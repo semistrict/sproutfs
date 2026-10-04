@@ -148,9 +148,10 @@ type ReadStats struct {
 	// HeadChecks counts the hits whose part was checked with a HEAD, and
 	// HeadMissing those whose part the store no longer had.
 	HeadChecks, HeadMissing uint64
-	// Delay and Bound are the reader's delay before a second request and its
-	// bound before a read of the store, now.
-	Delay, Bound time.Duration
+	// Classes is the reader's delay before a second request and its bound
+	// before a read of the store, now, for each size class of read, smallest
+	// first.
+	Classes []ReadClass
 	// Prefetches counts the reads of a window a prefetch made, which ask no
 	// second request, never read the store as a hedge, and leave the delay
 	// alone.
@@ -255,7 +256,7 @@ type clusterReader struct {
 	cancel context.CancelFunc
 	group  sync.WaitGroup
 
-	hedge hedger
+	hedge *hedger
 	marks downMarks
 
 	mu     sync.Mutex
@@ -285,10 +286,10 @@ func newClusterReader(ctx context.Context, shared *cluster, filler *filler, peer
 		clock = peers.Clock()
 	}
 	r := &clusterReader{cluster: shared, filler: filler, peers: peers, clock: clock, settings: settings, ctx: ctx,
-		cancel: cancel, tokens: storeHedgeMax * storeHedgeEarn,
-		// Both budgets start full, as a bucket does: a reader with no history
-		// may still hedge its first reads.
-		hedge: hedger{floor: settings.hedgeFloor, wait: settings.hedgeFloor, budget: hedgeMax * hedgeEarn}}
+		// The store hedge's bucket starts full, as the budget for second
+		// requests does: a reader with no history may still hedge its first
+		// reads.
+		cancel: cancel, tokens: storeHedgeMax * storeHedgeEarn, hedge: newHedger(settings.hedgeFloor)}
 	r.quiet = make(chan struct{})
 	r.marks = downMarks{reader: r, marks: make(map[rank.Identity]*downMark)}
 	filler.down = r.marks.isDown
@@ -358,8 +359,11 @@ func (r *clusterReader) statistics() ReadStats {
 	stats := r.stats
 	r.mu.Unlock()
 	stats.Down = r.marks.down()
-	stats.Delay = r.hedge.delay()
-	stats.Bound = r.bound()
+	for class := range readClasses {
+		reads, delay := r.hedge.state(class)
+		stats.Classes = append(stats.Classes, ReadClass{Bytes: readClassBytes(class), Reads: reads, Delay: delay,
+			Bound: r.boundAfter(delay)})
+	}
 	return stats
 }
 
@@ -378,10 +382,14 @@ func (r *clusterReader) on(key diskKey) bool {
 	return ok
 }
 
-// bound is how long a read waits for stripes before it reads the store as
-// well: boundFactor delays, and no less than the configured bound.
-func (r *clusterReader) bound() time.Duration {
-	return max(r.settings.bound, boundFactor*r.hedge.delay())
+// bound is how long a read of class waits for stripes before it reads the
+// store as well: boundFactor of the class's delays, and no less than the
+// configured bound.
+func (r *clusterReader) bound(class int) time.Duration { return r.boundAfter(r.hedge.delay(class)) }
+
+// boundAfter is the bound of a class whose delay is delay.
+func (r *clusterReader) boundAfter(delay time.Duration) time.Duration {
+	return max(r.settings.bound, boundFactor*delay)
 }
 
 // earn adds one read that asked the cluster to the store hedge's bucket.
@@ -424,22 +432,26 @@ type clusterWant struct {
 	valid   func([]byte) bool
 }
 
-// storeHedge reads the wants at the given positions from the store, decoded.
+// storeHedge reads the wants at the given positions from the store, decoded,
+// each in a buffer of its own.
 type storeHedge func(ctx context.Context, ats []int) ([][]byte, error)
 
 // read reads wants from the cluster, each window's at once, and returns the
-// decoded bytes of each, nil for one the cluster could not rebuild, and the
-// envelopes it rebuilt under an earlier code, in the order of their windows:
+// decoded bytes of each, in a buffer of its own that nothing else holds, which
+// the caller may keep as it is, nil for one the cluster could not rebuild, and
+// the envelopes it rebuilt under an earlier code, in the order of their windows:
 // the caller fills the cluster with them under the deployment's code once
 // its callers have their pages, as it fills what the store served. Every
 // want must be one the cluster is on for. Past the bound, hedge, when not
 // nil, reads the wants still waited on from the store, at most once and
 // within the bucket, and whichever of the two answers first is taken; a read
-// the store answered refills nothing.
+// the store answered refills nothing. Its delay and its bound are those of
+// its size class, the bytes all its wants ask for.
 func (r *clusterReader) read(ctx context.Context, codecs *blob.Codecs, wants []clusterWant,
 	hedge storeHedge) ([][]byte, []envelope, error) {
 	out := make([][]byte, len(wants))
-	groups := r.byWindow(wants)
+	class := r.classOf(wants)
+	groups := r.byWindow(wants, class)
 	results := make(chan windowResult, len(groups))
 	finished := make([]bool, len(groups))
 	refills := make([][]envelope, len(groups))
@@ -448,7 +460,7 @@ func (r *clusterReader) read(ctx context.Context, codecs *blob.Codecs, wants []c
 			results <- windowResult{group: at, out: windowOut{data: make([][]byte, len(g.wants))}}
 		}
 	}
-	wait := r.bound()
+	wait := r.bound(class)
 	if r.buggify(buggifyClusterStoreHedgeNow, 0.1) {
 		wait = 0
 	}
@@ -523,17 +535,19 @@ type hedgeResult struct {
 }
 
 // windowGroup is the wants of one window, and where they are among a read's,
-// and the membership they are read under.
+// the membership they are read under, and the size class of the read.
 type windowGroup struct {
 	window rank.Window
 	m      membership.Membership
 	ats    []int
 	wants  []clusterWant
+	class  int
 }
 
 // byWindow puts wants together by window, in the order their windows first
-// come, each placed by the membership the disk follows now.
-func (r *clusterReader) byWindow(wants []clusterWant) []windowGroup {
+// come, each placed by the membership the disk follows now, for a read of
+// class.
+func (r *clusterReader) byWindow(wants []clusterWant, class int) []windowGroup {
 	var groups []windowGroup
 	at := make(map[rank.Window]int)
 	for position, want := range wants {
@@ -543,7 +557,7 @@ func (r *clusterReader) byWindow(wants []clusterWant) []windowGroup {
 			m, _ := r.cluster.placedBy(want.key, false)
 			index = len(groups)
 			at[window] = index
-			groups = append(groups, windowGroup{window: window, m: m})
+			groups = append(groups, windowGroup{window: window, m: m, class: class})
 		}
 		groups[index].ats = append(groups[index].ats, position)
 		groups[index].wants = append(groups[index].wants, want)
@@ -579,6 +593,9 @@ type windowRead struct {
 	// deployment used before its own, which the read does not repair under.
 	code    rank.Code
 	earlier bool
+	// class is the size class of the read the window is part of, whose delay
+	// the read waits before it asks the rest of the ranks.
+	class int
 	// own says this host's own stripes rebuilt every want, with no request,
 	// and cut that the read's caller gave up on it before it ended.
 	own, cut bool
@@ -605,11 +622,15 @@ type windowRead struct {
 
 	// held is the stripes in hand of each want, tried how many were in hand
 	// at its last rebuild that failed, out what each rebuilt to and envelopes
-	// the envelope it was rebuilt from.
+	// the envelope it was rebuilt from. A stripe a peer sent is a view of its
+	// reply's buffer, and replies is the replies the read holds for them,
+	// given back when it finishes. What out and envelopes hold is the read's
+	// own and outlives it: neither is ever a view of a reply.
 	held      [][]heldStripe
 	tried     []int
 	out       [][]byte
 	envelopes [][]byte
+	replies   []peer.StripesReply
 	// answered is, for each rank that answered, the indices of each want it
 	// holds.
 	answered map[rank.Identity][][]int
@@ -685,7 +706,7 @@ func (r *clusterReader) readCodes(ctx context.Context, codecs *blob.Codecs, g wi
 		for want, position := range missing {
 			wants[want] = g.wants[position]
 		}
-		w := r.windowRead(codecs, g.window, g.m, code, wants, at > 0)
+		w := r.windowRead(codecs, g.window, g.m, code, wants, at > 0, g.class)
 		w.run(ctx)
 		if w.cut {
 			return out, own, 0, true
@@ -711,13 +732,14 @@ func (r *clusterReader) readCodes(ctx context.Context, codecs *blob.Codecs, g wi
 }
 
 // windowRead starts the read of wants of window under m, of the stripes of
-// code, from the window's ranks under that code. earlier marks a code the
-// deployment used before its own.
+// code, from the window's ranks under that code, for a read of class. earlier
+// marks a code the deployment used before its own.
 func (r *clusterReader) windowRead(codecs *blob.Codecs, window rank.Window, m membership.Membership, code rank.Code,
-	wants []clusterWant, earlier bool) *windowRead {
+	wants []clusterWant, earlier bool, class int) *windowRead {
 	list := m.List().Under(code)
 	ranks := list.Ranks(window)
-	w := &windowRead{r: r, codecs: codecs, window: window, m: m, code: code, earlier: earlier, wants: wants,
+	w := &windowRead{r: r, codecs: codecs, window: window, m: m, code: code, earlier: earlier, class: class,
+		wants: wants,
 		ranks: ranks, holders: list.Holders(window), self: r.cluster.self(), contributed: make(map[*cacheDisk]bool),
 		held: make([][]heldStripe, len(wants)), tried: make([]int, len(wants)), out: make([][]byte, len(wants)),
 		envelopes: make([][]byte, len(wants)), answered: make(map[rank.Identity][][]int),
@@ -821,7 +843,7 @@ func (w *windowRead) run(ctx context.Context) {
 	}
 	var delay <-chan time.Time
 	if len(w.spares) > 0 && !prefetch && !r.bug("cluster-no-second-request") {
-		timer := r.clock.NewTimer(r.hedge.delay())
+		timer := r.clock.NewTimer(r.hedge.delay(w.class))
 		defer timer.Stop()
 		delay = timer.C()
 	}
@@ -869,7 +891,7 @@ func (w *windowRead) run(ctx context.Context) {
 		}
 	}
 	if w.complete() && !prefetch {
-		r.hedge.done(r.clock.Since(began), waited)
+		r.hedge.done(w.class, r.clock.Since(began), waited)
 	}
 	if w.complete() && w.pending > 0 && !w.earlier && w.mayRepair() {
 		// The read has its pages. Whether a rank lacks a stripe no rank
@@ -1049,8 +1071,9 @@ func (w *windowRead) deliver(answer stripeAnswer) {
 	w.events <- answer
 }
 
-// finish ends the read: the disks of its own it held are given back, and
-// what is still to arrive is given back as it comes.
+// finish ends the read: the disks of its own it held and the replies whose
+// stripes it took are given back, and what is still to arrive is given back
+// as it comes. No stripe it holds is read after.
 func (w *windowRead) finish() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -1059,6 +1082,11 @@ func (w *windowRead) finish() {
 		release()
 	}
 	w.release = nil
+	for _, reply := range w.replies {
+		reply.Release()
+	}
+	w.replies = nil
+	clear(w.held)
 	for {
 		select {
 		case answer := <-w.events:
@@ -1085,9 +1113,17 @@ func (w *windowRead) take(ctx context.Context, answer stripeAnswer) bool {
 		}
 		return true
 	}
-	defer answer.reply.Release()
 	indices := make([][]int, len(w.wants))
 	took := false
+	defer func() {
+		// The stripes taken are views of the reply's buffer, which the read
+		// holds until it finishes.
+		if took {
+			w.replies = append(w.replies, answer.reply)
+		} else {
+			answer.reply.Release()
+		}
+	}()
 	offset := 0
 	for _, item := range answer.reply.Items {
 		raw := answer.reply.Payload[offset : offset+item.Size]
@@ -1115,13 +1151,12 @@ func (w *windowRead) take(ctx context.Context, answer stripeAnswer) bool {
 
 // parse checks one item a peer sent as the stripe of want at it says it is: a
 // page asked for, a header that names the want's key, the read's code and the
-// index the reply gives, and a checksum that holds. Its bytes are copied out
-// of the reply's buffer.
+// index the reply gives, and a checksum that holds. Its bytes are a view of
+// the reply's buffer, not a copy: the read holds the reply until it finishes.
 func (w *windowRead) parse(ctx context.Context, at int, item peer.StripeItem, raw []byte) (stripe.Stripe, error) {
 	if at < 0 {
 		return stripe.Stripe{}, fmt.Errorf("page %d was not asked for", item.Page)
 	}
-	raw = bytes.Clone(raw)
 	if len(raw) > diskItemFixed && w.r.buggify(buggifyClusterDamagedItem, 0.02) {
 		raw[len(raw)-1] ^= 0x10
 	}
@@ -1157,8 +1192,15 @@ func (w *windowRead) join(ctx context.Context) bool {
 		for position, held := range w.held[at] {
 			stripes[position] = held.stripe
 		}
-		var decoded []byte
+		var decoded, kept []byte
 		joined, err := stripe.Join(ctx, w.code, stripes, func(envelope []byte) error {
+			if w.sharesReply(at, envelope) && !w.r.bug("cluster-envelope-shares-reply") {
+				// Under k = 1 the envelope is a stripe's own bytes, and a
+				// peer's stripe is a view of its reply's buffer, which goes
+				// back to the pool when the read finishes and is read into
+				// by the next reply. The read keeps a copy.
+				envelope = bytes.Clone(envelope)
+			}
 			data, err := w.codecs.Decode(ctx, envelope, want.maximum)
 			if err != nil {
 				return err
@@ -1166,8 +1208,10 @@ func (w *windowRead) join(ctx context.Context) bool {
 			if !want.valid(data) {
 				return ErrCorrupt
 			}
-			// What a read rebuilt is never nil, which is what a miss is.
-			decoded = append([]byte{}, data...)
+			// A raw page is a view of its envelope, and the page and the
+			// envelope share one buffer, the read's own. What a read rebuilt
+			// is never nil, which is what a miss is.
+			decoded, kept = data, envelope
 			return nil
 		})
 		if context.Cause(ctx) != nil {
@@ -1190,7 +1234,7 @@ func (w *windowRead) join(ctx context.Context) bool {
 			short = short || errors.Is(err, stripe.ErrWrong)
 			continue
 		}
-		w.out[at], w.envelopes[at] = decoded, bytes.Clone(joined.Envelope)
+		w.out[at], w.envelopes[at] = decoded, kept
 		for _, position := range joined.Used {
 			if stripes[position].Index >= w.code.K {
 				w.r.probe(ProbeClusterParity)
@@ -1199,6 +1243,15 @@ func (w *windowRead) join(ctx context.Context) bool {
 		}
 	}
 	return short
+}
+
+// sharesReply reports whether envelope is the bytes of a stripe of want at
+// that a peer sent, a view of its reply's buffer. Only under a code with
+// k = 1 is a rebuilt envelope ever a stripe's bytes.
+func (w *windowRead) sharesReply(at int, envelope []byte) bool {
+	return len(envelope) > 0 && slices.ContainsFunc(w.held[at], func(held heldStripe) bool {
+		return held.own == nil && len(held.stripe.Bytes) > 0 && &held.stripe.Bytes[0] == &envelope[0]
+	})
 }
 
 // distinct is how many distinct indices held holds.
@@ -1354,27 +1407,110 @@ func (w *windowRead) preferred(identity rank.Identity) []int {
 	return append(first, rest...)
 }
 
-// hedger is one reader's delay before it asks the rest of a window's ranks,
-// and its budget for doing so, as FoundationDB's load balancer keeps them.
-// The delay is the 95th percentile of the reader's recent times to k stripes,
-// and no less than a floor. The budget counts twentieths of a request: a read
-// that had its stripes within the delay adds one, and a second request takes
-// twenty.
-type hedger struct {
-	floor time.Duration
+// A read's size class is the bytes it asks for, at most: up to 4 KiB, then
+// each four times the last, up to 16 MiB, the longest run a read covers
+// (maximumRunBytes). A longer read is of the last. So a 4 KiB page, a
+// segment, a 2 MiB page and a run of pages each have a class of their own.
+const (
+	readClasses       = 7
+	smallestReadClass = 4 << 10
+)
 
-	mu     sync.Mutex
-	wait   time.Duration
-	budget int
-	seen   int
-	recent [hedgeWindow]time.Duration
-	sorted [hedgeWindow]time.Duration
+// readClass is the class of a read that asks for bytes.
+func readClass(bytes int64) int {
+	class := 0
+	for limit := int64(smallestReadClass); bytes > limit && class < readClasses-1; limit *= 4 {
+		class++
+	}
+	return class
 }
 
-func (h *hedger) delay() time.Duration {
+// readClassBytes is the most a read of class asks for, but for the last class,
+// which holds every longer read too.
+func readClassBytes(class int) int64 { return smallestReadClass << (2 * class) }
+
+// classOf is the class of a read of wants: the bytes their envelopes may
+// decode to, together.
+func (r *clusterReader) classOf(wants []clusterWant) int {
+	if r.bug("cluster-one-delay-for-every-size") {
+		return 0
+	}
+	bytes := int64(0)
+	for _, want := range wants {
+		bytes += int64(want.maximum)
+	}
+	return readClass(bytes)
+}
+
+// ReadClass is a reader's delay and bound for one size class of read.
+type ReadClass struct {
+	// Bytes is the most a read of the class asks for; the last class holds
+	// every longer read too.
+	Bytes int64
+	// Reads counts the reads of the class that had their stripes, which its
+	// delay is drawn from.
+	Reads uint64
+	// Delay and Bound are the class's delay before a second request and its
+	// bound before a read of the store, now.
+	Delay, Bound time.Duration
+}
+
+// hedger is one reader's delays before it asks the rest of a window's ranks,
+// one for each size class of read, and its budget for doing so, as
+// FoundationDB's load balancer keeps them. A class's delay is the 95th
+// percentile of its recent times to k stripes, and no less than its floor,
+// so a burst of small fast reads does not set the delay of a larger one. The
+// budget is the reader's, whatever the class: it bounds the load second
+// requests add to the holders. It counts twentieths of a request: a read that
+// had its stripes within the delay adds one, and a second request takes
+// twenty.
+type hedger struct {
+	mu      sync.Mutex
+	budget  int
+	classes [readClasses]hedgeClass
+}
+
+// hedgeClass is one class's delay and the reads it is drawn from.
+type hedgeClass struct {
+	floor, wait time.Duration
+	seen        uint64
+	recent      [hedgeWindow]time.Duration
+	sorted      [hedgeWindow]time.Duration
+}
+
+// newHedger is a reader's hedger with every class's delay at floor. The
+// budget starts full, as a bucket does: a reader with no history may still
+// hedge its first reads.
+func newHedger(floor time.Duration) *hedger {
+	h := &hedger{budget: hedgeMax * hedgeEarn}
+	for class := range h.classes {
+		h.classes[class].floor, h.classes[class].wait = floor, floor
+	}
+	return h
+}
+
+// delay is the delay of a read of class.
+func (h *hedger) delay(class int) time.Duration {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return h.wait
+	return h.waitOf(class)
+}
+
+// waitOf is the delay of a read of class. A class that has heard hedgeEvery
+// reads of its own has a delay of its own. One that has not takes the delay
+// of the nearest class that has, the larger first, since a larger read is the
+// slower: a reader that has learned one size of read waits by it for the
+// others, as it did when it kept one delay for every size. With none learned,
+// it is the floor. Caller holds h.mu.
+func (h *hedger) waitOf(class int) time.Duration {
+	for distance := range readClasses {
+		for _, near := range []int{class + distance, class - distance} {
+			if near >= 0 && near < readClasses && h.classes[near].seen >= hedgeEvery {
+				return h.classes[near].wait
+			}
+		}
+	}
+	return h.classes[class].wait
 }
 
 // take spends one second request, if the budget holds one.
@@ -1388,24 +1524,33 @@ func (h *hedger) take() bool {
 	return true
 }
 
-// done records a read that had k stripes of every page in took. waited says
-// the delay passed before they came.
-func (h *hedger) done(took time.Duration, waited bool) {
+// done records a read of class that had k stripes of every page in took.
+// waited says the delay passed before they came.
+func (h *hedger) done(class int, took time.Duration, waited bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if !waited {
 		h.budget = min(h.budget+1, hedgeMax*hedgeEarn)
 	}
-	h.recent[h.seen%hedgeWindow] = took
-	h.seen++
-	if h.seen%hedgeEvery != 0 {
+	c := &h.classes[class]
+	c.recent[c.seen%hedgeWindow] = took
+	c.seen++
+	if c.seen%hedgeEvery != 0 {
 		return
 	}
-	n := min(h.seen, hedgeWindow)
-	s := h.sorted[:n]
-	copy(s, h.recent[:n])
+	n := int(min(c.seen, hedgeWindow))
+	s := c.sorted[:n]
+	copy(s, c.recent[:n])
 	slices.Sort(s)
-	h.wait = max(s[(n*95+99)/100-1], h.floor)
+	c.wait = max(s[(n*95+99)/100-1], c.floor)
+}
+
+// state is what a class holds now: how many reads its delay is drawn from,
+// and the delay.
+func (h *hedger) state(class int) (uint64, time.Duration) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.classes[class].seen, h.waitOf(class)
 }
 
 // checkHit has the part an envelope of key was served from checked with a

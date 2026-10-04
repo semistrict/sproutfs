@@ -592,10 +592,22 @@
     "purpose": "Fill from every read of the store, with no fill right asked of rank 1."
   },
   {
-    "id": "fill-queue-waits",
+    "id": "fill-publication-dropped-when-full",
     "package": "checkpoint",
-    "run": "^TestAPublicationNeverWaitsForItsFill$",
-    "purpose": "Wait for room in the queue of writes to the host's disk rather than drop the fill."
+    "run": "^(TestAPublicationGoesAtThePaceOfItsSlowestHolder|TestAPublicationHoldsNoMorePartsThanItsSlotsAndItsQueue)$",
+    "purpose": "Drop a publication's fill when the queue is full, as a read's is, rather than wait for room."
+  },
+  {
+    "id": "fill-publication-waits-forever",
+    "package": "checkpoint",
+    "run": "^TestADeadHolderCostsAPublicationTheBoundAtMost$",
+    "purpose": "Let a publication's fills wait for room, the rate, the budget or a busy holder without a bound."
+  },
+  {
+    "id": "fill-reads-behind-publications",
+    "package": "checkpoint",
+    "run": "^TestAReadsFillGoesAheadOfAPublications$",
+    "purpose": "Take a publication's fills before a read's, so a read's fill waits behind them."
   },
   {
     "id": "keep-while-writing",
@@ -686,6 +698,18 @@
     "package": "checkpoint",
     "run": "^TestASampledHitChecksItsPartStillExists$",
     "purpose": "Never check, by a HEAD, that the part behind a sampled hit still exists."
+  },
+  {
+    "id": "cluster-one-delay-for-every-size",
+    "package": "checkpoint",
+    "run": "^TestALargeReadAfterManySmallFastReadsIsNotHedgedToTheStore$",
+    "purpose": "Keep one delay and one store bound for reads of every size, so a large read after many small fast ones reads the store too."
+  },
+  {
+    "id": "cluster-envelope-shares-reply",
+    "package": "checkpoint",
+    "run": "^TestAPageReadFromAPeerOutlivesItsReplysBuffer$",
+    "purpose": "Keep a page rebuilt under k = 1 as a view of its peer's reply buffer, which the next reply is read into."
   },
   {
     "id": "fill-parts-in-any-order",

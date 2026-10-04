@@ -1,6 +1,7 @@
 package checkpoint
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"errors"
@@ -120,10 +121,10 @@ func (s *Store) loadPages(ctx context.Context, geometry Geometry, volume string,
 		for at := range wanted {
 			wanted[at] = at
 		}
-		data, _, err := s.fetchMembers(ctx, geometry, run, keys, wanted)
-		return data, func() {}, err
+		got, err := s.fetchMembers(ctx, geometry, run, keys, wanted)
+		return got.data, func() {}, err
 	}
-	return s.cache.getAll(ctx, keys, func(ctx context.Context, wanted []int) ([][]byte, []envelope, error) {
+	return s.cache.getAll(ctx, keys, func(ctx context.Context, wanted []int) (fetched, error) {
 		return s.fetchMembers(ctx, geometry, run, keys, wanted)
 	})
 }
@@ -131,13 +132,14 @@ func (s *Store) loadPages(ctx context.Context, geometry Geometry, volume string,
 // fillPages copies each member's bytes into the part of the caller's buffer its
 // page fills. A member published when the volume was shorter does not cover the
 // whole page; the bytes past its end read as zeroes, which is how a grown
-// volume reads.
+// volume reads. Only those are zeroed: the rest are copied over.
 func fillPages(run []pageRead, data [][]byte) {
 	for at, page := range run {
-		clear(page.dst)
+		filled := 0
 		if page.within < uint64(len(data[at])) {
-			copy(page.dst, data[at][page.within:])
+			filled = copy(page.dst, data[at][page.within:])
 		}
+		clear(page.dst[filled:])
 	}
 }
 
@@ -149,10 +151,14 @@ func fillPages(run []pageRead, data [][]byte) {
 // the run. The result holds one decoded page per position, in the order the
 // positions were given, and the envelopes the cache fills the cluster with
 // once the run's callers have their pages: those the cluster rebuilt under a
-// code the deployment used before its own, then those the store served.
+// code the deployment used before its own, then those the store served. A
+// page the cluster or the disk served is in a buffer of its own, which the
+// cache keeps as it is; one the store served is a slice of its request's
+// buffer, which the cache copies.
 func (s *Store) fetchMembers(ctx context.Context, geometry Geometry, run []pageRead, keys []cacheKey,
-	wanted []int) ([][]byte, []envelope, error) {
+	wanted []int) (fetched, error) {
 	data := make([][]byte, len(wanted))
+	owned := make([]bool, len(wanted))
 	// remote is the positions within wanted the store is to serve, and
 	// cluster those the cluster is read for first.
 	var remote, cluster []int
@@ -164,23 +170,23 @@ func (s *Store) fetchMembers(ctx context.Context, geometry Geometry, run []pageR
 			continue
 		}
 		if page, found := s.fromDisk(ctx, key, int(geometry.PageSize), validPage); found {
-			data[at] = page
+			data[at], owned[at] = page, true
 			s.checkHit(ctx, key, s.memberObject(run[position].at))
 			continue
 		}
 		remote = append(remote, at)
 	}
 	if len(cluster) > 0 {
-		missed, rebuilt, err := s.fromCluster(ctx, geometry, run, keys, wanted, cluster, data)
+		missed, rebuilt, err := s.fromCluster(ctx, geometry, run, keys, wanted, cluster, data, owned)
 		if err != nil {
-			return nil, nil, err
+			return fetched{}, err
 		}
 		remote = append(remote, missed...)
 		slices.Sort(remote)
 		refill = rebuilt
 	}
 	if len(remote) == 0 {
-		return data, refill, context.Cause(ctx)
+		return fetched{data: data, owned: owned, served: refill}, context.Cause(ctx)
 	}
 	positions := make([]int, len(remote))
 	for at, position := range remote {
@@ -188,21 +194,22 @@ func (s *Store) fetchMembers(ctx context.Context, geometry Geometry, run []pageR
 	}
 	decoded, served, err := s.fromStore(ctx, geometry, run, keys, positions)
 	if err != nil {
-		return nil, nil, err
+		return fetched{}, err
 	}
 	for at, position := range remote {
 		data[position] = decoded[at]
 	}
-	return data, append(refill, served...), nil
+	return fetched{data: data, owned: owned, served: append(refill, served...)}, nil
 }
 
 // fromCluster reads the members at the positions within wanted that cluster
 // names from the cluster, into data, and returns the positions it could not
 // rebuild, which the store serves, and the envelopes it rebuilt under an
 // earlier code. Past the cluster's bound, it may read the store for the ones
-// it is still waiting on as well, and take whichever answers first.
+// it is still waiting on as well, and take whichever answers first. Each
+// member it reads is in a buffer of its own, which owned marks.
 func (s *Store) fromCluster(ctx context.Context, geometry Geometry, run []pageRead, keys []cacheKey, wanted,
-	cluster []int, data [][]byte) ([]int, []envelope, error) {
+	cluster []int, data [][]byte, owned []bool) ([]int, []envelope, error) {
 	wants := make([]clusterWant, len(cluster))
 	for at, position := range cluster {
 		wants[at] = clusterWant{key: diskKey{cacheKey: keys[wanted[position]], span: windowSpan(geometry)},
@@ -217,6 +224,11 @@ func (s *Store) fromCluster(ctx context.Context, geometry Geometry, run []pageRe
 				positions[at] = wanted[cluster[want]]
 			}
 			decoded, _, err := s.fromStore(ctx, geometry, run, keys, positions)
+			// What a read of the cluster returns is its own: a page the store
+			// answered first is copied out of its request's buffer.
+			for at, page := range decoded {
+				decoded[at] = bytes.Clone(page)
+			}
 			return decoded, err
 		}
 	}
@@ -230,7 +242,7 @@ func (s *Store) fromCluster(ctx context.Context, geometry Geometry, run []pageRe
 			missed = append(missed, position)
 			continue
 		}
-		data[position] = got[at]
+		data[position], owned[position] = got[at], true
 		s.checkHit(ctx, wants[at].key, s.memberObject(run[wanted[position]].at))
 	}
 	return missed, refill, nil

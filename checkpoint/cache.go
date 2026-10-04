@@ -1,11 +1,13 @@
 package checkpoint
 
 import (
+	"bytes"
 	"cmp"
 	"container/list"
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -77,13 +79,22 @@ type CacheConfig struct {
 	// requests are timed by. Nil is the wall clock.
 	Clock platform.Clock
 	// FillQueueBytes bounds the host's queue of writes to its own disk, which
-	// every fill and every keep a peer sends goes through; a fill that finds
-	// it full is dropped. Default DefaultFillQueueBytes.
+	// every fill and every keep a peer sends goes through. A read's fill that
+	// finds it full is dropped. A publication's waits while it holds three
+	// quarters of the bound or more, so the publication goes at the pace its
+	// fills do. Default DefaultFillQueueBytes.
 	FillQueueBytes int64
 	// FillBytesPerSecond is the rate of keeps this host sends its peers, with
-	// a burst of one second of it; a keep past it is dropped. Default
-	// DefaultFillBytesPerSecond.
+	// a burst of one second of it. A read's keep past it is dropped, and a
+	// publication's waits for it, leaving a quarter of the burst to reads.
+	// Default DefaultFillBytesPerSecond.
 	FillBytesPerSecond int64
+	// FillWaitBound is the longest one wait of a publication's fills lasts:
+	// for room in the queue, or a keep's for the rate, the background budget
+	// or a busy holder. A publication that waited it out once waits no more,
+	// and each of its fills that finds no room after is dropped. Default
+	// DefaultFillWaitBound.
+	FillWaitBound time.Duration
 	// FillRightInterval is how long a window's fill right, once this cache
 	// gave it out, is not given again. Default DefaultFillRightInterval.
 	FillRightInterval time.Duration
@@ -296,12 +307,14 @@ func NewCache(ctx context.Context, resources *resource.Budget, config CacheConfi
 	config.FillQueueBytes = cmp.Or(config.FillQueueBytes, DefaultFillQueueBytes)
 	config.FillBytesPerSecond = cmp.Or(config.FillBytesPerSecond, DefaultFillBytesPerSecond)
 	config.FillRightInterval = cmp.Or(config.FillRightInterval, DefaultFillRightInterval)
+	config.FillWaitBound = cmp.Or(config.FillWaitBound, DefaultFillWaitBound)
 	config.ClusterHedgeFloor = cmp.Or(config.ClusterHedgeFloor, DefaultClusterHedgeFloor)
 	config.ClusterBound = cmp.Or(config.ClusterBound, DefaultClusterBound)
 	config.ClusterStripeTimeout = cmp.Or(config.ClusterStripeTimeout, DefaultClusterStripeTimeout)
 	config.HeadCheckEvery = cmp.Or(config.HeadCheckEvery, DefaultHeadCheckEvery)
 	if config.FillQueueBytes < 0 || config.FillBytesPerSecond < 0 || config.FillRightInterval < 0 ||
-		config.ClusterHedgeFloor < 0 || config.ClusterBound < 0 || config.ClusterStripeTimeout <= 0 {
+		config.FillWaitBound < 0 || config.ClusterHedgeFloor < 0 || config.ClusterBound < 0 ||
+		config.ClusterStripeTimeout <= 0 {
 		return nil, ErrInvalidConfig
 	}
 	if resources == nil || config.MaxConcurrentLoads < 1 || config.MaxConcurrentLoads > 1024 ||
@@ -336,7 +349,7 @@ func NewCache(ctx context.Context, resources *resource.Budget, config CacheConfi
 	if cache.disk != nil || config.Shards {
 		cache.filler = newFiller(ctx, shared, fillSettings{peers: config.Peers, clock: config.Clock,
 			queueBytes: config.FillQueueBytes, bytesPerSecond: config.FillBytesPerSecond,
-			rightInterval: config.FillRightInterval})
+			rightInterval: config.FillRightInterval, waitBound: config.FillWaitBound})
 		cache.reader = newClusterReader(ctx, shared, cache.filler, config.Peers, config.Clock, clusterSettings{
 			hedgeFloor: config.ClusterHedgeFloor, bound: config.ClusterBound, stripeTimeout: config.ClusterStripeTimeout,
 			probeFirst: DefaultProbeFirst, probeMax: DefaultProbeMax, headEvery: config.HeadCheckEvery})
@@ -479,6 +492,18 @@ func (c *Cache) fill(kind WriteKind, envelopes []envelope) {
 	c.filler.fill(kind, envelopes)
 }
 
+// publish hands what a publication made durable to the cluster, each window
+// inside the cluster share to its ranks, and returns once each window is
+// handed over or dropped: a window waits under ctx for room in the queue, as
+// the publication's pace allows. It does nothing for a cache that fills
+// nothing.
+func (c *Cache) publish(ctx context.Context, pace *fillPace, envelopes []envelope) {
+	if c == nil || c.filler == nil || len(envelopes) == 0 {
+		return
+	}
+	c.filler.publish(ctx, pace, envelopes)
+}
+
 // bug reports whether the in-tree bug id is on for the cache's run, as its
 // fills see it.
 func (c *Cache) bug(id string) bool { return c != nil && c.filler != nil && c.filler.bug(id) }
@@ -573,11 +598,24 @@ type cacheAdmission struct {
 }
 
 // fetcher fills one buffer per key of a load. It is given the positions within
-// keys that this load owns, and returns their bytes in that order; the cache
-// copies what it keeps, so a fetcher may hand back slices of its own buffers.
-// It also returns the envelopes it read from the store, which the load fills
-// the cluster with once its callers have their bytes.
-type fetcher func(ctx context.Context, wanted []int) ([][]byte, []envelope, error)
+// keys that this load owns, and returns their bytes in that order.
+type fetcher func(ctx context.Context, wanted []int) (fetched, error)
+
+// fetched is what one fetch returns: the bytes of each key it was asked for,
+// in order, which of them are its own to give, none where owned is nil, and
+// the envelopes it read from the store, which the load fills the cluster with
+// once its callers have their bytes. Bytes a fetch owns are in a buffer
+// nothing else holds or will change, little longer than they are, and the
+// cache keeps them as they are. Any others, a slice of a buffer the fetch
+// shares among keys or uses again, the cache copies.
+type fetched struct {
+	data   [][]byte
+	owned  []bool
+	served []envelope
+}
+
+// owns reports whether the bytes at are the fetch's own to give.
+func (f fetched) owns(at int) bool { return at < len(f.owned) && f.owned[at] }
 
 func (c *Cache) admit(ctx context.Context, keys []cacheKey, fetch fetcher) cacheAdmission {
 	c.mu.Lock()
@@ -716,14 +754,14 @@ func (c *Cache) retainLocked(entry *cacheEntry) {
 	}
 }
 
-// single is a fetcher of one key.
+// single is a fetcher of one key, whose bytes the cache copies.
 func single(load func(context.Context) ([]byte, []envelope, error)) fetcher {
-	return func(ctx context.Context, _ []int) ([][]byte, []envelope, error) {
+	return func(ctx context.Context, _ []int) (fetched, error) {
 		found, served, err := load(ctx)
 		if err != nil {
-			return nil, nil, err
+			return fetched{}, err
 		}
-		return [][]byte{found}, served, nil
+		return fetched{data: [][]byte{found}, served: served}, nil
 	}
 }
 
@@ -849,10 +887,11 @@ func (c *Cache) leave(key cacheKey, flight *cacheFlight) {
 
 func (c *Cache) run(ctx context.Context, load *cacheLoad, wanted []int, fetch fetcher) {
 	defer load.cancel()
-	fetched, served, err := fetch(ctx, wanted)
-	if err == nil && len(fetched) != len(load.flights) {
+	got, err := fetch(ctx, wanted)
+	if err == nil && len(got.data) != len(load.flights) {
 		err = ErrCorrupt
 	}
+	served := got.served
 	entries := make([]*cacheEntry, len(load.flights))
 	for at := range entries {
 		if err != nil {
@@ -860,16 +899,16 @@ func (c *Cache) run(ctx context.Context, load *cacheLoad, wanted []int, fetch fe
 		}
 		// What is kept of a segment is its page table, decoded here once for
 		// every reader waiting on the load and every one after it; of a page,
-		// a copy of its bytes.
+		// its bytes.
 		entry := &cacheEntry{key: load.keys[at]}
-		charge := int64(len(fetched[at]))
+		charge := int64(len(got.data[at]))
 		if entry.key.segment {
-			if entry.table, err = decodeTable(ctx, fetched[at]); err != nil {
+			if entry.table, err = decodeTable(ctx, got.data[at]); err != nil {
 				break
 			}
 			charge = entry.table.charge()
 		}
-		// Try to reserve the owned copy, reclaiming unused cache first. If guest
+		// Try to reserve the entry, reclaiming unused cache first. If guest
 		// pages or pinned readers occupy the allotment, serve this read through
 		// transient I/O headroom and do not retain it. Cache capacity must not
 		// prevent a required read.
@@ -881,8 +920,14 @@ func (c *Cache) run(ctx context.Context, load *cacheLoad, wanted []int, fetch fe
 			break
 		}
 		if !entry.key.segment {
-			entry.data = make([]byte, len(fetched[at]))
-			copy(entry.data, fetched[at])
+			// A page's entry keeps the bytes a fetch owns as they are, and a
+			// copy of any others, made with no zeroing first. Either way it
+			// holds no more of their buffer than they are.
+			kept := got.data[at]
+			if !got.owns(at) {
+				kept = bytes.Clone(kept)
+			}
+			entry.data = slices.Clip(kept)
 		}
 		entries[at] = entry
 	}

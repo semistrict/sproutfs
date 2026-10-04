@@ -1453,18 +1453,53 @@ request with that disk's stripes of the window, each as the disk stores it,
 with its own checksum, under the generation the fill was placed by. A disk no
 member serves gets nothing, and its stripes are dropped as `stale`.
 
-**Nothing waits on a fill.** A host holds the fills handed to it, and its
-peers' keeps, in one queue, `CacheConfig.FillQueueBytes` (64 MiB by default).
-One worker does the fills one at a time, in the order they were handed over.
-It asks for a read's fill right, writes this host's own stripes and sends each
-keep, and it takes the next fill once the last keep is answered. Every write
-to this host's own disk, its own fills' and its peers' keeps', is done by
-another worker, one at a time. Keeps go out within a rate per host,
-`CacheConfig.FillBytesPerSecond` (128 MiB/s by default, with a burst of one
-second of it), and within the host's background budget at the fill priority. A
-fill that finds the queue full, the rate spent or the budget without room is
-dropped. Its window is read from the store the next time. A fault, a
-publication and a pull never wait for a fill.
+**A fault and a pull never wait on a fill.** A host holds the fills handed to
+it, and its peers' keeps, in one queue, `CacheConfig.FillQueueBytes` (64 MiB
+by default). One worker does the fills one at a time. It asks for a read's
+fill right, writes this host's own stripes and sends each keep, and it takes
+the next fill once the last keep is answered. Every write to this host's own
+disk, its own fills' and its peers' keeps', is done by another worker, one at
+a time. Keeps go out within a rate per host, `CacheConfig.FillBytesPerSecond`
+(128 MiB/s by default, with a burst of one second of it), and within the
+host's background budget at the fill priority. A fill of a read or a pull that
+finds the queue full, the rate spent or the budget without room is dropped.
+Its window is read from the store the next time.
+
+**A publication goes at the pace of its fills.** A suspend or a stop is
+followed by a restore on another host. A window the publication did not fill
+is read from the store there, and those windows are the restore's tail
+([the real application's restore](measurements/gce-real-app-restore-2026-10-03.md)).
+A slower publication costs less than that. So a publication's fills wait
+rather than drop:
+
+- A publication hands a window over only while the queue holds less than
+  three quarters of its bound, its high-water mark. Until then it waits for
+  room. Windows that wait get room in the order they began to wait.
+- A part keeps its upload slot until its windows are handed over. So a
+  publication whose fills wait also waits for a slot for its next part. It
+  holds no more parts than the store has slots, besides what the queue holds.
+- A keep of a publication's that finds the rate spent waits for it, and
+  leaves a quarter of a second of the rate to reads. One that finds the
+  background budget full, or whose holder answers BUSY, is tried again after
+  10 ms, then twice as long each time, up to half a second. A keep larger
+  than the whole budget never fits it, and is dropped at once.
+- No wait lasts longer than `CacheConfig.FillWaitBound` (10 s by default). A
+  publication that waited it out once waits no more. Each of its fills that
+  finds no room after is dropped, as a read's is. A holder that is gone is
+  marked down within a few seconds, and keeps to it are then dropped at once.
+  So it costs a publication the bound at most.
+
+On GCE an 8 GiB guest published from an Ice Lake host under 4+2 used to drop
+two thirds of its stripes at the default queue. Paced, it drops none, and
+takes 69 s instead of 33 s, the pace of the host's keeps
+([the measurement](measurements/gce-fill-backpressure-2026-10-04.md)).
+
+**A read's fill never waits behind a publication's.** The last quarter of the
+queue is left to the fills of reads, repairs and peers' keeps, which never
+wait. The worker takes them before any of a publication's fills still to do,
+and also between one holder of a publication's fill and the next. So a read's
+fill waits for the keep on the wire at most. A publication's keep waiting to
+be tried again leaves the worker to them meanwhile.
 
 **One fill at a time.** Keeps sent beside each other reach a holder's link,
 its connection and the background budget in whatever order the Go scheduler
@@ -1499,8 +1534,9 @@ fill from a publication is refused last, and a fill from a read before it (see
 host filled from reads and from publications, the reads it filled nothing of
 for want of the right, the rights its cache gave out, the stripes it sent that
 their holders kept and their bytes, the stripes kept on its disk, the stripes
-dropped by reason, the duplicates, the stripes of keeps it refused, and its
-queue. The reasons are `queue`, `rate`, `budget` (this host's background
+dropped by reason, the duplicates, the stripes of keeps it refused, its
+queue and the most it has held, and its publications' waits: how many, how
+long in all, and how many publications waited out the bound. The reasons are `queue`, `rate`, `budget` (this host's background
 budget), `busy` (the holder's budget for this host), `down`, `stale` (a
 host that does not serve the disk at its address, a disk no member serves,
 or a holder on another generation that a newer one did not settle), `peer`
@@ -1548,10 +1584,16 @@ rebuilds from any k distinct indices it is sent.
 miss, not a hedge.
 
 **The rest after a delay.** If k stripes of every page have not arrived after
-a delay, the read asks every rank it has not asked. The delay is the 95th
-percentile of this host's recent times to k stripes, over its last 256 reads
-and updated every 32, and never less than `CacheConfig.ClusterHedgeFloor`
-(0.5 ms by default). These second requests come from a budget, as
+a delay, the read asks every rank it has not asked. The delay is kept for each
+size class of read: the bytes a read asks for, up to 4 KiB, then each class
+four times the last, up to 16 MiB. So a 4 KiB page, a segment, a 2 MiB page
+and a run of pages each have a delay of their own, and a burst of small fast
+reads does not set the delay of a larger one. A class's delay is the 95th
+percentile of this host's recent times to k stripes in reads of the class,
+over its last 256 and updated every 32, and never less than
+`CacheConfig.ClusterHedgeFloor` (0.5 ms by default). A class with fewer than 32
+reads of its own takes the delay of the nearest class that has them, the
+larger first, since a larger read is the slower; with none, the floor. These second requests come from a budget, as
 FoundationDB's do. A read that had its stripes within the delay adds a
 twentieth of a request, and a second request takes one; the budget holds five
 at most, and starts full. So when every holder is slow at once, the budget
@@ -1565,10 +1607,29 @@ is not the envelope's, is not used, and its holder is sent a drop
 (`Peer.Drop`) behind the fills. With exactly k stripes that rebuild nothing,
 which is wrong cannot be told, so the read asks one more rank at once.
 
+**Two copies of a page.** A stripe is read where its reply's buffer holds it,
+not copied out. The read holds each reply whose stripes it took until it
+finishes, and gives the buffers back to the pool then. The data stripes are
+copied once into one buffer, which is the envelope; with all of them in hand
+it is not zeroed first, since every byte of it is copied over, and nothing is
+decoded. A missing data stripe is rebuilt by the parity stripes in its place
+in that buffer. A raw page is a view of its envelope, and the memory tier
+keeps that buffer as it is. The page is copied once more, into the caller's
+buffer, and only what it does not cover there is zeroed. Under k = 1 the
+envelope is a stripe's own bytes, so a stripe a peer sent is copied before
+the read finishes. Nothing the read returns is a view of a reply. Every check
+stays: each stripe's key and checksum, and the envelope's SHA-256. Before, a
+2 MiB page was copied six times and zeroed three times on the way. On an
+Apple M5 Pro, a reader's own work for a 2 MiB page from its data stripes went
+from 1.63 to 1.05 ms, and with two parity stripes from 1.81 to 1.17 ms; it
+allocates one buffer of the page's size, not five
+(`BenchmarkAReaderRebuildsA2MiBPage`).
+
 **The store past the bound.** A read that has not rebuilt its pages within a
 bound reads the store for them as well, and takes whichever answers first.
-The bound is four delays, and never less than `CacheConfig.ClusterBound`
-(10 ms by default). These reads of the store come from a token bucket: every
+The bound is four delays of the read's size class, and never less than
+`CacheConfig.ClusterBound` (10 ms by default). So a 2 MiB read after many
+4 KiB reads is not past its bound for taking as long as 2 MiB reads take. These reads of the store come from a token bucket: every
 read of a window that asked the cluster adds a twentieth of one, the bucket
 holds five at most, and starts full. Past the bucket, the read waits for its
 stripes. So a slowdown of every host at once does not double the store's load.
@@ -1637,15 +1698,17 @@ those rebuilt under an earlier code (`earlier_hits`), the requests, the
 holders replaced, the second requests and those the budget refused, the reads of the store past the bound by outcome, the wrong stripes
 and the drops sent, the repairs, the timeouts, the marks made, refused for the
 fifth and cleared, the hosts down now, the HEAD checks and what they found
-missing, the delay and the bound now, and what the peer server served of the
-cache: reads, stripes, bytes, and reads answered `BUSY` for the bandwidth.
-`/metrics` carries the same as `sproutfs_cache_reads_total`,
-`sproutfs_cache_read_*` and `sproutfs_cache_serve_*`. The tier above them is
-reported too: `cache_memory` counts the pages and page tables the memory tier
-holds, the reads of pages it served, the reads it sent on to the disk, the
-cluster or the store, and the reads that joined a fetch in flight, and the
-page tables it holds, their bytes, and the lookups of them a held table
-answered, that loaded a segment, and that a publication kept
+missing, the delay and the bound of each size class now, with the reads each
+class's delay is drawn from (`classes`, by `up_to_bytes`), and what the peer
+server served of the cache: reads, stripes, bytes, and reads answered `BUSY`
+for the bandwidth. `/metrics` carries the same as `sproutfs_cache_reads_total`,
+`sproutfs_cache_read_*` (the classes as series labelled `up_to_bytes`) and
+`sproutfs_cache_serve_*`. The tier above them is reported too:
+`cache_memory` counts the pages and page tables the memory tier holds, the
+reads of pages it served, the reads it sent on to the disk, the cluster or
+the store, and the reads that joined a fetch in flight, and the page tables
+it holds, their bytes, and the lookups of them a held table answered, that
+loaded a segment, and that a publication kept
 (`sproutfs_cache_memory_*`). With the pager's own fault and load counters,
 these say where each page a guest faulted on came from.
 
@@ -1925,8 +1988,11 @@ read back is then fitted to that share before it serves anything.
   checkpoint the host publishes. The part builders behind them have a separate
   bound: a quarter of the cores, between 2 and 8. Each publication encodes its
   pages on the host's encoders side by side, and holds one more batch of pages
-  than there are encoders. Together with the parts in flight, this determines
-  how much memory publication uses on this host.
+  than there are encoders. A part keeps its upload slot until the cluster has
+  taken its windows ([filling the cluster](#filling-the-cluster)), so a
+  publication behind its fills holds no more parts than there are slots.
+  Together with the parts in flight and the fill queue, this determines how
+  much memory publication uses on this host.
 - **Open VMs**: one manager owns at most 4,096 live handles by default, with the
   per-write bound described in [volumes](volumes.md#writes). There is no bound
   on unpublished bytes. A write waits for nothing, and the bytes it leaves

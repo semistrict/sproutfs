@@ -372,12 +372,14 @@ for, three things fill: a read of the store, or of the cluster under an
 earlier code, once its callers have their pages; a publication, for each part once
 its PUT has succeeded, in part order, and for its segments once the index
 object's has; and a
-pull, for what it copies. A host does its fills one at a time, in the order
-they were handed over, from one bounded queue. Its own stripes go to its own
+pull, for what it copies. A host does its fills one at a time from one
+bounded queue, a read's before a publication's. Its own stripes go to its own
 disk, and every other stripe goes as a keep within a bounded rate and the
-background budget. A fill that finds the queue full, the rate spent or the
-budget without room is dropped, and the window is read from the store next
-time. Nothing waits on a fill. See [hosting](hosting.md#filling-the-cluster).
+background budget. A fill of a read or a pull that finds the queue full, the
+rate spent or the budget without room is dropped, and the window is read from
+the store next time; a fault and a pull never wait on a fill. A publication's
+fill waits for room instead, up to a bound, so the publication goes at the
+pace its keeps go. See [hosting](hosting.md#filling-the-cluster).
 
 **Keep**: The peer-server request that fills a cache: the stripes of one window
 the disk holds, each as the disk stores it, with its own checksum, under the
@@ -398,8 +400,10 @@ asks again.
 
 **Second request**: Asking the rest of a window's ranks once k stripes have
 not arrived after a delay, about the 95th percentile of the reader's recent
-reads. A reader earns a twentieth of one with each read that did not need one,
-so when every holder is slow the reader waits rather than doubling their load.
+reads of the same size class: the bytes a read asks for, so a 4 KiB page, a
+2 MiB page and a run each have a delay of their own. A reader earns a
+twentieth of one with each read that did not need one, so when every holder
+is slow the reader waits rather than doubling their load.
 
 **Repair**: A stripe a reader sends a rank that holds fewer of a window's
 stripes than the code puts on it: an index no rank holds, of a page it

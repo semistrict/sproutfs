@@ -320,6 +320,47 @@ func TestEveryCaseReadsTheGuestBack(t *testing.T) {
 	})
 }
 
+// A run that only publishes publishes the guest of each page size its cases
+// name, once a round as a VM of its own, and counts what each publication's
+// fills did on every node. Under 4+2 on six nodes each of the sixteen pages'
+// windows and the segment's puts one stripe on each node: the publisher keeps
+// one of each and sends the other five.
+func TestAPublishingRunCountsEachPublicationsFills(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		runtime := sim.New(sim.Config{})
+		ctx := sim.WithRuntime(t.Context(), runtime)
+		nodes := simNodes(t, ctx, runtime, nil)
+		specs, err := parseCases("2MiB/sequential/page/16")
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, profiles, err := drive(ctx, nodes, driveConfig{pages: map[uint64]uint64{checkpoint.PageSize2MiB: 16},
+			code: "4+2", cases: specs, lost: 3, publishes: 2})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(profiles) != 0 || len(result.Cases) != 0 || len(result.Publications) != 2 {
+			t.Fatalf("%d profiles, %d cases and %d publications, want none, none and 2", len(profiles),
+				len(result.Cases), len(result.Publications))
+		}
+		for round, one := range result.Publications {
+			if want := fmt.Sprintf("guest-2mib-%d", round); one.VM != want || one.Round != round {
+				t.Fatalf("publication %d is %s of round %d, want %s", round, one.VM, one.Round, want)
+			}
+			publisher := one.Fills[0]
+			kept := uint64(0)
+			for _, fills := range one.Fills[1:] {
+				kept += fills.Kept
+			}
+			if publisher.FromPublications != 17 || publisher.Kept != 17 || publisher.Sent != 85 ||
+				publisher.Dropped != ([len(publisher.Dropped)]uint64{}) || kept != 85 {
+				t.Fatalf("publication %d's fills came to %+v on the publisher, and the others kept %d; want 17 "+
+					"windows, one stripe of each kept and five sent and kept", round, publisher, kept)
+			}
+		}
+	})
+}
+
 // A walk reads the same chain of pages from the regional bucket, the cluster
 // and a hot tier its publication filled, and reads a cold hot tier, which
 // fills it.

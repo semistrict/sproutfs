@@ -7,12 +7,10 @@ import (
 	"strings"
 	"testing"
 	"testing/synctest"
-	"time"
 
 	"github.com/semistrict/sproutfs/checkpoint"
 	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/platform"
-	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/rank"
 )
 
@@ -167,55 +165,6 @@ func publishFromOf(t *testing.T, store *checkpoint.Store, vm string, pages []uin
 	_, m, p := beginPublicationOf(t, store, vm, pages, data)
 	published, err := p.Commit(t.Context(), m)
 	return published, m, err
-}
-
-// commitLatency is how long the first host of a cluster of config takes to
-// publish three pages, and what the cluster's fills came to once they settled.
-func commitLatency(t *testing.T, config fillConfig) (time.Duration, checkpoint.FillStats) {
-	t.Helper()
-	var took time.Duration
-	var fills checkpoint.FillStats
-	synctest.Test(t, func(t *testing.T) {
-		c := newFillCluster(t, config)
-		_, m, p := beginPublication(t, c.hosts[0].store, "vm", publishedPages)
-		start := time.Now()
-		if _, err := p.Commit(t.Context(), m); err != nil {
-			t.Fatal(err)
-		}
-		took = time.Since(start)
-		c.settle(t)
-		fills = c.fills()
-	})
-	return took, fills
-}
-
-// Nothing waits on a fill, a publication's no more than a fault's. With the
-// publisher's queue of writes to its own disk holding one window at a time and
-// its disk taking a second over each write, the publication takes exactly as
-// long as with the cluster cache off: the windows its queue has no room for
-// are dropped, not waited for.
-func TestAPublicationNeverWaitsForItsFill(t *testing.T) {
-	config := fillConfig{hosts: 6, code: rank.Code{K: 4, M: 2}, runtime: latencyRuntime,
-		disk: sim.DiskConfig{WriteLatency: time.Second},
-		cache: func(host int, cache *checkpoint.CacheConfig) {
-			if host == 0 {
-				cache.FillQueueBytes = 1
-			}
-		}}
-	off, offFills := commitLatency(t, config)
-	if offFills.FromPublications != 0 || offFills.Kept != 0 {
-		t.Fatalf("with the cluster cache off the fills came to %+v, want none", offFills)
-	}
-	config.share = 100
-	on, onFills := commitLatency(t, config)
-	if on != off {
-		t.Fatalf("a publication took %v with the cluster cache off and %v with its fills behind a full queue; want the same",
-			off, on)
-	}
-	if onFills.FromPublications == 0 || onFills.Dropped[checkpoint.DropQueue] == 0 {
-		t.Fatalf("with a queue of one window the fills came to %+v, want some filled and some dropped for the queue",
-			onFills)
-	}
 }
 
 // heldPart is an object store that holds the PUT of the first part of a

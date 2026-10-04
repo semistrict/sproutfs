@@ -344,8 +344,8 @@ that answers that it holds nothing of the window is replaced at once by the
 next rank not yet asked; that is a miss, not a hedge.
 
 The delay before the rest are asked follows the reader's own recent stripe
-latencies: about their 95th percentile, so about one read in twenty sends a
-second request. The second requests draw on a budget, as FoundationDB's do.
+latencies in reads of the same size: about their 95th percentile, so about
+one read in twenty sends a second request. The second requests draw on a budget, as FoundationDB's do.
 Each read that completes within the delay adds a twentieth of a request to it,
 and each second request takes one away. So when every holder is slow at once,
 the budget runs out and the reader waits, rather than doubling the load on
@@ -441,6 +441,12 @@ Nothing waits on a fill. Local writes go through one bounded queue per host,
 and keeps through a bounded rate per host. A fill that finds either full is
 dropped, and the window is read from the store next time. A fault, a
 publication and a pull never wait for one.
+
+A publication was taken out of that rule on 2026-10-04. Its fills outran the
+keeps on GCE and the queue dropped windows a restore then read from the
+store. A publication's fills now wait for room, up to a bound, and a read's
+go first ([hosting](../docs/hosting.md#filling-the-cluster),
+[the measurement](../docs/measurements/gce-fill-backpressure-2026-10-04.md)).
 
 ## Serving stripes
 

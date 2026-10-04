@@ -31,6 +31,10 @@
 # checkpoint is open and before the reads. SPROUTFS_RESTORE_BINARY runs a
 # bench built elsewhere, for linux/amd64, instead of building this tree's:
 # an earlier build, to read before and after a change on the same hosts.
+# SPROUTFS_RESTORE_PUBLISHES, when set, has the drive publish the guest of each
+# page size the cases name that many times, each as a VM of its own, and read
+# nothing: what each publication took and what its fills dropped
+# (docs/measurements/gce-fill-backpressure-2026-10-04.md).
 #
 # `all` always deletes the hosts. `create`, `run` and `delete` expose the same
 # steps. Each host also deletes itself after three hours.
@@ -49,17 +53,19 @@ platform=${SPROUTFS_RESTORE_PLATFORM:-Intel Cascade Lake}
 # The drive's cases and sources, as its flags take them.
 drive_flags=""
 for setting in cases:SPROUTFS_RESTORE_CASES sources:SPROUTFS_RESTORE_SOURCES profile:SPROUTFS_RESTORE_PROFILE \
-    tables:SPROUTFS_RESTORE_TABLES; do
+    tables:SPROUTFS_RESTORE_TABLES publishes:SPROUTFS_RESTORE_PUBLISHES; do
     name=${setting#*:}
     value=${!name:-}
     [[ $value =~ ^[A-Za-z0-9/,-]*$ ]] || { echo "$name is a comma-separated list of cases or sources" >&2; exit 2; }
     if [[ -n $value ]]; then drive_flags+=" -${setting%%:*} $value"; fi
 done
-# The publisher holds the fills of the whole guest it publishes until they
-# are sent, so a host that publishes faster than its keeps go needs a queue as
-# large as what it is behind by: SPROUTFS_RESTORE_FILL_QUEUE_BYTES, 4 GiB by
-# default.
-fill_queue=${SPROUTFS_RESTORE_FILL_QUEUE_BYTES:-4294967296}
+# A publication's fills wait for room in the queue, so the publisher goes at
+# the pace of its keeps and a larger queue only costs it memory: at 4 GiB a
+# publisher of an 8 GiB guest on a 16 GB host was killed for it
+# (docs/measurements/gce-fill-backpressure-2026-10-04.md).
+# SPROUTFS_RESTORE_FILL_QUEUE_BYTES is the queue, 64 MiB by default, a host's
+# own default.
+fill_queue=${SPROUTFS_RESTORE_FILL_QUEUE_BYTES:-67108864}
 [[ $fill_queue =~ ^[0-9]+$ ]] || { echo "SPROUTFS_RESTORE_FILL_QUEUE_BYTES is a number" >&2; exit 2; }
 bucket=${SPROUTFS_GCE_BUCKET:-}
 account=${SPROUTFS_GCE_SERVICE_ACCOUNT:-}

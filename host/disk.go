@@ -250,7 +250,9 @@ func cacheFillReport(member bool, fill checkpoint.FillStats) *hostapi.CacheFill 
 	return &hostapi.CacheFill{FromReads: fill.FromReads, FromPublications: fill.FromPublications,
 		WithoutRight: fill.WithoutRight, RightsGranted: fill.RightsGranted, Sent: fill.Sent,
 		SentBytes: fill.SentBytes, Kept: fill.Kept, Dropped: dropped, Duplicates: fill.Duplicates,
-		Refused: fill.Refused, QueuedBytes: fill.Queued, QueueBytes: fill.QueueBytes}
+		Refused: fill.Refused, QueuedBytes: fill.Queued, QueueBytes: fill.QueueBytes,
+		QueuedPeakBytes: fill.QueuedPeak, PublicationWaits: fill.Waits,
+		PublicationWaitedSeconds: fill.Waited.Seconds(), PublicationsGaveUp: fill.GaveUp}
 }
 
 // hotTierReport is what the host's reads through its hot tier and its fills
@@ -288,9 +290,20 @@ func cacheReadReport(member bool, read checkpoint.ReadStats, served peer.ServerS
 		StoreHedges: read.StoreHedges, StoreHedgesWon: read.StoreHedgesWon, StoreHedgesRefused: read.StoreHedgesRefused,
 		WrongStripes: read.WrongStripes, DropsSent: read.DropsSent, Repairs: read.Repairs, Timeouts: read.Timeouts,
 		MarkedDown: read.MarkedDown, MarkCapped: read.Capped, MarkCleared: read.Cleared, Down: read.Down,
-		HeadChecks: read.HeadChecks, HeadMissing: read.HeadMissing, Delay: read.Delay, Bound: read.Bound,
+		HeadChecks: read.HeadChecks, HeadMissing: read.HeadMissing, Classes: readClassReport(read.Classes),
 		Served: served.StripeReads, ServedStripes: served.Stripes, ServedBytes: served.StripeBytes,
 		ServeBusy: served.StripesBusy}
+}
+
+// readClassReport is a reader's delay and bound for each size class of read,
+// as /status reports them.
+func readClassReport(classes []checkpoint.ReadClass) []hostapi.CacheReadClass {
+	report := make([]hostapi.CacheReadClass, len(classes))
+	for at, class := range classes {
+		report[at] = hostapi.CacheReadClass{UpToBytes: class.Bytes, Reads: class.Reads, Delay: class.Delay,
+			Bound: class.Bound}
+	}
+	return report
 }
 
 // stagedWriter stages an image on the host's disk. It counts what the image
