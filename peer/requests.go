@@ -181,9 +181,10 @@ func (p *Peer) Claim(ctx context.Context, vm string) error {
 // what it holds at the peer while it is answered, and maxPayload the largest
 // payload its reply may carry.
 //
-// Making the request is admitted before it takes room or a connection: see
-// Admitter. Its sent hook is called once it is on the wire, or once it fails
-// before it is: see WithSent.
+// Making the request is admitted before it takes room or a connection, and
+// again whenever it waited for either: see Admitter and readmit. Its sent hook
+// is called once it is on the wire, or once it fails before it is: see
+// WithSent.
 func (p *Peer) call(ctx context.Context, admitAs string, request, response proto.Message, reserve, maxPayload int64,
 	payload []byte) (result, time.Duration, error) {
 	sent := sentHook(ctx)
@@ -206,13 +207,19 @@ func (p *Peer) call(ctx context.Context, admitAs string, request, response proto
 		if p.table.bug("peer-unbounded-background") {
 			break
 		}
-		if err := p.table.background.Acquire(ctx, PriorityOf(ctx), reserve); err != nil {
+		waited, err := p.table.background.acquire(ctx, PriorityOf(ctx), reserve)
+		if err != nil {
 			return result{}, clock.Since(began), err
 		}
 		defer p.table.background.Release(reserve)
+		if waited {
+			if err := p.readmit(ctx, admitAs); err != nil {
+				return result{}, clock.Since(began), err
+			}
+		}
 	}
 	pool := p.pools[class]
-	c, err := pool.acquire(ctx, reserve)
+	c, err := pool.acquire(ctx, reserve, func() error { return p.readmit(ctx, admitAs) })
 	waited := clock.Since(began)
 	if err != nil {
 		return result{}, waited, err

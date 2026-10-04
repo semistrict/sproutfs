@@ -54,8 +54,9 @@ const scheduledHosts = 3
 
 // runScheduledWorld runs one seed of the scenario in both halves of the
 // deployment and returns its recording and the runtime whose trace carries the
-// fingerprint of everything the simulated dependencies did.
-func runScheduledWorld(t *testing.T, seed uint64, reverse bool) (sim.Recording, *sim.Runtime) {
+// fingerprint of everything the simulated dependencies did. shake, when not
+// zero, is the run's sim.Config.Shake.
+func runScheduledWorld(t *testing.T, seed uint64, reverse bool, shake uint64) (sim.Recording, *sim.Runtime) {
 	t.Helper()
 	var scheduler *sim.Scheduler
 	var runtime *sim.Runtime
@@ -71,7 +72,7 @@ func runScheduledWorld(t *testing.T, seed uint64, reverse bool) (sim.Recording, 
 		go func() { result <- scheduler.Run(done) }()
 		func() {
 			defer close(done)
-			runtime = sim.New(sim.Config{Seed: seed, Wait: scheduler.Wait,
+			runtime = sim.New(sim.Config{Seed: seed, Wait: scheduler.Wait, Shake: shake,
 				Network: sim.NetworkConfig{Latency: time.Microsecond, Jitter: time.Nanosecond,
 					ConnectLatency: time.Microsecond},
 				ObjectStore: sim.ObjectStoreConfig{GetLatency: time.Microsecond,
@@ -563,7 +564,7 @@ func TestScheduledWorldReproduces(t *testing.T) {
 		t.Run(fmt.Sprintf("seed-%02d", seed), func(t *testing.T) {
 			var recordings [2]sim.Recording
 			for order := range 2 {
-				recordings[order], _ = runScheduledWorld(t, seed, order == 1)
+				recordings[order], _ = runScheduledWorld(t, seed, order == 1, 0)
 				if err := recordings[order].WriteFiles(dir, fmt.Sprintf("seed-%02d-order-%d", seed, order)); err != nil {
 					t.Fatal(err)
 				}
@@ -583,13 +584,15 @@ func TestScheduledWorldReproduces(t *testing.T) {
 // fingerprint — the same operations on the same resources, in the same order on
 // each of them, at the same simulated moments, with the same adapter
 // numbering. The recording comparison proves this across processes for reversed
-// creation order; this proves it for two ordinary runs of one seed, which is
-// the check a soak can afford to make on every seed it visits.
+// creation order; this proves it for two runs of one seed, which is the check
+// a soak can afford to make on every seed it visits. The second run is shaken,
+// so goroutines ready at one simulated instant reach the adapters in another
+// order: a race the scheduler does not decide shows up on an idle machine too.
 func TestScheduledWorldFingerprintIsStable(t *testing.T) {
 	for seed := uint64(1); seed <= 3; seed++ {
 		t.Run(fmt.Sprintf("seed-%02d", seed), func(t *testing.T) {
-			_, one := runScheduledWorld(t, seed, false)
-			_, two := runScheduledWorld(t, seed, false)
+			_, one := runScheduledWorld(t, seed, false, 0)
+			_, two := runScheduledWorld(t, seed, false, fingerprintShake)
 			first, second := one.Fingerprint(), two.Fingerprint()
 			t.Logf("seed=%d fingerprint=%#016x probes=%v", seed, first, one.Probes())
 			if first != second {
@@ -609,7 +612,7 @@ func TestScheduledWorldSoak(t *testing.T) {
 		t.Run(fmt.Sprintf("seed-%d", seed), func(t *testing.T) {
 			var recordings [2]sim.Recording
 			for order := range 2 {
-				recordings[order], _ = runScheduledWorld(t, seed, order == 1)
+				recordings[order], _ = runScheduledWorld(t, seed, order == 1, 0)
 			}
 			if !bytes.Equal(recordings[0].Execution, recordings[1].Execution) {
 				t.Errorf("seed %d: execution differs across creation order", seed)
