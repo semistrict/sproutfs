@@ -116,7 +116,7 @@ func runShakenTopologyCampaign(t *testing.T, seed uint64, buggify bool, cache ca
 	ctx := sim.WithRuntime(t.Context(), runtime)
 	world := simtest.MustStart(t, ctx, simtest.Config{Runtime: runtime, Topology: topology,
 		Knobs: campaignKnobs(t, runtime, topology), Prefix: prefix, Log: t.Logf, ClusterCache: clusterCache,
-		HotTier: cache == cacheHot})
+		HotTier: cache == cacheHot, Shards: shardsOf(cache, topology)})
 	driver := simtest.NewDriver(world, runtime.Random("simtest/schedule"),
 		simtest.Faults(runtime.Random("simtest/faults"), topology), t.Logf)
 	runErr := driver.Run(ctx)
@@ -144,7 +144,7 @@ func runShakenTopologyCampaign(t *testing.T, seed uint64, buggify bool, cache ca
 	}
 	// Hosts whose disks are one cache fill each other: a stripe one host
 	// sent was kept by another.
-	if kept := runtime.Probes()[checkpoint.ProbeKeepKept]; clusterCache && kept == 0 {
+	if kept := runtime.Probes()[checkpoint.ProbeKeepKept]; (clusterCache || cache == cacheShards) && kept == 0 {
 		t.Errorf("seed=%d: the hosts' caches kept no stripe a peer sent them", seed)
 	}
 	// Hosts that read through a hot tier fill it and read from it.
@@ -158,6 +158,15 @@ func runShakenTopologyCampaign(t *testing.T, seed uint64, buggify bool, cache ca
 	}
 	t.Logf("seed=%d fingerprint=%#016x probes=%v", seed, runtime.Fingerprint(), runtime.Probes())
 	return runtime
+}
+
+// shardsOf is how many shards a run keeps its cache on: one a host for
+// cacheShards, and none otherwise.
+func shardsOf(cache campaignCache, topology simtest.Topology) int {
+	if cache != cacheShards {
+		return 0
+	}
+	return len(topology.Hosts)
 }
 
 // campaignCache is whether a campaign's hosts keep one cluster cache, on for
@@ -174,16 +183,19 @@ const (
 	cacheOn
 	// cacheHot keeps no cache disk and reads through a hot tier.
 	cacheHot
+	// cacheShards keeps the cluster cache on shards, one a host, which the
+	// membership moves between the hosts as they are lost and started again.
+	cacheShards
 )
 
 func (c campaignCache) String() string {
-	return [...]string{"drawn", "off", "on", "hot"}[c]
+	return [...]string{"drawn", "off", "on", "hot", "shards"}[c]
 }
 
 // on reports whether the hosts of a run keep the cluster cache.
 func (c campaignCache) on(runtime *sim.Runtime) bool {
 	switch c {
-	case cacheOff, cacheHot:
+	case cacheOff, cacheHot, cacheShards:
 		return false
 	case cacheOn:
 		return true
