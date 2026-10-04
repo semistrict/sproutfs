@@ -191,3 +191,29 @@ func TestAPublicationsQueuedWindowsHoldWhatTheQueueCounts(t *testing.T) {
 			"window kept on every host", run.placed, run.ranked, fills)
 	}
 }
+
+// A holder's lane holds two of a publication's keeps: one on the wire, and
+// one behind it. Eight pages of noise, a part each, go to one slow holder
+// through a queue with room below its high-water mark for all nine windows.
+// Half a second in, the publication has begun three windows: the first's
+// keep on the wire, the second's behind it, and the third waiting for room
+// on the lane, with the other six queued behind it. Once the first keep is
+// answered, a second later, it has begun a fourth.
+func TestAHoldersLaneHoldsTwoOfAPublicationsKeeps(t *testing.T) {
+	var begun []uint64
+	run := pacedPublication{config: sideBySide(1, 32<<20, 0, slowWrite, nil), pages: 8, uploads: 8,
+		beside: func(t *testing.T, c *fillCluster) {
+			for _, after := range []time.Duration{500 * time.Millisecond, time.Second} {
+				time.Sleep(after)
+				begun = append(begun, c.hosts[0].cache.Stats().Fill.FromPublications)
+			}
+		}}.run(t)
+	if !slices.Equal(begun, []uint64{3, 4}) {
+		t.Fatalf("half a second and a second and a half in, the publication had begun %v windows; want 3 and 4",
+			begun)
+	}
+	if fills := run.fills; !samePlaces(run.placed, run.ranked) || fills.Sent != 9 || dropped(fills) != 0 {
+		t.Fatalf("the windows' stripes are on %v, want %v, and the publisher's fills came to %+v; want every "+
+			"window kept on both hosts", run.placed, run.ranked, fills)
+	}
+}

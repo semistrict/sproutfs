@@ -2523,6 +2523,10 @@ each:
 - `TestAPublicationsKeepsInFlightAreBounded` sets the host's keeps in flight
   to one, and behind three slow holders the commit takes eighteen seconds
   longer.
+- `TestAHoldersLaneHoldsTwoOfAPublicationsKeeps` publishes to one slow holder
+  through a queue with room for every window. Half a second in, the
+  publication has begun three windows: a keep on the wire, one behind it, and
+  one waiting for room on the lane. A second later it has begun a fourth.
 - `TestEachHolderKeepsAPublicationsWindowsInTheirOrder` publishes twelve
   parts to three slow holders through a queue with room for five windows, so
   each holder's lane is full and the worker waits for room on it. Each holder
@@ -3055,6 +3059,17 @@ which is tried again at once. The rest are in code the run's tests do not
 drive: a sender's retries under a newer generation, keeps that do not hold
 together, repairs and drops. Gremlins reports the worker's own lines
 uncovered, though every test of a fill runs them on its goroutine.
+
+On 2026-10-04, after a fill's keeps went to its holders side by side, the run
+over `fill.go` and `fillsend.go` killed 150 of 217 mutants and timed out 9,
+with 31 alive and 27 not covered. Two survivors were the bound of
+a holder's lane: with 2 MiB keeps under 1+1 or 1+3 the background budget
+bound the keeps first. `TestAHoldersLaneHoldsTwoOfAPublicationsKeeps` now
+kills both. The rest of those in the new code change nothing a run can see:
+the lane of the host's own disks left unbounded, which its quick writes never
+fill; a lane left in the map once idle; a fill told to go on at once tried
+again at once; and the timing of a wait for a busy holder, which no test of
+the run drives. The others are in code the change did not touch.
 
 The reads of the cluster are mutated the same way, with the tests of their
 copies and their hedge:
