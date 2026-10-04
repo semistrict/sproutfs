@@ -364,7 +364,7 @@ func (r *MemoryRegion) readInWindow(ctx context.Context, index uint64) (pg *resi
 	if id, named := plan.identity(index); !named || id.zero() || plan.own(index) {
 		return nil, false, nil
 	}
-	if pf := plan.inFlight(index); pf != nil {
+	if pf := plan.inFlight(ctx, index); pf != nil {
 		// A prefetch is reading this page already; the store plans again once
 		// it has landed. The plan holds nothing yet.
 		return nil, true, r.awaitPrefetch(ctx, pf)
@@ -845,7 +845,7 @@ func (r *MemoryRegion) loadOnce(ctx context.Context, index uint64, spill *int) (
 		return false, err
 	}
 	defer plan.unlock()
-	if pf := plan.inFlight(index); pf != nil {
+	if pf := plan.inFlight(ctx, index); pf != nil {
 		// A prefetch is reading this page already; the fault plans again once
 		// it has landed. The plan holds nothing yet.
 		return false, r.awaitPrefetch(ctx, pf)

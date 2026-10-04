@@ -114,6 +114,30 @@
     "purpose": "Give back a cold copy the guest stored into, as though it still held its origin's bytes."
   },
   {
+    "id": "pager-read-the-run-first",
+    "package": "vmmemory",
+    "run": "^TestADependentChainOfFaultsWaitsForOnePageAHop$",
+    "purpose": "Read a fault's whole read-ahead run before its page is installed, as the pager did before 2026-10-04. Every hop of a dependent chain of faults then waits for a run instead of a page."
+  },
+  {
+    "id": "pager-fault-waits-for-its-prefetch",
+    "package": "vmmemory",
+    "run": "^TestAFaultNeverWaitsForAPrefetchOfOtherPages$",
+    "purpose": "Start the prefetch of the rest of a fault's run, then read the faulting page only once that prefetch is in. A fault beside a held prefetch then waits for it."
+  },
+  {
+    "id": "pager-read-in-flight-again",
+    "package": "vmmemory",
+    "run": "^TestAGuestReadingForwardsStillReadsItsMemoryInRuns$",
+    "purpose": "Read a page a prefetch is already reading again rather than wait for that read. A guest reading forwards then reads pages twice and no longer in runs."
+  },
+  {
+    "id": "pager-prefetch-ignores-pressure",
+    "package": "vmmemory",
+    "run": "^TestAnAllocationCancelsAPrefetchRatherThanEvict$",
+    "purpose": "Evict a page a guest maps for a fault's slot while a prefetch holds free slots for pages nobody has asked for yet, rather than cancel that prefetch."
+  },
+  {
     "id": "pager-zero-new-page",
     "package": "internal/simtest",
     "run": "^TestScheduledWorldReproduces$",

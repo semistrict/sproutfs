@@ -217,10 +217,11 @@ func (p *windowPlan) splitPrefetch(ctx context.Context, index uint64) *prefetch 
 	return pf
 }
 
-// inFlight is the prefetch reading the faulting page, nil where none is.
-func (p *windowPlan) inFlight(page uint64) *prefetch {
+// inFlight is the prefetch reading the faulting page, nil where none is. The
+// in-tree bug that reads such a page again reports none.
+func (p *windowPlan) inFlight(ctx context.Context, page uint64) *prefetch {
 	key, named := p.identity(page)
-	if !named || key.zero() {
+	if !named || key.zero() || sim.Bug(ctx, "pager-read-in-flight-again") {
 		return nil
 	}
 	h := p.memoryRegion.host
