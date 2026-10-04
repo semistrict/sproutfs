@@ -2632,7 +2632,7 @@ bound the small reads set and read the store too. The last keeps a page
 rebuilt under 1+1 as a view of its peer's reply buffer, which the pool hands
 the next reply: once the replies are written over, the page has changed.
 
-Eight guards break a pull as a prefetch
+Nine guards break a pull as a prefetch
 ([pulling a VM's memory](hosting.md#pulling-a-vms-memory)):
 
 ```sh
@@ -2640,6 +2640,8 @@ SPROUTFS_SIM_BUG=pull-reads-the-store-first \
   go test ./checkpoint -run '^TestAPullOfACheckpointTheClusterHoldsReadsNothingFromTheStore$' -count=1
 SPROUTFS_SIM_BUG=pull-count-any-stripe \
   go test ./checkpoint -run '^TestAPullOfACheckpointTheClusterPartlyHoldsReadsOnlyWhatItLacks$' -count=1
+SPROUTFS_SIM_BUG=presence-ignore-stale-answer \
+  go test ./checkpoint -run '^TestAPullBehindTheMembershipAsksAgainUnderTheNewerOne$' -count=1
 SPROUTFS_SIM_BUG=pull-hedges-to-the-store \
   go test ./checkpoint -run '^TestAPullsReadsOfTheClusterAreBulkWorkThatNeverHedges$' -count=1
 SPROUTFS_SIM_BUG=pull-reads-as-a-fault \
@@ -2658,15 +2660,18 @@ The first reads every page from the store, as a pull did before it asked the
 cluster: a pull of a checkpoint the cluster holds then reads it all again.
 The second counts a page held when any rank holds any stripe of it: a page
 left with three stripes of 4+2 is never pulled, and stays short. The third
-lets a pull's read of a segment through the cluster read the store past its
-bound, and behind slow links the pull reads the index object again. The
-fourth leaves a pull's reads unmarked: they ask second requests and go over
-the fault and stripe connections. The fifth sends a prefetch's stripe
-requests over the stripe class, as they went before: they run under the
-reader's own context, which names no class. The sixth runs a pull's reads in
-a slot of the loads faults wait on: with one slot, a fault waits for the
-pull's read of the store. The seventh leaves a pull reading under memory or
-disk pressure. The last sends every presence check over the fault class.
+counts a rank that answers stale as holding nothing: a puller one generation
+behind reads from the store the pages whose fourth stripe only that rank
+holds. The fourth lets a pull's read of a segment through the cluster read
+the store past its bound, and behind slow links the pull reads the index
+object again. The fifth leaves a pull's reads unmarked: they ask second
+requests and go over the fault and stripe connections. The sixth sends a
+prefetch's stripe requests over the stripe class, as they went before: they
+run under the reader's own context, which names no class. The seventh runs a
+pull's reads in a slot of the loads faults wait on: with one slot, a fault
+waits for the pull's read of the store. The eighth leaves a pull reading
+under memory or disk pressure. The last sends every presence check over the
+fault class.
 
 Five guards break the hot tier:
 

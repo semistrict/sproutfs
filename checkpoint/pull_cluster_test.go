@@ -12,6 +12,7 @@ import (
 	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/peer"
 	"github.com/semistrict/sproutfs/platform"
+	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/rank"
 )
 
@@ -341,4 +342,84 @@ func TestPressureCancelsAPullsReads(t *testing.T) {
 			})
 		})
 	}
+}
+
+// A pull behind the membership asks again under the newer one. Six hosts hold
+// a checkpoint under 4+2, and two of them have lost their stripe of every
+// page, which leaves four: the puller's own, two others' and that of the one
+// host the puller's read of the segment does not ask. That host alone has
+// read a newer membership, which places every window as before, and answers
+// the puller's presence check that it is stale. Without its stripe three are
+// left and the pages would be read from the store. The puller reads the newer
+// membership, asks again, finds four, and reads nothing from the store.
+func TestAPullBehindTheMembershipAsksAgainUnderTheNewerOne(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		c := newFillCluster(t, fillConfig{hosts: 6, code: rank.Code{K: 4, M: 2}, share: 100})
+		pages := []uint64{0, 1, 2, 3}
+		ref, _ := c.filled(t, 0, "vm", pages)
+		puller := c.hosts[1]
+		list := *c.list.Load()
+		segment := segmentWindow(ref)
+		_, rest := picks(list, puller.cache.Identity(), segment,
+			len(puller.cache.HeldIndices(segment, 0, list.Code())) > 0)
+		if len(rest) != 1 {
+			t.Fatalf("the puller's read of the segment leaves %d ranks unasked, want one", len(rest))
+		}
+		ahead := c.hostOf(rest[0])
+		for _, page := range pages {
+			window := pageWindow(ref, page)
+			lost := 0
+			for at, held := range c.placed(window) {
+				h := c.hosts[at]
+				if h == puller || h == ahead || lost == 2 {
+					continue
+				}
+				for _, index := range held {
+					if err := h.cache.Drop(c.ctx(t), h.cache.Identity(),
+						peer.Drop{Window: window, Page: 0, Index: index, Code: list.Code()}); err != nil {
+						t.Fatal(err)
+					}
+					lost++
+				}
+			}
+		}
+		// An earlier code in the list is a new generation that ranks and
+		// places every window as before.
+		newer, err := rank.NewList(list.Code(), list.Caches(), rank.Code{K: 2, M: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		c.hold(t, newer, ahead)
+		stats, gets := c.pullOn(t, puller, ref)
+		if gets != 0 || stats.Err != nil || stats.Held != stats.Bytes {
+			t.Fatalf("the pull came to %+v with %d requests of the store; want everything found held under "+
+				"the newer membership", stats, gets)
+		}
+		if asked := c.runtime.Probes()[checkpoint.ProbePresenceStale]; asked != 1 {
+			t.Fatalf("the puller asked again %d times, want once", asked)
+		}
+	})
+}
+
+// With the cluster cache on for every window, a pull keeps nothing whole on
+// this host's disk, so a checkpoint larger than all the disk's share is
+// pulled all the same: its windows go to the cluster.
+func TestAPullIsNotRefusedForTheDisksSizeWhenEveryWindowIsTheClusters(t *testing.T) {
+	clusterPullWith(t, func(_ *sim.Runtime, _ *sim.DiskConfig, config *checkpoint.CacheConfig) {
+		config.ClusterPercent = 100
+		config.DiskBytes = 64 << 10
+	}, func(t *testing.T, f *pullFixture) {
+		f.follow(t, rank.Code{K: 1, M: 1}, false, otherHosts[0])
+		pull, err := f.store.Pull(f.ctx(t), f.index)
+		if err != nil {
+			t.Fatalf("a pull of four 2 MiB pages with every window the cluster's was refused: %v", err)
+		}
+		defer pull.Close()
+		if err := pull.Wait(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if stats := pull.Stats(); !stats.Done || stats.Pulled != stats.Bytes || stats.Fetched == 0 {
+			t.Fatalf("the pull came to %+v, want every byte read from the store and handed to the fills", stats)
+		}
+	})
 }

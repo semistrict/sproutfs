@@ -586,6 +586,12 @@
     "purpose": "Send a prefetch's stripe requests over the stripe class faults use, since they run under the reads' life rather than the read's context."
   },
   {
+    "id": "presence-ignore-stale-answer",
+    "package": "checkpoint",
+    "run": "^TestAPullBehindTheMembershipAsksAgainUnderTheNewerOne$",
+    "purpose": "Count the ranks that answer a presence check stale as holding nothing, rather than read the newer membership and ask again."
+  },
+  {
     "id": "pull-ignores-pressure",
     "package": "checkpoint",
     "run": "^TestPressureCancelsAPullsReads$",

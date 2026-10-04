@@ -69,7 +69,8 @@ func (r *clusterReader) holds(ctx context.Context, keys []diskKey) []bool {
 	}
 	for tries := 0; ; tries++ {
 		newer := r.presence(ctx, m, keys, held)
-		if newer <= m.Generation() || tries == staleRetries || ctx.Err() != nil {
+		if newer <= m.Generation() || tries == staleRetries || ctx.Err() != nil ||
+			r.bug("presence-ignore-stale-answer") {
 			return held
 		}
 		next, err := r.cluster.catch(ctx, newer)
