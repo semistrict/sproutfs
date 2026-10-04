@@ -8,6 +8,7 @@ import (
 
 	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/host"
+	"github.com/semistrict/sproutfs/peer"
 	"github.com/semistrict/sproutfs/vmmigrate"
 	"github.com/semistrict/sproutfs/volume"
 )
@@ -17,11 +18,17 @@ import (
 // seal and is running again when this returns.
 func (m *migration) forked(t *testing.T, child string) (*volume.ForkPoint, vmmigrate.Handoff) {
 	t.Helper()
+	return m.forkedFrom(t, child, m.pages)
+}
+
+// forkedFrom is forked with the parent's pages served by source.
+func (m *migration) forkedFrom(t *testing.T, child string, source *peer.Server) (*volume.ForkPoint, vmmigrate.Handoff) {
+	t.Helper()
 	point, err := host.Seal(t.Context(), m.vm, m.machine)
 	if err != nil {
 		t.Fatal(err)
 	}
-	handoff, err := vmmigrate.Fork(t.Context(), child, point, m.pages, vmmigrate.Options{})
+	handoff, err := vmmigrate.Fork(t.Context(), child, point, source, vmmigrate.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
