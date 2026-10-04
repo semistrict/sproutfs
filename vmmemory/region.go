@@ -108,6 +108,8 @@ type MemoryRegion struct {
 	pressed atomic.Bool
 	// repeats paces this memory region's repeated faults; see repeats.go.
 	repeats repeatBudget
+	// guestFaults counts the faults the guest waited for; see guestfaults.go.
+	guestFaults faultTally
 	// heldReported marks the one line this memory region's unreclaimable pages are
 	// worth; see heldPages.
 	heldReported atomic.Bool

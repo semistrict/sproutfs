@@ -232,6 +232,25 @@ events is recorded somewhere that outlives the process:
 | A fatal error | the `sproutfs-host: exiting` log line |
 | The process killed outright | nothing from the process. The last scrape's `sproutfs_loss_window_seconds` bounds what its VMs lost, and each VM reopens at the checkpoint its control record selects |
 
+**Timing a start.** A scrape sees totals, not one start. So each create, open
+and receive logs one line, `host: a VM runs`, and each fork on the parent's
+host logs `host: a VM forked`. The line names the VM and the request (`how`).
+It gives each step in milliseconds from the request's arrival: the fork and
+root of a create, the open and state read of an open, the receive's open,
+the VMM's phases (process, state load, sessions, ready), the resume
+(`release`), and the parent's confirm, pause, seal, pin and handoff. It also
+gives the object-store calls by kind (`control record conditional put`,
+`index get`, `part get`), their union (`store_ms`), the calls made after the
+guest ran apart (`store_after`), and each memory region's attach and populate.
+`running_ms` is when the VMM reported the vCPUs running: after a restore's
+resume, or a boot's first answer from the VMM, which it gives once it has
+started the vCPUs. The host cannot see the guest's first instruction itself.
+One second after that, a second line, `host: a VM's first faults`, counts
+each memory region's guest faults before the guest ran and in that second,
+with the time the guest waited for them and its first fault.
+`cmd/sproutfs-startbench` joins these lines with its own timings
+([start latency](measurements/gce-start-latency-2026-10-04.md)).
+
 ## Running the VMM
 
 The host prepares a VM's memory and drives its VMM. It does not start the VMM

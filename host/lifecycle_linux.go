@@ -18,7 +18,8 @@ import (
 )
 
 func (s *supervisor) Create(ctx context.Context, request hostapi.CreateRequest) (hostapi.CreateResult, error) {
-	began := s.clock.Now()
+	ctx, line := startTimeline(ctx, s.clock, request.ID, "create")
+	began := line.began
 	id := request.ID
 	if request.From != nil && request.Template != "" {
 		return hostapi.CreateResult{}, fmt.Errorf("%w: a create names a template or a checkpoint, not both",
@@ -41,7 +42,9 @@ func (s *supervisor) Create(ctx context.Context, request hostapi.CreateRequest) 
 		return hostapi.CreateResult{}, err
 	}
 	prepared := s.clock.Now()
+	ended := step(ctx, "template")
 	point, source, name, err := s.createPoint(ctx, request)
+	ended()
 	if err != nil {
 		return hostapi.CreateResult{}, err
 	}
@@ -56,7 +59,9 @@ func (s *supervisor) Create(ctx context.Context, request hostapi.CreateRequest) 
 		added = append(added, volume.VolumeSpec{Name: ephemeralVolume, Size: request.Ephemeral,
 			PageSize: s.pagers.Pmem.PageSize(), Ephemeral: true})
 	}
+	ended = step(ctx, "fork")
 	vm, _, err := CreateFork(ctx, s.host.Volumes(), id, point, added...)
+	ended()
 	if err != nil {
 		return hostapi.CreateResult{}, fmt.Errorf("forking %s from %s: %w", id, source, err)
 	}
@@ -99,7 +104,9 @@ func (s *supervisor) Create(ctx context.Context, request hostapi.CreateRequest) 
 		nested := request.Nested
 		shape.Nested = &nested
 	}
+	ended = step(ctx, "root")
 	state, err := s.host.CreateRoot(ctx, vm, point, shape)
+	ended()
 	if err != nil {
 		// A VM whose root never published is one nothing else can ever act on,
 		// so it is given up rather than left behind as an unopenable record.
@@ -115,6 +122,7 @@ func (s *supervisor) Create(ctx context.Context, request hostapi.CreateRequest) 
 	if err != nil {
 		return hostapi.CreateResult{}, err
 	}
+	line.log(ctx, "host: a VM runs", "resumed", len(state) > 0)
 	return hostapi.CreateResult{VM: s.record(m), Template: templateSeconds, Fork: forkSeconds,
 		Boot: s.since(booted), Root: rootSeconds, Total: s.since(began), Resumed: len(state) > 0}, nil
 }
@@ -141,7 +149,8 @@ func (s *supervisor) createPoint(ctx context.Context, request hostapi.CreateRequ
 }
 
 func (s *supervisor) Open(ctx context.Context, id string, request hostapi.OpenRequest) (hostapi.OpenResult, error) {
-	began := s.clock.Now()
+	ctx, line := startTimeline(ctx, s.clock, id, "open")
+	began := line.began
 	if err := s.absent(id); err != nil {
 		return hostapi.OpenResult{}, err
 	}
@@ -158,6 +167,7 @@ func (s *supervisor) Open(ctx context.Context, id string, request hostapi.OpenRe
 	if err != nil {
 		return hostapi.OpenResult{}, err
 	}
+	line.log(ctx, "host: a VM runs", "resumed", len(state) > 0)
 	// A VM whose checkpoint had no VMM state booted whether or not it was asked
 	// to, and a flow reading what it came back as has to know.
 	return hostapi.OpenResult{VM: s.record(m), Restore: s.since(restored),
@@ -190,20 +200,26 @@ func (s *supervisor) coldRequest(request hostapi.OpenRequest) error {
 func (s *supervisor) opening(ctx context.Context, id string,
 	request hostapi.OpenRequest) (*volume.VM, []byte, error) {
 	if request.Cold {
+		ended := step(ctx, "open cold")
 		vm, err := s.host.OpenColdAfter(ctx, id, ColdShape{Memory: vmmachine.RAMVolume, Root: rootVolume,
 			MemoryBytes: request.Memory, RootBytes: request.Disk, VCPUs: request.VCPUs}, request.Epoch)
+		ended()
 		if err != nil {
 			return nil, nil, fmt.Errorf("cold starting %s: %w", id, err)
 		}
 		return vm, nil, nil
 	}
+	ended := step(ctx, "open")
 	vm, err := s.host.Volumes().OpenAfter(ctx, id, request.Epoch)
+	ended()
 	if err != nil {
 		return nil, nil, fmt.Errorf("opening %s: %w", id, err)
 	}
 	// The VMM state of the checkpoint the control record selects is what this
 	// guest resumes from; a checkpoint published without one is cold booted.
+	ended = step(ctx, "state")
 	state, err := s.host.Starting(ctx, vm, vmmachine.RAMVolume)
+	ended()
 	if err != nil {
 		return nil, nil, errors.Join(err, closing(ctx, vm))
 	}
@@ -223,7 +239,8 @@ func (s *supervisor) opening(ctx context.Context, id string,
 // page it inherited. A child taken in here is served nothing: it attaches over
 // the fork point itself, so its inherited pages never reach the wire.
 func (s *supervisor) Fork(ctx context.Context, parent string, request hostapi.ForkRequest) (hostapi.ForkResult, error) {
-	began := s.clock.Now()
+	ctx, line := startTimeline(ctx, s.clock, parent, "fork")
+	began := line.began
 	if _, err := s.running(parent); err != nil {
 		return hostapi.ForkResult{}, err
 	}
@@ -237,6 +254,7 @@ func (s *supervisor) Fork(ctx context.Context, parent string, request hostapi.Fo
 		handed.Pull = request.Pull
 		wire = append(wire, apiHandoff(handed))
 	}
+	line.log(ctx, "host: a VM forked", "children", request.IDs, "local", request.Destination == "")
 	return hostapi.ForkResult{Handoffs: wire, Capture: s.since(captured),
 		Total: s.since(began), Hold: hostapi.Of(s.host.HoldTimeout())}, nil
 }
@@ -300,18 +318,23 @@ func (s *supervisor) boot(ctx context.Context, vm *volume.VM, state []byte, temp
 		return nil, errors.Join(fmt.Errorf("starting the VMM of %s", vm.ID()), err,
 			closing(ctx, vm))
 	}
-	process, err := vmmachine.Start(ctx, s.machineConfig(vm, state, nil))
+	process, err := startVMM(ctx, s.machineConfig(vm, state, nil))
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("starting the VMM of %s", vm.ID()), err,
 			closing(ctx, vm))
 	}
 	// A restore starts paused: the vCPUs run again once its memory regions are its own.
 	if len(state) > 0 {
-		if err := process.Release(ctx); err != nil {
+		ended := step(ctx, "release")
+		err := process.Release(ctx)
+		ended()
+		if err != nil {
 			return nil, errors.Join(fmt.Errorf("resuming %s", vm.ID()), err, process.Close(),
 				closing(ctx, vm))
 		}
 	}
+	// A boot's VMM has started the vCPUs by the time Start returns.
+	ran(ctx, process.MemoryRegions())
 	m := &machine{vm: vm, process: process, template: template}
 	if err := s.remember(m); err != nil {
 		return nil, errors.Join(err, process.Close(), closing(ctx, vm))

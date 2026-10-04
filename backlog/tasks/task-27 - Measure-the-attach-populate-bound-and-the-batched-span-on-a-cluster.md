@@ -4,7 +4,7 @@ title: Measure the attach populate bound and the batched span on a cluster
 status: To Do
 assignee: []
 created_date: '2026-09-25 18:18'
-updated_date: '2026-09-26 01:50'
+updated_date: '2026-10-04 21:53'
 labels:
   - measurement
   - gce
@@ -45,3 +45,9 @@ install no run. The walk now stops when the budget runs out
 item are meant to show whether the walk is what a managed restore's seconds
 were spent on.
 <!-- SECTION:DESCRIPTION:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-10-04 (TASK-88, docs/measurements/gce-start-latency-2026-10-04.md): on Ice Lake GCE with a 1 GiB alpine guest and a 2 GiB root disk in 2 MiB pages, every start populated the root's ~1,010 resident pages in 8 commands in 115-122 ms and RAM's ~470 pages in 4 commands in 54-69 ms, one after the other. The cost is about 0.12 ms per 2 MiB page, not per command, and it is the largest part of every restore and fork (170-190 ms of 340-450 ms).
+<!-- SECTION:NOTES:END -->

@@ -4,7 +4,7 @@ title: Find where a managed restore spends its 1.7 to 3.3 s
 status: To Do
 assignee: []
 created_date: '2026-09-25 18:18'
-updated_date: '2026-09-26 01:50'
+updated_date: '2026-10-04 21:53'
 labels:
   - measurement
   - deferred
@@ -35,3 +35,9 @@ With the populate bounded at 128 runs per memory region, those 12,000 runs are t
 faults' windows, not the populate. The pages are the populate's holes, and
 one command covers any number of holes.
 <!-- SECTION:DESCRIPTION:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-10-04 (TASK-88, docs/measurements/gce-start-latency-2026-10-04.md): the phases were timed on GCE, 400 starts a case, 1 GiB guest. VMM process 11 ms, state load 226-242 ms (of which the populate is 170-190 ms), sessions 0, ready 0.2 ms, release 3-25 ms. The process step looks like the 10 ms poll for the API socket.
+<!-- SECTION:NOTES:END -->
