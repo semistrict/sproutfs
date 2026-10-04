@@ -391,7 +391,7 @@ func TestReceiveRefusesAMachineMissingAMemoryRegion(t *testing.T) {
 	}
 	model := m.machine.snapshot()
 	var started *partialMachine
-	_, err = vmmigrate.Receive(ctx, m.destination, handoff, m.cluster.peers(t, m.cluster.dialer("dest")),
+	received, err := vmmigrate.Receive(ctx, m.destination, handoff, m.cluster.peers(t, m.cluster.dialer("dest")),
 		func(ctx context.Context, vm *volume.VM, backings map[string]vmmemory.Backing, state []byte) (vmmigrate.Runtime, error) {
 			built, err := newMachine(t, m.destPager, vm, backings, state)
 			if err != nil {
@@ -400,6 +400,12 @@ func TestReceiveRefusesAMachineMissingAMemoryRegion(t *testing.T) {
 			started = &partialMachine{machine: built, missing: "ram0"}
 			return started, nil
 		}, vmmigrate.Options{})
+	if received != nil {
+		// A receive that wrongly went ahead streams pages behind a machine
+		// the test closes. Its stream ends first, or the machine's detach
+		// waits for a stream fault asking a source that is no longer there.
+		t.Cleanup(received.Close)
+	}
 	if !errors.Is(err, vmmigrate.ErrInvalid) {
 		t.Fatalf("a destination without a memory region for ram0 reported %v", err)
 	}
