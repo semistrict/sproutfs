@@ -133,6 +133,26 @@ func TestAHeavyTailMakesAFewHopsLong(t *testing.T) {
 	})
 }
 
+// Once the tail ends, no hop takes longer for it. These are the hops of the
+// test above, of which 22 were long.
+func TestOnceTheTailEndsNoHopIsLong(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		runtime := sim.New(sim.Config{Seed: 7, Network: quiet(sim.NetworkConfig{TailEvery: 100,
+			TailLatency: 50 * time.Millisecond})})
+		listener, client, server := connectedPair(t, runtime)
+		defer listener.Close()
+		defer client.Close()
+		defer server.Close()
+		go drain(server)
+		runtime.Network().EndTail()
+		for i := range 2000 {
+			if took := sendFor(t, client, fmt.Sprint(i), nil); took != time.Millisecond {
+				t.Fatalf("hop %d took %v once the tail ended, want 1ms", i, took)
+			}
+		}
+	})
+}
+
 // A slow pair stays slow: every hop between the two hosts pays the same extra
 // latency, both ways, for the whole run, and the hosts are named by HostOf.
 func TestASlowPairStaysSlowBothWays(t *testing.T) {
