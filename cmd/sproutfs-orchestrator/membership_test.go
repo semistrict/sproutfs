@@ -117,16 +117,17 @@ func disksOf(m membership.Membership) []rank.Identity {
 }
 
 // The orchestrator moves the membership to every host that reports a disk,
-// one step a pass: a host joins with its disk attaching in one generation,
-// and its disk serves in the next. A host that keeps no disk is not in it.
-// With no code configured, three disks get the table's 2+1.
+// one step a pass: the deployment's code first, then each host joins with its
+// disk attaching in one generation, and its disk serves in another. A host
+// that keeps no disk is not in it. With no code configured, three disks get
+// the default 4+2, round the three.
 func TestTheMembershipNamesEveryHostThatReportsADisk(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newMembershipFixture(t, map[string][]string{"host-0": {}, "host-1": {}, "host-2": {}, "host-3": {}})
 		f.withDisks(map[string]uint32{"host-0": 2, "host-1": 1, "host-2": 4})
 		m, steps := f.settle(t)
-		if steps != 7 || m.Generation() != 7 || m.Code() != (rank.Code{K: 2, M: 1}) {
-			t.Fatalf("the membership took %d steps to generation %d under %s, want 7 to 2+1", steps,
+		if steps != 7 || m.Generation() != 7 || m.Code() != (rank.Code{K: 4, M: 2}) {
+			t.Fatalf("the membership took %d steps to generation %d under %s, want 7 to 4+2", steps,
 				m.Generation(), m.Code())
 		}
 		for _, name := range []string{"host-0", "host-1", "host-2"} {
@@ -224,22 +225,27 @@ func TestEachStepMovesTheWindowsOfOneDiskAtMost(t *testing.T) {
 }
 
 // A code the deployment configures is the membership's, whatever the size of
-// the cluster.
+// the cluster, and so are the codes it replaced, newest first.
 func TestAConfiguredCodeIsTheMemberships(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newMembershipFixture(t, map[string][]string{"host-0": {}, "host-1": {}})
 		f.withDisks(map[string]uint32{"host-0": 1, "host-1": 1})
-		f.orchestrator.code = rank.Code{K: 4, M: 2}
-		if m, _ := f.settle(t); m.Code() != (rank.Code{K: 4, M: 2}) || len(m.Disks()) != 2 {
-			t.Fatalf("the membership holds %d disks under %s, want two under 4+2", len(m.Disks()), m.Code())
+		f.orchestrator.code = rank.Code{K: 1, M: 1}
+		f.orchestrator.earlier = []rank.Code{{K: 2, M: 1}, {K: 4, M: 2}}
+		m, _ := f.settle(t)
+		want := []rank.Code{{K: 1, M: 1}, {K: 2, M: 1}, {K: 4, M: 2}}
+		if !slices.Equal(m.List().Codes(), want) || len(m.Disks()) != 2 {
+			t.Fatalf("the membership holds %d disks under %v, want two under 1+1, then 2+1 and 4+2",
+				len(m.Disks()), m.List().Codes())
 		}
 	})
 }
 
-// A drain takes a six-host cluster to five. The code stays 4+2, because a
-// code that followed the hosts would make every stripe in the cluster a
-// miss, and its stripes go round the five disks left.
-func TestADrainDoesNotChangeTheCode(t *testing.T) {
+// The code never follows the hosts. A six-host cluster that sets no code runs
+// 4+2, and drained down to two hosts it still does, because a code that
+// followed the hosts would leave every stripe in the cluster to the store. Its
+// stripes go round the disks left.
+func TestTheCodeNeverFollowsTheHosts(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		names := []string{"host-0", "host-1", "host-2", "host-3", "host-4", "host-5"}
 		running := map[string][]string{}
@@ -253,12 +259,16 @@ func TestADrainDoesNotChangeTheCode(t *testing.T) {
 		if m, _ := f.settle(t); m.Code() != (rank.Code{K: 4, M: 2}) || len(m.Disks()) != 6 {
 			t.Fatalf("six hosts are listed as %d disks under %s, want six under 4+2", len(m.Disks()), m.Code())
 		}
-		if _, err := f.orchestrator.Kill(f.ctx, "host-5"); err != nil {
-			t.Fatal(err)
-		}
-		if m, _ := f.settle(t); m.Code() != (rank.Code{K: 4, M: 2}) || len(m.Disks()) != 5 {
-			t.Fatalf("after host-5 left the membership holds %d disks under %s, want five under 4+2",
-				len(m.Disks()), m.Code())
+		for left := 5; left >= 2; left-- {
+			if _, err := f.orchestrator.Kill(f.ctx, names[left]); err != nil {
+				t.Fatal(err)
+			}
+			m, _ := f.settle(t)
+			if _, listed := m.Disk(identityOf(names[left])); listed || m.Code() != (rank.Code{K: 4, M: 2}) ||
+				len(m.Disks()) != left {
+				t.Fatalf("after %s left the membership holds %d disks under %s, want the other %d under 4+2",
+					names[left], len(m.Disks()), m.Code(), left)
+			}
 		}
 	})
 }
@@ -306,8 +316,8 @@ func TestTheMembershipFollowsWhatEachHostReports(t *testing.T) {
 		m, _ := f.settle(t)
 		want := []rank.Identity{identityOf("host-2"), identityOf("a new disk")}
 		slices.SortFunc(want, func(a, b rank.Identity) int { return compareIdentities(a, b) })
-		if got := disksOf(m); !slices.Equal(got, want) || m.Code() != (rank.Code{K: 2, M: 1}) {
-			t.Fatalf("the membership holds %v under %s, want host-2's disk and host-0's new one under 2+1", got,
+		if got := disksOf(m); !slices.Equal(got, want) || m.Code() != (rank.Code{K: 4, M: 2}) {
+			t.Fatalf("the membership holds %v under %s, want host-2's disk and host-0's new one under 4+2", got,
 				m.Code())
 		}
 	})
@@ -374,7 +384,7 @@ func TestTwoOrchestratorsMoveOneMembership(t *testing.T) {
 		}
 		wg.Wait()
 		m, steps := f.settle(t)
-		if steps != 0 || m.Generation() != 9 || len(m.Disks()) != 4 || m.Code() != (rank.Code{K: 2, M: 2}) {
+		if steps != 0 || m.Generation() != 9 || len(m.Disks()) != 4 || m.Code() != (rank.Code{K: 4, M: 2}) {
 			t.Fatalf("two orchestrators left generation %d of %d disks under %s, and one more took %d steps",
 				m.Generation(), len(m.Disks()), m.Code(), steps)
 		}
@@ -389,24 +399,42 @@ func TestTwoOrchestratorsMoveOneMembership(t *testing.T) {
 	})
 }
 
-// The deployment names its code as k+m, and a code no host can store under
-// is refused at start.
+// The deployment names its code as k+m, and the codes it replaced as a list
+// of them, newest first. A code no host can store under is refused at start,
+// and so is an earlier code that is not one, or that is the code itself. With
+// no code set, the code is the default, 4+2.
 func TestTheCodeIsConfigured(t *testing.T) {
-	environment := map[string]string{"SPROUTFS_BUCKET": "bucket", "SPROUTFS_CACHE_CODE": "6+2"}
+	environment := map[string]string{"SPROUTFS_BUCKET": "bucket", "SPROUTFS_CACHE_CODE": "6+2",
+		"SPROUTFS_CACHE_EARLIER_CODES": "4+2, 2+1"}
 	lookup := func(name string) string { return environment[name] }
 	config, err := loadConfig(lookup)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.CacheCode != (rank.Code{K: 6, M: 2}) {
-		t.Fatalf("the code is %s, want 6+2", config.CacheCode)
+	if config.CacheCode != (rank.Code{K: 6, M: 2}) ||
+		!slices.Equal(config.CacheEarlierCodes, []rank.Code{{K: 4, M: 2}, {K: 2, M: 1}}) {
+		t.Fatalf("the code is %s after %v, want 6+2 after 4+2 and 2+1", config.CacheCode, config.CacheEarlierCodes)
 	}
-	environment["SPROUTFS_CACHE_CODE"] = "0+2"
+	for name, value := range map[string]string{
+		"SPROUTFS_CACHE_CODE":          "0+2",
+		"SPROUTFS_CACHE_EARLIER_CODES": "6+2",
+	} {
+		before := environment[name]
+		environment[name] = value
+		if _, err := loadConfig(lookup); err == nil {
+			t.Fatalf("%s=%s was accepted", name, value)
+		}
+		environment[name] = before
+	}
+	environment["SPROUTFS_CACHE_EARLIER_CODES"] = "4+2,two"
 	if _, err := loadConfig(lookup); err == nil {
-		t.Fatal("a code of no data stripes was accepted")
+		t.Fatal("an earlier code that is not one was accepted")
 	}
 	delete(environment, "SPROUTFS_CACHE_CODE")
-	if config, err := loadConfig(lookup); err != nil || config.CacheCode != (rank.Code{}) {
-		t.Fatalf("with no code configured the configuration is %s, %v", config.CacheCode, err)
+	delete(environment, "SPROUTFS_CACHE_EARLIER_CODES")
+	if config, err := loadConfig(lookup); err != nil || config.CacheCode != rank.DefaultCode ||
+		len(config.CacheEarlierCodes) != 0 {
+		t.Fatalf("with no code configured the configuration is %s after %v, %v", config.CacheCode,
+			config.CacheEarlierCodes, err)
 	}
 }

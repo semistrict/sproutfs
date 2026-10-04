@@ -423,7 +423,7 @@ func servingOf(list rank.List) membership.Membership {
 			caches[at].Address = platform.Address("host-" + caches[at].Identity.String())
 		}
 	}
-	addressed, err := rank.NewList(list.Code(), caches)
+	addressed, err := rank.NewList(list.Code(), caches, list.Earlier()...)
 	if err != nil {
 		panic(err)
 	}
@@ -557,11 +557,11 @@ func (f *diskFixture) write(t *testing.T, key diskKey, length int) {
 // read reads key and requires a hit with what was written.
 func (f *diskFixture) read(t *testing.T, key diskKey) {
 	t.Helper()
-	data, outcome := f.disk.read(f.ctx(t), key, selfChecked)
+	data, code, outcome := f.disk.readCode(f.ctx(t), key, selfChecked)
 	if outcome != diskHit || !bytes.Equal(data, f.model[key]) {
 		t.Fatalf("reading %v found %d and %d bytes, want a hit of %d", key, outcome, len(data), len(f.model[key]))
 	}
-	f.disk.served(key)
+	f.disk.served(key, code)
 }
 
 // held reports which of keys the disk holds.

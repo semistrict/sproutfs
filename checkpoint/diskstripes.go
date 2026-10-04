@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/internal/blob"
@@ -31,15 +32,17 @@ import (
 // host kept it before there were stripes, so a deployment rolls the cluster
 // cache out a share of windows at a time and loses nothing before then.
 //
-// A read rebuilds the envelope from the stripes of the membership's code the disk
-// holds, any k distinct indices of them. A stripe of another code is a miss,
-// so a deployment that changes its code refills from the store and reads no
-// wrong bytes. Each stripe's key and checksum are checked as it is read, and
-// the envelope it rebuilds is checked by the caller's check, which is the
-// envelope's own SHA-256. A stripe found wrong is forgotten. Nothing here
-// reads from a peer or sends one a stripe: until the cluster fills and reads
-// across hosts, a page this host cannot rebuild from its own disk is read
-// from the store.
+// A write keeps stripes under the membership's code alone. A read rebuilds
+// the envelope from the stripes of one code the disk holds, any k distinct
+// indices of them: the membership's code first, then each code the
+// deployment used before it, newest first. So a deployment that changes its
+// code on purpose reads what it stored under the earlier code until it ages
+// out. A stripe of a code the membership does not name is a miss, and no
+// envelope is rebuilt from stripes of two codes. Each stripe's key and
+// checksum are checked as it is read, and the envelope it rebuilds is checked
+// by the caller's check, which is the envelope's own SHA-256. A stripe found
+// wrong is forgotten. Nothing here reads from a peer or sends one a stripe:
+// clusterread.go does.
 
 // The probes the disk's stripes mark.
 const (
@@ -53,8 +56,11 @@ const (
 	// fewer than k.
 	ProbeDiskTooFewStripes = "checkpoint/disk-too-few-stripes"
 	// ProbeDiskStripeOfAnotherCode is a read that found stripes of the page
-	// only under another code.
+	// only under a code the list does not name.
 	ProbeDiskStripeOfAnotherCode = "checkpoint/disk-stripe-of-another-code"
+	// ProbeDiskEarlierCode is a read that rebuilt an envelope from stripes of
+	// a code the deployment used before its own.
+	ProbeDiskEarlierCode = "checkpoint/disk-earlier-code"
 	// ProbeDiskWrongStripe is a stripe found wrong, by rebuilding the
 	// envelope from other stripes, and forgotten.
 	ProbeDiskWrongStripe = "checkpoint/disk-wrong-stripe-found"
@@ -65,8 +71,9 @@ const (
 	// buggifyDiskWrongStripe hands a read a stripe whose checksum holds and
 	// whose bytes are wrong.
 	buggifyDiskWrongStripe = "checkpoint/disk-wrong-stripe"
-	// buggifyDiskCodeChanged reads under another code than the membership's,
-	// as a host does after its deployment's code changed.
+	// buggifyDiskCodeChanged reads under a code the membership does not
+	// name, as a host does after its deployment changed its code and dropped
+	// the old one from its earlier codes.
 	buggifyDiskCodeChanged = "checkpoint/disk-code-changed"
 	// buggifyDiskShortList places a window by the ranks less every other
 	// disk, as a host that has heard of no other disk yet does: ranks fewer
@@ -130,23 +137,27 @@ func (d *cacheDisk) placedBy(key diskKey, ignoreShare bool) (membership.Membersh
 	return m, true
 }
 
-// code is the code the disk reads key under: the membership's for a window
-// it places by the membership, and 1+0 for every other.
-func (d *cacheDisk) code(ctx context.Context, key diskKey) rank.Code {
-	code := wholeCode
+// codes is the codes the disk reads key under, in the order it tries them:
+// for a window it places by the membership, its code and then each earlier
+// one; for every other, 1+0.
+func (d *cacheDisk) codes(ctx context.Context, key diskKey) []rank.Code {
+	codes := []rank.Code{wholeCode}
 	if m, ok := d.placedBy(key, sim.Bug(ctx, "diskcache-share-ignored")); ok {
-		code = m.Code()
+		codes = m.List().Codes()
+		if sim.Bug(ctx, "diskcache-current-code-only") {
+			codes = codes[:1]
+		}
 	}
 	if sim.Buggify(ctx, buggifyDiskCodeChanged, 0.05) {
-		code = anotherCode(code)
+		codes = []rank.Code{anotherCode(codes)}
 	}
-	return code
+	return codes
 }
 
-// anotherCode is a code of the table other than code.
-func anotherCode(code rank.Code) rank.Code {
+// anotherCode is a code of the table none of codes is.
+func anotherCode(codes []rank.Code) rank.Code {
 	for hosts := 1; ; hosts++ {
-		if other := rank.CodeFor(hosts); other != code {
+		if other := rank.CodeFor(hosts); !slices.Contains(codes, other) {
 			return other
 		}
 	}
@@ -394,34 +405,67 @@ func (d *cacheDisk) readStripe(ctx context.Context, key diskKey, code rank.Code,
 	return d.readItem(ctx, key, want, location)
 }
 
-// read rebuilds the envelope the disk holds under key from the stripes of the
-// list's code it holds, and checks it with check: nil accepts any envelope.
-// Anything but a hit is a miss. A stripe the rebuild finds wrong is
-// forgotten, and so is every stripe of key that rebuilds nothing that passes,
-// because a copy that failed once is not asked for again.
+// read rebuilds the envelope the disk holds under key from the stripes of one
+// code it holds, trying each code the list names in turn, and checks it with
+// check: nil accepts any envelope. Anything but a hit is a miss. A stripe the
+// rebuild finds wrong is forgotten, and so is every stripe of key that
+// rebuilds nothing that passes, because a copy that failed once is not asked
+// for again.
 func (d *cacheDisk) read(ctx context.Context, key diskKey, check func([]byte) error) ([]byte, diskReadOutcome) {
-	code := d.code(ctx, key)
+	envelope, _, outcome := d.readCode(ctx, key, check)
+	return envelope, outcome
+}
+
+// readCode is read, and the code that rebuilt the envelope.
+func (d *cacheDisk) readCode(ctx context.Context, key diskKey, check func([]byte) error) ([]byte, rank.Code,
+	diskReadOutcome) {
+	outcome, held := diskAbsent, false
+	for at, code := range d.codes(ctx, key) {
+		envelope, read, some := d.readUnder(ctx, key, code, check)
+		switch {
+		case read == diskHit:
+			if at > 0 {
+				sim.Probe(ctx, ProbeDiskEarlierCode)
+			}
+			return envelope, code, diskHit
+		case read == diskFailed && context.Cause(ctx) != nil:
+			return nil, rank.Code{}, diskFailed
+		case read != diskAbsent:
+			outcome = read
+		}
+		held = held || some
+	}
+	if !held {
+		d.mu.Lock()
+		other := d.index.holdsAny(key)
+		d.mu.Unlock()
+		if other {
+			sim.Probe(ctx, ProbeDiskStripeOfAnotherCode)
+		}
+	}
+	return nil, rank.Code{}, outcome
+}
+
+// readUnder rebuilds the envelope the disk holds under key from the stripes of
+// code alone, and checks it with check. It reports whether the index held any
+// stripe of key under code.
+func (d *cacheDisk) readUnder(ctx context.Context, key diskKey, code rank.Code,
+	check func([]byte) error) ([]byte, diskReadOutcome, bool) {
 	stripes, read, outcome := d.ownStripes(ctx, key, code)
+	held := len(stripes) > 0 || outcome != diskHit
 	if len(stripes) < code.K {
 		switch {
 		case outcome != diskHit:
-			return nil, outcome
-		case len(stripes) > 0:
+			return nil, outcome, held
+		case held:
 			sim.Probe(ctx, ProbeDiskTooFewStripes)
-		default:
-			d.mu.Lock()
-			other := d.index.holdsAny(key)
-			d.mu.Unlock()
-			if other {
-				sim.Probe(ctx, ProbeDiskStripeOfAnotherCode)
-			}
 		}
-		return nil, diskAbsent
+		return nil, diskAbsent, held
 	}
 	joined, err := stripe.Join(ctx, code, stripes, check)
 	if context.Cause(ctx) != nil {
 		// A check the caller gave up on says nothing about the stripes.
-		return nil, diskFailed
+		return nil, diskFailed, held
 	}
 	wrong := joined.Wrong
 	if len(wrong) > 0 {
@@ -440,7 +484,7 @@ func (d *cacheDisk) read(ctx context.Context, key diskKey, check func([]byte) er
 		}
 	}
 	if err != nil {
-		return nil, diskWrongStripe
+		return nil, diskWrongStripe, held
 	}
 	for _, at := range joined.Used {
 		if stripes[at].Index >= code.K {
@@ -448,16 +492,17 @@ func (d *cacheDisk) read(ctx context.Context, key diskKey, check func([]byte) er
 			break
 		}
 	}
-	return joined.Envelope, diskHit
+	return joined.Envelope, diskHit, held
 }
 
 // decoded is the decoded bytes of the envelope the disk holds under key,
 // rebuilt and checked as one from the store is: it decodes under codecs to at
 // most maximum bytes, its SHA-256 holds, and valid takes what it decodes to.
+// It reports the code that rebuilt it.
 func (d *cacheDisk) decoded(ctx context.Context, key diskKey, codecs *blob.Codecs, maximum int,
-	valid func([]byte) bool) ([]byte, bool) {
+	valid func([]byte) bool) ([]byte, rank.Code, bool) {
 	var data []byte
-	_, outcome := d.read(ctx, key, func(envelope []byte) error {
+	_, code, outcome := d.readCode(ctx, key, func(envelope []byte) error {
 		decoded, err := codecs.Decode(ctx, envelope, maximum)
 		if err != nil {
 			return err
@@ -468,16 +513,12 @@ func (d *cacheDisk) decoded(ctx context.Context, key diskKey, codecs *blob.Codec
 		data = decoded
 		return nil
 	})
-	return data, outcome == diskHit
+	return data, code, outcome == diskHit
 }
 
 // served counts one read of an envelope that came back intact, and one read
-// of each stripe of it the disk holds under the membership's code.
-func (d *cacheDisk) served(key diskKey) {
-	code := wholeCode
-	if m, ok := d.placedBy(key, false); ok {
-		code = m.Code()
-	}
+// of each stripe of it the disk holds under code, the code that rebuilt it.
+func (d *cacheDisk) served(key diskKey, code rank.Code) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.hits++

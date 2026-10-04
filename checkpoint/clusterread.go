@@ -59,6 +59,16 @@ import (
 // stripes of which exist anywhere it asked is read from the store, and that
 // read fills the cluster behind it.
 //
+// A window is read under the code it was stored under. The read tries the
+// list's code first. What it could not rebuild under it, it reads again under
+// each code the deployment used before, newest first, from the window's ranks
+// under that code, which are the first of its ranks under the widest. Each
+// rebuild takes stripes of one code alone. A repair is only ever under the
+// list's code: a window rebuilt under an earlier code is filled under the
+// list's code instead, as a read of the store fills it. So a deliberate change
+// of the code leaves every earlier window readable until it ages out. The
+// store is read only for a page no code rebuilt.
+//
 // Nothing a read sends waits on the read: a request goes on until it is
 // answered or times out, whether or not the read still needs it, and how it
 // ended is what marks a host down (clusterdown.go). Drops and repairs are
@@ -108,11 +118,12 @@ const (
 // ReadStats is what a cache's reads of the cluster did, in envelopes unless
 // they say otherwise.
 type ReadStats struct {
-	// Hits counts the envelopes rebuilt from the cluster, and OwnHits those
-	// among them this host's own disk rebuilt alone, with no request.
-	// Misses counts the envelopes the cluster could not rebuild, which the
-	// store served.
-	Hits, OwnHits, Misses uint64
+	// Hits counts the envelopes rebuilt from the cluster, OwnHits those
+	// among them this host's own disk rebuilt alone, with no request, and
+	// EarlierHits those rebuilt under a code the deployment used before its
+	// own. Misses counts the envelopes the cluster could not rebuild, which
+	// the store served.
+	Hits, OwnHits, EarlierHits, Misses uint64
 	// Requests counts the stripe requests sent, Replaced the holders replaced
 	// at once for answering with nothing, BUSY or an error, SecondRequests
 	// the reads that asked the rest of the ranks after the delay, and
@@ -150,6 +161,9 @@ const (
 	ProbeClusterOwnHit = "checkpoint/cluster-own-hit"
 	// ProbeClusterMiss is an envelope the cluster could not rebuild.
 	ProbeClusterMiss = "checkpoint/cluster-miss"
+	// ProbeClusterEarlierCode is an envelope rebuilt under a code the
+	// deployment used before its own.
+	ProbeClusterEarlierCode = "checkpoint/cluster-earlier-code"
 	// ProbeClusterParity is an envelope rebuilt with a data stripe missing.
 	ProbeClusterParity = "checkpoint/cluster-rebuilt-from-parity"
 	// ProbeClusterReplaced is a holder replaced at once for its answer.
@@ -407,19 +421,24 @@ type clusterWant struct {
 type storeHedge func(ctx context.Context, ats []int) ([][]byte, error)
 
 // read reads wants from the cluster, each window's at once, and returns the
-// decoded bytes of each, nil for one the cluster could not rebuild. Every want
-// must be one the cluster is on for. Past the bound, hedge, when not nil,
-// reads the wants still waited on from the store, at most once and within the
-// bucket, and whichever of the two answers first is taken.
+// decoded bytes of each, nil for one the cluster could not rebuild, and the
+// envelopes it rebuilt under an earlier code, in the order of their windows:
+// the caller fills the cluster with them under the deployment's code once
+// its callers have their pages, as it fills what the store served. Every
+// want must be one the cluster is on for. Past the bound, hedge, when not
+// nil, reads the wants still waited on from the store, at most once and
+// within the bucket, and whichever of the two answers first is taken; a read
+// the store answered refills nothing.
 func (r *clusterReader) read(ctx context.Context, codecs *blob.Codecs, wants []clusterWant,
-	hedge storeHedge) ([][]byte, error) {
+	hedge storeHedge) ([][]byte, []envelope, error) {
 	out := make([][]byte, len(wants))
 	groups := r.byWindow(wants)
 	results := make(chan windowResult, len(groups))
 	finished := make([]bool, len(groups))
+	refills := make([][]envelope, len(groups))
 	for at, g := range groups {
 		if !r.spawn(func(context.Context) { results <- windowResult{group: at, out: r.readWindow(ctx, codecs, g)} }) {
-			results <- windowResult{group: at, out: make([][]byte, len(g.wants))}
+			results <- windowResult{group: at, out: windowOut{data: make([][]byte, len(g.wants))}}
 		}
 	}
 	wait := r.bound()
@@ -437,7 +456,8 @@ func (r *clusterReader) read(ctx context.Context, codecs *blob.Codecs, wants []c
 		case result := <-results:
 			pending--
 			finished[result.group] = true
-			for at, data := range result.out {
+			refills[result.group] = result.out.refill
+			for at, data := range result.out.data {
 				if position := groups[result.group].ats[at]; out[position] == nil {
 					out[position] = data
 				}
@@ -475,18 +495,18 @@ func (r *clusterReader) read(ctx context.Context, codecs *blob.Codecs, wants []c
 			}
 			r.count(func(stats *ReadStats) { stats.StoreHedgesWon++ })
 			r.probe(ProbeClusterStoreHedgeWon)
-			return out, nil
+			return out, nil, nil
 		case <-ctx.Done():
-			return nil, context.Cause(ctx)
+			return nil, nil, context.Cause(ctx)
 		}
 	}
-	return out, nil
+	return out, slices.Concat(refills...), nil
 }
 
 // windowResult is what the read of one group of wants rebuilt.
 type windowResult struct {
 	group int
-	out   [][]byte
+	out   windowOut
 }
 
 // hedgeResult is what a read of the store past the bound read.
@@ -540,14 +560,20 @@ type stripeAnswer struct {
 }
 
 // windowRead is one read of the cluster for the wants of one window, under
-// one generation of the membership.
+// one code, under one generation of the membership.
 type windowRead struct {
 	r      *clusterReader
 	codecs *blob.Codecs
 	window rank.Window
-	m      membership.Membership
-	code   rank.Code
-	wants  []clusterWant
+	m membership.Membership
+	// code is the code the read takes stripes of. earlier marks a code the
+	// deployment used before its own, which the read does not repair under.
+	code    rank.Code
+	earlier bool
+	// own says this host's own stripes rebuilt every want, with no request,
+	// and cut that the read's caller gave up on it before it ended.
+	own, cut bool
+	wants    []clusterWant
 	// owned says this host serves its disk under m, so its own stripes are
 	// part of the read.
 	owned bool
@@ -582,41 +608,107 @@ type windowRead struct {
 	finished bool
 }
 
-// readWindow reads the wants of one window from the cluster, and returns what
-// each rebuilt to, nil for one it could not rebuild. A read that a holder
-// ahead of it answers stale reads the membership and reads the window again
-// under the newer generation.
-func (r *clusterReader) readWindow(ctx context.Context, codecs *blob.Codecs, g windowGroup) [][]byte {
+// windowOut is what the read of one window's wants rebuilt: the decoded bytes
+// of each, nil for one it could not rebuild, how many it rebuilt under an
+// earlier code, and their envelopes, which the deployment's code is filled
+// with.
+type windowOut struct {
+	data    [][]byte
+	earlier int
+	refill  []envelope
+}
+
+// readWindow reads the wants of one window from the cluster, under one
+// generation of the membership: under its code, then what it could not
+// rebuild under each earlier code in turn. A read that a holder ahead of it
+// answers stale reads the membership and reads the window again under the
+// newer generation.
+func (r *clusterReader) readWindow(ctx context.Context, codecs *blob.Codecs, g windowGroup) windowOut {
 	for tries := 0; ; tries++ {
-		w := r.newWindowRead(codecs, g)
-		w.run(ctx)
-		if !w.stale() || tries == staleRetries {
-			return w.out
+		out, own, newer, cut := r.readCodes(ctx, codecs, g)
+		if cut {
+			// A read its caller gave up on counts nothing.
+			return out
 		}
-		newer, err := r.disk.catch(ctx, w.newer)
-		if err != nil || newer.Generation() <= g.m.Generation() {
+		if newer <= g.m.Generation() || tries == staleRetries {
+			r.counted(out, own)
+			return out
+		}
+		next, err := r.disk.catch(ctx, newer)
+		if err != nil || next.Generation() <= g.m.Generation() {
 			slog.DebugContext(ctx, "checkpoint: a read told it is stale could not read the membership",
-				"generation", g.m.Generation(), "holder", w.newer, "error", err)
-			return w.out
+				"generation", g.m.Generation(), "holder", newer, "error", err)
+			r.counted(out, own)
+			return out
 		}
 		r.probe(membership.ProbeSenderCaughtUp)
-		g.m = newer
+		g.m = next
 	}
 }
 
-// newWindowRead is a read of g's wants under its membership.
-func (r *clusterReader) newWindowRead(codecs *blob.Codecs, g windowGroup) *windowRead {
-	list := g.m.List()
-	ranks := list.Ranks(g.window)
-	w := &windowRead{r: r, codecs: codecs, window: g.window, m: g.m, code: g.m.Code(), wants: g.wants,
-		owned: r.disk.owns(g.m), ranks: ranks, holders: list.Holders(g.window),
-		self: rank.Cache{Identity: r.disk.identity},
-		held: make([][]heldStripe, len(g.wants)), tried: make([]int, len(g.wants)), out: make([][]byte, len(g.wants)),
-		envelopes: make([][]byte, len(g.wants)), answered: make(map[rank.Identity][][]int),
+// readCodes reads the wants of g's window under each of its membership's
+// codes in turn, and reports what they rebuilt, whether this host's own
+// stripes rebuilt every want under the membership's code, the generation of
+// a holder that answered the read is stale, and whether the read's caller
+// gave up on it.
+func (r *clusterReader) readCodes(ctx context.Context, codecs *blob.Codecs, g windowGroup) (windowOut, bool,
+	uint64, bool) {
+	out := windowOut{data: make([][]byte, len(g.wants))}
+	own := false
+	for at, code := range g.m.List().Codes() {
+		var missing []int
+		for position, data := range out.data {
+			if data == nil {
+				missing = append(missing, position)
+			}
+		}
+		if len(missing) == 0 || ctx.Err() != nil || at > 0 && r.bug("cluster-current-code-only") {
+			break
+		}
+		wants := make([]clusterWant, len(missing))
+		for want, position := range missing {
+			wants[want] = g.wants[position]
+		}
+		w := r.windowRead(codecs, g.window, g.m, code, wants, at > 0)
+		w.run(ctx)
+		if w.cut {
+			return out, own, 0, true
+		}
+		if w.stale() {
+			return out, own, w.newer, false
+		}
+		own = own || at == 0 && w.own
+		for want, position := range missing {
+			if w.out[want] == nil {
+				continue
+			}
+			out.data[position] = w.out[want]
+			if at > 0 {
+				out.earlier++
+				if !r.bug("cluster-no-refill") {
+					out.refill = append(out.refill, envelope{key: wants[want].key, data: w.envelopes[want]})
+				}
+			}
+		}
+	}
+	return out, own, 0, false
+}
+
+// windowRead starts the read of wants of window under m, of the stripes of
+// code, from the window's ranks under that code. earlier marks a code the
+// deployment used before its own.
+func (r *clusterReader) windowRead(codecs *blob.Codecs, window rank.Window, m membership.Membership, code rank.Code,
+	wants []clusterWant, earlier bool) *windowRead {
+	list := m.List().Under(code)
+	ranks := list.Ranks(window)
+	w := &windowRead{r: r, codecs: codecs, window: window, m: m, code: code, earlier: earlier, wants: wants,
+		owned: r.disk.owns(m), ranks: ranks, holders: list.Holders(window), self: rank.Cache{Identity: r.disk.identity},
+		held: make([][]heldStripe, len(wants)), tried: make([]int, len(wants)), out: make([][]byte, len(wants)),
+		envelopes: make([][]byte, len(wants)), answered: make(map[rank.Identity][][]int),
 		askedOf: make(map[rank.Identity]bool),
 		events:  make(chan stripeAnswer, len(ranks))}
-	for _, want := range g.wants {
-		w.pages = append(w.pages, uint32(want.key.Page-g.window.Page(0)))
+	for _, want := range wants {
+		w.pages = append(w.pages, uint32(want.key.Page-window.Page(0)))
 	}
 	return w
 }
@@ -645,11 +737,17 @@ func (w *windowRead) run(ctx context.Context) {
 	own := w.owned && w.readOwn(ctx)
 	w.join(ctx)
 	if w.complete() {
-		w.counted(ctx, true)
+		w.own = true
+		for _, want := range w.wants {
+			r.disk.served(want.key, w.code)
+		}
 		w.repair(ctx)
 		return
 	}
-	r.earn()
+	if !w.earlier {
+		// One read of a window earns once, whatever codes it tries.
+		r.earn()
+	}
 	var others []rank.Cache
 	for _, cache := range w.ranks {
 		if cache.Identity != w.self.Identity && w.routed(cache) && !r.marks.isDown(cache.Identity) &&
@@ -719,14 +817,14 @@ func (w *windowRead) run(ctx context.Context) {
 			for w.askNext(ctx) {
 			}
 		case <-ctx.Done():
+			w.cut = true
 			return
 		}
 	}
 	if w.complete() {
 		r.hedge.done(r.clock.Since(began), waited)
 	}
-	w.counted(ctx, false)
-	if w.complete() && w.pending > 0 && w.mayRepair() {
+	if w.complete() && w.pending > 0 && !w.earlier && w.mayRepair() {
 		// The read has its pages. Whether a rank lacks a stripe no rank
 		// holds is known only once every rank has answered, and the rest
 		// answer behind the read rather than in front of it.
@@ -1085,35 +1183,38 @@ func (w *windowRead) dropAt(ctx context.Context, cache rank.Cache, page uint32, 
 	}
 }
 
-// counted counts what the read rebuilt and missed. own says this host's disk
-// rebuilt everything alone, which counts as a hit of the disk too.
-func (w *windowRead) counted(ctx context.Context, own bool) {
+// counted counts what the read of a window rebuilt, under which code, and
+// what it missed. own says this host's disk rebuilt everything alone under
+// the list's code.
+func (r *clusterReader) counted(out windowOut, own bool) {
 	hits, misses := uint64(0), uint64(0)
-	for at, data := range w.out {
+	for _, data := range out.data {
 		if data == nil {
 			misses++
-			continue
-		}
-		hits++
-		if own {
-			w.r.disk.served(w.wants[at].key)
+		} else {
+			hits++
 		}
 	}
-	w.r.count(func(stats *ReadStats) {
+	earlier := uint64(out.earlier)
+	r.count(func(stats *ReadStats) {
 		stats.Hits += hits
 		stats.Misses += misses
+		stats.EarlierHits += earlier
 		if own {
 			stats.OwnHits += hits
 		}
 	})
 	switch {
 	case hits > 0 && own:
-		w.r.probe(ProbeClusterOwnHit)
+		r.probe(ProbeClusterOwnHit)
 	case hits > 0:
-		w.r.probe(ProbeClusterHit)
+		r.probe(ProbeClusterHit)
+	}
+	if earlier > 0 {
+		r.probe(ProbeClusterEarlierCode)
 	}
 	if misses > 0 {
-		w.r.probe(ProbeClusterMiss)
+		r.probe(ProbeClusterMiss)
 	}
 }
 
@@ -1123,8 +1224,13 @@ func (w *windowRead) counted(ctx context.Context, own bool) {
 // a read that heard from every rank knows what no rank holds, so
 // only such a read repairs; one that did not ask every rank leaves the window
 // to a reader that does. It never sends an index another rank holds, so a
-// change of ranks never leaves one index on two ranks.
+// change of ranks never leaves one index on two ranks. A window read under an
+// earlier code is not repaired: it is filled under the deployment's code
+// instead, and what it holds under the earlier one ages out.
 func (w *windowRead) repair(ctx context.Context) {
+	if w.earlier {
+		return
+	}
 	for _, cache := range w.ranks {
 		if _, heard := w.answered[cache.Identity]; !heard {
 			return

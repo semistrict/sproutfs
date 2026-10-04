@@ -141,20 +141,27 @@ and a reader takes the first to answer. So replication is not a second
 mechanism. It is the code at k = 1, with the same ranks, fills, reads, repair
 and checks.
 
-The code is not derived from the live list. A drain takes a six-host cluster to
-five for a while, and a code that followed the list would change, and every
-stripe in the cluster would become a miss. An operator who sets no code gets
-the table's code for the most caches the orchestrator has listed since it
-started, which a drain does not lower. Instead, while the list holds fewer
-hosts than k+m, a window's stripes go round the hosts it has: stripe i on rank
+The code never follows the number of hosts or shards. A drain takes a six-host
+cluster to five for a while, and a code that followed the list would change,
+and every stripe in the cluster would become a miss. An operator who sets no
+code gets 4+2, whatever the cluster's size. While the list holds fewer hosts
+than k+m, a window's stripes go round the hosts it has: stripe i on rank
 ((i − 1) mod n) + 1. A host then holds two stripes of some windows, and losing
 it costs both. With 4+2 on five hosts, any one host can still be lost. With
 4+2 on two hosts, no host can, so the operator sets the code for the size the
 cluster normally runs at, not the size it may briefly fall to.
 
-Every stored stripe states its code. A reader that finds a stripe of another
-code treats it as a miss, so changing a deployment's code costs a refill from
-the store, as the cluster reads, and nothing worse.
+Every stored stripe states its code, and every window is read and rebuilt
+under the code it was stored under. An operator who changes the code on
+purpose names the old one as an earlier code. A reader tries the deployment's
+code first, then each earlier code, newest first, on the window's ranks under
+that code. It never rebuilds from stripes of two codes. A window it rebuilds
+under an earlier code it fills under the deployment's code, as a read of the
+store does, so a hot window moves to the new code and the rest age out. A
+change of the code so reads no window from the store that the cluster held.
+The earlier codes are a deployment setting beside the code, so nothing has to
+remember them. A stripe of a code the list does not name is a miss.
+Decided on 2026-10-03 (TASK-85).
 
 ### Tenants
 
@@ -701,7 +708,8 @@ in `/metrics`, with the page's identity.
 requests between them. One configuration has four hosts and a 2+1 code, which
 keeps the state space small. Another has two hosts and a 1+1 code, the
 smallest deployment. A third has three hosts and a 2+2 code, so that stripes
-go round the hosts:
+go round the hosts. Two more have three hosts whose code changes on purpose,
+from 2+1 to 1+1 and from 1+1 to 2+1:
 
 - disk regions, opened, closed, evicted and given back, the region kept free,
   and the bounded second chance;
@@ -713,6 +721,9 @@ go round the hosts:
 - hosts that hold different lists of caches, hosts marked down, and a host that
   restarts, joins or leaves;
 - a peer that answers with a wrong stripe;
+- a deliberate change of the code: stripes that name their code, reads under
+  the code and then each earlier code, and a window read under an earlier
+  code filled under the new one;
 - a VM deleted and its name created again, with a small epoch space so that a
   collision is reachable;
 - the limiter's goal, the spill promises allocated whole (and, as a mutant,
@@ -724,10 +735,11 @@ Its invariants:
 - `NoWrongBytes`: every read returns the bytes the store holds, or held, under
   the identity it asked for, or misses.
 - `StripesRanked`: a stripe is only ever on ranks 1 to k+m of its window,
-  under some list a host held.
-- `SurvivesLosses`: a window whose k+m stripes were all written decodes for a
-  reader whose list agrees with the cluster's, after any changes to its ranks
-  that took no more than m of its stripes.
+  under some list a host held, of that list's code.
+- `SurvivesLosses`: a window whose k+m stripes under some code the deployment
+  used were all written decodes for a reader whose list agrees with the
+  cluster's, after any changes to its ranks that took no more than m of those
+  stripes. So a change of the code leaves every earlier window readable.
 - `PromisesKept`: a spill file is never refused space it was promised.
 - `GoalKept`: the host's disk use meets the goal, or the host reports itself
   unready.
@@ -738,8 +750,9 @@ share, the bytes it holds fall. TLC also checks for deadlock.
 The mutants put back a read without the key check, a stripe used without its
 checksum, a part filled before its PUT succeeded, a keep accepted from a cache
 not ranked for the window, a limiter that counts spill files by their
-allocation, eviction without its free region, and an unbounded second chance.
-Each must fail with the property it names, or deadlock. The epoch collision is
+allocation, eviction without its free region, an unbounded second chance, and
+a read that tries only its own code. Each must fail with the property it
+names, or deadlock. The epoch collision is
 a configuration of its own, which must fail `NoWrongBytes` to show the model
 reaches it.
 
@@ -831,6 +844,10 @@ Each property has a test that states it in its own words.
 - **A drain does not change the code.** The six-host cluster drains to five.
   Its code stays 4+2, its stripes go round five hosts, and every window still
   decodes with one more host lost.
+- **A change of the code reads nothing from the store.** A six-host cluster
+  under 4+2 changes to 2+1 and names 4+2 as earlier, and three hosts under 2+1
+  change to 4+2. Every host reads every earlier window with no read of the
+  store, with a host lost too, and the first read fills it under the new code.
 - **A hot page spreads its load.** All six hosts read one window at once. Each
   holder sends at most one stripe to each reader, no holder sends a whole
   window, and the requests spread over all six holders.

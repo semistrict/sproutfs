@@ -44,6 +44,12 @@ func (m Membership) Marshal() ([]byte, error) {
 	}
 	message.SetMembers(members)
 	message.SetDisks(disks)
+	earlier := make([]*membershipv1.Code, 0, len(m.earlier))
+	for _, code := range m.earlier {
+		earlier = append(earlier, membershipv1.Code_builder{K: proto.Uint32(uint32(code.K)),
+			M: proto.Uint32(uint32(code.M))}.Build())
+	}
+	message.SetEarlier(earlier)
 	data, err := proto.MarshalOptions{Deterministic: true}.Marshal(message)
 	if err != nil {
 		return nil, err
@@ -93,7 +99,15 @@ func Unmarshal(data []byte) (Membership, error) {
 		disks = append(disks, Disk{ID: id, Volume: disk.GetVolume(), Weight: disk.GetWeight(), Member: owner,
 			State: DiskState(disk.GetState()), Assigned: disk.GetAssigned()})
 	}
-	m, err := New(message.GetGeneration(), rank.Code{K: int(message.GetK()), M: int(message.GetM())}, members, disks)
+	earlier := make([]rank.Code, 0, len(message.GetEarlier()))
+	for _, code := range message.GetEarlier() {
+		if len(code.ProtoReflect().GetUnknown()) != 0 || !code.HasK() || !code.HasM() {
+			return Membership{}, ErrCorrupt
+		}
+		earlier = append(earlier, rank.Code{K: int(code.GetK()), M: int(code.GetM())})
+	}
+	m, err := New(message.GetGeneration(), rank.Code{K: int(message.GetK()), M: int(message.GetM())}, members, disks,
+		earlier...)
 	if err != nil {
 		return Membership{}, fmt.Errorf("%w: %w", ErrCorrupt, err)
 	}

@@ -22,6 +22,15 @@ message Membership {
   // members and disks are each in identity order.
   repeated Member members = 6;
   repeated Disk disks = 7;
+  // earlier is the codes the deployment used before k+m, newest first. A
+  // window stored under one is still read under it.
+  repeated Code earlier = 8;
+}
+
+// Code is an erasure code: k data stripes and m parity stripes.
+message Code {
+  uint32 k = 1;
+  uint32 m = 2;
 }
 
 // Member is one host: its identity, the address its peer server answers at,

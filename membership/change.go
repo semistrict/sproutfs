@@ -199,13 +199,15 @@ func (m Membership) Leave(member rank.Identity) (Membership, error) {
 	return m.next(slices.Delete(members, at, at+1), m.Disks())
 }
 
-// Recode sets the deployment's code. Every stripe of another code is a miss,
-// so it is a change a deployment makes rarely.
-func (m Membership) Recode(code rank.Code) (Membership, error) {
-	if code == m.code {
+// Recode sets the deployment's code and the codes it used before, newest
+// first. A window stored under an earlier code is still read under it, and a
+// stripe of a code the membership does not name is a miss, so it is a change
+// a deployment makes rarely.
+func (m Membership) Recode(code rank.Code, earlier ...rank.Code) (Membership, error) {
+	if code == m.code && slices.Equal(earlier, m.earlier) {
 		return Membership{}, ErrUnchanged
 	}
-	next, err := New(m.generation+1, code, m.members, m.disks)
+	next, err := New(m.generation+1, code, m.members, m.disks, earlier...)
 	if err != nil {
 		return Membership{}, err
 	}
@@ -214,7 +216,7 @@ func (m Membership) Recode(code rank.Code) (Membership, error) {
 
 // next is the membership at the next generation with members and disks.
 func (m Membership) next(members []Member, disks []Disk) (Membership, error) {
-	return New(m.generation+1, m.code, members, disks)
+	return New(m.generation+1, m.code, members, disks, m.earlier...)
 }
 
 // put is disks with disk in place of the disk of its identity, or added.

@@ -169,9 +169,10 @@ type orchestrator struct {
 	resuming map[string]bool
 	resumes  sync.WaitGroup
 
-	// code is the deployment's code, as configured. The zero code is the
-	// table's for the most disks the membership has wanted.
-	code rank.Code
+	// code is the deployment's code, as configured, and earlier the codes it
+	// replaced, newest first, which the orchestrator writes in the membership.
+	code    rank.Code
+	earlier []rank.Code
 	// members is the membership the orchestrator moves towards the host
 	// pods, nil for a deployment that keeps none, and reported the member
 	// each listed host pod last reported, by pod name.

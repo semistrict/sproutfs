@@ -464,3 +464,50 @@ func TestDiskReadsNoStripeOfAnotherCode(t *testing.T) {
 		f.disk.checkInvariants(t)
 	})
 }
+
+// A page is read under the code it was kept under. A disk that kept a page
+// under 2+1 and now follows a list of 2+2 that names 2+1 as its earlier code
+// rebuilds the page from its 2+1 stripes. A write keeps the page under 2+2
+// beside them, and the read then takes the list's own code first. The two
+// sets never mix: each rebuilds the page alone.
+func TestDiskReadsAPageUnderTheCodeItWasKeptUnder(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		before, now := rank.Code{K: 2, M: 1}, rank.Code{K: 2, M: 2}
+		f := newDiskFixture(t, diskFixtureConfig{regions: 8, clusterPercent: 100, caches: func(self CacheIdentity) rank.List {
+			return listOf(before, self)
+		}})
+		key := keyOf("va", 0)
+		f.write(t, key, testItemBytes)
+		self := f.disk.identity
+		changed, err := rank.NewList(now, []rank.Cache{{Identity: self, Weight: 1}}, before)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.disk.follow(membership.NewFixed(servingOf(changed)), self)
+		data, code, outcome := f.disk.readCode(f.ctx(t), key, selfChecked)
+		if outcome != diskHit || code != before || !bytes.Equal(data, f.model[key]) {
+			t.Fatalf("a page kept under 2+1 read under 2+2 after 2+1 found %d under %s, want a hit under 2+1",
+				outcome, code)
+		}
+		if probes := f.runtime.Probes(); probes[ProbeDiskEarlierCode] != 1 || probes[ProbeDiskStripeOfAnotherCode] != 0 {
+			t.Fatalf("the read reached %v, want one read under the earlier code", probes)
+		}
+		if f.disk.has(f.ctx(t), key) {
+			t.Fatal("the disk says it holds under 2+2 a page it kept under 2+1")
+		}
+		f.write(t, key, testItemBytes)
+		if held := f.heldIndices(t, key, now); !slices.Equal(held, []int{0, 1, 2, 3}) {
+			t.Fatalf("the disk holds indices %v of 2+2, want all four", held)
+		}
+		if held := f.heldIndices(t, key, before); !slices.Equal(held, []int{0, 1, 2}) {
+			t.Fatalf("the disk holds indices %v of 2+1, want all three still", held)
+		}
+		if _, code, outcome := f.disk.readCode(f.ctx(t), key, selfChecked); outcome != diskHit || code != now {
+			t.Fatalf("with both codes kept the read found %d under %s, want a hit under 2+2", outcome, code)
+		}
+		if probes := f.runtime.Probes(); probes[ProbeDiskEarlierCode] != 1 {
+			t.Fatalf("the reads reached %v, want only the first under the earlier code", probes)
+		}
+		f.disk.checkInvariants(t)
+	})
+}

@@ -137,7 +137,10 @@ type Disk struct {
 type Membership struct {
 	generation uint64
 	code       rank.Code
-	nonce      []byte
+	// earlier is the codes the deployment used before code, newest first: a
+	// window stored under one is still read under it.
+	earlier []rank.Code
+	nonce   []byte
 	members    []Member
 	disks      []Disk
 	// list ranks windows over the disks, each at the address of the member
@@ -149,12 +152,14 @@ type Membership struct {
 // route by it: a valid code; members and disks with identities, none twice;
 // a member with an address; a disk with a weight; and a disk assigned to a
 // listed member in a state that has one, or released and assigned to nobody.
-func New(generation uint64, code rank.Code, members []Member, disks []Disk) (Membership, error) {
+// earlier is the codes the deployment used before code, newest first, each
+// named once and at most rank.MaxEarlierCodes of them.
+func New(generation uint64, code rank.Code, members []Member, disks []Disk, earlier ...rank.Code) (Membership, error) {
 	if err := code.Validate(); err != nil {
 		return Membership{}, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
-	m := Membership{generation: generation, code: code, members: sorted(members, memberID),
-		disks: sorted(disks, diskID)}
+	m := Membership{generation: generation, code: code, earlier: slices.Clone(earlier),
+		members: sorted(members, memberID), disks: sorted(disks, diskID)}
 	for at, member := range m.members {
 		switch {
 		case member.ID.IsZero() || member.Address == "":
@@ -176,7 +181,7 @@ func New(generation uint64, code rank.Code, members []Member, disks []Disk) (Mem
 		}
 		caches = append(caches, rank.Cache{Identity: disk.ID, Weight: disk.Weight, Address: m.served(disk)})
 	}
-	list, err := rank.NewList(code, caches)
+	list, err := rank.NewList(code, caches, earlier...)
 	if err != nil {
 		return Membership{}, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
@@ -242,6 +247,9 @@ func (m Membership) Generation() uint64 { return m.generation }
 
 // Code is the deployment's code.
 func (m Membership) Code() rank.Code { return m.code }
+
+// Earlier is the codes the deployment used before its code, newest first.
+func (m Membership) Earlier() []rank.Code { return slices.Clone(m.earlier) }
 
 // Members is every member, in identity order.
 func (m Membership) Members() []Member { return slices.Clone(m.members) }
@@ -312,7 +320,8 @@ func (m Membership) Route(disk rank.Identity) (Route, bool) {
 // Equal reports two memberships with the same generation, code, members and
 // disks. The writer's nonce is not compared.
 func (m Membership) Equal(other Membership) bool {
-	return m.generation == other.generation && m.code == other.code && slices.Equal(m.members, other.members) &&
+	return m.generation == other.generation && m.code == other.code && slices.Equal(m.earlier, other.earlier) &&
+		slices.Equal(m.members, other.members) &&
 		slices.Equal(m.disks, other.disks)
 }
 

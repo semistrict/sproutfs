@@ -29,7 +29,10 @@ import (
 // sends it again under the newer generation.
 //
 // A read hands over the run the store served once the read's callers have
-// their bytes, never before. A publication hands over each part once its PUT
+// their bytes, never before. A read of the cluster that rebuilt a window
+// under a code the deployment used before its own hands it over the same
+// way, so the window moves to the deployment's code. Every fill is split
+// under the list's own code, never an earlier one. A publication hands over each part once its PUT
 // has succeeded, and the segments it wrote once the index object has, so no
 // cache ever holds the bytes of a part the store refused. A pull hands over
 // what it copies.

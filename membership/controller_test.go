@@ -31,24 +31,25 @@ func toward(t *testing.T, m Membership, want Want) (Membership, []Membership) {
 	}
 }
 
-// Next joins each wanted host with its disk in one generation, in identity
-// order, then serves each disk in one more, and takes the code last: from
-// the empty membership, three hosts under 2+1 are seven generations.
+// Next takes the codes first, so a new deployment's disks are filled under
+// its code from the start, then joins each wanted host with its disk in one
+// generation, in identity order, then serves each disk in one more: from the
+// empty membership, three hosts under 2+1 are seven generations.
 func TestNextJoinsAHostInOneGenerationAndServesItInTheNext(t *testing.T) {
 	want := Want{Code: rank.Code{K: 2, M: 1}, Hosts: []Host{hostOf(3), hostOf(1), hostOf(2)}}
 	end, steps := toward(t, Empty(), want)
-	if len(steps) != 7 || end.Code() != want.Code {
+	if len(steps) != 7 || end.Code() != want.Code || steps[0].Code() != want.Code {
 		t.Fatalf("Next took %d steps to %s", len(steps), describe(end))
 	}
-	first := steps[0]
+	first := steps[1]
 	if len(first.Members()) != 1 || len(first.Disks()) != 1 || first.Members()[0].ID != idOf(1) {
-		t.Fatalf("the first step is %s, want host 1 joining with its disk", describe(first))
+		t.Fatalf("the second step is %s, want host 1 joining with its disk", describe(first))
 	}
-	if joined := steps[2]; len(joined.Members()) != 3 || joined.Serves(idOf(1), diskOf(1).ID) {
-		t.Fatalf("the third step is %s, want every host joined and no disk serving yet", describe(joined))
+	if joined := steps[3]; len(joined.Members()) != 3 || joined.Serves(idOf(1), diskOf(1).ID) {
+		t.Fatalf("the fourth step is %s, want every host joined and no disk serving yet", describe(joined))
 	}
-	if served := steps[3]; !served.Serves(idOf(1), diskOf(1).ID) {
-		t.Fatalf("the fourth step is %s, want host 1's disk serving", describe(served))
+	if served := steps[4]; !served.Serves(idOf(1), diskOf(1).ID) {
+		t.Fatalf("the fifth step is %s, want host 1's disk serving", describe(served))
 	}
 	for n := byte(1); n <= 3; n++ {
 		if member, _ := end.Member(idOf(n)); member.State != Active || !end.Serves(idOf(n), diskOf(n).ID) {
@@ -115,6 +116,35 @@ func TestNextGivesACopiedDiskToOneHost(t *testing.T) {
 	disk, _ := end.Disk(diskOf(1).ID)
 	if len(end.Members()) != 2 || len(end.Disks()) != 1 || disk.Member != idOf(1) || disk.State != Serving {
 		t.Fatalf("a copied disk ends %s", describe(end))
+	}
+}
+
+// A deployment that changes its code names the one it replaced as earlier:
+// one generation, which moves no disk, after which the list ranks windows
+// under the new code and reads them under the old one too.
+func TestNextTakesTheCodesInOneGeneration(t *testing.T) {
+	start, _ := toward(t, Empty(), Want{Code: rank.Code{K: 1, M: 1}, Hosts: []Host{hostOf(1), hostOf(2)}})
+	want := Want{Code: rank.Code{K: 2, M: 1}, Earlier: []rank.Code{{K: 1, M: 1}},
+		Hosts: []Host{hostOf(1), hostOf(2)}}
+	end, steps := toward(t, start, want)
+	if len(steps) != 1 || !slices.Equal(end.List().Codes(), []rank.Code{{K: 2, M: 1}, {K: 1, M: 1}}) ||
+		!slices.Equal(end.Disks(), start.Disks()) {
+		t.Fatalf("after %d steps the membership is %s under %v", len(steps), describe(end), end.List().Codes())
+	}
+	end.nonce = make([]byte, nonceSize)
+	data, err := end.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	read, err := Unmarshal(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !read.Equal(end) || !slices.Equal(read.Earlier(), want.Earlier) {
+		t.Fatalf("read back %s under %v", describe(read), read.Earlier())
+	}
+	if _, err := end.Recode(rank.Code{K: 2, M: 1}, rank.Code{K: 2, M: 1}); err == nil {
+		t.Fatal("a membership naming its own code as earlier was built")
 	}
 }
 

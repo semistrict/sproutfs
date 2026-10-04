@@ -585,14 +585,14 @@ func (s *Store) loadSegment(ctx context.Context, volume string, number uint64, a
 		disk := segmentDiskKey(volume, number, at.ref)
 		object := func() (platform.ObjectKey, error) { return s.indexKey(at.ref) }
 		if s.readsCluster(disk) {
-			got, err := s.cache.reader.read(ctx, s.codecs,
+			got, refill, err := s.cache.reader.read(ctx, s.codecs,
 				[]clusterWant{{key: disk, maximum: maximumSegmentSize, valid: anySegment}}, nil)
 			if err != nil {
 				return nil, nil, err
 			}
 			if got[0] != nil {
 				s.checkHit(ctx, disk, object)
-				return got[0], nil, nil
+				return got[0], refill, nil
 			}
 		} else if data, found := s.fromDisk(ctx, disk, maximumSegmentSize, anySegment); found {
 			s.checkHit(ctx, disk, object)
@@ -662,11 +662,11 @@ func (s *Store) fromDisk(ctx context.Context, key diskKey, maximum int, valid fu
 	if s.cache == nil || s.cache.disk == nil {
 		return nil, false
 	}
-	data, found := s.cache.disk.decoded(ctx, key, s.codecs, maximum, valid)
+	data, code, found := s.cache.disk.decoded(ctx, key, s.codecs, maximum, valid)
 	if !found {
 		return nil, false
 	}
-	s.cache.disk.served(key)
+	s.cache.disk.served(key, code)
 	return data, true
 }
 

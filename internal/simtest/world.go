@@ -405,6 +405,9 @@ func start(ctx context.Context, config Config) (*World, error) {
 		points: map[string]pendingPoint{},
 		kept:   map[string]map[uint64]durableState{}, receivedGuests: map[string]int{},
 		ownership: newOwnership(config.Prefix.String()), members: map[string]membership.Host{},
+		// The code is the deployment's setting: the one the table gives the
+		// topology's size, as an operator sets it, and never changed by a
+		// host joining or leaving.
 		code: rank.CodeFor(len(config.Topology.Hosts))}
 	var err error
 	w.membership, err = membership.NewStore(membership.Config{ObjectStore: w.runtime.ObjectStore(),

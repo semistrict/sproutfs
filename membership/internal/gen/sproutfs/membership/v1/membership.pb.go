@@ -136,6 +136,7 @@ type Membership struct {
 	xxx_hidden_WriterNonce   []byte                 `protobuf:"bytes,5,opt,name=writer_nonce,json=writerNonce"`
 	xxx_hidden_Members       *[]*Member             `protobuf:"bytes,6,rep,name=members"`
 	xxx_hidden_Disks         *[]*Disk               `protobuf:"bytes,7,rep,name=disks"`
+	xxx_hidden_Earlier       *[]*Code               `protobuf:"bytes,8,rep,name=earlier"`
 	XXX_raceDetectHookData   protoimpl.RaceDetectHookData
 	XXX_presence             [1]uint32
 	unknownFields            protoimpl.UnknownFields
@@ -220,24 +221,33 @@ func (x *Membership) GetDisks() []*Disk {
 	return nil
 }
 
+func (x *Membership) GetEarlier() []*Code {
+	if x != nil {
+		if x.xxx_hidden_Earlier != nil {
+			return *x.xxx_hidden_Earlier
+		}
+	}
+	return nil
+}
+
 func (x *Membership) SetFormatVersion(v uint32) {
 	x.xxx_hidden_FormatVersion = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 0, 7)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 0, 8)
 }
 
 func (x *Membership) SetGeneration(v uint64) {
 	x.xxx_hidden_Generation = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 1, 7)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 1, 8)
 }
 
 func (x *Membership) SetK(v uint32) {
 	x.xxx_hidden_K = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 2, 7)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 2, 8)
 }
 
 func (x *Membership) SetM(v uint32) {
 	x.xxx_hidden_M = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 3, 7)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 3, 8)
 }
 
 func (x *Membership) SetWriterNonce(v []byte) {
@@ -245,7 +255,7 @@ func (x *Membership) SetWriterNonce(v []byte) {
 		v = []byte{}
 	}
 	x.xxx_hidden_WriterNonce = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 4, 7)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 4, 8)
 }
 
 func (x *Membership) SetMembers(v []*Member) {
@@ -254,6 +264,10 @@ func (x *Membership) SetMembers(v []*Member) {
 
 func (x *Membership) SetDisks(v []*Disk) {
 	x.xxx_hidden_Disks = &v
+}
+
+func (x *Membership) SetEarlier(v []*Code) {
+	x.xxx_hidden_Earlier = &v
 }
 
 func (x *Membership) HasFormatVersion() bool {
@@ -332,6 +346,9 @@ type Membership_builder struct {
 	// members and disks are each in identity order.
 	Members []*Member
 	Disks   []*Disk
+	// earlier is the codes the deployment used before k+m, newest first. A
+	// window stored under one is still read under it.
+	Earlier []*Code
 }
 
 func (b0 Membership_builder) Build() *Membership {
@@ -339,27 +356,134 @@ func (b0 Membership_builder) Build() *Membership {
 	b, x := &b0, m0
 	_, _ = b, x
 	if b.FormatVersion != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 0, 7)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 0, 8)
 		x.xxx_hidden_FormatVersion = *b.FormatVersion
 	}
 	if b.Generation != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 1, 7)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 1, 8)
 		x.xxx_hidden_Generation = *b.Generation
 	}
 	if b.K != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 2, 7)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 2, 8)
 		x.xxx_hidden_K = *b.K
 	}
 	if b.M != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 3, 7)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 3, 8)
 		x.xxx_hidden_M = *b.M
 	}
 	if b.WriterNonce != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 4, 7)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 4, 8)
 		x.xxx_hidden_WriterNonce = b.WriterNonce
 	}
 	x.xxx_hidden_Members = &b.Members
 	x.xxx_hidden_Disks = &b.Disks
+	x.xxx_hidden_Earlier = &b.Earlier
+	return m0
+}
+
+// Code is an erasure code: k data stripes and m parity stripes.
+type Code struct {
+	state                  protoimpl.MessageState `protogen:"opaque.v1"`
+	xxx_hidden_K           uint32                 `protobuf:"varint,1,opt,name=k"`
+	xxx_hidden_M           uint32                 `protobuf:"varint,2,opt,name=m"`
+	XXX_raceDetectHookData protoimpl.RaceDetectHookData
+	XXX_presence           [1]uint32
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
+}
+
+func (x *Code) Reset() {
+	*x = Code{}
+	mi := &file_sproutfs_membership_v1_membership_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Code) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Code) ProtoMessage() {}
+
+func (x *Code) ProtoReflect() protoreflect.Message {
+	mi := &file_sproutfs_membership_v1_membership_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+func (x *Code) GetK() uint32 {
+	if x != nil {
+		return x.xxx_hidden_K
+	}
+	return 0
+}
+
+func (x *Code) GetM() uint32 {
+	if x != nil {
+		return x.xxx_hidden_M
+	}
+	return 0
+}
+
+func (x *Code) SetK(v uint32) {
+	x.xxx_hidden_K = v
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 0, 2)
+}
+
+func (x *Code) SetM(v uint32) {
+	x.xxx_hidden_M = v
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 1, 2)
+}
+
+func (x *Code) HasK() bool {
+	if x == nil {
+		return false
+	}
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 0)
+}
+
+func (x *Code) HasM() bool {
+	if x == nil {
+		return false
+	}
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 1)
+}
+
+func (x *Code) ClearK() {
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 0)
+	x.xxx_hidden_K = 0
+}
+
+func (x *Code) ClearM() {
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 1)
+	x.xxx_hidden_M = 0
+}
+
+type Code_builder struct {
+	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
+
+	K *uint32
+	M *uint32
+}
+
+func (b0 Code_builder) Build() *Code {
+	m0 := &Code{}
+	b, x := &b0, m0
+	_, _ = b, x
+	if b.K != nil {
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 0, 2)
+		x.xxx_hidden_K = *b.K
+	}
+	if b.M != nil {
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 1, 2)
+		x.xxx_hidden_M = *b.M
+	}
 	return m0
 }
 
@@ -378,7 +502,7 @@ type Member struct {
 
 func (x *Member) Reset() {
 	*x = Member{}
-	mi := &file_sproutfs_membership_v1_membership_proto_msgTypes[1]
+	mi := &file_sproutfs_membership_v1_membership_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -390,7 +514,7 @@ func (x *Member) String() string {
 func (*Member) ProtoMessage() {}
 
 func (x *Member) ProtoReflect() protoreflect.Message {
-	mi := &file_sproutfs_membership_v1_membership_proto_msgTypes[1]
+	mi := &file_sproutfs_membership_v1_membership_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -527,7 +651,7 @@ type Disk struct {
 
 func (x *Disk) Reset() {
 	*x = Disk{}
-	mi := &file_sproutfs_membership_v1_membership_proto_msgTypes[2]
+	mi := &file_sproutfs_membership_v1_membership_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -539,7 +663,7 @@ func (x *Disk) String() string {
 func (*Disk) ProtoMessage() {}
 
 func (x *Disk) ProtoReflect() protoreflect.Message {
-	mi := &file_sproutfs_membership_v1_membership_proto_msgTypes[2]
+	mi := &file_sproutfs_membership_v1_membership_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -754,7 +878,7 @@ var File_sproutfs_membership_v1_membership_proto protoreflect.FileDescriptor
 
 const file_sproutfs_membership_v1_membership_proto_rawDesc = "" +
 	"\n" +
-	"'sproutfs/membership/v1/membership.proto\x12\x16sproutfs.membership.v1\"\x80\x02\n" +
+	"'sproutfs/membership/v1/membership.proto\x12\x16sproutfs.membership.v1\"\xb8\x02\n" +
 	"\n" +
 	"Membership\x12%\n" +
 	"\x0eformat_version\x18\x01 \x01(\rR\rformatVersion\x12\x1e\n" +
@@ -765,7 +889,11 @@ const file_sproutfs_membership_v1_membership_proto_rawDesc = "" +
 	"\x01m\x18\x04 \x01(\rR\x01m\x12!\n" +
 	"\fwriter_nonce\x18\x05 \x01(\fR\vwriterNonce\x128\n" +
 	"\amembers\x18\x06 \x03(\v2\x1e.sproutfs.membership.v1.MemberR\amembers\x122\n" +
-	"\x05disks\x18\a \x03(\v2\x1c.sproutfs.membership.v1.DiskR\x05disks\"m\n" +
+	"\x05disks\x18\a \x03(\v2\x1c.sproutfs.membership.v1.DiskR\x05disks\x126\n" +
+	"\aearlier\x18\b \x03(\v2\x1c.sproutfs.membership.v1.CodeR\aearlier\"\"\n" +
+	"\x04Code\x12\f\n" +
+	"\x01k\x18\x01 \x01(\rR\x01k\x12\f\n" +
+	"\x01m\x18\x02 \x01(\rR\x01m\"m\n" +
 	"\x06Member\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\fR\x02id\x12\x18\n" +
 	"\aaddress\x18\x02 \x01(\tR\aaddress\x129\n" +
@@ -790,24 +918,26 @@ const file_sproutfs_membership_v1_membership_proto_rawDesc = "" +
 	"\x13DISK_STATE_RELEASED\x10\x04B\\ZZgithub.com/semistrict/sproutfs/membership/internal/gen/sproutfs/membership/v1;membershipv1b\beditionsp\xe9\a"
 
 var file_sproutfs_membership_v1_membership_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_sproutfs_membership_v1_membership_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
+var file_sproutfs_membership_v1_membership_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
 var file_sproutfs_membership_v1_membership_proto_goTypes = []any{
 	(MemberState)(0),   // 0: sproutfs.membership.v1.MemberState
 	(DiskState)(0),     // 1: sproutfs.membership.v1.DiskState
 	(*Membership)(nil), // 2: sproutfs.membership.v1.Membership
-	(*Member)(nil),     // 3: sproutfs.membership.v1.Member
-	(*Disk)(nil),       // 4: sproutfs.membership.v1.Disk
+	(*Code)(nil),       // 3: sproutfs.membership.v1.Code
+	(*Member)(nil),     // 4: sproutfs.membership.v1.Member
+	(*Disk)(nil),       // 5: sproutfs.membership.v1.Disk
 }
 var file_sproutfs_membership_v1_membership_proto_depIdxs = []int32{
-	3, // 0: sproutfs.membership.v1.Membership.members:type_name -> sproutfs.membership.v1.Member
-	4, // 1: sproutfs.membership.v1.Membership.disks:type_name -> sproutfs.membership.v1.Disk
-	0, // 2: sproutfs.membership.v1.Member.state:type_name -> sproutfs.membership.v1.MemberState
-	1, // 3: sproutfs.membership.v1.Disk.state:type_name -> sproutfs.membership.v1.DiskState
-	4, // [4:4] is the sub-list for method output_type
-	4, // [4:4] is the sub-list for method input_type
-	4, // [4:4] is the sub-list for extension type_name
-	4, // [4:4] is the sub-list for extension extendee
-	0, // [0:4] is the sub-list for field type_name
+	4, // 0: sproutfs.membership.v1.Membership.members:type_name -> sproutfs.membership.v1.Member
+	5, // 1: sproutfs.membership.v1.Membership.disks:type_name -> sproutfs.membership.v1.Disk
+	3, // 2: sproutfs.membership.v1.Membership.earlier:type_name -> sproutfs.membership.v1.Code
+	0, // 3: sproutfs.membership.v1.Member.state:type_name -> sproutfs.membership.v1.MemberState
+	1, // 4: sproutfs.membership.v1.Disk.state:type_name -> sproutfs.membership.v1.DiskState
+	5, // [5:5] is the sub-list for method output_type
+	5, // [5:5] is the sub-list for method input_type
+	5, // [5:5] is the sub-list for extension type_name
+	5, // [5:5] is the sub-list for extension extendee
+	0, // [0:5] is the sub-list for field type_name
 }
 
 func init() { file_sproutfs_membership_v1_membership_proto_init() }
@@ -821,7 +951,7 @@ func file_sproutfs_membership_v1_membership_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_sproutfs_membership_v1_membership_proto_rawDesc), len(file_sproutfs_membership_v1_membership_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   3,
+			NumMessages:   4,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

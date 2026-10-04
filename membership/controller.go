@@ -8,11 +8,13 @@ import (
 	"github.com/semistrict/sproutfs/rank"
 )
 
-// Want is what a controller moves the membership towards: the code, and every
-// host that should be in it, as the host last reported itself.
+// Want is what a controller moves the membership towards: the code and the
+// codes the deployment used before it, newest first, and every host that
+// should be in it, as the host last reported itself.
 type Want struct {
-	Code  rank.Code
-	Hosts []Host
+	Code    rank.Code
+	Earlier []rank.Code
+	Hosts   []Host
 }
 
 // Host is one host a controller wants in the membership: its identity, the
@@ -35,6 +37,8 @@ type Change func(Membership) (Membership, error)
 // next, so the data each step moves is bounded: one join, one leave or one
 // change of weight a generation. The steps, in the order they are taken:
 //
+//  0. The membership takes want's codes, so a new deployment's disks are
+//     filled under its code from the start.
 //  1. A member whose host is not wanted is drained: it is draining, and its
 //     disks are releasing. Nothing moves.
 //  2. A releasing disk whose member's host is not wanted is let go: that
@@ -47,11 +51,14 @@ type Change func(Membership) (Membership, error)
 //  6. A listed member follows its host's address.
 //  7. An attaching disk its member's host reports is served.
 //  8. A disk follows the weight its host reports.
-//  9. The membership takes want's code.
 //
 // So a host drains before it leaves, and a quiet host, which a controller
 // still wants, keeps its place.
 func Next(m Membership, want Want) (Change, bool) {
+	if (want.Code != m.code || !slices.Equal(want.Earlier, m.earlier)) && want.Code.Validate() == nil {
+		code, earlier := want.Code, slices.Clone(want.Earlier)
+		return func(m Membership) (Membership, error) { return m.Recode(code, earlier...) }, true
+	}
 	hosts := make(map[rank.Identity]Host, len(want.Hosts))
 	reported := make(map[rank.Identity]rank.Identity)
 	for _, host := range sortedHosts(want.Hosts) {
@@ -126,10 +133,6 @@ func Next(m Membership, want Want) (Change, bool) {
 			}
 		}
 	}
-	if want.Code != m.code && want.Code.Validate() == nil {
-		code := want.Code
-		return func(m Membership) (Membership, error) { return m.Recode(code) }, true
-	}
 	return nil, false
 }
 
@@ -154,5 +157,5 @@ func FromList(generation uint64, list rank.List) (Membership, error) {
 		disks = append(disks, Disk{ID: cache.Identity, Volume: cache.Identity.String(), Weight: cache.Weight,
 			Member: cache.Identity, State: Serving, Assigned: 1})
 	}
-	return New(generation, list.Code(), members, disks)
+	return New(generation, list.Code(), members, disks, list.Earlier()...)
 }

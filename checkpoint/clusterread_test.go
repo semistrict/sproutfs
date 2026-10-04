@@ -106,8 +106,14 @@ func TestAPageInTheClusterIsReadWithNoStoreRead(t *testing.T) {
 						t.Fatalf("%s made %d requests of the store for %d pages, want only an open of the index for each",
 							h.name, gets, len(pages))
 					}
-					if stats := h.cache.Stats().Read; stats.Hits != 2*uint64(len(pages)) || stats.Misses != 0 {
+					stats := h.cache.Stats().Read
+					if stats.Hits != 2*uint64(len(pages)) || stats.Misses != 0 {
 						t.Fatalf("%s read %+v, want a page and its segment from the cluster for each read", h.name, stats)
+					}
+					// Under 1+1 each host holds every window whole, so its own
+					// disk rebuilds every read with no request.
+					if own := cluster.code.K == 1; own && (stats.OwnHits != stats.Hits || stats.Requests != 0) {
+						t.Fatalf("%s read %+v under 1+1, want every hit its own with no request", h.name, stats)
 					}
 				}
 			})

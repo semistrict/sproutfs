@@ -213,7 +213,7 @@ func (c *fillCluster) hold(t *testing.T, list rank.List, hosts ...*fillHost) {
 // of its own at its address, serving its own disk, under the list's code.
 func settleMembership(t *testing.T, ctx context.Context, store *membership.Store, list rank.List) {
 	t.Helper()
-	want := membership.Want{Code: list.Code()}
+	want := membership.Want{Code: list.Code(), Earlier: list.Earlier()}
 	for _, cache := range list.Caches() {
 		want.Hosts = append(want.Hosts, membership.Host{ID: cache.Identity, Address: cache.Address,
 			Disks: []membership.Disk{{ID: cache.Identity, Volume: cache.Identity.String(), Weight: cache.Weight}}})

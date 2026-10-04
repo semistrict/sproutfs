@@ -64,11 +64,11 @@ func (o *orchestrator) noteMembers(ctx context.Context, hosts []liveHost) {
 
 // want is what the membership is moved towards: every host pod the
 // Kubernetes API lists that reported a disk, as it last did, and the
-// deployment's code. A code that is not configured is the table's for the
-// most disks the membership has wanted: it only widens, so a drain, which
-// wants fewer for a while, does not change it, because every stripe in the
-// cluster would become a miss.
-func (o *orchestrator) want(ctx context.Context, current membership.Membership) membership.Want {
+// deployment's code with the codes it replaced. The code is the deployment's
+// setting and never follows the hosts: a drain, a join or a restart of this
+// process that changed it would leave every stripe stored under the old one
+// to the store.
+func (o *orchestrator) want(ctx context.Context) membership.Want {
 	o.memberMu.Lock()
 	reported := maps.Clone(o.reported)
 	o.memberMu.Unlock()
@@ -93,13 +93,9 @@ func (o *orchestrator) want(ctx context.Context, current membership.Membership) 
 		want.Hosts = append(want.Hosts, wanted)
 		disks += len(wanted.Disks)
 	}
-	want.Code = o.code
-	if want.Code == (rank.Code{}) {
-		want.Code = current.Code()
-		if wider := rank.CodeFor(disks); wider.Width() > want.Code.Width() ||
-			sim.Bug(ctx, "orchestrator-code-follows-the-membership") {
-			want.Code = wider
-		}
+	want.Code, want.Earlier = o.code, o.earlier
+	if sim.Bug(ctx, "orchestrator-code-follows-the-hosts") {
+		want.Code, want.Earlier = rank.CodeFor(disks), nil
 	}
 	return want
 }
@@ -114,11 +110,7 @@ func (o *orchestrator) StepMembership(ctx context.Context) (membership.Membershi
 	if _, err := o.recent(ctx); err != nil {
 		return membership.Membership{}, false, err
 	}
-	current, err := o.members.Read(ctx)
-	if err != nil {
-		return membership.Membership{}, false, err
-	}
-	next, changed, err := o.members.Reconcile(ctx, o.want(ctx, current))
+	next, changed, err := o.members.Reconcile(ctx, o.want(ctx))
 	if changed {
 		slog.InfoContext(ctx, "sproutfs-orchestrator: the membership took a step", "generation", next.Generation(),
 			"members", len(next.Members()), "disks", len(next.Disks()), "code", next.Code().String())

@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-03 17:54'
-updated_date: '2026-10-03 23:15'
+updated_date: '2026-10-03 23:23'
 labels:
   - cluster
   - correctness
@@ -38,6 +38,21 @@ Which hosts are in the cluster, with their identity, peer-server address, weight
 - [ ] #8 Tests follow repo practice: synctest over platform/sim, Buggify sites with probes a campaign asserts (lost CAS replies, stale holders, store outages), sim.Bug guards in scripts/mutation/guards.json, Gremlins on the new code, and the fingerprint test stays stable under shake
 - [ ] #9 The membership also holds which network disk (cache shard) each member serves, with a state per disk (attaching, serving, releasing), changed only by compare-and-set on the generation: a disk is released before it is assigned again, a member serves a disk only under the generation that assigns it to that member, and replies name that generation so a member that lost a disk can never serve it again; tests cover two members both believing they hold a disk, lost replies and a stale server
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. New package membership: the object (generation, code, writer nonce, members with identity/address/state, disks with identity/volume/weight/member/state/assigned generation), its protobuf format at <prefix>membership, pure transitions (join, attach, activate, drain, release, released, assign, remove, weight, address, code) that each raise the generation by one, a Store that changes it only by read-modify-conditional-write with lost-reply reconciliation by nonce, and a View (a process's copy: current, refresh, catch up to a generation, slow timer) that replaces rank.Follower. Buggify sites for lost replies, failed writes and failed reads; probes; guards membership-write-unconditional and membership-assign-without-release.
+2. rank keeps ranking; ranks are over disk identities, a disk's address is its member's while the disk is served. Remove rank/follower.go.
+3. peer: every stripe read, keep, drop and presence names the sender's generation; replies name the holder's generation and the disk's assignment generation; a holder behind catches up before answering, a holder ahead or unable to catch up answers STALE with its generation; a disk not served by this member under that generation is NOT_ME. Client returns a StaleError; a reply whose assignment generation differs is refused. Guards membership-serve-stale-generation and membership-serve-stale-assignment.
+4. checkpoint: the disk follows the host's view instead of a list func; each read, fill, fill right, keep check and repair places by one membership snapshot and sends its generation; a stale answer from a holder ahead makes the reader catch up and read again (guard membership-ignore-stale-answer); a fill is placed again under the newer membership.
+5. host: open the view over the object store, the host's member identity is its cache file's identity; mark its own disk serving once attached; /status reports member, disk and the membership held instead of cache and caches. supervisor and cmd/sproutfs-host lose the orchestrator list reader.
+6. orchestrator: replace caches.go and GET /caches with a controller that reconciles the membership from pods and host reports one step per pass (join with its disk, address change, weight change, drain, release, remove disk, remove member, code), on its own timer; tests incl. two controllers at once.
+7. simtest world writes the membership itself as a controller; fingerprint test under shake; volume.CheckDeployment accepts the membership object; restorebench builds a membership.
+8. spec/membership/Membership.tla: CAS object with generations, hosts' copies, requests naming generations, disk moves; invariants no stripe placed/served under different memberships and one server per disk; mutants without the generation check, without release, and an unconditional write; runs in under two minutes.
+9. Tests: multi-writer CAS campaign with lost replies and outages (synctest over platform/sim), protocol tests (holder behind/ahead, store outage, two members believing they hold a disk), campaign probes, guards in scripts/mutation/guards.json and docs/testing.md each shown to fail, Gremlins before/after on membership and the orchestrator controller.
+10. Docs: context.md (membership, generation, disk assignment), hosting.md, volumes.md, deploy/README.md, talk, one-membership.md status, testing.md. just check; merge main; commit in steps.
+<!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
 

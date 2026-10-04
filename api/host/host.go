@@ -689,12 +689,15 @@ type CacheMemory struct {
 // window's ranks for theirs, asks the rest after a delay within a budget, and
 // past a bound reads the store too within a token bucket.
 type CacheRead struct {
-	// Hits counts the envelopes rebuilt from the cluster, and OwnHits those
-	// this host's own stripes rebuilt alone. Misses counts the envelopes the
+	// Hits counts the envelopes rebuilt from the cluster, OwnHits those this
+	// host's own stripes rebuilt alone, and EarlierHits those rebuilt from
+	// stripes of a code the deployment used before its own: once they stop
+	// growing, that code can leave the list. Misses counts the envelopes the
 	// cluster could not rebuild, which the store served.
-	Hits    uint64 `json:"hits"`
-	OwnHits uint64 `json:"own_hits"`
-	Misses  uint64 `json:"misses"`
+	Hits        uint64 `json:"hits"`
+	OwnHits     uint64 `json:"own_hits"`
+	EarlierHits uint64 `json:"earlier_hits"`
+	Misses      uint64 `json:"misses"`
 	// Requests counts the stripe requests sent; Replaced the holders replaced
 	// at once for answering with nothing, BUSY or an error; SecondRequests
 	// the reads that asked the rest of the ranks after the delay; and
@@ -846,9 +849,11 @@ type MemberDisk struct {
 // A read that fails keeps the membership held.
 type Membership struct {
 	Generation uint64 `json:"generation"`
-	// K and M are its code.
-	K int `json:"k"`
-	M int `json:"m"`
+	// K and M are its code, and Earlier the codes the deployment used before
+	// it, newest first, each written as 4+2.
+	K       int      `json:"k"`
+	M       int      `json:"m"`
+	Earlier []string `json:"earlier,omitempty"`
 	// Members and Disks count what it lists.
 	Members int `json:"members"`
 	Disks   int `json:"disks"`
@@ -902,6 +907,9 @@ func MembershipOf(status membership.ViewStatus) Membership {
 	report := Membership{Generation: held.Generation(), K: held.Code().K, M: held.Code().M,
 		Members: len(held.Members()), Disks: len(held.Disks()), Reads: status.Reads, Failures: status.Failures,
 		Error: status.Error}
+	for _, code := range held.Earlier() {
+		report.Earlier = append(report.Earlier, code.String())
+	}
 	if !status.Read.IsZero() {
 		read := status.Read
 		report.Read = &read

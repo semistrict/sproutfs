@@ -324,11 +324,11 @@ func TestDiskEvictionAlwaysGivesSpaceBack(t *testing.T) {
 				for op := range 1500 {
 					if len(written) > 0 && random.Chance(fmt.Sprintf("read/%d", op), 0.3) {
 						key := written[random.Intn(fmt.Sprintf("which/%d", op), len(written))]
-						if data, outcome := f.disk.read(f.ctx(t), key, nil); outcome == diskHit {
+						if data, code, outcome := f.disk.readCode(f.ctx(t), key, nil); outcome == diskHit {
 							if !bytes.Equal(data, f.model[key]) {
 								t.Fatalf("page %d read back other bytes", key.Page)
 							}
-							f.disk.served(key)
+							f.disk.served(key, code)
 						}
 						continue
 					}

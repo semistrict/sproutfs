@@ -3,10 +3,11 @@ id: TASK-85
 title: >-
   Fix the cache's erasure code per deployment and read each stripe by the code
   it was stored under
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-03 22:22'
-updated_date: '2026-10-03 23:10'
+updated_date: '2026-10-04 00:14'
 labels:
   - cluster
   - performance
@@ -27,7 +28,41 @@ Today, with no SPROUTFS_CACHE_CODE set, the orchestrator picks the table's code 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The code is a deployment setting that never follows the number of hosts or shards; with none set the deployment uses one fixed default documented in docs/hosting.md
-- [ ] #2 A stripe is read and rebuilt by the code it was stored under; a test changes the code and reads every earlier window without a store read
-- [ ] #3 Tests follow repo practice: synctest over platform/sim, sim.Bug guards in scripts/mutation/guards.json, Gremlins on the new code; spec/diskcache models a code change, every TLC run within a couple of minutes
+- [x] #1 The code is a deployment setting that never follows the number of hosts or shards; with none set the deployment uses one fixed default documented in docs/hosting.md
+- [x] #2 A stripe is read and rebuilt by the code it was stored under; a test changes the code and reads every earlier window without a store read
+- [x] #3 Tests follow repo practice: synctest over platform/sim, sim.Bug guards in scripts/mutation/guards.json, Gremlins on the new code; spec/diskcache models a code change, every TLC run within a couple of minutes
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. rank: List carries the current code and the codes the deployment used before it, newest first (NewList(code, caches, earlier...), Codes, Earlier, Under). DefaultCode = 4+2, the code of a deployment that sets none. At most three earlier codes.
+2. Wire: GET /caches carries earlier codes (api/host Caches.Earlier as k+m strings).
+3. Orchestrator: SPROUTFS_CACHE_CODE unset is DefaultCode, never the table's code for the hosts seen; SPROUTFS_CACHE_EARLIER_CODES lists the codes it replaced. Recorded in the deployment's settings: stateless, survives an orchestrator restart, and TASK-83's membership object takes the same field. Drop mostCaches.
+4. Disk: a read of the own disk tries the list's code, then each earlier code, and rebuilds only from stripes of one code. The index is already keyed by code. Writes and has() stay under the current code.
+5. Cluster read: a window not rebuilt under the current code is read again under each earlier code, ranks taken from the same list under that code's width. Counted once per window. Repair runs under the code the window was read under; a holder takes a repair keep under an earlier code its list names, ranked under that code; fills and fill rights stay under the current code only.
+6. Tests (synctest over platform/sim): a code change on six hosts reads every earlier window with no store read, also with a host lost; a store read after the change fills under the new code; repair of an earlier window stays under its code; orchestrator default is fixed whatever the hosts. sim.Bug guards: reader treats earlier codes as a miss, disk reads current code only, repair under the current code, orchestrator code follows host count. Each in guards.json and docs/testing.md, shown to fail its test.
+7. Gremlins on rank, orchestrator caches.go, diskstripes.go, clusterread.go, fill.go with --file/--run, before/after.
+8. spec/diskcache: codes as a sequence, a deliberate ChangeCode, stripes carry their code, reads try current then earlier codes, repair under the read's code; SurvivesLosses per code; mutant current-code-only; every TLC run within a couple of minutes.
+9. Docs: hosting.md (The list of caches, The code), context.md (Code, Stripe, Keep), plan Small clusters, testing.md.
+10. Merge main, just check, commit.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Design decisions (2026-10-03):
+- Default code is a fixed 4+2 (rank.DefaultCode), set by loadConfig when SPROUTFS_CACHE_CODE is unset; mostCaches and the table lookup are gone from the orchestrator. CodeFor stays only as the operator's table.
+- Earlier codes are recorded in the deployment's settings (SPROUTFS_CACHE_EARLIER_CODES, newest first, at most 3) and carried in GET /caches as 'earlier'. Stateless, survives an orchestrator restart, and maps onto a field of TASK-83's membership object. Rejected: orchestrator state (lost on restart, and TASK-83 replaces it), each disk's own record (a joining host would not know peers' codes).
+- The disk index was already keyed by code (entries carry k, m; lookup by diskCode); no change needed.
+- A read tries the list's code, then each earlier code, each a separate windowRead with ranks from list.Under(code) (rendezvous order does not depend on the code). Join takes one code only.
+- Repair only under the list's code. A window rebuilt under an earlier code is refilled under the current code as a read of the store is (needs the fill right), instead of being repaired under the old code. So holders never take keeps of an earlier code, ranked() is unchanged, and hot windows migrate to the new code while cold ones age out.
+- New counter earlier_hits in cache_read and sproutfs_cache_read_earlier_hits_total: tells the operator when an earlier code can be dropped.
+
+Validation (2026-10-03):
+- Tests (synctest over platform/sim): TestAChangedCodeReadsEveryEarlierWindowWithNoStoreRead (6 hosts 4+2->2+1, with and without a host lost; 3 hosts 2+1->4+2): every host reads every earlier window with only the index opens from the store. TestFillsAfterACodeChangeAreUnderTheNewCode, TestRepairAfterACodeChangeStaysUnderTheNewCode, TestADroppedEarlierCodeIsAMiss, TestDiskReadsAPageUnderTheCodeItWasKeptUnder, TestTheCodeNeverFollowsTheHosts, TestTheCodeIsConfigured, rank TestAListNamesTheCodesItUsedBefore. Read campaign now changes the code once per seed and reaches checkpoint/cluster-earlier-code.
+- Guards, each shown failing its test: orchestrator-code-follows-the-hosts (renamed from orchestrator-code-follows-the-list), cluster-current-code-only, cluster-no-refill, diskcache-current-code-only.
+- Gremlins: checkpoint clusterread.go+diskstripes.go 164 killed/35 lived/15 not covered/3 timed out before, 165/34/15/3 after (new-code survivors left: the guard condition only). rank.go 41/2/8, no survivor in new code. Orchestrator caches.go+main.go 17 killed, 0 lived, 21 not covered (port parsing, run).
+- spec/diskcache: MCChange 4s, MCWiden 4s, mutant current-code-only caught by SurvivesLosses; deep/Change 91s; single-code configs unchanged in state count (MCCluster 91345).
+- TestSeededTopologyFingerprintIsStable passes; just check exit 0.
+<!-- SECTION:NOTES:END -->
