@@ -117,10 +117,12 @@ fork inherits that identity unchanged.
 locate a page that the overlay does not hold, it reads the segment the page
 falls in. A segment covers 512 MiB of a 2 MiB-page volume or 64 MiB of a
 4 KiB-page volume. Reading a segment fetches one member, regardless of how many
-pages the segment names. Every later range inside that segment is answered from
-data the handle already holds. A range inside a segment that no checkpoint has
-written costs nothing, because an absent segment reads as zeroes, like an
-absent page.
+pages the segment names, and decodes it into the segment's **page table**. The
+page cache keeps the page table under the segment's identity
+([page cache](#page-cache)), so every later range inside that segment, through
+this handle or any other that addresses the segment, is answered from it while
+the cache keeps it. A range inside a segment that no checkpoint has written
+costs nothing, because an absent segment reads as zeroes, like an absent page.
 
 ## Ephemeral disks
 
@@ -275,6 +277,15 @@ objects, and no page and no page table. The root is O(segments) regardless of
 what the volume holds, and segments load on demand with the pages they locate.
 Nothing is verified up front. The overlay starts empty, because nothing is
 durable between checkpoints and there is nothing to replay.
+
+A 4 KiB-page volume's page tables load lazily too, decided on 2026-10-04 with
+GCE numbers ([fault planning](measurements/gce-fault-planning-2026-10-04.md)).
+Loading all 64 of a 4 GiB volume's when the checkpoint opens took 85 ms from
+the cluster and 130 ms from the store, sixteen at a time, before its guest
+could run. It grows with the volume: about 1.4 s and 320 MiB of tables for
+64 GiB, whether or not the guest touches those pages. Left to the first fault
+that touches each segment, a table costs that fault 2 to 6 ms more, once for
+each segment the guest touches.
 
 Open does not wait for an in-flight publication. It uses the selected
 checkpoint. A record may select a checkpoint that has never been published. This
@@ -676,9 +687,10 @@ segment's first page, at about twenty bytes per entry. A segment is read as one
 range GET on the index object of the checkpoint that wrote it, through the same
 page cache that the pages use. A segment is *identified* by that checkpoint, its
 volume and its number. A page is identified in the same way, by its origin, its
-volume and its number. The cache keys a segment by its identity. So two roots
-that address the same segment share one cached copy, however each root found
-it. The offset and length only say where to fetch the segment.
+volume and its number. The cache keys a segment by its identity and keeps it
+decoded, as its page table. So two roots that address the same segment share
+one decoded copy, however each root found it. The offset and length only say
+where to fetch the segment.
 `maximumSegmentSize` of 1 MiB bounds a segment. `maximumRootSize` of 2 MiB
 bounds a root, at about 140,000 segments. A publication with a larger root is
 refused.
@@ -782,7 +794,31 @@ because which members it carries depends on which run requested it and on what
 else its part holds. Caching extents would give two readers of overlapping runs
 two copies of the pages they share. It would also make a half-cached run fetch
 again the half it already has. For the same reason, a segment is keyed by its
-own identity: the checkpoint that wrote it, its volume and its number. Clearing
+own identity: the checkpoint that wrote it, its volume and its number.
+
+What the cache keeps of a segment is its **page table**: the segment decoded
+once, as an array with one twenty-byte entry for every page up to the last it
+locates (`checkpoint/pagetable.go`). A whole segment of a 4 KiB-page volume
+is 320 KiB of table. Every index that addresses the segment looks its pages
+up in that one table, and each checks it against its own root, because the
+table is shared and the root is what says which checkpoints and parts a page
+may name. Tables are charged to the cache's budget and evicted with the pages,
+least recently used. A fault looks its window up in one, so a table in use is
+never the one evicted. A publication leaves the tables of the segments it
+wrote in the cache, as a reader of the index it published would decode them,
+so the VM that published goes on faulting without fetching them. Only a store
+made with no cache, which tools and tests make, keeps the tables in each
+index instead, for the index's life.
+
+Until 2026-10-04 each index decoded the segments it read into a map of its
+own, through one protobuf message per page, and kept them for its life outside
+any budget. On GCE a segment of a 4 KiB-page volume took about 6 ms and
+7.6 MB of allocation to decode, once for every index that read it
+([fault first](measurements/gce-fault-first-2026-10-04.md)). The table is
+parsed straight off the wire. It accepts and refuses exactly what the
+generated message did (`FuzzPageTableDecodesAsTheProtobufDid`), and on an
+Apple M5 it decodes a whole segment in 0.64 ms with 5 allocations, against
+2.3 to 3.8 ms and 16,559. Clearing
 the cache prevents in-flight loads from repopulating it. A cached object is
 never evidence that a publication landed. An ambiguous publication is
 reconciled against object storage.

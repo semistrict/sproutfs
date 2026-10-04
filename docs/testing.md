@@ -423,7 +423,11 @@ stays bounded by the part size and the encoders instead of by the dirty set.
 
 A publication's pace is stated in simulated time. `sim.Config.Compute` prices
 an encode (`blob.WorkEncode`) in bytes a second, spent while it holds its
-encoder, and `sim.Work` counts the encodes and the most at once.
+encoder, and `sim.Work` counts the encodes and the most at once. The same
+prices a fault's planning (`vmmemory.WorkPlan`, a unit a page located) and the
+decoding of a segment's page table (`checkpoint.WorkPageTable`, by the
+segment's bytes), which is how a test sees a fault plan its own page first and
+counts the decodes of a segment.
 `TestAPublicationEncodesAsManyPagesAtOnceAsItHasEncoders` publishes 64 pages of
 10 ms each through four encoders: four encode at once, and the last part lands
 exactly 160 ms and one part's PUT after the commit began, not 640 ms.
@@ -1977,6 +1981,10 @@ SPROUTFS_SIM_BUG=pager-prefetch-ignores-pressure \
   go test ./vmmemory -run '^TestAnAllocationCancelsAPrefetchRatherThanEvict$' -count=1
 SPROUTFS_SIM_BUG=pager-prefetch-every-fault \
   go test ./vmmemory -run '^TestADependentChainOfFaultsWaitsForOnePageAHop$' -count=1
+SPROUTFS_SIM_BUG=pager-plan-the-window-first \
+  go test ./vmmemory -run '^TestADependentChainOf4KiBFaultsPaysOnePageReadAHop$' -count=1
+SPROUTFS_SIM_BUG=checkpoint-decode-every-lookup \
+  go test ./checkpoint -run '^TestASegmentIsDecodedOncePerCheckpointWhileCached$' -count=1
 SPROUTFS_SIM_BUG=spill-sparse \
   go test ./vmmemory -run '^TestASpillSucceedsOnADiskFilledFromOutside$' -count=1
 SPROUTFS_SIM_BUG=diskcache-skip-key-check \
@@ -2099,7 +2107,18 @@ guest reading forwards reads pages twice. `pager-prefetch-ignores-pressure`
 evicts a page the guest maps while a prefetch holds free slots, and its test
 counts the eviction. `pager-prefetch-every-fault` prefetches the run of a
 fault that follows none of its memory region's recent faults, and a chain at
-random then prefetches on every hop instead of on its first. `migration-give-up-first-receive` gives a handoff up
+random then prefetches on every hop instead of on its first.
+`pager-plan-the-window-first` plans a fault's whole window before its own
+page's read starts. Its test,
+`TestADependentChainOf4KiBFaultsPaysOnePageReadAHop`, runs a 4 KiB pager over
+a real checkpoint store whose reads take a millisecond, with planning priced
+at a microsecond a page (`vmmemory.WorkPlan`): a hop then takes the read and
+512 µs of window instead of the read and 1 µs of page.
+`checkpoint-decode-every-lookup` fetches and decodes a segment's page table
+for every lookup instead of taking the one the page cache keeps, and
+`TestASegmentIsDecodedOncePerCheckpointWhileCached`, which prices a decode by
+its bytes (`checkpoint.WorkPageTable`), counts a decode for every lookup
+instead of one for each segment. `migration-give-up-first-receive` gives a handoff up
 after its first failed receive. In one retry scenario the destination cannot
 reach the store for ten seconds, so the handover must retry it; in the other
 the destination refuses until the source's hold is over, and the handoff must
