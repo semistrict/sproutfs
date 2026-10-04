@@ -115,8 +115,10 @@ type prefetch struct {
 	// are reserved and not yet pages. cancelled marks one an allocation has
 	// cancelled already. Both are guarded by Host.mu.
 	reading, cancelled bool
-	// number names the prefetch's task in a controlled run.
-	number uint64
+	// ctx is what the prefetch runs under: the values of the context of the
+	// fault that split it off, a task of its own in a controlled run, and
+	// the prefetch mark; cancel ends it.
+	ctx context.Context
 }
 
 type prefetchPage struct {
@@ -207,13 +209,16 @@ func (p *windowPlan) splitPrefetch(ctx context.Context, index uint64) *prefetch 
 	for _, page := range kept {
 		h.inflight[page.key] = pf
 	}
+	h.prefetchNumber++
+	// The context is made before the prefetch is registered: an allocation
+	// or a detach may cancel it from the moment it is.
+	pf.ctx = sim.WithTask(context.WithoutCancel(ctx), fmt.Sprintf("prefetch-%d", h.prefetchNumber))
+	pf.ctx, pf.cancel = context.WithCancelCause(checkpoint.WithPrefetch(pf.ctx))
 	h.prefetches[pf] = struct{}{}
 	h.prefetching++
-	h.prefetchNumber++
 	h.prefetchRunning++
 	r.prefetchRunning++
 	h.stats.Prefetches++
-	pf.number = h.prefetchNumber
 	return pf
 }
 
@@ -255,11 +260,7 @@ func (r *MemoryRegion) awaitPrefetch(ctx context.Context, pf *prefetch) error {
 // that split it off, so it keeps only the values of that fault's context; an
 // allocation short of slots cancels it, and so does the memory region's
 // detach.
-func (pf *prefetch) begin(ctx context.Context) {
-	ctx = sim.WithTask(context.WithoutCancel(ctx), fmt.Sprintf("prefetch-%d", pf.number))
-	ctx, pf.cancel = context.WithCancelCause(checkpoint.WithPrefetch(ctx))
-	go pf.run(ctx)
-}
+func (pf *prefetch) begin() { go pf.run(pf.ctx) }
 
 func (pf *prefetch) run(ctx context.Context) {
 	r := pf.memoryRegion

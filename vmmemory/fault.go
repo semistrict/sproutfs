@@ -877,7 +877,7 @@ func (r *MemoryRegion) loadOnce(ctx context.Context, index uint64, spill *int) (
 // prefetch.go.
 func (p *windowPlan) loadFaulting(ctx context.Context, index uint64) error {
 	if pf := p.splitPrefetch(ctx, index); pf != nil {
-		pf.begin(ctx)
+		pf.begin()
 		if sim.Bug(ctx, "pager-fault-waits-for-its-prefetch") {
 			// The bug reads the page only once the rest of its run is in.
 			if err := p.memoryRegion.withoutMemoryRegion(ctx, func() error {
