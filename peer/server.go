@@ -108,11 +108,12 @@ type Server struct {
 	budgets  serverBudgets
 	// serving is the bandwidth stripe replies may take.
 	serving *servingBudget
-	// assigned is the generation that assigned this host the disk it keeps,
-	// as the last membership that had it serve the disk said: what every
-	// answer for the disk names. A host that lost the disk names it still,
-	// which no sender that knows of the loss accepts.
-	assigned atomic.Uint64
+	// assigned is, for each disk this host has served, the generation that
+	// assigned it the disk, as the last membership that had it serve the
+	// disk said: what every answer for the disk names. A host that lost a
+	// disk names it still, which no sender that knows of the loss accepts.
+	assignedMu sync.Mutex
+	assigned   map[rank.Identity]uint64
 
 	requests, servedPages, absentPages, refused, listings, incompatible atomic.Int64
 	stripeReads, stripes, stripeBytes, stripesBusy                      atomic.Int64
@@ -153,6 +154,7 @@ func NewServer(ctx context.Context, config ServerConfig) (*Server, error) {
 	serverCtx, cancel := context.WithCancelCause(ctx)
 	s := &Server{config: config, listener: listener, ctx: serverCtx, cancel: cancel,
 		handoffs: newHandoffs(), budgets: serverBudgets{held: make(map[budgetKey]int64)},
+		assigned: make(map[rank.Identity]uint64),
 		serving: newServingBudget(platform.ClockOr(config.Clock), config.StripeBytesPerSecond)}
 	s.wg.Go(s.accept)
 	return s, nil

@@ -83,8 +83,21 @@ func (d *cacheDisk) readBack(ctx context.Context) error {
 		refused = fmt.Errorf("its regions are of %d bytes, not %d", header.regionBytes, d.regionBytes)
 	case header.deployment != d.deployment && !sim.Bug(ctx, "diskcache-restart-ignores-deployment"):
 		refused = fmt.Errorf("it belongs to the deployment %+v, not %+v", header.deployment, d.deployment)
+	case d.lease != nil && header.identity != d.identity:
+		refused = fmt.Errorf("it is shard %s, not %s", header.identity, d.identity)
 	}
 	if refused != nil {
+		if d.lease != nil {
+			// A shard whose header is not this one's may still carry a lease
+			// a member newer than this one wrote, and is then not this one's
+			// to make anew.
+			if found, err := readDiskLease(ctx, d.file, d.regionBytes); err == nil &&
+				found.lease.Assigned > d.lease.Assigned && !sim.Bug(ctx, "shard-ignore-lease") {
+				sim.Probe(ctx, ProbeShardLeaseRefused)
+				return fmt.Errorf("%w: shard %s is leased under generation %d, newer than %d", ErrFenced, d.identity,
+					found.lease.Assigned, d.lease.Assigned)
+			}
+		}
 		sim.Probe(ctx, ProbeDiskHeaderRefused)
 		slog.WarnContext(ctx, "checkpoint: the page cache's disk is not this cache's; it is emptied", "bytes", size,
 			"reason", refused)
@@ -97,8 +110,43 @@ func (d *cacheDisk) readBack(ctx context.Context) error {
 		return d.makeFile(ctx, generation, true)
 	}
 	d.identity, d.generation = header.identity, header.generation
-	d.readRegions(ctx, size)
+	slots := max(size-1, 0) / d.regionBytes
+	if d.lease != nil {
+		if slots, err = d.takeLease(ctx, slots); err != nil {
+			return err
+		}
+	}
+	d.readRegions(ctx, slots)
 	return d.fit(ctx)
+}
+
+// takeLease takes a shard's lease for the assignment it is opened under, and
+// reports how many of the device's slots, of all it has, the file has ever
+// opened, which are all a restart reads back. A lease of an assignment newer
+// than this one refuses the shard, ErrFenced: another member has served it
+// since. A lease of this file that is damaged, or none, says nothing of the
+// regions, and every slot is read back. The lease is written and synced before
+// anything is read back, so a member that served the shard before and still
+// holds its device fences itself at the next region it opens.
+func (d *cacheDisk) takeLease(ctx context.Context, all int64) (int64, error) {
+	slots := all
+	found, err := readDiskLease(ctx, d.file, d.regionBytes)
+	switch {
+	case errors.Is(err, errNoLease):
+	case err != nil:
+		return 0, fmt.Errorf("reading the shard's lease: %w", err)
+	case found.generation != d.generation:
+	case found.lease.Assigned > d.lease.Assigned && !sim.Bug(ctx, "shard-ignore-lease"):
+		sim.Probe(ctx, ProbeShardLeaseRefused)
+		return 0, fmt.Errorf("%w: shard %s is leased to %s under generation %d, newer than %d", ErrFenced, d.identity,
+			found.lease.Member, found.lease.Assigned, d.lease.Assigned)
+	default:
+		slots = min(found.slots, all)
+	}
+	if err := d.writeLease(ctx, slots); err != nil {
+		return 0, err
+	}
+	return slots, nil
 }
 
 // makeFile gives the whole file back and writes a header of a new identity and
@@ -106,14 +154,22 @@ func (d *cacheDisk) readBack(ctx context.Context) error {
 // is written, so a crash part way leaves a file with no header, which is made
 // again.
 func (d *cacheDisk) makeFile(ctx context.Context, generation uint64, empty bool) error {
-	var identity CacheIdentity
-	d.entropy.Fill(identity[:])
+	identity := d.identity
+	if identity.IsZero() {
+		d.entropy.Fill(identity[:])
+	}
+	// A device cannot be emptied, and need not be: the new generation keeps
+	// every table on it from being read back as the new file's, and the
+	// lease says no region of the new file has been opened.
 	if empty {
-		if err := d.file.Truncate(ctx, 0); err != nil {
+		switch err := d.file.Truncate(ctx, 0); {
+		case errors.Is(err, errors.ErrUnsupported):
+		case err != nil:
 			return fmt.Errorf("emptying the page cache's disk: %w", err)
-		}
-		if err := d.file.Sync(ctx); err != nil {
-			return fmt.Errorf("syncing the emptied page cache's disk: %w", err)
+		default:
+			if err := d.file.Sync(ctx); err != nil {
+				return fmt.Errorf("syncing the emptied page cache's disk: %w", err)
+			}
 		}
 	}
 	header := diskHeader{regionBytes: d.regionBytes, identity: identity, generation: generation,
@@ -125,6 +181,11 @@ func (d *cacheDisk) makeFile(ctx context.Context, generation uint64, empty bool)
 		return fmt.Errorf("syncing the page cache's disk's header: %w", err)
 	}
 	d.identity, d.generation = identity, generation
+	if d.lease != nil {
+		if err := d.writeLease(ctx, 0); err != nil {
+			return err
+		}
+	}
 	slog.InfoContext(ctx, "checkpoint: the page cache's disk was made", "identity", identity.String(),
 		"generation", generation)
 	return nil
@@ -146,11 +207,10 @@ type recovery struct {
 	full bool
 }
 
-// readRegions reads back the regions of a file of size bytes whose header is
-// this cache's, and rebuilds the index and the log's order from them. A region
-// it cannot read is given back.
-func (d *cacheDisk) readRegions(ctx context.Context, size int64) {
-	slots := max(size-1, 0) / d.regionBytes
+// readRegions reads back the regions in the first slots of a file whose
+// header is this cache's, and rebuilds the index and the log's order from
+// them. A region it cannot read is given back.
+func (d *cacheDisk) readRegions(ctx context.Context, slots int64) {
 	r := &recovery{d: d}
 	var tables, torn []recovering
 	for slot := range slots {

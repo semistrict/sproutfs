@@ -95,6 +95,8 @@ func runNode(ctx context.Context, args []string) error {
 	advertise := flags.String("advertise", "", "address peers reach this node's peer server at")
 	controlAddress := flags.String("control", ":7600", "address the control API listens on")
 	dir := flags.String("dir", "/mnt/ssd", "directory of the cache's file")
+	device := flags.String("device", "", "a Compute Engine disk attached to this instance, by its name, "+
+		"whose block device the cache keeps its disk on instead of a file in -dir, as a shard does")
 	cacheBytes := flags.Int64("cache-bytes", 40<<30, "bytes of disk the cache may hold")
 	memoryBytes := flags.Int64("memory-bytes", 1<<30, "bytes of memory each cache's memory tier may hold")
 	fillQueueBytes := flags.Int64("fill-queue-bytes", 4<<30, "bytes of fills the cache holds before it drops them")
@@ -123,15 +125,19 @@ func runNode(ctx context.Context, args []string) error {
 		defer closer.Close()
 		hotObjects = hot
 	}
-	disk, err := adapters.NewDisk(*dir)
-	if err != nil {
-		return err
-	}
-	file, err := disk.Open(ctx, "cache", platform.OpenOptions{Create: true})
+	file, err := openCacheFile(ctx, *dir, *device)
 	if err != nil {
 		return err
 	}
 	defer file.Close()
+	if *device != "" {
+		size, err := file.Size(ctx)
+		if err != nil {
+			return err
+		}
+		// The device's first region is its header's.
+		*cacheBytes = min(*cacheBytes, size-checkpoint.DefaultDiskRegionBytes)
+	}
 	n, err := newNode(ctx, nodeConfig{address: platform.Address(*advertise), listen: platform.Address(*listen),
 		network: adapters.NewNetwork(),
 		objects: store, file: file, cacheBytes: *cacheBytes,
@@ -153,6 +159,19 @@ func runNode(ctx context.Context, args []string) error {
 		return err
 	}
 	return nil
+}
+
+// openCacheFile opens the file the cache keeps its disk in: the block device
+// of an attached disk, as a shard keeps it, or a file in a directory.
+func openCacheFile(ctx context.Context, dir, device string) (platform.File, error) {
+	if device != "" {
+		return adapters.NewGCEDevices().Open(ctx, device)
+	}
+	disk, err := adapters.NewDisk(dir)
+	if err != nil {
+		return nil, err
+	}
+	return disk.Open(ctx, "cache", platform.OpenOptions{Create: true})
 }
 
 // newNode opens a node's table of peers, its two caches and stores, and its

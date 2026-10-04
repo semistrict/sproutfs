@@ -24,10 +24,10 @@ func TestACacheDropsAKeepItHoldsOrIsWriting(t *testing.T) {
 			return listOf(code, self, otherCache)
 		})
 		held := keyOf("held", 0)
-		if err := f.cache.Keep(t.Context(), f.m, keepOf(t, held, code, []int{0, 1})); err != nil {
+		if err := f.cache.Keep(t.Context(), f.m, f.cache.Identity(), keepOf(t, held, code, []int{0, 1})); err != nil {
 			t.Fatal(err)
 		}
-		if err := f.cache.Keep(t.Context(), f.m, keepOf(t, held, code, []int{0, 1})); !errors.Is(err, peer.ErrDropped) {
+		if err := f.cache.Keep(t.Context(), f.m, f.cache.Identity(), keepOf(t, held, code, []int{0, 1})); !errors.Is(err, peer.ErrDropped) {
 			t.Fatalf("a keep of stripes the cache holds = %v, want it dropped", err)
 		}
 		if fill := f.cache.Stats().Fill; fill.Kept != 2 || fill.Duplicates != 2 {
@@ -35,10 +35,10 @@ func TestACacheDropsAKeepItHoldsOrIsWriting(t *testing.T) {
 		}
 		writing := keyOf("writing", 0)
 		first := make(chan error, 1)
-		go func() { first <- f.cache.Keep(t.Context(), f.m, keepOf(t, writing, code, []int{0, 1})) }()
+		go func() { first <- f.cache.Keep(t.Context(), f.m, f.cache.Identity(), keepOf(t, writing, code, []int{0, 1})) }()
 		synctest.Wait()
 		start := time.Now()
-		if err := f.cache.Keep(t.Context(), f.m, keepOf(t, writing, code, []int{0, 1})); !errors.Is(err, peer.ErrDropped) {
+		if err := f.cache.Keep(t.Context(), f.m, f.cache.Identity(), keepOf(t, writing, code, []int{0, 1})); !errors.Is(err, peer.ErrDropped) {
 			t.Fatalf("a keep of stripes the cache is writing = %v, want it dropped", err)
 		}
 		if took := time.Since(start); took != 0 {
@@ -86,7 +86,7 @@ func TestRankOneGivesOneFillRightPerWindowPerInterval(t *testing.T) {
 		}
 		right := func(key diskKey, pages []uint32, code rank.Code) bool {
 			t.Helper()
-			stripes, err := f.cache.ReadStripes(t.Context(), f.m, peer.StripeRead{Window: key.rankWindow(), Pages: pages,
+			stripes, err := f.cache.ReadStripes(t.Context(), f.m, f.cache.Identity(), peer.StripeRead{Window: key.rankWindow(), Pages: pages,
 				Code: code})
 			if err != nil {
 				t.Fatal(err)
@@ -118,7 +118,7 @@ func TestRankOneGivesOneFillRightPerWindowPerInterval(t *testing.T) {
 			t.Fatal("rank 1 gave no right for the last page of a window")
 		}
 		// Once it holds a stripe of the page asked for, it gives none.
-		if err := f.cache.Keep(t.Context(), f.m, keepOf(t, mine, code, []int{0})); err != nil {
+		if err := f.cache.Keep(t.Context(), f.m, f.cache.Identity(), keepOf(t, mine, code, []int{0})); err != nil {
 			t.Fatal(err)
 		}
 		f.clock.Advance(DefaultFillRightInterval)
@@ -140,11 +140,11 @@ func TestACacheReportsItsPagesAndDropsAWrongStripe(t *testing.T) {
 			return listOf(code, self, otherCache)
 		})
 		third := keyOf("vm", 3)
-		if err := f.cache.Keep(t.Context(), f.m, keepOf(t, third, code, []int{0, 1})); err != nil {
+		if err := f.cache.Keep(t.Context(), f.m, f.cache.Identity(), keepOf(t, third, code, []int{0, 1})); err != nil {
 			t.Fatal(err)
 		}
 		window := third.rankWindow()
-		held, err := f.cache.Presence(t.Context(), peer.Presence{Windows: []rank.Window{window, keyOf("vm", 512).rankWindow()},
+		held, err := f.cache.Presence(t.Context(), f.cache.Identity(), peer.Presence{Windows: []rank.Window{window, keyOf("vm", 512).rankWindow()},
 			Code: code})
 		if err != nil {
 			t.Fatal(err)
@@ -152,19 +152,19 @@ func TestACacheReportsItsPagesAndDropsAWrongStripe(t *testing.T) {
 		if !slices.EqualFunc(held, [][]uint32{{3}, nil}, slices.Equal) {
 			t.Fatalf("the cache reports %v of the two windows, want page 3 of the first", held)
 		}
-		if err := f.cache.Drop(t.Context(), peer.Drop{Window: window, Page: 3, Index: 1, Code: code}); err != nil {
+		if err := f.cache.Drop(t.Context(), f.cache.Identity(), peer.Drop{Window: window, Page: 3, Index: 1, Code: code}); err != nil {
 			t.Fatal(err)
 		}
 		if got := f.held(third, code); !slices.Equal(got, []int{0}) {
 			t.Fatalf("after a drop of stripe 1 the cache holds %v, want stripe 0", got)
 		}
-		if err := f.cache.Drop(t.Context(), peer.Drop{Window: window, Page: 3, Index: 0, Code: code}); err != nil {
+		if err := f.cache.Drop(t.Context(), f.cache.Identity(), peer.Drop{Window: window, Page: 3, Index: 0, Code: code}); err != nil {
 			t.Fatal(err)
 		}
 		if got := f.held(third, code); len(got) != 0 {
 			t.Fatalf("after a drop of both stripes the cache holds %v", got)
 		}
-		if err := f.cache.Drop(t.Context(), peer.Drop{Window: window, Page: 3, Index: 2, Code: code}); err == nil {
+		if err := f.cache.Drop(t.Context(), f.cache.Identity(), peer.Drop{Window: window, Page: 3, Index: 2, Code: code}); err == nil {
 			t.Fatal("a drop of an index past the code was taken")
 		}
 	})

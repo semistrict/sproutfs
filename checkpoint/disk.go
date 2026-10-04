@@ -8,10 +8,8 @@ import (
 	"slices"
 	"sync"
 
-	"github.com/semistrict/sproutfs/membership"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/platform/sim"
-	"github.com/semistrict/sproutfs/rank"
 	"github.com/semistrict/sproutfs/stripe"
 )
 
@@ -176,11 +174,19 @@ type cacheDisk struct {
 	// file's identity and generation are drawn from.
 	deployment CacheDeployment
 	entropy    platform.Entropy
-	// clusterPercent is the share of windows placed by the membership.
-	clusterPercent int
+	// cluster is what the cache keeps for the cluster and how it places it:
+	// the membership it follows, this host's identity in it, and the share
+	// of windows the membership places. Every disk of one cache has the
+	// same.
+	cluster *cluster
 	// identity and generation are the file's, set as the disk opens.
 	identity   CacheIdentity
 	generation uint64
+	// lease is the assignment a shard is opened under, nil for a host's own
+	// disk, which has none; leased is the regions the lease on the disk says
+	// the file has ever opened, which a region past them raises first.
+	lease  *Lease
+	leased int64
 	// slots is the fetches every pull on this host has in flight together,
 	// and writer the one writer the log has at a time. Both are channels, so
 	// a goroutine waiting on either is durably blocked.
@@ -210,12 +216,9 @@ type cacheDisk struct {
 	// stopped is a disk whose cache has closed: its open region is closed, and
 	// it takes no more writes.
 	stopped bool
-	// source is the host's copy of the membership, which says what the disk
-	// keeps of each envelope and under which code it reads, and member the
-	// host's identity in it; nil is a host that follows no membership, and
-	// keeps each envelope whole.
-	source membership.Source
-	member rank.Identity
+	// fenced is a shard whose lease came to name another assignment: another
+	// member has served it since, and this one writes it no more.
+	fenced bool
 }
 
 // diskSettings is how a cache's disk is laid out and bounded, and what its
@@ -228,18 +231,29 @@ type diskSettings struct {
 	deployment CacheDeployment
 	entropy    platform.Entropy
 	// clusterPercent is the share of windows the disk places by the
-	// membership; it keeps the rest whole.
+	// membership; it keeps the rest whole. cluster, where it is not nil, is
+	// the cache's, which the disk shares instead.
 	clusterPercent int
+	cluster        *cluster
+	// identity, for a shard, is the identity its header must name, which a
+	// device made anew is given; zero draws one. lease is the assignment a
+	// shard is opened under, nil for a host's own disk.
+	identity CacheIdentity
+	lease    *Lease
 }
 
 // openCacheDisk opens the page cache's disk over file: what the file holds is
 // read back, or the file is made anew, and the disk is fitted to its share
 // before it serves anything.
 func openCacheDisk(ctx context.Context, file platform.File, budget DiskBudget, settings diskSettings) (*cacheDisk, error) {
+	shared := settings.cluster
+	if shared == nil {
+		shared = newCluster(settings.clusterPercent)
+	}
 	d := &cacheDisk{file: file, budget: budget, regionBytes: settings.regionBytes, indexLimit: settings.indexLimit,
 		threshold: settings.threshold, deployment: settings.deployment, entropy: platform.EntropyOr(settings.entropy),
-		clusterPercent: settings.clusterPercent,
-		slots:          make(chan struct{}, pullConcurrency), writer: make(chan struct{}, 1), index: newDiskIndex()}
+		cluster: shared, identity: settings.identity, lease: settings.lease,
+		slots: make(chan struct{}, pullConcurrency), writer: make(chan struct{}, 1), index: newDiskIndex()}
 	if err := d.readBack(ctx); err != nil {
 		return nil, err
 	}
@@ -417,7 +431,10 @@ func (d *cacheDisk) openRegion(ctx context.Context, kind WriteKind) error {
 	region := &diskRegion{slot: slot, base: d.base(slot), sequence: d.sequence}
 	free := int64(d.held) == regions
 	d.mu.Unlock()
-	err := d.allocate(ctx, region)
+	err := d.renewLease(ctx, slot)
+	if err == nil {
+		err = d.allocate(ctx, region)
+	}
 	if err == nil && reused {
 		_, err = d.file.WriteAt(ctx, make([]byte, diskTrailerSize), region.base+d.regionBytes-diskTrailerSize)
 	}
@@ -435,6 +452,88 @@ func (d *cacheDisk) openRegion(ctx context.Context, kind WriteKind) error {
 	d.open = region
 	d.mu.Unlock()
 	return nil
+}
+
+// renewLease checks, before a shard opens a region in slot, that its lease
+// still names the assignment the shard was opened under, and raises the
+// regions it names to cover slot before anything is written there. A lease
+// that names another assignment, or none, fences the shard: another member
+// has opened it since, and this one writes it no more. A host's own disk has
+// no lease.
+func (d *cacheDisk) renewLease(ctx context.Context, slot int64) error {
+	if d.lease == nil {
+		return nil
+	}
+	if err := d.checkLease(ctx); err != nil {
+		return err
+	}
+	d.mu.Lock()
+	leased := d.leased
+	d.mu.Unlock()
+	if slot < leased {
+		return nil
+	}
+	return d.writeLease(ctx, slot+1)
+}
+
+// checkLease reads the shard's lease back, and fences the shard where it
+// names another assignment than the one the shard was opened under, or none:
+// ErrFenced. A disk already fenced stays fenced.
+func (d *cacheDisk) checkLease(ctx context.Context) error {
+	d.mu.Lock()
+	fenced := d.fenced
+	d.mu.Unlock()
+	if fenced {
+		return ErrFenced
+	}
+	found, err := readDiskLease(ctx, d.file, d.regionBytes)
+	if err != nil && !errors.Is(err, errNoLease) {
+		return err
+	}
+	if (err != nil || found.generation != d.generation || found.lease != *d.lease) && !sim.Bug(ctx, "shard-ignore-lease") {
+		d.fence(ctx, found.lease)
+		return ErrFenced
+	}
+	return nil
+}
+
+// holdsLease reports whether the disk may write a region's table: a host's
+// own disk always, and a shard while its lease is the one it was opened
+// under.
+func (d *cacheDisk) holdsLease(ctx context.Context) bool {
+	return d.lease == nil || d.checkLease(ctx) == nil
+}
+
+// writeLease writes the shard's lease, naming the assignment it is opened
+// under and slots regions ever opened, and syncs it.
+func (d *cacheDisk) writeLease(ctx context.Context, slots int64) error {
+	encoded := encodeDiskLease(diskLease{generation: d.generation, lease: *d.lease, slots: slots})
+	if _, err := d.file.WriteAt(ctx, encoded, leaseOffset(d.regionBytes)); err != nil {
+		return fmt.Errorf("writing the shard's lease: %w", err)
+	}
+	if err := d.file.Sync(ctx); err != nil {
+		return fmt.Errorf("syncing the shard's lease: %w", err)
+	}
+	d.mu.Lock()
+	d.leased = slots
+	d.mu.Unlock()
+	return nil
+}
+
+// fence stops a shard whose lease another member took: it writes nothing
+// more, and reports itself fenced.
+func (d *cacheDisk) fence(ctx context.Context, taken Lease) {
+	d.mu.Lock()
+	already := d.fenced
+	d.fenced, d.stopped = true, true
+	d.mu.Unlock()
+	if already {
+		return
+	}
+	sim.Probe(ctx, ProbeShardFenced)
+	slog.WarnContext(ctx, "checkpoint: a shard's lease names another assignment; it is written no more",
+		"shard", d.identity.String(), "assigned", d.lease.Assigned, "lease_assigned", taken.Assigned,
+		"lease_member", taken.Member.String())
 }
 
 // allocate reserves a region's space where the file can, so no write into it
@@ -475,6 +574,10 @@ func (d *cacheDisk) close(ctx context.Context, region *diskRegion) {
 	region.items = nil
 	d.closed = append(d.closed, region)
 	d.mu.Unlock()
+	if !d.holdsLease(ctx) {
+		// Another member has the shard now: it writes no table here.
+		return
+	}
 	if !sim.Bug(ctx, "diskcache-table-before-sync") {
 		if err := d.sync(ctx); err != nil {
 			slog.WarnContext(ctx, "checkpoint: syncing a disk region failed; it is closed without a table",
