@@ -133,7 +133,7 @@ func TestRankOneGivesOneFillRightPerWindowPerInterval(t *testing.T) {
 	})
 }
 
-// A cache tells a peer which pages of a window it holds a stripe of, and
+// A cache tells a peer which stripes of a window it holds, by index, and
 // forgets a stripe a reader tells it is wrong.
 func TestACacheReportsItsPagesAndDropsAWrongStripe(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
@@ -151,8 +151,9 @@ func TestACacheReportsItsPagesAndDropsAWrongStripe(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !slices.EqualFunc(held, [][]uint32{{3}, nil}, slices.Equal) {
-			t.Fatalf("the cache reports %v of the two windows, want page 3 of the first", held)
+		want := []peer.Present{{{3}, {3}}, {nil, nil}}
+		if !slices.EqualFunc(held, want, func(a, b peer.Present) bool { return slices.EqualFunc(a, b, slices.Equal) }) {
+			t.Fatalf("the cache reports %v of the two windows, want both indices of page 3 of the first", held)
 		}
 		if err := f.cache.Drop(t.Context(), f.cache.Identity(), peer.Drop{Window: window, Page: 3, Index: 1, Code: code}); err != nil {
 			t.Fatal(err)

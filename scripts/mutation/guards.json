@@ -550,6 +550,12 @@
     "purpose": "Send stripe reads over the fault class, where a stripe waits behind every 2 MiB page reply ahead of it on its connection."
   },
   {
+    "id": "peer-presence-in-fault-class",
+    "package": "peer",
+    "run": "^TestAPresenceCheckGoesOverTheClassItsContextNames$",
+    "purpose": "Send every presence check over the fault class, so a pull's checks share the connections a guest's faults wait on."
+  },
+  {
     "id": "peer-serve-past-budget",
     "package": "peer",
     "run": "^TestAServerAnswersBusyPastItsServingBandwidth$",

@@ -1,12 +1,14 @@
 package peer_test
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"testing/synctest"
 	"time"
 
 	"github.com/semistrict/sproutfs/peer"
+	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/rank"
 )
 
@@ -55,6 +57,37 @@ func TestAStripeReadNeverWaitsBehindAPage(t *testing.T) {
 		close(s.gate.open)
 		if err := <-slow; err != nil {
 			t.Fatal(err)
+		}
+	})
+}
+
+// A presence check is a fault unless its context names another class. A
+// pull asks it as bulk work: it goes over a bulk connection and opens no
+// fault connection, where a guest's fault would wait behind it.
+func TestAPresenceCheckGoesOverTheClassItsContextNames(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		cache := newMemoryCache(1)
+		s := newServing(t, peer.ServerConfig{Cache: cache, Membership: cache.source, Member: cache.member})
+		for _, c := range []struct {
+			host  platform.Address
+			ctx   context.Context
+			wants peer.Connections
+		}{
+			{"faulting", t.Context(), peer.Connections{Fault: 1}},
+			{"pulling", peer.WithClass(t.Context(), peer.BulkRead), peer.Connections{BulkRead: 1}},
+		} {
+			asker := s.table(t, c.host, peer.TableConfig{})
+			held, err := asker.Presence(c.ctx, cache.route,
+				peer.Presence{Windows: []rank.Window{window}, Code: rank.Code{K: 1, M: 1}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(held) != 1 || len(held[0]) != 2 {
+				t.Fatalf("%s: presence %v, want two indices of one window", c.host, held)
+			}
+			if status := asker.Status(); status.Connections != c.wants {
+				t.Fatalf("%s holds %+v connections, want %+v", c.host, status.Connections, c.wants)
+			}
 		}
 	})
 }

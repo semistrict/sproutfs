@@ -19,7 +19,7 @@ import (
 
 // The requests of the cluster's disk cache (plans/disk-cache-2026-10-02.md):
 // read the stripes a disk holds of a window, keep stripes, drop a stripe found
-// wrong, ask which pages a disk holds, and probe it. This package carries them
+// wrong, ask which stripes a disk holds, and probe it. This package carries them
 // and answers them through a Cache; the checkpoint cache is what implements it.
 //
 // Every request is routed by the membership (package membership). It names
@@ -122,11 +122,18 @@ type Drop struct {
 	Code   rank.Code
 }
 
-// Presence asks which pages of some windows a cache holds a stripe of.
+// Presence asks which stripes of some windows a cache holds under a code.
 type Presence struct {
 	Windows []rank.Window
 	Code    rank.Code
 }
+
+// Present is what a cache holds of one window a Presence asked about: for
+// each index of the code, in index order, the pages of the window it holds
+// that index of. A page is held by the cluster only with k distinct indices,
+// and a join near the top of a window's ranks leaves holders with other
+// indices than their ranks name, so the pages alone could not say.
+type Present [][]uint32
 
 // Cache is what a host's disk cache answers its peers with. A host may keep
 // several disks: its own, or the shards the membership assigns it. Every
@@ -143,8 +150,9 @@ type Cache interface {
 	// Keep writes stripes, or reports ErrDropped when it does not.
 	Keep(ctx context.Context, m membership.Membership, disk rank.Identity, keep Keep) error
 	Drop(ctx context.Context, disk rank.Identity, drop Drop) error
-	// Presence reports, per window asked, the pages it holds a stripe of.
-	Presence(ctx context.Context, disk rank.Identity, presence Presence) ([][]uint32, error)
+	// Presence reports, per window asked, the stripes it holds: one list of
+	// pages for each index of the code.
+	Presence(ctx context.Context, disk rank.Identity, presence Presence) ([]Present, error)
 }
 
 func windowToWire(window rank.Window) *peerv1.Window {
@@ -411,7 +419,7 @@ func (s *Server) answerDrop(request *peerv1.Drop) answer {
 func (s *Server) answerPresence(request *peerv1.Presence) answer {
 	admitted := s.admitCache(request.GetCache(), request.GetGeneration())
 	present := func(status *peerv1.CacheStatus, bitmaps [][]byte) answer {
-		return answer{message: peerv1.Present_builder{Status: status, Pages: bitmaps,
+		return answer{message: peerv1.Present_builder{Status: status, Held: bitmaps,
 			Generation: proto.Uint64(admitted.generation), Assigned: proto.Uint64(admitted.assigned)}.Build()}
 	}
 	if admitted.refused != nil {
@@ -421,13 +429,22 @@ func (s *Server) answerPresence(request *peerv1.Presence) answer {
 	for _, window := range request.GetWindows() {
 		windows = append(windows, windowFromWire(window))
 	}
-	held, err := s.config.Cache.Presence(s.ctx, admitted.disk, Presence{Windows: windows, Code: codeFromWire(request.GetK(), request.GetM())})
+	code := codeFromWire(request.GetK(), request.GetM())
+	if code.Validate() != nil {
+		return present(cacheStatus(peerv1.CacheStatus_CACHE_STATUS_UNSPECIFIED), nil)
+	}
+	held, err := s.config.Cache.Presence(s.ctx, admitted.disk, Presence{Windows: windows, Code: code})
 	if err != nil || len(held) != len(windows) {
 		return present(cacheStatus(peerv1.CacheStatus_CACHE_STATUS_UNSPECIFIED), nil)
 	}
-	bitmaps := make([][]byte, 0, len(held))
-	for _, pages := range held {
-		bitmaps = append(bitmaps, pageBitmap(pages))
+	bitmaps := make([][]byte, 0, len(held)*code.Width())
+	for _, window := range held {
+		if len(window) != code.Width() {
+			return present(cacheStatus(peerv1.CacheStatus_CACHE_STATUS_UNSPECIFIED), nil)
+		}
+		for _, pages := range window {
+			bitmaps = append(bitmaps, pageBitmap(pages))
+		}
 	}
 	return present(cacheStatus(peerv1.CacheStatus_CACHE_STATUS_OK), bitmaps)
 }
@@ -618,9 +635,10 @@ func (p *Peer) Drop(ctx context.Context, route membership.Route, drop Drop) erro
 	return replied(route, response.GetStatus(), response.GetGeneration(), response.GetAssigned())
 }
 
-// Presence asks the peer which pages of some windows the disk route names
-// holds a stripe of, under the route's generation.
-func (p *Peer) Presence(ctx context.Context, route membership.Route, presence Presence) ([][]uint32, error) {
+// Presence asks the peer which stripes of some windows the disk route names
+// holds, under the route's generation. It is a Fault unless ctx names another
+// class: a pull asks it as bulk work, behind every fault.
+func (p *Peer) Presence(ctx context.Context, route membership.Route, presence Presence) ([]Present, error) {
 	windows := make([]*peerv1.Window, 0, len(presence.Windows))
 	for _, window := range presence.Windows {
 		windows = append(windows, windowToWire(window))
@@ -628,7 +646,11 @@ func (p *Peer) Presence(ctx context.Context, route membership.Route, presence Pr
 	request := peerv1.Presence_builder{Cache: route.Disk[:], Windows: windows, K: proto.Uint32(uint32(presence.Code.K)),
 		M: proto.Uint32(uint32(presence.Code.M)), Generation: proto.Uint64(route.Generation)}.Build()
 	response := new(peerv1.Present)
-	got, _, err := p.call(WithClass(ctx, Fault), "", request, response, 0, 0, nil)
+	class := classOr(ctx, Fault)
+	if p.table.bug("peer-presence-in-fault-class") {
+		class = Fault
+	}
+	got, _, err := p.call(WithClass(ctx, class), "", request, response, 0, 0, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -636,13 +658,19 @@ func (p *Peer) Presence(ctx context.Context, route membership.Route, presence Pr
 	if err := replied(route, response.GetStatus(), response.GetGeneration(), response.GetAssigned()); err != nil {
 		return nil, err
 	}
-	if len(response.GetPages()) != len(presence.Windows) {
-		return nil, fmt.Errorf("%w: presence of %d windows for %d asked", wire.ErrMalformedFrame,
-			len(response.GetPages()), len(presence.Windows))
+	width := presence.Code.Width()
+	bitmaps := response.GetHeld()
+	if len(bitmaps) != len(presence.Windows)*width {
+		return nil, fmt.Errorf("%w: presence of %d bitmaps for %d windows of %d indices", wire.ErrMalformedFrame,
+			len(bitmaps), len(presence.Windows), width)
 	}
-	held := make([][]uint32, 0, len(response.GetPages()))
-	for _, bitmap := range response.GetPages() {
-		held = append(held, bitmapPages(bitmap))
+	held := make([]Present, 0, len(presence.Windows))
+	for window := range presence.Windows {
+		indices := make(Present, width)
+		for index := range indices {
+			indices[index] = bitmapPages(bitmaps[window*width+index])
+		}
+		held = append(held, indices)
 	}
 	return held, nil
 }

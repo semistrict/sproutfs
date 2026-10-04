@@ -98,20 +98,25 @@ func (c *Cache) Drop(ctx context.Context, disk rank.Identity, drop peer.Drop) er
 	return nil
 }
 
-// Presence reports, for each window asked, the pages of it disk holds a stripe
-// of under the code, of any index.
-func (c *Cache) Presence(_ context.Context, disk rank.Identity, presence peer.Presence) ([][]uint32, error) {
+// Presence reports, for each window asked, the stripes of it disk holds under
+// the code: for each index, the pages it holds that index of. A pull asks it
+// of a window's ranks to learn whether the cluster holds k distinct indices
+// of each page, and reads from the store only the pages it does not.
+func (c *Cache) Presence(_ context.Context, disk rank.Identity, presence peer.Presence) ([]peer.Present, error) {
 	found, release, err := c.held(disk)
 	if err != nil {
 		return nil, err
 	}
 	defer release()
-	held := make([][]uint32, 0, len(presence.Windows))
+	if presence.Code.Validate() != nil {
+		return nil, fmt.Errorf("%w: presence under %s", errKeepRefused, presence.Code)
+	}
+	held := make([]peer.Present, 0, len(presence.Windows))
 	for _, window := range presence.Windows {
 		if !validWindow(window, nil) {
 			return nil, fmt.Errorf("%w: presence of %+v", errKeepRefused, window)
 		}
-		held = append(held, found.heldPages(window, nil, presence.Code))
+		held = append(held, found.present(window, nil, presence.Code))
 	}
 	return held, nil
 }

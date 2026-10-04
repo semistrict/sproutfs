@@ -2481,7 +2481,7 @@ func (b0 Dropped_builder) Build() *Dropped {
 	return m0
 }
 
-// Presence asks which pages of some windows a cache holds a stripe of.
+// Presence asks which stripes of some windows a cache holds, under one code.
 type Presence struct {
 	state                  protoimpl.MessageState `protogen:"opaque.v1"`
 	xxx_hidden_Cache       []byte                 `protobuf:"bytes,1,opt,name=cache"`
@@ -2666,14 +2666,16 @@ func (b0 Presence_builder) Build() *Presence {
 	return m0
 }
 
-// Present answers Presence with a bitmap of pages per window, in the order the
-// windows were asked.
+// Present answers Presence. For each window, in the order the windows were
+// asked, and for each index of the code, in index order, held carries a bitmap
+// of the pages of the window the cache holds that index of. A page counts as
+// held only with k distinct indices, so a bitmap of pages alone could not say.
 type Present struct {
 	state                  protoimpl.MessageState `protogen:"opaque.v1"`
 	xxx_hidden_Status      CacheStatus            `protobuf:"varint,1,opt,name=status,enum=sproutfs.peer.v1.CacheStatus"`
-	xxx_hidden_Pages       [][]byte               `protobuf:"bytes,2,rep,name=pages"`
 	xxx_hidden_Generation  uint64                 `protobuf:"varint,3,opt,name=generation"`
 	xxx_hidden_Assigned    uint64                 `protobuf:"varint,4,opt,name=assigned"`
+	xxx_hidden_Held        [][]byte               `protobuf:"bytes,5,rep,name=held"`
 	XXX_raceDetectHookData protoimpl.RaceDetectHookData
 	XXX_presence           [1]uint32
 	unknownFields          protoimpl.UnknownFields
@@ -2714,13 +2716,6 @@ func (x *Present) GetStatus() CacheStatus {
 	return CacheStatus_CACHE_STATUS_UNSPECIFIED
 }
 
-func (x *Present) GetPages() [][]byte {
-	if x != nil {
-		return x.xxx_hidden_Pages
-	}
-	return nil
-}
-
 func (x *Present) GetGeneration() uint64 {
 	if x != nil {
 		return x.xxx_hidden_Generation
@@ -2735,23 +2730,30 @@ func (x *Present) GetAssigned() uint64 {
 	return 0
 }
 
+func (x *Present) GetHeld() [][]byte {
+	if x != nil {
+		return x.xxx_hidden_Held
+	}
+	return nil
+}
+
 func (x *Present) SetStatus(v CacheStatus) {
 	x.xxx_hidden_Status = v
 	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 0, 4)
 }
 
-func (x *Present) SetPages(v [][]byte) {
-	x.xxx_hidden_Pages = v
-}
-
 func (x *Present) SetGeneration(v uint64) {
 	x.xxx_hidden_Generation = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 2, 4)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 1, 4)
 }
 
 func (x *Present) SetAssigned(v uint64) {
 	x.xxx_hidden_Assigned = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 3, 4)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 2, 4)
+}
+
+func (x *Present) SetHeld(v [][]byte) {
+	x.xxx_hidden_Held = v
 }
 
 func (x *Present) HasStatus() bool {
@@ -2765,14 +2767,14 @@ func (x *Present) HasGeneration() bool {
 	if x == nil {
 		return false
 	}
-	return protoimpl.X.Present(&(x.XXX_presence[0]), 2)
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 1)
 }
 
 func (x *Present) HasAssigned() bool {
 	if x == nil {
 		return false
 	}
-	return protoimpl.X.Present(&(x.XXX_presence[0]), 3)
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 2)
 }
 
 func (x *Present) ClearStatus() {
@@ -2781,12 +2783,12 @@ func (x *Present) ClearStatus() {
 }
 
 func (x *Present) ClearGeneration() {
-	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 2)
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 1)
 	x.xxx_hidden_Generation = 0
 }
 
 func (x *Present) ClearAssigned() {
-	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 3)
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 2)
 	x.xxx_hidden_Assigned = 0
 }
 
@@ -2794,9 +2796,9 @@ type Present_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
 	Status     *CacheStatus
-	Pages      [][]byte
 	Generation *uint64
 	Assigned   *uint64
+	Held       [][]byte
 }
 
 func (b0 Present_builder) Build() *Present {
@@ -2807,15 +2809,15 @@ func (b0 Present_builder) Build() *Present {
 		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 0, 4)
 		x.xxx_hidden_Status = *b.Status
 	}
-	x.xxx_hidden_Pages = b.Pages
 	if b.Generation != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 2, 4)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 1, 4)
 		x.xxx_hidden_Generation = *b.Generation
 	}
 	if b.Assigned != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 3, 4)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 2, 4)
 		x.xxx_hidden_Assigned = *b.Assigned
 	}
+	x.xxx_hidden_Held = b.Held
 	return m0
 }
 
@@ -3113,14 +3115,14 @@ const file_sproutfs_peer_v1_peer_proto_rawDesc = "" +
 	"\x01m\x18\x04 \x01(\rR\x01m\x12\x1e\n" +
 	"\n" +
 	"generation\x18\x05 \x01(\x04R\n" +
-	"generation\"\x92\x01\n" +
+	"generation\"\x9d\x01\n" +
 	"\aPresent\x125\n" +
-	"\x06status\x18\x01 \x01(\x0e2\x1d.sproutfs.peer.v1.CacheStatusR\x06status\x12\x14\n" +
-	"\x05pages\x18\x02 \x03(\fR\x05pages\x12\x1e\n" +
+	"\x06status\x18\x01 \x01(\x0e2\x1d.sproutfs.peer.v1.CacheStatusR\x06status\x12\x1e\n" +
 	"\n" +
 	"generation\x18\x03 \x01(\x04R\n" +
 	"generation\x12\x1a\n" +
-	"\bassigned\x18\x04 \x01(\x04R\bassigned\"\x1d\n" +
+	"\bassigned\x18\x04 \x01(\x04R\bassigned\x12\x12\n" +
+	"\x04held\x18\x05 \x03(\fR\x04heldJ\x04\b\x02\x10\x03R\x05pages\"\x1d\n" +
 	"\x05Probe\x12\x14\n" +
 	"\x05cache\x18\x01 \x01(\fR\x05cache\"U\n" +
 	"\x06Probed\x125\n" +

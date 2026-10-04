@@ -197,7 +197,7 @@ message Dropped {
   uint64 assigned = 3;
 }
 
-// Presence asks which pages of some windows a cache holds a stripe of.
+// Presence asks which stripes of some windows a cache holds, under one code.
 message Presence {
   bytes cache = 1;
   repeated Window windows = 2;
@@ -206,13 +206,17 @@ message Presence {
   uint64 generation = 5;
 }
 
-// Present answers Presence with a bitmap of pages per window, in the order the
-// windows were asked.
+// Present answers Presence. For each window, in the order the windows were
+// asked, and for each index of the code, in index order, held carries a bitmap
+// of the pages of the window the cache holds that index of. A page counts as
+// held only with k distinct indices, so a bitmap of pages alone could not say.
 message Present {
+  reserved 2;
+  reserved pages;
   CacheStatus status = 1;
-  repeated bytes pages = 2;
   uint64 generation = 3;
   uint64 assigned = 4;
+  repeated bytes held = 5;
 }
 
 // Probe asks whether this host is there and keeps the disk named. An empty
