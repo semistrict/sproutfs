@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -46,9 +48,41 @@ func (k *clusterPods) List(ctx context.Context) ([]pod, error) {
 	}
 	pods := make([]pod, 0, len(list.Items))
 	for _, item := range list.Items {
-		pods = append(pods, pod{Name: item.Name, IP: item.Status.PodIP, Ready: podReady(item)})
+		pods = append(pods, pod{Name: item.Name, IP: item.Status.PodIP, Ready: podReady(item),
+			Terminating: item.DeletionTimestamp != nil})
 	}
 	return pods, nil
+}
+
+// ShardVolumes lists the deployment's shards: the claims in the namespace
+// that selector matches, each by the CSI volume handle of the persistent
+// volume it is bound to, which is the name the cloud's attach API knows the
+// disk by. Kubernetes provisions the disks, from a StorageClass, and never
+// attaches them: no pod mounts a shard's claim. A claim not bound yet is left
+// out until it is. The handles come back in order.
+func (k *clusterPods) ShardVolumes(ctx context.Context, selector string) ([]string, error) {
+	claims, err := k.client.CoreV1().PersistentVolumeClaims(k.namespace).List(ctx,
+		metav1.ListOptions{LabelSelector: selector})
+	if err != nil {
+		return nil, err
+	}
+	var volumes []string
+	for _, claim := range claims.Items {
+		if claim.Status.Phase != corev1.ClaimBound || claim.Spec.VolumeName == "" {
+			slog.WarnContext(ctx, "sproutfs-orchestrator: a shard's claim is not bound yet", "claim", claim.Name)
+			continue
+		}
+		volume, err := k.client.CoreV1().PersistentVolumes().Get(ctx, claim.Spec.VolumeName, metav1.GetOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("the volume of claim %s: %w", claim.Name, err)
+		}
+		if volume.Spec.CSI == nil || volume.Spec.CSI.VolumeHandle == "" {
+			return nil, fmt.Errorf("the volume of claim %s is not a CSI volume with a handle", claim.Name)
+		}
+		volumes = append(volumes, volume.Spec.CSI.VolumeHandle)
+	}
+	slices.Sort(volumes)
+	return volumes, nil
 }
 
 // Delete removes one host pod immediately, which is the demo's host loss: no

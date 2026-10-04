@@ -694,5 +694,11 @@
     "package": "host",
     "run": "^TestAHostOpensAShardOnlyWhileTheObjectStillAssignsItThere$",
     "purpose": "Open a shard by the membership the host holds, without reading the object again first, so a host behind takes a shard that moved to another host on its machine."
+  },
+  {
+    "id": "orchestrator-keep-terminating-host",
+    "package": "cmd/sproutfs-orchestrator",
+    "run": "^TestTheOrchestratorMovesShardsOffATerminatingHost$",
+    "purpose": "Take a terminating host pod for one that stays, so its shards stay on it until its node is gone."
   }
 ]

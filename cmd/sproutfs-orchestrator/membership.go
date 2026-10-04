@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"maps"
 	"slices"
@@ -40,10 +41,14 @@ func (o *orchestrator) noteMembers(ctx context.Context, hosts []liveHost) {
 	if o.reported == nil {
 		o.reported = make(map[string]host.Member)
 	}
+	o.leaving = make(map[string]bool)
 	listed := make(map[string]bool, len(hosts))
 	for index := range hosts {
 		report := &hosts[index].report
 		listed[report.Name] = true
+		if report.Terminating && !sim.Bug(ctx, "orchestrator-keep-terminating-host") {
+			o.leaving[report.Name] = true
+		}
 		answered := report.Error == ""
 		switch {
 		case answered && report.Member != nil:
@@ -71,6 +76,7 @@ func (o *orchestrator) noteMembers(ctx context.Context, hosts []liveHost) {
 func (o *orchestrator) want(ctx context.Context) membership.Want {
 	o.memberMu.Lock()
 	reported := maps.Clone(o.reported)
+	leaving := maps.Clone(o.leaving)
 	o.memberMu.Unlock()
 	var want membership.Want
 	owners := make(map[rank.Identity]string, len(reported))
@@ -90,6 +96,9 @@ func (o *orchestrator) want(ctx context.Context) membership.Want {
 			continue
 		}
 		owners[wanted.ID] = name
+		// A pod being deleted drains: its shards move off it while it still
+		// answers, before its node goes.
+		wanted.Leaving = leaving[name]
 		want.Hosts = append(want.Hosts, wanted)
 		disks += len(wanted.Disks)
 	}
@@ -110,12 +119,34 @@ func (o *orchestrator) StepMembership(ctx context.Context) (membership.Membershi
 	if _, err := o.recent(ctx); err != nil {
 		return membership.Membership{}, false, err
 	}
-	next, changed, err := o.members.Reconcile(ctx, o.want(ctx))
+	var next membership.Membership
+	var changed bool
+	var err error
+	if o.shards != nil {
+		next, changed, err = o.stepShards(ctx)
+	} else {
+		next, changed, err = o.members.Reconcile(ctx, o.want(ctx))
+	}
 	if changed {
 		slog.InfoContext(ctx, "sproutfs-orchestrator: the membership took a step", "generation", next.Generation(),
 			"members", len(next.Members()), "disks", len(next.Disks()), "code", next.Code().String())
 	}
 	return next, changed, err
+}
+
+// stepShards takes one step of the membership with the deployment's shards,
+// listed from their claims, and attaches and detaches them as the membership
+// it leaves calls for. A listing of the claims that failed takes no step: a
+// shard missing from the list would be taken for one the deployment no
+// longer has.
+func (o *orchestrator) stepShards(ctx context.Context) (membership.Membership, bool, error) {
+	volumes, err := o.shardVolumes(ctx)
+	if err != nil {
+		return membership.Membership{}, false, fmt.Errorf("listing the shards' claims: %w", err)
+	}
+	pass := *o.shards
+	pass.Volumes = volumes
+	return pass.Pass(ctx, o.want(ctx))
 }
 
 // SteppingMembership takes a step of the membership every interval for as
