@@ -2,6 +2,7 @@ package sim
 
 import (
 	"context"
+	"slices"
 	"time"
 )
 
@@ -24,7 +25,7 @@ func Work(ctx context.Context, kind string, n int) error {
 	if rate <= 0 {
 		return nil
 	}
-	r.beginWork(kind)
+	r.beginWork(kind, taskName(ctx))
 	defer r.endWork(kind)
 	return r.sleep(ctx, workTime(n, rate))
 }
@@ -52,13 +53,35 @@ func (r *Runtime) Work(kind string) WorkStats {
 	return WorkStats{}
 }
 
-// workCount is one kind's stats and how many of its pieces are under way.
+// WorkPiece is one piece of priced work: the task (WithTask) it ran under,
+// empty where its caller named none, and the simulated instant it began.
+type WorkPiece struct {
+	Task  string
+	Began time.Time
+}
+
+// WorkPieces reports each piece of one kind of priced work, in the order the
+// pieces began. It is how a test sees which of several callers waiting for
+// one processor got it first. Pieces that began at one instant are in the
+// order their goroutines happened to run, which the instants do not depend on.
+func (r *Runtime) WorkPieces(kind string) []WorkPiece {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if count := r.work[kind]; count != nil {
+		return slices.Clone(count.pieces)
+	}
+	return nil
+}
+
+// workCount is one kind's stats, how many of its pieces are under way, and
+// its pieces, in the order they began.
 type workCount struct {
 	WorkStats
 	running int
+	pieces  []WorkPiece
 }
 
-func (r *Runtime) beginWork(kind string) {
+func (r *Runtime) beginWork(kind, task string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.work == nil {
@@ -70,6 +93,7 @@ func (r *Runtime) beginWork(kind string) {
 		r.work[kind] = count
 	}
 	count.Pieces++
+	count.pieces = append(count.pieces, WorkPiece{Task: task, Began: r.now()})
 	count.running++
 	count.Peak = max(count.Peak, count.running)
 }

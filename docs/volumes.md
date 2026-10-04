@@ -367,7 +367,8 @@ The publication reads its pages one at a time, in page order, on its own
 goroutine, and hands them to the store's encoders in batches: a 2 MiB page
 alone, or small pages up to 1 MiB together. It has one more batch encoding
 than the store has encoders, so an encoder that finishes finds the next batch
-ready. The parts take the envelopes in the order the pages were read, so a
+ready. It takes each batch's encoder itself, in the order it filled the
+batches, so a later batch never holds the encoder an earlier one waits for. The parts take the envelopes in the order the pages were read, so a
 part holds the same bytes whichever encode ends first, and a retry writes the
 same parts. Each page's segment entry is written as the page lands in its
 part. Until 2026-10-04 a publication encoded one page at a time, and ran at one

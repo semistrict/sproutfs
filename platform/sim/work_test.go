@@ -19,7 +19,8 @@ func TestWorkTakesTheTimeItsPriceSays(t *testing.T) {
 		runtime := sim.New(sim.Config{Compute: map[string]int64{"encode": 1 << 20}})
 		ctx := sim.WithRuntime(t.Context(), runtime)
 		started := time.Now()
-		if err := sim.Work(ctx, "encode", 512<<10); err != nil {
+		began := started
+		if err := sim.Work(sim.WithTask(ctx, "first"), "encode", 512<<10); err != nil {
 			t.Fatal(err)
 		}
 		if got, want := time.Since(started), 500*time.Millisecond; got != want {
@@ -53,6 +54,17 @@ func TestWorkTakesTheTimeItsPriceSays(t *testing.T) {
 		}
 		if got := runtime.Work("unpriced"); got != (sim.WorkStats{}) {
 			t.Fatalf("unpriced work was counted: %+v", got)
+		}
+		// The first piece ran under a task of its own, at the start, and the
+		// three after it under none, half a second in.
+		pieces := runtime.WorkPieces("encode")
+		if len(pieces) != 4 || pieces[0].Task != `/"first"` || !pieces[0].Began.Equal(began) {
+			t.Fatalf("the pieces were %+v, want the first under its task at %v", pieces, began)
+		}
+		for _, piece := range pieces[1:] {
+			if piece.Task != "" || piece.Began.Sub(began) != 500*time.Millisecond {
+				t.Fatalf("a piece side by side was %+v, want no task half a second in", piece)
+			}
 		}
 	})
 }

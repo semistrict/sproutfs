@@ -3,6 +3,7 @@ package checkpoint_test
 import (
 	"context"
 	"fmt"
+	goruntime "runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -47,7 +48,10 @@ type throughputResult struct {
 	// objects is each object's PUT, by key.
 	objects map[string]put
 	// encodes is what the encodes did, and puts the most PUTs at once.
-	encodes     sim.WorkStats
+	encodes sim.WorkStats
+	// batches is when each batch's encode began, by the batch's number in the
+	// order it was filled, from the start of the commit.
+	batches     map[int]time.Duration
 	puts        int64
 	fingerprint uint64
 }
@@ -109,6 +113,13 @@ func (c throughput) run(t *testing.T) throughputResult {
 		result.took = time.Since(started)
 		result.objects, result.puts = objects.puts, objects.peak.Load()
 		result.encodes, result.fingerprint = runtime.Work(blob.WorkEncode), runtime.Fingerprint()
+		result.batches = map[int]time.Duration{}
+		for _, piece := range runtime.WorkPieces(blob.WorkEncode) {
+			var batch int
+			if _, err := fmt.Sscanf(piece.Task[strings.LastIndex(piece.Task, "/")+1:], `"encode-%d"`, &batch); err == nil {
+				result.batches[batch] = piece.Began.Sub(started)
+			}
+		}
 		// Every page reads back as it was published, whatever order the
 		// encodes ended in.
 		got, want := make([]byte, c.page()), make([]byte, c.page())
@@ -205,6 +216,43 @@ func TestAPublicationEncodesAsManyPagesAtOnceAsItHasEncoders(t *testing.T) {
 	if landed, want := got.partsLanded(t, parts), encoding+last; landed != want {
 		t.Fatalf("the parts of %d pages landed at %v, want %v: %v encoding on %d encoders and %v for the last part",
 			c.pages, landed, want, encoding, c.encoders, last)
+	}
+}
+
+// A publication admits its batches to the encoders in the order it filled
+// them, whichever of its goroutines the Go scheduler runs first, so no later
+// batch takes the encoder an earlier one is waiting for while the publication
+// waits for the earlier one. On one processor the Go scheduler runs the
+// goroutine started last first, which is the order that admitted batches
+// newest first when each took its own encoder; on two it is a race. On either,
+// the encodes begin in the order the batches were filled, one page a batch,
+// and the parts land exactly when the encoding and the last PUT say.
+func TestAPublicationAdmitsItsBatchesToTheEncodersInOrder(t *testing.T) {
+	c := throughput{pages: 64, encoders: 4, uploads: 8, putLatency: 20 * time.Millisecond,
+		encodeRate: tenMillisecondPages}
+	encoding := time.Duration(c.pages) * 10 * time.Millisecond / time.Duration(c.encoders)
+	was := goruntime.GOMAXPROCS(0)
+	t.Cleanup(func() { goruntime.GOMAXPROCS(was) })
+	for _, processors := range []int{1, 2} {
+		goruntime.GOMAXPROCS(processors)
+		got := c.run(t)
+		if len(got.batches) != int(c.pages) {
+			t.Fatalf("on %d processors %d batches were encoded, want one a page: %v", processors,
+				len(got.batches), got.batches)
+		}
+		for batch := 2; batch <= int(c.pages); batch++ {
+			if got.batches[batch] < got.batches[batch-1] {
+				t.Fatalf("on %d processors batch %d began encoding at %v, before batch %d at %v", processors,
+					batch, got.batches[batch], batch-1, got.batches[batch-1])
+			}
+		}
+		parts := int(c.pages / 4)
+		last := max(c.putTime(got.object(t, fmt.Sprintf("/part/%d", parts-2)).size),
+			c.putTime(got.object(t, fmt.Sprintf("/part/%d", parts-1)).size))
+		if landed, want := got.partsLanded(t, parts), encoding+last; landed != want {
+			t.Fatalf("on %d processors the parts landed at %v, want %v: %v encoding on %d encoders and %v for "+
+				"the last part", processors, landed, want, encoding, c.encoders, last)
+		}
 	}
 }
 
