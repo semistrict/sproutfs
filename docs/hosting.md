@@ -1203,8 +1203,12 @@ of where each disk is attached (`membership.ShardControl`, `membership.Carry`):
 8. Once the host reports it closed, or is gone, and the cloud has it on no
    machine, the membership lets it go: released, and back to step 1.
 
-A move costs a shard its server for a few seconds: two attach operations,
-the read back of its tables, and a few passes of five seconds. Reads hedge
+A move costs a shard its server for a few seconds: a detach and an attach,
+the read back of its tables, and a few passes of the controller. On GCE a
+Hyperdisk Balanced shard holding 32 GiB moved in 13 to 15 s with passes of
+one second, whether its host drained or died: about 10 s of Compute Engine's
+calls, 0.3 s of read back, and the rest passes
+([measured](measurements/gce-shards-2026-10-04.md#moving-a-shard)). Reads hedge
 around it as around any holder that does not answer: under 4+2 two shards may
 move at once with no read of the store.
 

@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-03 23:10'
-updated_date: '2026-10-04 01:57'
+updated_date: '2026-10-04 03:25'
 labels:
   - cluster
   - storage
@@ -67,4 +67,6 @@ Steps:
 Owner, 2026-10-03: which member serves which disk is decided by the membership object (TASK-83), by compare-and-set, not by Kubernetes scheduling alone. TASK-86 carries out those assignments: when the membership releases a disk from a member, that member stops serving and the volume is detached; when it assigns the disk to another member, the volume is attached there (Kubernetes or the cloud's attach API) and the member serves under the assigning generation. A controller, usually the orchestrator, moves disks off members the autoscaler is removing, one step at a time.
 
 Progress 2026-10-04 (@claude). Mechanism chosen: the membership is the authority; the orchestrator carries it out through Compute Engine's attach API (platform.NetworkDisks), and the host opens /dev/disk/by-id/google-<name> with O_EXCL (platform.Devices) and serves it. Kubernetes provisions the disks (StorageClass + one claim per shard, Immediate binding, Retain) and never attaches them: a running pod cannot gain a volume, and pods scheduled by Kubernetes would follow the scheduler, not the membership. Members are hosts with an identity drawn per process; shard identities derive from the volume handle. Fencing: single-writer cloud + detach yanks the device; Let only once closed and detached; O_EXCL per machine; the lease (assignment generation, member, slots opened) at the end of the header region, checked at open, every region open/close and every pass. Built: platform sim and GCE adapters (fb862857), multi-disk cache + lease (df8e037e), membership Next/Carry/ShardControl (97c9d8c6), host shard server (06852770), orchestrator (2d0992ff), simtest scaling + spec/shards + diskcache MovesKeepStripes (77573005), campaign + fingerprint arm (afe86a2c), deploy (4216f1a2), move bench (d9626dbc). Guards: shard-ignore-lease, membership-let-attached-shard, membership-detach-held-shard, host-open-shard-without-reading-again, orchestrator-keep-terminating-host, all killed 3/3 by check-guards.py. TLC: spec/shards MCShards 30s, MCMultiAttach 1s, deep/Nine 1m58s; diskcache MCShards 6s; mutants caught. Gremlins before/after recorded in docs/testing.md. Remaining: GCE measurements and the report; deploy README sizing.
+
+Merged main (d3377d88, guards.json kept both sides); just check exit 0 with check-guards.py killing all five TASK-86 guards. GCE move (scripts/bench-shard-move-gce.sh, 2 x c3-standard-4, Hyperdisk Balanced 256 GB, 32 GiB filled, controller pass 1 s): six moves, three drained and three died, 13.0 to 14.6 s each to serving on the other host; about 10 s is Compute Engine's detach and attach calls; read back 529 regions from tables in 0.30 s, none scanned, all 16,512 entries kept. Hyperdisk Balanced does not attach to N2 (API refuses), so its shards need C3/C4/N4; a 4-vCPU C3 reads 400 MiB/s from it, below the 500 MiB/s budget. Every VM and disk deleted and verified.
 <!-- SECTION:NOTES:END -->

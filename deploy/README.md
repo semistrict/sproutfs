@@ -536,12 +536,16 @@ within one serving budget, `SPROUTFS_CACHE_SERVE_BYTES_PER_SECOND`.
 | Disk size | The cache holds the shard count times the size times k/(k+m) of windows, less a 64 MiB header region and a free region a shard. Every shard the same size: a shard's weight is its size in 16 GiB steps | 256 GiB each: 1 TiB of windows under 4+2 |
 | Provisioned throughput | What one shard may be asked for: its host's serving budget, 500 MiB/s, shared by the shards that host serves, plus its fills. A disk slower than the budget is the slowest hop of a read, and a dependent read pays it whole | 500 MiB/s, Hyperdisk Balanced |
 | Provisioned IOPS | A 2 MiB page under 4+2 is a 512 KiB stripe a disk; a 4 KiB page is about 1 KiB, read with its window's other pages; a fault reads an 8 MiB run. So throughput binds before IOPS for 2 MiB pages, and IOPS for 4 KiB pages read one at a time | 6000 |
-| Machine | The disk's limits are per disk and per instance: an instance's network disk throughput depends on its machine type and vCPUs, and caps what every shard it serves may read together. Hyperdisk Balanced attaches to C3, C4 and N4 machines, not to N2 | c3, 4 vCPUs or more |
+| Machine | The disk's limits are per disk and per instance: an instance's network disk throughput depends on its machine type and vCPUs, and caps what every shard it serves may read together. A C3 of 4 vCPUs read 400 MiB/s from Hyperdisk Balanced provisioned for 500; 8 vCPUs allow 800. Hyperdisk Balanced attaches to C3, C4 and N4 machines; the API refused it on N2 | c3, 8 vCPUs to serve the whole budget |
 
-`docs/measurements/gce-shards-2026-10-04.md` measures dependent reads from
-shards on Hyperdisk Balanced, pd-balanced and pd-ssd against local NVMe, each
-disk's throughput against the 500 MiB/s budget, and the time to move a shard
-when its host is removed.
+`docs/measurements/gce-shards-2026-10-04.md` measures shards on C3. A
+dependent read of a 2 MiB page took 8.6 ms a hop from Hyperdisk Balanced,
+7.3 ms from pd-balanced or pd-ssd and 5.5 ms from local NVMe, against 40 ms
+from the store; of a 4 KiB page, 1.4, 1.0 and 0.56 ms, against 29 ms. A
+persistent disk is a little faster for dependent reads, but its IOPS and
+throughput follow its size, and on C3 it reads at most 240 MiB/s. A shard
+moved off a removed host in 13 to 15 s with a controller passing every
+second, about 10 s of it Compute Engine's detach and attach calls.
 
 ## Resources
 
