@@ -13,6 +13,7 @@
 #include <sys/mman.h>
 #include <sys/ioctl.h>
 #include <sys/mount.h>
+#include <sys/random.h>
 #include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -50,6 +51,69 @@ static uint64_t monotonic(void) {
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
     return (uint64_t)now.tv_sec * 1000000000u + (uint64_t)now.tv_nsec;
+}
+
+// reseeds counts the kernel's records of reseeding its random pool from a new
+// VM generation ID, which its VMGenID driver does each time the VMM gives the
+// guest one. The records are in the kernel's log whatever the console's level,
+// and the log is guest memory, so a restored guest's count goes on from the
+// count its state was captured with. -1 is a log this guest cannot read.
+static long reseeds(void) {
+    int log = open("/dev/kmsg", O_RDONLY | O_NONBLOCK);
+    if (log < 0) return -1;
+    char record[8192];
+    long count = 0;
+    for (;;) {
+        ssize_t got = read(log, record, sizeof record - 1);
+        if (got < 0 && errno == EPIPE) continue;  // records overwritten while reading
+        if (got <= 0) break;                      // EAGAIN: the end of the log
+        record[got] = '\0';
+        if (strstr(record, "crng reseeded due to virtual machine fork")) count++;
+    }
+    close(log);
+    return count;
+}
+
+// vmclock_field reads one little-endian 64-bit field of the VMClock device's
+// page, which /dev/vmclock0 serves: 16 is its disruption marker and 104 its VM
+// generation counter, both of which Firecracker raises on every restore. -1 is
+// a guest without the device.
+static long long vmclock_field(off_t offset) {
+    int device = open("/dev/vmclock0", O_RDONLY);
+    if (device < 0) return -1;
+    unsigned char page[4096];
+    ssize_t got = read(device, page, sizeof page);
+    close(device);
+    if (got < offset + 8) return -1;
+    uint64_t value = 0;
+    for (int i = 7; i >= 0; i--) value = value << 8 | page[offset + i];
+    return (long long)value;
+}
+
+// entropy reports what a fork child or a restored guest must not share with
+// another: random bytes from the kernel, how many times the kernel reseeded
+// for a new generation, the VMClock counters, and the wall clock, beside the
+// monotonic clock and the clocksource both run on. The reseed count is read
+// before the bytes are drawn, so a reseed it counts came before the draw.
+static void entropy(void) {
+    long seeds = reseeds();
+    unsigned char bytes[16];
+    if (getrandom(bytes, sizeof bytes, 0) != (ssize_t)sizeof bytes) fail("getrandom");
+    struct timespec real;
+    clock_gettime(CLOCK_REALTIME, &real);
+    char hex[2 * sizeof bytes + 1];
+    for (size_t i = 0; i < sizeof bytes; i++) sprintf(hex + 2 * i, "%02x", bytes[i]);
+    char source[64] = "none";
+    FILE *file = fopen("/sys/devices/system/clocksource/clocksource0/current_clocksource", "r");
+    if (file) {
+        if (fgets(source, sizeof source, file)) source[strcspn(source, "\n")] = '\0';
+        fclose(file);
+    }
+    printf("SPROUTFS_ENTROPY random=%s reseeds=%ld generation=%lld disruption=%lld realtime_ns=%llu "
+           "monotonic_ns=%llu clocksource=%s\n",
+           hex, seeds, vmclock_field(104), vmclock_field(16),
+           (unsigned long long)real.tv_sec * 1000000000u + (unsigned long long)real.tv_nsec,
+           (unsigned long long)monotonic(), source);
 }
 
 // run_command executes one shell command and reports its wall time and the
@@ -270,6 +334,8 @@ int main(void) {
             flush_value(fd, disk);
         } else if (sscanf(line, "ram %lu", &value) == 1) {
             *ram = value; printf("SPROUTFS_RAM ram=%lu\n", *ram);
+        } else if (!strncmp(line, "entropy", 7)) {
+            entropy();
         } else if (!strncmp(line, "read", 4)) {
             printf("SPROUTFS_VALUE ram=%lu disk=%lu\n", *ram, *disk);
         } else if (sscanf(line, "pressure %lu", &value) == 1) {

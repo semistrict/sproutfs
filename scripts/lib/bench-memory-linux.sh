@@ -216,6 +216,17 @@ if [[ ${SPROUTFS_GCE_QUALIFY:-0} == 1 ]]; then
             --manifest-path third_party/firecracker/Cargo.toml -p vmm --features sproutfs-memory \
             -E 'test(/nested|pinning|version_14_0|managed_memory/)'
     fi
+    # The fork's own tests of the clock a restore moves on need real KVM, so
+    # they run with a whole qualification and with the Firecracker test of a
+    # restored guest's wall clock.
+    if [[ -z $selected || $selected_tests == *AfterAStop* ]]; then
+        if [[ ! -x "$CARGO_HOME/bin/cargo-nextest" ]]; then
+            cargo install --locked cargo-nextest
+        fi
+        qualify firecracker-clock cargo nextest run --locked \
+            --manifest-path third_party/firecracker/Cargo.toml -p vmm --features sproutfs-memory \
+            -E 'test(/test_vm_save_state_pairs|test_vm_restore_state_|test_vm_save_restore_state|test_advance_tsc/)'
+    fi
     # Where a guest's time goes that the pager does not see: the host KVM's
     # exits by reason, its async page faults, and the time its vCPUs wait to
     # be woken, counted by histogram triggers on its tracepoints, which cost
