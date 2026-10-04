@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"runtime"
 	"runtime/pprof"
 	"sync"
 	"syscall"
@@ -622,6 +623,15 @@ func (n *node) drop(context.Context, struct{}) (struct{}, error) {
 }
 
 // dropPageCache drops the kernel's page cache.
+// peakRSS is the most memory the process has held: getrusage counts it in
+// KiB on Linux and in bytes on macOS.
+func peakRSS(usage syscall.Rusage) int64 {
+	if runtime.GOOS == "darwin" {
+		return int64(usage.Maxrss)
+	}
+	return int64(usage.Maxrss) << 10
+}
+
 func dropPageCache() error {
 	syscall.Sync()
 	return os.WriteFile("/proc/sys/vm/drop_caches", []byte("3\n"), 0)
@@ -642,6 +652,8 @@ type statsReply struct {
 	// requests of the hot tier's bucket.
 	Hot      checkpoint.HotTierStats `json:"hot"`
 	HotStore platform.ObjectTraffic  `json:"hot_store"`
+	// PeakRSSBytes is the most memory the node's process has held.
+	PeakRSSBytes int64 `json:"peak_rss_bytes"`
 }
 
 func (n *node) stats(context.Context, struct{}) (statsReply, error) {
@@ -663,7 +675,7 @@ func (n *node) stats(context.Context, struct{}) (statsReply, error) {
 	out := statsReply{CPUSeconds: time.Duration(usage.Utime.Nano() + usage.Stime.Nano()).Seconds(),
 		StripeReads: served.StripeReads, Stripes: served.Stripes, StripeBytes: served.StripeBytes,
 		StripesBusy: served.StripesBusy, Read: stats.Read, Fill: stats.Fill, Disk: stats.Disk,
-		Store: n.objects.Traffic()}
+		Store: n.objects.Traffic(), PeakRSSBytes: peakRSS(usage)}
 	if n.hotTier != nil {
 		out.Hot, out.HotStore = n.hotTier.Stats(), n.hotObjects.Traffic()
 	}

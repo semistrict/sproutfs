@@ -121,6 +121,9 @@ type driveConfig struct {
 	seed uint64
 	// calibrate is how long the reader times each step of a read.
 	calibrate time.Duration
+	// publishes, when not zero, has the run publish each guest that many
+	// times, as VMs of their own, and read nothing.
+	publishes int
 }
 
 // caseResult is one read of a guest.
@@ -171,6 +174,8 @@ type driveResult struct {
 	Fills       []statsReply            `json:"after_publish"`
 	Calibration calibration             `json:"calibration"`
 	Cases       []caseResult            `json:"cases"`
+	// Publications is each publication of a run that only publishes.
+	Publications []publication `json:"publications,omitempty"`
 }
 
 func runDrive(ctx context.Context, args []string) error {
@@ -192,12 +197,13 @@ func runDrive(ctx context.Context, args []string) error {
 	calibrateFor := flags.Duration("calibrate", 500*time.Millisecond, "how long the reader times each step of a read")
 	out := flags.String("out", "results.json", "where the results go")
 	profiles := flags.String("profiles", "profiles", "the directory the CPU profiles go in")
+	publishes := flags.Int("publishes", 0, "publish each guest the cases name this many times and read nothing")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	config := driveConfig{pages: map[uint64]uint64{checkpoint.PageSize2MiB: *pages, checkpoint.PageSize4KiB: *smallPages},
 		code: *code, rounds: *rounds, reads: *reads, runReads: *runReads, lost: *lost, loseAfter: *loseAfter,
-		cleared: 20 * time.Second, seed: *seed, calibrate: *calibrateFor}
+		cleared: 20 * time.Second, seed: *seed, calibrate: *calibrateFor, publishes: *publishes}
 	var err error
 	if config.cases, err = parseCases(*cases); err != nil {
 		return err
@@ -247,6 +253,10 @@ func drive(ctx context.Context, nodes []controller, config driveConfig) (driveRe
 	}
 	if err := followAll(ctx, nodes, config.code); err != nil {
 		return driveResult{}, nil, err
+	}
+	if config.publishes > 0 {
+		result, err := publishRounds(ctx, nodes, config)
+		return result, nil, err
 	}
 	result := driveResult{Code: config.code, Publish: make(map[string]publishReply)}
 	guests := make(map[uint64]guestRequest)
@@ -349,6 +359,82 @@ func drive(ctx context.Context, nodes []controller, config driveConfig) (driveRe
 		}
 	}
 	return result, profiles, nil
+}
+
+// publication is one publication of a guest from the first node: what its
+// commit and its fills took, what each node's fills did meanwhile, the
+// publisher's first, and the most memory each node had held by its end.
+type publication struct {
+	Round   int                    `json:"round"`
+	VM      string                 `json:"vm"`
+	Publish publishReply           `json:"publish"`
+	Fills   []checkpoint.FillStats `json:"fills"`
+	PeakRSS []int64                `json:"peak_rss_bytes"`
+}
+
+// publishRounds publishes a guest of each page size the cases read from the
+// first node, config.publishes times, each time as a VM of its own so every
+// window is new to the cluster, and reads nothing back. Unlike a run of
+// reads it does not stop at a dropped stripe: the drops are what it counts.
+func publishRounds(ctx context.Context, nodes []controller, config driveConfig) (driveResult, error) {
+	result := driveResult{Code: config.code, Publish: make(map[string]publishReply)}
+	var sizes []uint64
+	for _, spec := range config.cases {
+		if !slices.Contains(sizes, spec.pageSize) {
+			sizes = append(sizes, spec.pageSize)
+		}
+	}
+	for round := range config.publishes {
+		for _, size := range sizes {
+			g := guestRequest{VM: fmt.Sprintf("guest-%s-%d", strings.ToLower(pageSizeName(size)), round),
+				PageSize: size, Pages: config.pages[size]}
+			before, err := statsOf(ctx, nodes)
+			if err != nil {
+				return driveResult{}, err
+			}
+			slog.InfoContext(ctx, "drive: publishing", "vm", g.VM, "pages", g.Pages)
+			published, err := nodes[0].publish(ctx, g)
+			if err != nil {
+				return driveResult{}, err
+			}
+			after, err := statsOf(ctx, nodes)
+			if err != nil {
+				return driveResult{}, err
+			}
+			one := publication{Round: round, VM: g.VM, Publish: published}
+			for at := range nodes {
+				one.Fills = append(one.Fills, fillDelta(before[at].Fill, after[at].Fill))
+				one.PeakRSS = append(one.PeakRSS, after[at].PeakRSSBytes)
+			}
+			slog.InfoContext(ctx, "drive: published", "vm", g.VM, "seconds", published.Seconds,
+				"settled", published.Settled, "fill", fmt.Sprintf("%+v", one.Fills[0]))
+			result.Guests = append(result.Guests, g)
+			result.Publish[g.VM] = published
+			result.Publications = append(result.Publications, one)
+		}
+	}
+	var err error
+	result.Fills, err = statsOf(ctx, nodes)
+	return result, err
+}
+
+// fillDelta is what a node's fills did between two readings. The queue's
+// size, its bound and the most it held are the second reading's.
+func fillDelta(before, after checkpoint.FillStats) checkpoint.FillStats {
+	delta := after
+	delta.FromReads -= before.FromReads
+	delta.FromPublications -= before.FromPublications
+	delta.WithoutRight -= before.WithoutRight
+	delta.RightsGranted -= before.RightsGranted
+	delta.Sent -= before.Sent
+	delta.SentBytes -= before.SentBytes
+	delta.Kept -= before.Kept
+	for reason := range delta.Dropped {
+		delta.Dropped[reason] -= before.Dropped[reason]
+	}
+	delta.Duplicates -= before.Duplicates
+	delta.Refused -= before.Refused
+	return delta
 }
 
 // nodeSource is what the reader reads from for source: the lost case reads

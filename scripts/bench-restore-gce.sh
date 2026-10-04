@@ -26,6 +26,13 @@
 # SPROUTFS_RESTORE_CASES and SPROUTFS_RESTORE_SOURCES choose the cases and
 # sources (the drive's defaults when unset); SPROUTFS_RESTORE_PLATFORM is the
 # hosts' least processor (Intel Cascade Lake by default).
+# SPROUTFS_RESTORE_PUBLISHES, when set, has the drive publish the guest of each
+# page size the cases name that many times, each as a VM of its own, and read
+# nothing: what each publication took and what its fills dropped
+# (docs/measurements/gce-fill-backpressure-2026-10-04.md).
+# SPROUTFS_RESTORE_BINARY names a sproutfs-restorebench built for linux/amd64
+# to run instead of one built from this tree, so two revisions run on the
+# same hosts.
 #
 # `all` always deletes the hosts. `create`, `run` and `delete` expose the same
 # steps. Each host also deletes itself after three hours.
@@ -43,7 +50,8 @@ platform=${SPROUTFS_RESTORE_PLATFORM:-Intel Cascade Lake}
 [[ $platform =~ ^Intel\ [A-Za-z\ ]+$ ]] || { echo "SPROUTFS_RESTORE_PLATFORM is an Intel CPU platform" >&2; exit 2; }
 # The drive's cases and sources, as its flags take them.
 drive_flags=""
-for setting in cases:SPROUTFS_RESTORE_CASES sources:SPROUTFS_RESTORE_SOURCES profile:SPROUTFS_RESTORE_PROFILE; do
+for setting in cases:SPROUTFS_RESTORE_CASES sources:SPROUTFS_RESTORE_SOURCES profile:SPROUTFS_RESTORE_PROFILE \
+    publishes:SPROUTFS_RESTORE_PUBLISHES; do
     name=${setting#*:}
     value=${!name:-}
     [[ $value =~ ^[A-Za-z0-9/,-]*$ ]] || { echo "$name is a comma-separated list of cases or sources" >&2; exit 2; }
@@ -156,10 +164,19 @@ run() {
         "$ready" || { echo "$host did not finish starting." >&2; return 1; }
     done
     staging=$(mktemp -d "${TMPDIR:-/tmp}/sproutfs-restore.XXXXXX")
-    (cd "$repo" && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o "$staging/sproutfs-restorebench" ./cmd/sproutfs-restorebench)
+    if [[ -n ${SPROUTFS_RESTORE_BINARY:-} ]]; then
+        cp "$SPROUTFS_RESTORE_BINARY" "$staging/sproutfs-restorebench"
+    else
+        (cd "$repo" && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o "$staging/sproutfs-restorebench" ./cmd/sproutfs-restorebench)
+    fi
     {
-        echo "revision $(git -C "$repo" rev-parse HEAD)"
-        git -C "$repo" status --porcelain=v1 -- cmd/sproutfs-restorebench checkpoint peer rank stripe vmmemory | sed 's/^/changed /'
+        if [[ -n ${SPROUTFS_RESTORE_BINARY:-} ]]; then
+            echo "binary $SPROUTFS_RESTORE_BINARY"
+        else
+            echo "revision $(git -C "$repo" rev-parse HEAD)"
+            git -C "$repo" status --porcelain=v1 -- cmd/sproutfs-restorebench checkpoint peer rank stripe vmmemory |
+                sed 's/^/changed /'
+        fi
         (cd "$staging" && shasum -a 256 sproutfs-restorebench)
         echo "machine $machine ($platform), pages $pages and $small_pages, rounds $rounds,$drive_flags," \
             "objects gs://$bucket/$run_objects"
