@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"os"
 	"slices"
@@ -65,17 +66,21 @@ const (
 	lineFaults = "host: a VM's first faults"
 )
 
-// hostLines reads the lines of starts out of the hosts' logs. Anything else in
-// them, a line of another kind or one that is not JSON, is skipped.
+// hostLines reads the lines of starts out of the hosts' logs: as kubectl logs
+// prints them, or as the node keeps them, where each line is prefixed with its
+// time and stream. Anything else in them, a line of another kind or one that
+// is not JSON, is skipped.
 func hostLines(r io.Reader) ([]hostLine, error) {
 	var lines []hostLine
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 1<<20), 16<<20)
 	for scanner.Scan() {
-		text := bytes.TrimSpace(scanner.Bytes())
-		if len(text) == 0 || text[0] != '{' {
+		text := scanner.Bytes()
+		at := bytes.IndexByte(text, '{')
+		if at < 0 {
 			continue
 		}
+		text = bytes.TrimSpace(text[at:])
 		var line hostLine
 		if err := json.Unmarshal(text, &line); err != nil {
 			continue
@@ -363,7 +368,7 @@ func readSamples(r io.Reader) ([]sample, error) {
 func runSummary(args []string, w io.Writer) error {
 	flags := flag.NewFlagSet("summary", flag.ContinueOnError)
 	samplesPath := flags.String("samples", "samples.jsonl", "the driver's samples")
-	logsPath := flags.String("logs", "pods.log", "the hosts' logs")
+	logsPaths := flags.String("logs", "pods.log", "the hosts' logs, separated by commas")
 	storePath := flags.String("store", "", "the store bench's times, if any")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -377,14 +382,20 @@ func runSummary(args []string, w io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("reading %s: %w", *samplesPath, err)
 	}
-	logsFile, err := os.Open(*logsPath)
-	if err != nil {
-		return err
-	}
-	defer logsFile.Close()
-	lines, err := hostLines(logsFile)
-	if err != nil {
-		return fmt.Errorf("reading %s: %w", *logsPath, err)
+	var lines []hostLine
+	for _, path := range strings.Split(*logsPaths, ",") {
+		logsFile, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		read, err := hostLines(logsFile)
+		if closeErr := logsFile.Close(); closeErr != nil {
+			slog.Error("sproutfs-startbench: closing a log", "path", path, "error", closeErr)
+		}
+		if err != nil {
+			return fmt.Errorf("reading %s: %w", path, err)
+		}
+		lines = append(lines, read...)
 	}
 	var store *storeTimes
 	if *storePath != "" {

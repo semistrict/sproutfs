@@ -6,8 +6,9 @@ import (
 	"testing"
 )
 
-// The hosts' logs as kubectl prints them: a header per pod, lines of other
-// kinds, and the start lines, not in time order across pods.
+// The hosts' logs as kubectl prints them, and one line as the node keeps it,
+// prefixed with its time and stream: a header per pod, lines of other kinds,
+// and the start lines, not in time order across pods.
 const podsLog = `=== pod/sproutfs-host-a
 {"time":"2026-10-04T10:00:00.100Z","level":"INFO","msg":"host: assembled","host":"a"}
 {"time":"2026-10-04T10:00:01.000Z","level":"INFO","msg":"host: a VM runs","vm":"c0","how":"create","resumed":false,"total_ms":28,"running_ms":25,"store_ms":12,"steps":[{"name":"template","at_ms":0,"took_ms":0.1},{"name":"fork","at_ms":0.1,"took_ms":5},{"name":"root","at_ms":5.1,"took_ms":10},{"name":"vmm start","at_ms":15.1,"took_ms":9.9},{"name":"vmm process","at_ms":15.1,"took_ms":8},{"name":"vmm ready","at_ms":23.1,"took_ms":1.9},{"name":"register","at_ms":26,"took_ms":1}],"store":[{"kind":"control record conditional put","calls":2,"ms":8,"max_ms":4},{"kind":"index get","calls":1,"ms":4,"max_ms":4}],"store_after":[],"attach":[{"region":"root","ms":1,"populate_ms":0.2,"populated_pages":3,"populate_commands":1}]}
@@ -16,7 +17,7 @@ const podsLog = `=== pod/sproutfs-host-a
 {"time":"2026-10-04T10:00:05.000Z","level":"INFO","msg":"host: a VM forked","vm":"p","how":"fork","children":["f0"],"local":false,"total_ms":10,"store_ms":0,"steps":[{"name":"confirm","at_ms":0,"took_ms":2},{"name":"seal","at_ms":2,"took_ms":4},{"name":"pause","at_ms":2,"took_ms":3},{"name":"pin","at_ms":6,"took_ms":0.5}],"store":[{"kind":"control record get","calls":1,"ms":2,"max_ms":2}],"store_after":[],"attach":[]}
 not JSON at all
 === pod/sproutfs-host-b
-{"time":"2026-10-04T10:00:05.050Z","level":"INFO","msg":"host: a VM runs","vm":"f0","how":"receive","total_ms":35,"running_ms":15,"store_ms":5,"steps":[{"name":"open","at_ms":0,"took_ms":5},{"name":"release","at_ms":13,"took_ms":2},{"name":"post-copy","at_ms":15,"took_ms":19}],"store":[{"kind":"control record conditional put","calls":1,"ms":5,"max_ms":5}],"store_after":[],"attach":[]}
+2026-10-04T10:00:05.051Z stderr F {"time":"2026-10-04T10:00:05.050Z","level":"INFO","msg":"host: a VM runs","vm":"f0","how":"receive","total_ms":35,"running_ms":15,"store_ms":5,"steps":[{"name":"open","at_ms":0,"took_ms":5},{"name":"release","at_ms":13,"took_ms":2},{"name":"post-copy","at_ms":15,"took_ms":19}],"store":[{"kind":"control record conditional put","calls":1,"ms":5,"max_ms":5}],"store_after":[],"attach":[]}
 {"time":"2026-10-04T10:00:04.000Z","level":"INFO","msg":"host: a VM runs","vm":"r","how":"open","resumed":true,"total_ms":21,"running_ms":20,"store_ms":9,"steps":[{"name":"open","at_ms":0,"took_ms":9},{"name":"state","at_ms":9,"took_ms":4},{"name":"release","at_ms":19,"took_ms":1}],"store":[],"store_after":[],"attach":[]}
 `
 

@@ -295,13 +295,25 @@ run() {
     remote "$server" 'tar -czf /tmp/sproutfs-start.tar.gz -C /tmp sproutfs-start' || true
     "${cloud[@]}" compute scp --zone="$zone" "$server:/tmp/sproutfs-start.tar.gz" "$results/" || true
     tar -xzf "$results/sproutfs-start.tar.gz" -C "$results" && rm -f "$results/sproutfs-start.tar.gz"
+    # kubectl logs prints only a container's current log file, and the polling
+    # of the agents fills one every few minutes. The node keeps the files it
+    # rotated, so every host's whole log is read from its node.
+    local node
+    for node in "${nodes[@]}"; do
+        # shellcheck disable=SC2016 # expanded by the node's shell
+        remote "$node" 'sudo sh -c "for f in /var/log/pods/sproutfs_sproutfs-host-*/host/0.log*; do
+            case \$f in *.gz) zcat \$f ;; *) cat \$f ;; esac; done"' > "$results/sproutfs-start/$node.log"
+    done
     [[ $status == 0 ]] || { echo "The run failed; see $results/run.log." >&2; return 1; }
     summary
 }
 
 summary() {
+    # The nodes' files hold everything pods.log does, and more.
+    local logs='' node
+    for node in "${nodes[@]}"; do logs+="${logs:+,}$results/sproutfs-start/$node.log"; done
     (cd "$repo" && go run ./cmd/sproutfs-startbench summary -samples "$results/sproutfs-start/samples.jsonl" \
-        -logs "$results/sproutfs-start/pods.log" -store "$results/sproutfs-start/store.json") |
+        -logs "$logs" -store "$results/sproutfs-start/store.json") |
         tee "$results/summary.md"
 }
 
