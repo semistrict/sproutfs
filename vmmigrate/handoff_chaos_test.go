@@ -117,13 +117,15 @@ func stores(random *rand.Rand, m *machine) {
 
 // Failure to resume is an explicit error, never a successful handoff. This is
 // the supervisor contract when a canceled/failed stop cannot safely run again.
+// The migration runs under the cluster's runtime, so a guard SPROUTFS_SIM_BUG
+// names is on in it.
 func TestMigrationReportsFailedResumption(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		m := newMigration(t)
 		m.machine.failStop = errInjected
 		resumeFailure := errors.New("supervisor cannot resume")
 		process := &failedRelease{machine: m.machine, err: resumeFailure}
-		handoff, err := vmmigrate.Migrate(t.Context(), m.vm, process, m.pages, vmmigrate.Options{})
+		handoff, err := vmmigrate.Migrate(m.machine.ctx(), m.vm, process, m.pages, vmmigrate.Options{})
 		if !errors.Is(err, errInjected) || !errors.Is(err, resumeFailure) {
 			t.Fatalf("lost a migration/resumption error: %v", err)
 		}

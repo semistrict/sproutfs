@@ -169,8 +169,17 @@ def main():
     # turns exactly one of them on.
     guarded = output / "guards"
     guarded.mkdir()
+    # A guard whose tests run on one system only is checked only where the
+    # binaries are built for it: a launcher with GOOS set is how Linux is.
+    target = env.get("GOOS") or subprocess.check_output(["go", "env", "GOOS"], env=env, text=True).strip()
     for guard in guards:
         package = guard["package"]
+        if guard.get("goos", target) != target:
+            report["guards"].append({"id": guard["id"], "purpose": guard["purpose"], "runs": [],
+                                     "outcome": "skipped-goos"})
+            save()
+            print(f"{guard['id']}: skipped, {guard['goos']} only", flush=True)
+            continue
         binary, built = build(package, guarded)
         record = {"id": guard["id"], "purpose": guard["purpose"], "runs": [built], "outcome": "build-error"}
         report["guards"].append(record)
@@ -235,7 +244,7 @@ def main():
     print(json.dumps(report["summary"], indent=2))
     if any(r["status"] != "passed" for r in report["restored"]):
         raise SystemExit("Restored baseline failed")
-    if any(m["outcome"] != "killed-guard" for m in report["guards"]):
+    if any(m["outcome"] not in ("killed-guard", "skipped-goos") for m in report["guards"]):
         raise SystemExit(1)
     if any(m["outcome"] != "killed-scheduled" for m in report["mutants"]):
         raise SystemExit(1)

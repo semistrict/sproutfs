@@ -33,12 +33,14 @@ func sharedCopy(t *testing.T) (f *fixture, a *vmmemory.MemoryRegion, am *mapping
 	return f, a, am, ab, b, bm
 }
 
-// giveBack is the session's give-back of a memory region's cold copies.
-func giveBack(t *testing.T, r *vmmemory.MemoryRegion) int {
-	t.Helper()
-	given, err := r.GiveBackColdCopies(t.Context())
+// giveBack is the session's give-back of a memory region's cold copies. It
+// runs under the fixture's runtime, so a give-back guard SPROUTFS_SIM_BUG
+// names is on in it.
+func (f *fixture) giveBack(r *vmmemory.MemoryRegion) int {
+	f.t.Helper()
+	given, err := r.GiveBackColdCopies(f.ctx)
 	if err != nil {
-		t.Fatalf("giving back: %v", err)
+		f.t.Fatalf("giving back cold copies: %v", err)
 	}
 	return given
 }
@@ -50,7 +52,7 @@ func TestAnUnchangedCopyIsGivenBackWithoutACheckpoint(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f, a, am, _, _, bm := sharedCopy(t)
 		maps, revokes, protects := am.maps, am.revokes, am.protects
-		if given := giveBack(t, a); given != 1 {
+		if given := f.giveBack(a); given != 1 {
 			t.Fatalf("the give-back gave back %d pages, want exactly one", given)
 		}
 		if am.pages[0].place != bm.pages[0].place {
@@ -74,7 +76,7 @@ func TestAnUnchangedCopyIsGivenBackWithoutACheckpoint(t *testing.T) {
 			t.Fatalf("the memory region still holds a write since %v: %v", stats.DirtySince, err)
 		}
 		// Nothing is left to compare, so the next give-back does nothing.
-		if given := giveBack(t, a); given != 0 || hostStats(t, f).GiveBackCompares != 1 {
+		if given := f.giveBack(a); given != 0 || hostStats(t, f).GiveBackCompares != 1 {
 			t.Fatalf("a second give-back gave back %d and compared again", given)
 		}
 	})
@@ -87,7 +89,7 @@ func TestAnUnchangedCopyIsGivenBackWithoutACheckpoint(t *testing.T) {
 func TestAGuestReadAfterAGiveBackMakesNoNewCopy(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f, a, am, _, _, _ := sharedCopy(t)
-		giveBack(t, a)
+		f.giveBack(a)
 		before := hostStats(t, f)
 		if got := access(t, a, am, 0, false)[0]; got != 1 {
 			t.Fatalf("the page given back reads %d, want the byte the volume holds", got)
@@ -112,7 +114,7 @@ func TestACopyWrittenDuringTheCompareIsKept(t *testing.T) {
 			am.onProtect = nil
 			am.arena.page(copied)[0] = 99
 		}
-		if given := giveBack(t, a); given != 0 {
+		if given := f.giveBack(a); given != 0 {
 			t.Fatalf("the give-back gave back %d pages the guest stored into, want none", given)
 		}
 		if p := am.pages[0]; p.place != copied || !p.writable {
@@ -126,7 +128,7 @@ func TestACopyWrittenDuringTheCompareIsKept(t *testing.T) {
 		if got := access(t, b, bm, 0, false); got[0] != 1 {
 			t.Fatalf("the sibling reads %d, want the byte the volume holds", got[0])
 		}
-		if given := giveBack(t, a); given != 0 || hostStats(t, f).GiveBackCompares != 1 {
+		if given := f.giveBack(a); given != 0 || hostStats(t, f).GiveBackCompares != 1 {
 			t.Fatalf("a second give-back gave back %d and compared the changed copy again", given)
 		}
 		f.mustCheckpoint(a, ab)
@@ -155,7 +157,7 @@ func TestAStoreThatTrapsDuringTheCompareIsNotLost(t *testing.T) {
 			}
 		}
 		copies := hostStats(t, f).CopyOnWrites
-		if given := giveBack(t, a); given != 1 {
+		if given := f.giveBack(a); given != 1 {
 			t.Fatalf("the give-back gave back %d pages, want exactly one", given)
 		}
 		if err := <-stored; err != nil {
@@ -187,14 +189,14 @@ func TestACopyWhoseMappingIsRefusedIsGivenBackByTheNextTry(t *testing.T) {
 		f, a, am, _, _, bm := sharedCopy(t)
 		copied := am.pages[0].place
 		am.refuseMap = true
-		if given := giveBack(t, a); given != 0 {
+		if given := f.giveBack(a); given != 0 {
 			t.Fatalf("the give-back gave back %d pages with its mapping refused, want none", given)
 		}
 		if p := am.pages[0]; p.place != copied || !p.writable {
 			t.Fatalf("the guest maps %+v, want its own copy writable again", p)
 		}
 		am.refuseMap = false
-		if given := giveBack(t, a); given != 1 {
+		if given := f.giveBack(a); given != 1 {
 			t.Fatalf("the next try gave back %d pages, want exactly one", given)
 		}
 		if am.pages[0].place != bm.pages[0].place {
@@ -227,16 +229,6 @@ func coldCopy(t *testing.T, kind vmmemory.MemoryRegionKind) (f *fixture, a *vmme
 	return f, a, am, bm
 }
 
-// giveBackColdCopies gives back the cold copies one memory region recorded.
-func giveBackColdCopies(t *testing.T, r *vmmemory.MemoryRegion) int {
-	t.Helper()
-	given, err := r.GiveBackColdCopies(t.Context())
-	if err != nil {
-		t.Fatalf("giving back cold copies: %v", err)
-	}
-	return given
-}
-
 // A cold copy the guest never stored into goes back as soon as the session asks,
 // with no interval and no checkpoint, whatever kind of memory it is: a disk's
 // copy is no more the guest's state than a RAM one's.
@@ -245,7 +237,7 @@ func TestAColdCopyIsGivenBackAtOnce(t *testing.T) {
 		t.Run(kind.String(), func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				f, a, am, bm := coldCopy(t, kind)
-				if given := giveBackColdCopies(t, a); given != 1 {
+				if given := f.giveBack(a); given != 1 {
 					t.Fatalf("gave back %d cold copies, want exactly one", given)
 				}
 				if am.pages[0].place != bm.pages[0].place || am.pages[0].writable {
@@ -257,7 +249,7 @@ func TestAColdCopyIsGivenBackAtOnce(t *testing.T) {
 						stats.GiveBackCompares, stats.GivenBackPages, stats.DirtyPages)
 				}
 				// Each cold copy is given back once: nothing is left to take.
-				if given := giveBackColdCopies(t, a); given != 0 || hostStats(t, f).GiveBackCompares != 1 {
+				if given := f.giveBack(a); given != 0 || hostStats(t, f).GiveBackCompares != 1 {
 					t.Fatalf("a second call gave back %d and compared again", given)
 				}
 			})
@@ -272,7 +264,7 @@ func TestAColdCopyTheGuestStoredIntoIsKept(t *testing.T) {
 		f, a, am, bm := coldCopy(t, vmmemory.Ram)
 		copied := am.pages[0].place
 		am.arena.page(copied)[0] = 77
-		if given := giveBackColdCopies(t, a); given != 0 {
+		if given := f.giveBack(a); given != 0 {
 			t.Fatalf("gave back %d cold copies the guest stored into, want none", given)
 		}
 		if p := am.pages[0]; p.place != copied || !p.writable {
@@ -299,7 +291,7 @@ func TestACopyOfAMappedPageIsNotAColdCopy(t *testing.T) {
 		a, am, _ := f.memoryRegion(4)
 		access(t, a, am, 0, false)
 		access(t, a, am, 0, true)
-		if given := giveBackColdCopies(t, a); given != 0 {
+		if given := f.giveBack(a); given != 0 {
 			t.Fatalf("gave back %d copies of a page the guest mapped, want none", given)
 		}
 		if s := hostStats(t, f); s.GiveBackCompares != 0 {

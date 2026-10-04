@@ -43,21 +43,21 @@
   },
   {
     "id": "migration-corrupt-fallback",
-    "package": "internal/simtest",
-    "run": "^TestSeededTopologyCampaign$",
-    "purpose": "Return zeros instead of volume bytes when the page source fails. Only a campaign whose faults take a source away mid-stream falls back at all, which is why this is the generated schedule's entry rather than the recorded scenario's."
+    "package": "vmmigrate",
+    "run": "^TestADestinationWhoseSourceIsGoneReadsTheCheckpoint$",
+    "purpose": "Return zeros instead of volume bytes when the source answers that it no longer serves the VM. Its test is a destination whose source is released before its first read, over a checkpoint that holds every byte the guest wrote, so zeros differ from what the volume holds."
   },
   {
     "id": "migration-skip-resume",
-    "package": "internal/simtest",
-    "run": "^TestSeededTopologyCampaign$",
-    "purpose": "Leave the source sealed or paused after an abandoned migration."
+    "package": "vmmigrate",
+    "run": "^(TestFailedStopResumesTheGuest|TestMigrationReportsFailedResumption)$",
+    "purpose": "Leave the source sealed or paused after an abandoned migration. One test finds the guest paused, the other the release's failure missing from the error. Each fails alone."
   },
   {
     "id": "migration-give-up-first-receive",
     "package": "internal/simtest",
-    "run": "^TestTwoWritersOfOneVMNeverMixAcrossASwizzle$",
-    "purpose": "Give a handoff up after its first failed receive while the source still holds its pages. The swizzle campaign's separated links fail a first receive on every seed, so this is its entry."
+    "run": "^(TestAReceiveIsRetriedUntilItsDestinationReachesTheStore|TestAHandoffIsGivenUpOnlyWhenItsSourceStopsHoldingIt)$",
+    "purpose": "Give a handoff up after its first failed receive while the source still holds its pages. One scenario's destination cannot reach the store for ten seconds, so only a retry hands the guest over; the other's refuses until the hold is over, which the handoff must outlast. Each fails alone."
   },
   {
     "id": "migration-ignore-source-hold",
@@ -97,9 +97,9 @@
   },
   {
     "id": "pager-forget-spill",
-    "package": "internal/simtest",
-    "run": "^TestSeededTopologyUnderBuggify$",
-    "purpose": "Forget that evicted private bytes exist in scratch storage. Only the buggified campaign evicts enough to spill, so this is the entry the per-site injection made detectable."
+    "package": "vmmemory",
+    "run": "^TestASpilledPageFaultsBackWhatTheGuestStored$",
+    "purpose": "Forget that evicted private bytes exist in scratch storage. Its test spills a page the guest stored into, twice, and faults it back each time."
   },
   {
     "id": "spill-sparse",
@@ -109,9 +109,9 @@
   },
   {
     "id": "pager-give-back-changed-copy",
-    "package": "internal/simtest",
-    "run": "^TestSeededTopologyCampaign$",
-    "purpose": "Give back a RAM copy the guest stored into, as though it still held its origin's bytes. The campaign's give-back checks every page the guest maps against what it wrote."
+    "package": "vmmemory",
+    "run": "^TestAColdCopyTheGuestStoredIntoIsKept$",
+    "purpose": "Give back a cold copy the guest stored into, as though it still held its origin's bytes."
   },
   {
     "id": "pager-zero-new-page",
@@ -146,30 +146,40 @@
   {
     "id": "vmmachine-accept-reserved-load",
     "package": "vmmachine",
+    "goos": "linux",
+    "root": true,
     "run": "^TestAdversarialStarters$",
     "purpose": "Accept a Starter's snapshot load request that names a key this package loads. Linux only, as root."
   },
   {
     "id": "vmmachine-skip-owner",
     "package": "vmmachine",
+    "goos": "linux",
+    "root": true,
     "run": "^TestAdversarialStarters$",
     "purpose": "Leave the prepared directory and its sockets to this process instead of the placement's Owner. Linux only, as root."
   },
   {
     "id": "vmmachine-give-host-path",
     "package": "vmmachine",
+    "goos": "linux",
+    "root": true,
     "run": "^TestAdversarialStarters$",
     "purpose": "Give the VMM host paths instead of the placement's Within. Linux only, as root."
   },
   {
     "id": "vmmachine-prepare-twice",
     "package": "vmmachine",
+    "goos": "linux",
+    "root": true,
     "run": "^TestAdversarialStarters$",
     "purpose": "Let a Starter prepare one launch twice. Linux only, as root."
   },
   {
     "id": "vmmachine-skip-peer-check",
     "package": "vmmachine",
+    "goos": "linux",
+    "root": true,
     "run": "^TestAdversarialStarters$",
     "purpose": "Admit a memory session from a process other than the VMM its Starter reported. Linux only, as root."
   },

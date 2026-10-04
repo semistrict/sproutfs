@@ -246,16 +246,23 @@ func TestReleasedSourceSendsTheDestinationToItsVolume(t *testing.T) {
 
 // TestFailedStopResumesTheGuest requires that a migration abandoned during the
 // pause put the guest back exactly where it was, with its memory unsealed and
-// its log still its own.
+// its log still its own. The migration runs under the cluster's runtime, so
+// a guard SPROUTFS_SIM_BUG names is on in it.
 func TestFailedStopResumesTheGuest(t *testing.T) {
 	m := newMigration(t)
 	m.machine.start(4)
 	m.machine.failStop = errInjected
-	if _, err := vmmigrate.Migrate(t.Context(), m.vm, m.machine, m.pages, vmmigrate.Options{}); !errors.Is(err, errInjected) {
+	if _, err := vmmigrate.Migrate(m.machine.ctx(), m.vm, m.machine, m.pages, vmmigrate.Options{}); !errors.Is(err, errInjected) {
 		t.Fatalf("failed stop reported %v", err)
 	}
 	if status := m.vm.Status(); status.HandedOff || status.Err != nil {
 		t.Fatalf("failed stop gave the log up: %+v", status)
+	}
+	// The release is what restarts the guest, and it has happened by the time
+	// the migration reports its failure. A guest left paused would store
+	// nothing more, and waiting for it to would wait for ever.
+	if !m.machine.isRunning() {
+		t.Fatal("the failed stop left the guest paused")
 	}
 	m.machine.storedMore(t, m.machine.stored())
 	m.machine.failStop = nil
@@ -270,6 +277,47 @@ func TestFailedStopResumesTheGuest(t *testing.T) {
 	}
 	if err := destination.verify(t.Context(), model); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestADestinationWhoseSourceIsGoneReadsTheCheckpoint: a source that answers
+// that it no longer serves the VM sends the destination to its own volume for
+// the rest of the read that heard it, and for every read after. The volume
+// holds the checkpoint the handoff selected, and the guest stored nothing since,
+// so every page reads back exactly what the guest wrote. The guest's reads run
+// under the cluster's runtime, so a guard SPROUTFS_SIM_BUG names is on in them.
+func TestADestinationWhoseSourceIsGoneReadsTheCheckpoint(t *testing.T) {
+	m := newMigration(t)
+	ctx := m.machine.ctx()
+	// The guest is quiet, so the checkpoint holds every byte it wrote and the
+	// handoff names no page only the source has.
+	if err := m.machine.checkpoint(ctx, m.vm); err != nil {
+		t.Fatal(err)
+	}
+	model := m.machine.snapshot()
+	handoff, err := vmmigrate.Migrate(ctx, m.vm, m.machine, m.pages, vmmigrate.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, memoryRegion := range handoff.MemoryRegions {
+		if len(memoryRegion.Unpublished) != 0 {
+			t.Fatalf("a quiet guest's handoff names %v of %s as the source's alone",
+				memoryRegion.Unpublished, memoryRegion.Name)
+		}
+	}
+	// The source stops serving the VM before the destination asks it for
+	// anything, so the first read of each memory region is the one that hears it.
+	if err := m.pages.Release(handoff.VMID); err != nil {
+		t.Fatalf("releasing a handoff that names no page of the source's own: %v", err)
+	}
+	m.machine.close()
+	received, destination := m.receive(t, handoff)
+	if err := destination.verify(ctx, model); err != nil {
+		t.Fatalf("a destination whose source is gone read %v, want the checkpoint's bytes", err)
+	}
+	if stats := received.Stats(); stats.PeerPages != 0 || stats.VolumePages == 0 || stats.Requests == 0 {
+		t.Fatalf("read %d peer and %d volume pages in %d requests; want every page from the volume once "+
+			"the source answered that it was gone", stats.PeerPages, stats.VolumePages, stats.Requests)
 	}
 }
 

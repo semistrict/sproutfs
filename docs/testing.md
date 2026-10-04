@@ -1820,11 +1820,11 @@ SPROUTFS_SIM_BUG=migration-accept-missing-memoryRegion \
 SPROUTFS_SIM_BUG=migration-corrupt-peer-page \
   go test ./internal/simtest -run '^TestScheduledWorldReproduces$' -count=1
 SPROUTFS_SIM_BUG=migration-corrupt-fallback \
-  go test ./internal/simtest -run '^TestSeededTopologyCampaign$' -count=1
+  go test ./vmmigrate -run '^TestADestinationWhoseSourceIsGoneReadsTheCheckpoint$' -count=1
 SPROUTFS_SIM_BUG=migration-skip-resume \
-  go test ./internal/simtest -run '^TestSeededTopologyCampaign$' -count=1
+  go test ./vmmigrate -run '^(TestFailedStopResumesTheGuest|TestMigrationReportsFailedResumption)$' -count=1
 SPROUTFS_SIM_BUG=migration-give-up-first-receive \
-  go test ./internal/simtest -run '^TestTwoWritersOfOneVMNeverMixAcrossASwizzle$' -count=1
+  go test ./internal/simtest -run '^(TestAReceiveIsRetriedUntilItsDestinationReachesTheStore|TestAHandoffIsGivenUpOnlyWhenItsSourceStopsHoldingIt)$' -count=1
 SPROUTFS_SIM_BUG=migration-ignore-source-hold \
   go test ./internal/simtest -run '^(TestAMigrationWhoseSourceIsCutOffEndsAtItsHold|TestARemoteForkWhoseParentIsCutOffEndsAtItsHold)$' -count=1
 SPROUTFS_SIM_BUG=migration-retry-beside-a-receive \
@@ -1840,9 +1840,9 @@ SPROUTFS_SIM_BUG=migration-stream-in-any-order \
 SPROUTFS_SIM_BUG=pager-zero-new-page \
   go test ./internal/simtest -run '^TestScheduledWorldReproduces$' -count=1
 SPROUTFS_SIM_BUG=pager-forget-spill \
-  go test ./internal/simtest -run '^TestSeededTopologyUnderBuggify$' -count=1
+  go test ./vmmemory -run '^TestASpilledPageFaultsBackWhatTheGuestStored$' -count=1
 SPROUTFS_SIM_BUG=pager-give-back-changed-copy \
-  go test ./internal/simtest -run '^TestSeededTopologyCampaign$' -count=1
+  go test ./vmmemory -run '^TestAColdCopyTheGuestStoredIntoIsKept$' -count=1
 SPROUTFS_SIM_BUG=spill-sparse \
   go test ./vmmemory -run '^TestASpillSucceedsOnADiskFilledFromOutside$' -count=1
 SPROUTFS_SIM_BUG=diskcache-skip-key-check \
@@ -1883,18 +1883,52 @@ SPROUTFS_SIM_BUG=stripe-stop-at-first-failure \
   go test ./stripe -run '^TestOneWrongStripeAmongKPlusOneIsFound$' -count=1
 ```
 
-Each invocation must fail. Three of them belong to the generated schedule and
-not to the recorded scenario, because they break a fault's own path:
+Each invocation must fail. `just check-guards` runs every entry and fails if
+any of them passes; `just check` runs it, and so does CI. It builds each
+package's test binary once, runs each entry once with no guard on, and then
+once with its guard on. It takes about fifteen seconds once the binaries are
+built. The `vmmachine` entries name `"goos": "linux"` and `"root": true`, and
+the check skips them anywhere else, because their test skips itself there. To
+show that an entry fails every time rather than once, run it again and again:
 
-- `pager-forget-spill` needs a pager that evicts enough to spill a private page
-  and fault it back.
-- `migration-corrupt-fallback` needs a destination whose source is removed
-  mid-stream.
-- `migration-skip-resume` needs a migration that was abandoned after its guest
-  had already stopped.
+```sh
+python3 scripts/check-guards.py --repeat 5 --guard pager-forget-spill
+```
 
-These three show that the per-site injection and the ambient faults are worth
-their cost.
+A guard is only consulted under a context that carries a simulated runtime. A
+test that calls the code under a bare `t.Context()` never turns its guard on,
+however directly it tests the property. The guard is only as good as the test
+that names it, and that test has to run the guard's path under the runtime.
+
+The check exists because five guards rotted without anyone seeing. Their
+tests passed with the guard on, on main. Each named a campaign that no longer
+reached the guard's path, or never did:
+
+- `pager-forget-spill` named the buggified campaign. Since the isolated arena
+  became the default, that campaign's evictions take only clean pages, so it
+  spills nothing. It still fails under `SPROUTFS_ARENA=shared`.
+- `pager-give-back-changed-copy` named the generated schedule, which gave RAM
+  back on an interval. That pass was removed, and only the cold-copy
+  give-back is left. The campaign makes no cold copy.
+- `migration-give-up-first-receive` named the swizzle campaign. Its separated
+  links used to fail a first receive on every seed. Since the peer server's
+  transport waits out a separation inside the receive, no receive fails.
+- `migration-corrupt-fallback` and `migration-skip-resume` named the generated
+  schedule. Its seeds reach neither path, and it passed with either guard on
+  from the first commit of this repository. The `vmmigrate` tests of the
+  fallback and of the abandoned migration did not consult them. They ran
+  under a bare context, and the fallback tests read volumes of zeros, which a
+  fallback that returns zeros matches.
+
+Each now names a focused test. `TestASpilledPageFaultsBackWhatTheGuestStored`
+spills a page the guest stored into, twice, and faults it back.
+`TestAColdCopyTheGuestStoredIntoIsKept` gives back a cold copy the guest
+stored into, under the fixture's runtime.
+`TestADestinationWhoseSourceIsGoneReadsTheCheckpoint` releases the source
+before the destination reads anything, over a checkpoint of nonzero bytes.
+`TestFailedStopResumesTheGuest` and `TestMigrationReportsFailedResumption`
+abandon a migration at its pause under the cluster's runtime. The retry
+scenarios fail a first receive on purpose.
 
 `spill-sparse` leaves a pager's spill file sparse. Its test fills the
 simulated filesystem from outside once the pager has started, and the guest's
@@ -1916,14 +1950,13 @@ share the cluster cache is on for, so a host whose membership holds others keeps
 pulled checkpoint as stripes it cannot rebuild alone. The two
 `stripe-` guards rebuild from a stripe of another code whose length fits, and
 give up when the first k fail instead of trying other sets.
-`pager-give-back-changed-copy` belongs to the generated schedule
-too. The recorded scenario runs no give-back. A campaign runs one at the end of
-one turn of its stores in four, as a host's interval would, and checks at once
-that every page its guest maps reads what the guest wrote. The guard gives back
-a copy the guest stored into, and seeds 1, 7 and 23 fail on that check. `migration-give-up-first-receive` belongs to the two-writer
-campaign. It gives a handoff up after its first failed receive. The campaign's
-separated links fail a first receive on every one of its sixteen seeds, and it
-requires the guest to be handed over, not taken over.
+`pager-give-back-changed-copy` gives back a cold copy the guest stored into,
+as though it still held its origin's bytes. Its test finds the copy given back
+and the guest's store gone. `migration-give-up-first-receive` gives a handoff up
+after its first failed receive. In one retry scenario the destination cannot
+reach the store for ten seconds, so the handover must retry it; in the other
+the destination refuses until the source's hold is over, and the handoff must
+last that long.
 `migration-ignore-source-hold` belongs to two scenarios of its own. It keeps a
 receive waiting on a listed source that nothing can reach after the source's
 hold is over: a migration's source in one, a fork's parent's host in the
@@ -2470,7 +2503,8 @@ the whole `vmmachine` suite there. Its Firecracker tests skip, because the
 runner clears the `SPROUTFS_*` settings that name the Firecracker assets.
 
 `killed-guard` means the invocation that `guards.json` names failed with the
-guard enabled. `killed-scheduled` means a scheduled test failed with the source
+guard enabled. `skipped-goos` is a guard whose entry names another system than
+the one the binaries are built for. `killed-scheduled` means a scheduled test failed with the source
 mutation installed. `killed-full` means only the broader suite caught it. Build
 errors, missing tests, process errors and timeouts are separate outcomes, not
 successful kills. The command exits nonzero unless a scheduled test kills every

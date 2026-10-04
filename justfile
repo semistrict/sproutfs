@@ -17,7 +17,7 @@ test-race:
     go test -race ./...
 
 # Everything a push has to pass; .github/workflows/check.yml runs these recipes.
-check: determinism check-go check-proto check-shell test-shell check-rust check-spec
+check: determinism check-go check-guards check-proto check-shell test-shell check-rust check-spec
 
 # test-knobs runs the campaigns with a seed's own tunables rather than the
 # deployment's: part sizes, pager budgets, intervals and holds drawn per seed,
@@ -45,6 +45,13 @@ check-go:
     GOOS=darwin go vet ./...
     go test ./...
     SPROUTFS_ARENA=shared go test ./vmmemory/... ./host/... ./vmmigrate/... ./internal/simtest/... ./vmmachine/...
+
+# check-guards runs every in-tree bug guard in scripts/mutation/guards.json
+# against the tests it names and fails if those tests pass with it on: a guard
+# its tests no longer kill protects nothing. About fifteen seconds once the test
+# binaries are built. See "Negative tests in the tree" in docs/testing.md.
+check-guards:
+    python3 scripts/check-guards.py
 
 check-proto:
     buf lint
