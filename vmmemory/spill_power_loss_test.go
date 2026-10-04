@@ -117,11 +117,13 @@ var _ platform.AllocatingFile = (*survivingSpill)(nil)
 // resolves unsynced writes at a power loss.
 func spillFixture(t *testing.T, seed uint64) (*fixture, *vmmemory.MemoryRegion, *mapping, *survivingSpill) {
 	t.Helper()
-	disk := sim.New(sim.Config{Seed: seed}).NewDisk("pager", sim.DiskConfig{PowerLossFaults: true})
+	runtime := sim.New(sim.Config{Seed: seed})
+	ctx := sim.WithRuntime(t.Context(), runtime)
+	disk := runtime.NewDisk("pager", sim.DiskConfig{PowerLossFaults: true})
 	spill := openSurvivingSpill(t, disk, "spill")
 	a := newArena(pageSize)
 	cfg := vmmemory.Config{PageSize: uint64(pageSize), ResidentPages: 2, LogicalPages: 4, DirtyPages: 2}
-	h, err := vmmemory.New(t.Context(), testresource.New(), cfg, a, spill)
+	h, err := vmmemory.New(ctx, testresource.New(), cfg, a, spill)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +138,7 @@ func spillFixture(t *testing.T, seed uint64) (*fixture, *vmmemory.MemoryRegion, 
 	if err := spill.Sync(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	f := &fixture{t: t, h: h, a: a, disk: disk, pageSize: pageSize,
+	f := &fixture{t: t, ctx: ctx, h: h, a: a, disk: disk, pageSize: pageSize,
 		source: control.Ref{VM: vmName(t), Sequence: 1}}
 	r, m, _ := f.memoryRegion(3)
 	return f, r, m, spill

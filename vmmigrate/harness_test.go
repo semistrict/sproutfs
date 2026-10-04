@@ -553,6 +553,13 @@ func (m *machine) storedMore(t *testing.T, than int64) {
 	}
 }
 
+// isRunning reports whether the guest is running rather than paused.
+func (m *machine) isRunning() bool {
+	m.guestMu.Lock()
+	defer m.guestMu.Unlock()
+	return m.running
+}
+
 func (m *machine) stored() int64 {
 	m.modelMu.Lock()
 	defer m.modelMu.Unlock()

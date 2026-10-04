@@ -42,7 +42,7 @@ func TestASealLeavesOutAColdCopyTheGuestDidNotChange(t *testing.T) {
 					t.Fatalf("the volume holds %d and %d, want the 1 it held and the 99 the guest stored",
 						b.data[0], b.data[f.pageSize])
 				}
-				if given := giveBackColdCopies(t, r); given != 1 {
+				if given := f.giveBack(r); given != 1 {
 					t.Fatalf("gave back %d cold copies after the checkpoint, want the one it left out", given)
 				}
 			})
@@ -90,7 +90,7 @@ func TestAnEvictionSpillsAYoungColdCopyAndItsSessionGivesItBack(t *testing.T) {
 		if s := hostStats(t, f); s.Spills != 1 || s.GivenBackPages != 0 {
 			t.Fatalf("spilled %d and gave back %d, want the young cold copy spilled", s.Spills, s.GivenBackPages)
 		}
-		if given := giveBackColdCopies(t, r); given != 1 {
+		if given := f.giveBack(r); given != 1 {
 			t.Fatalf("the session gave back %d cold copies, want the spilled one", given)
 		}
 		if s := hostStats(t, f); s.DirtyPages != 0 || s.GiveBackCompares != 1 {
@@ -177,7 +177,7 @@ func TestAColdCopyWhoseOriginWasEvictedIsComparedWithItsVolume(t *testing.T) {
 			t.Fatalf("the checkpoint holds pages %v, want none", got)
 		}
 		f.finishCheckpoint(r, b)
-		if given := giveBackColdCopies(t, r); given != 1 {
+		if given := f.giveBack(r); given != 1 {
 			t.Fatalf("the session gave back %d cold copies, want the one whose origin went", given)
 		}
 		if s := hostStats(t, f); s.DirtyPages != 0 {
