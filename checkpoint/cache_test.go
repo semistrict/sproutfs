@@ -198,6 +198,35 @@ func TestCacheLRUEvictionUnderSharedPressureAndClear(t *testing.T) {
 	})
 }
 
+// A prefetch's load takes a slot of the prefetches', so a fault never waits
+// for a load slot behind one. With one slot of each, a prefetch's fetch held
+// in the store, a read something waits on still loads its page at once.
+func TestAReadNeverWaitsForALoadSlotBehindAPrefetch(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		store, index, m, cache, objects := cachedFixture(t, 16<<20, 1)
+		readCachedPage(t, store, index, m, 0)
+		objects.block.Store(true)
+		prefetched := make(chan error, 1)
+		go func() {
+			prefetched <- store.Read(checkpoint.WithPrefetch(t.Context()), index, "root", checkpoint.PageSize2MiB,
+				make([]byte, checkpoint.PageSize2MiB))
+		}()
+		<-objects.entered
+		objects.block.Store(false)
+		if stats := cache.Stats(); stats.ActivePrefetches != 1 || stats.ActiveLoads != 1 || stats.PrefetchLoads != 1 {
+			t.Fatalf("with the prefetch's fetch held the cache is at %+v, want one load, the prefetch's", stats)
+		}
+		readCachedPage(t, store, index, m, 2)
+		close(objects.release)
+		if err := <-prefetched; err != nil {
+			t.Fatal(err)
+		}
+		if stats := cache.Stats(); stats.ActivePrefetches != 0 || stats.ActiveLoads != 0 || stats.PeakLoads != 2 {
+			t.Fatalf("the cache ended at %+v, want nothing in flight and two loads at once at its peak", stats)
+		}
+	})
+}
+
 func TestCacheCoalescesMissesAndSurvivesOneCallerLeaving(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		store, index, m, cache, objects := cachedFixture(t, 16<<20, 1)

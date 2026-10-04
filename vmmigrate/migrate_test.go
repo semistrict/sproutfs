@@ -71,8 +71,14 @@ func newMigration(t *testing.T) *migration {
 // what a destination daemon's start function does.
 func (m *migration) receive(t *testing.T, handoff vmmigrate.Handoff) (*vmmigrate.Received, *machine) {
 	t.Helper()
+	return m.receiveUnder(t.Context(), t, handoff)
+}
+
+// receiveUnder is receive with the post-copy stream's requests made under ctx.
+func (m *migration) receiveUnder(ctx context.Context, t *testing.T, handoff vmmigrate.Handoff) (*vmmigrate.Received, *machine) {
+	t.Helper()
 	var destination *machine
-	received, err := vmmigrate.Receive(t.Context(), m.destination, handoff, m.cluster.peers(t, m.cluster.dialer("dest")),
+	received, err := vmmigrate.Receive(ctx, m.destination, handoff, m.cluster.peers(t, m.cluster.dialer("dest")),
 		func(ctx context.Context, vm *volume.VM, backings map[string]vmmemory.Backing, state []byte) (vmmigrate.Runtime, error) {
 			built, err := newMachine(t, m.destPager, vm, backings, state)
 			if err != nil {
@@ -307,14 +313,27 @@ func TestADestinationWhoseSourceIsGoneReadsTheCheckpoint(t *testing.T) {
 	}
 	// The source stops serving the VM before the destination asks it for
 	// anything, so the first read of each memory region is the one that hears it.
+	// The post-copy stream's listing would hear it too, so its requests are
+	// held until the guest has read everything: otherwise which of the two
+	// heard it first would be the Go scheduler's choice.
 	if err := m.pages.Release(handoff.VMID); err != nil {
 		t.Fatalf("releasing a handoff that names no page of the source's own: %v", err)
 	}
 	m.machine.close()
-	received, destination := m.receive(t, handoff)
+	held := make(chan struct{})
+	streamCtx := vmmigrate.WithAdmission(t.Context(), func(ctx context.Context, _ string) error {
+		select {
+		case <-held:
+			return nil
+		case <-ctx.Done():
+			return context.Cause(ctx)
+		}
+	})
+	received, destination := m.receiveUnder(streamCtx, t, handoff)
 	if err := destination.verify(ctx, model); err != nil {
 		t.Fatalf("a destination whose source is gone read %v, want the checkpoint's bytes", err)
 	}
+	close(held)
 	if stats := received.Stats(); stats.PeerPages != 0 || stats.VolumePages == 0 || stats.Requests == 0 {
 		t.Fatalf("read %d peer and %d volume pages in %d requests; want every page from the volume once "+
 			"the source answered that it was gone", stats.PeerPages, stats.VolumePages, stats.Requests)
@@ -372,7 +391,7 @@ func TestReceiveRefusesAMachineMissingAMemoryRegion(t *testing.T) {
 	}
 	model := m.machine.snapshot()
 	var started *partialMachine
-	_, err = vmmigrate.Receive(ctx, m.destination, handoff, m.cluster.peers(t, m.cluster.dialer("dest")),
+	received, err := vmmigrate.Receive(ctx, m.destination, handoff, m.cluster.peers(t, m.cluster.dialer("dest")),
 		func(ctx context.Context, vm *volume.VM, backings map[string]vmmemory.Backing, state []byte) (vmmigrate.Runtime, error) {
 			built, err := newMachine(t, m.destPager, vm, backings, state)
 			if err != nil {
@@ -381,6 +400,12 @@ func TestReceiveRefusesAMachineMissingAMemoryRegion(t *testing.T) {
 			started = &partialMachine{machine: built, missing: "ram0"}
 			return started, nil
 		}, vmmigrate.Options{})
+	if received != nil {
+		// A receive that wrongly went ahead streams pages behind a machine
+		// the test closes. Its stream ends first, or the machine's detach
+		// waits for a stream fault asking a source that is no longer there.
+		t.Cleanup(received.Close)
+	}
 	if !errors.Is(err, vmmigrate.ErrInvalid) {
 		t.Fatalf("a destination without a memory region for ram0 reported %v", err)
 	}

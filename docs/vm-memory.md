@@ -316,7 +316,8 @@ amount of memory in each pager:
 
 | bound | production value | why |
 | --- | --- | --- |
-| `ReadAheadPages` | 8 MiB of this pager's pages — four at 2 MiB, 2,048 at 4 KiB | a boot, a restore and a working set all walk memory forwards, so one fault serves what would otherwise take four. The run lands in consecutive arena slots, so one command installs it |
+| `ReadAheadPages` | 8 MiB of this pager's pages — four at 2 MiB, 2,048 at 4 KiB | a boot, a restore and a working set all walk memory forwards, so one fault serves what would otherwise take four. The faulting page is read first and the rest of the run is prefetched behind it, so a fault that does not walk forwards waits for its page alone. The run lands in consecutive arena slots |
+| `PrefetchRuns` | `ConcurrentIO` | each prefetch holds one read-ahead buffer and the free slots it took, so the bound on them is the same as on the reads faults make |
 | `WriteAheadPages` | the same 8 MiB of this pager's pages — four at 2 MiB, 2,048 at 4 KiB — or one page where that pager's dirty budget holds fewer than 64 such runs | write-ahead serves only fresh zeros. No other memory region shares a hole, so making a store's neighbours private loses no sharing at any page size. The benefit is one fault where a guest writing fresh memory forwards would otherwise take many: 80 % of the pages a 16 GiB guest's boot makes private are two contiguous runs written in order. Every page of the run holds a dirty reservation until the next checkpoint, so a pager whose budget cannot hold 64 runs uses one page |
 | `ConcurrentIO` | four per processor, held between 16 and 256, and never more read-ahead runs than that pager's arena has room for | each permit can hold one read-ahead or spill buffer. So the value sets both the parallelism a node can use and a bound on the buffers it costs |
 | `SettleWorkers` | the node's processors, capped at 64 | a settle compares resident pages and takes no I/O permit, so it is limited by processors. The upload waits for the settle |
@@ -559,29 +560,128 @@ Ordinary volume reads on the fault path add no extra round trip. Migration
 backings may request pages from the source peer, and cold volume loads may read
 object storage. The supervisor's periodic verification confirms ownership.
 
-A read fault serves its whole aligned read-ahead run when it can. The run is one
-pager page by default. Pages already resident under the same page identity are
-mapped without a read. The rest are loaded with **one backing read for the
-window** into consecutive arena slots and installed with one mapping command.
-Their page tables are pre-installed, which avoids missing-page faults while
-those mappings remain valid. Read-ahead uses only free slots and never evicts.
+A read fault serves its whole aligned read-ahead run, but **its own page
+first**. The run is one pager page by default. Pages already resident under the
+same page identity are mapped without a read. The faulting page is read alone,
+installed with those resident pages in one mapping command, and its access is
+resolved: the guest runs again as soon as that one page is in. The rest of the
+run is a **prefetch**: one backing read on a goroutine of its own, started
+beside the fault's read, that the fault never waits for
+(`vmmemory/prefetch.go`). Read-ahead uses only free slots and never evicts.
 Only the faulting page may cause an eviction. Eviction can later revoke a
 mapping and require a refault. The read-ahead run is set per host, and every
 memory region of a host uses it.
 
-That one read asks only for the pages of the window that need bytes. It leaves
-out the pages the memory region already holds, through `vmmemory.SparseLoader`, which
-`volume.Volume` implements. It does not split into several reads around those
-pages. A window is a run of a volume, and the volume decides how to read a run.
-The wanted pages are still grouped by the part that holds their members, with
-one ranged read per part. When a reader leaves out a few pages in the middle of
-a run, the volume reads through them, in the same way as it reads through pages
-that a later checkpoint rewrote. Splitting the read instead put that decision
-in the pager and cost one request per stretch. For example, a 512-page window
-with 64 already-resident pages scattered through it took 65 loads and 195 object
-reads. It now takes one load and three object reads. A backing that cannot be
-asked for part of a range, such as a migration destination's peer backing, is
-still read one stretch of wanted pages at a time.
+Until 2026-10-04 a fault read its whole run before it installed its page. A
+guest that follows pointers knows its next address only once the page it is
+reading is in, so a chain of its faults paid the whole run on every hop. On GCE
+a 4 KiB page from the cluster took 0.65 ms and the 8 MiB run a fault read took
+39 ms; at 2 MiB, 10 ms against 20 ms
+([dependent reads](measurements/gce-dependent-reads-2026-10-03.md)). The run
+was chosen for boots and restores, which walk memory forwards, and it still
+serves them: see [reading forwards](#reading-forwards).
+
+A prefetch's pages land as clean pages under their identities, idle and in the
+sharing index, as a page every memory region has stopped mapping is. The
+prefetch then takes the window's locks, as a fault does, and maps them
+read-only into the memory region whose fault asked for them, so a guest reading
+forwards takes no fault on them. A page is mapped only if the guest still has
+nothing there and the page's identity is still the one that landed. Mapping
+them matters on x86-64: a store trap on a page the guest does not map makes a
+private copy of it, and KVM reports every page it waited for as a store. A page
+that cannot land as a clean shared page is not prefetched and is left to its own
+fault: a page whose bytes go in the memory region's own file, a page a
+migration's source still holds, and a page with no identity. A page the source
+turns out to hold when the read returns is dropped, not mapped.
+
+Nothing waits on a prefetch except a fault on a page that prefetch is already
+reading. That fault waits for the read rather than reading the page again, with
+the memory region given up as a backing read gives it up, and then plans its
+window again from the top. These rules keep a prefetch from costing a fault:
+
+- At most `Config.PrefetchRuns` prefetches read at once, `ConcurrentIO` by
+  default. Past that a fault reads its page and nothing else, and its
+  neighbours fault for themselves.
+- A prefetch takes only slots that are free, giving up idle pages for them as
+  read-ahead always has. Its landed pages are idle until something maps them,
+  so they are the first memory an allocation gives up.
+- An allocation that finds no free slot and no idle page cancels every
+  prefetch still reading and takes their slots as the reads end, before it
+  evicts a page a guest maps.
+- Its reads are marked with `checkpoint.WithPrefetch`. Their peer requests go
+  over the bulk class, on connections of their own and within the host's
+  background budget, so no fault's reply waits behind a prefetch's. The page
+  cache gives their loads slots of their own. A read of the cluster for one
+  asks no second request after the delay, never reads the store as a hedge,
+  and is left out of the delay, which estimates what a fault's read takes.
+- A detach cancels its memory region's prefetches and waits for them to end
+  before it takes anything away, because they read the region's backing.
+
+A post-copy stream's faults read their whole run at once
+(`vmmemory.WithStream`): no guest waits on any one of them.
+
+`Stats.Prefetches` counts the prefetches and `Stats.PrefetchedPages` the pages
+they landed; both are also counted in `Loads` and `LoadedPages`.
+`PrefetchMapped` counts the landed pages mapped as they landed,
+`PrefetchWaits` the faults that waited for a prefetch already reading their
+page, `PrefetchRefused` the runs left unread at the bound, `PrefetchCancelled`
+the prefetches an allocation cancelled, and `PrefetchDropped` the pages a
+prefetch reserved a slot for that never landed. `Stats.Load` times the reads a
+fault waits on, and `Stats.Prefetch` a prefetch's.
+
+That prefetch read asks only for the pages of the window that need bytes. It
+leaves out the faulting page and the pages the memory region already holds,
+through `vmmemory.SparseLoader`, which `volume.Volume` implements. It does not
+split into several reads around those pages. A window is a run of a volume,
+and the volume decides how to read a run. The wanted pages are still grouped
+by the part that holds their members, with one ranged read per part. When a
+reader leaves out a few pages in the middle of a run, the volume reads through
+them, in the same way as it reads through pages that a later checkpoint
+rewrote. Splitting the read instead put that decision in the pager and cost
+one request per stretch. For example, a 512-page window with 64
+already-resident pages scattered through it took 65 loads and 195 object
+reads. It now takes the faulting page's load and one more, and the faulting
+page's object read and three more. A backing that cannot be asked for part of
+a range, such as a migration destination's peer backing, is still read one
+stretch of wanted pages at a time, so its prefetch reads the pages before the
+faulting page and the pages after it apart.
+
+### Reading forwards
+
+A guest that reads its memory in order still reads it in runs. Its first
+fault in a run reads that page and starts the prefetch of the rest. Its next
+fault finds that page in flight, waits for the prefetch, and maps the whole
+run when it lands. So a run costs two faults and two reads, and no page is read
+twice. The page's read overlaps the run's, so a run takes about as long as the
+run's read alone. `TestAGuestReadingForwardsStillReadsItsMemoryInRuns` holds
+the pager to exactly that; the in-tree bug `pager-read-in-flight-again`, which
+reads a page a prefetch is reading again, fails it.
+
+### Reading at random
+
+Only a fault that looks like reading forwards prefetches. A memory region
+remembers the windows of its last eight faults that read its backing. A fault
+prefetches the rest of its run when one of them is its own window or the
+window before, and when the memory region has had no fault yet, because a boot
+and a restore begin by reading forwards. Any other fault reads its page and
+nothing else, and `Stats.PrefetchRandom` counts it. Eight windows let that
+many threads of one guest each read forwards at once.
+
+The reason is processors. A prefetch's pages are checked and decoded as a
+fault's are: at 4 KiB, a run of 2,047 pages from the cluster is about 100 ms
+of processor time. On GCE on 2026-10-04 a chain of dependent 4 KiB faults
+from the cluster, every fault prefetching its run, took 24 ms a hop that
+faulted against 0.67 ms for a page read alone: the prefetches of the hops
+before held the processors the next hop's read needed. A chain at random gains
+nothing from those prefetches. Prefetching only behind a fault that follows a
+recent one, the chain took 3.2 ms a hop, and 41 ms with the run read first.
+From the store, whose reads wait on the network rather than on processors, the
+chain took 31 ms a hop prefetching behind every fault and 29 ms after, against
+25 ms for the page alone and 80 ms with the run first
+([measurement](measurements/gce-fault-first-2026-10-04.md)).
+`TestADependentChainOfFaultsWaitsForOnePageAHop` holds a chain at random to
+one prefetch, its first hop's; the in-tree bug `pager-prefetch-every-fault`
+fails it.
 
 Before the memory region is exposed, attach populates the pages whose identity is
 already resident in the same pager. It loads nothing. The Rust session serves
@@ -670,8 +770,8 @@ Such a start goes through Close, so the scratch does not keep counting a process
 it will never see stop.
 
 A store into a page for which this memory region holds no memory first reads in its
-whole read-ahead run, as a read fault does. It then copies the one page the
-guest stored into. This is necessary because of how KVM behaves on x86-64. KVM
+page, with the rest of its read-ahead run prefetched behind it, as a read fault
+does. It then copies the one page the guest stored into. This is necessary because of how KVM behaves on x86-64. KVM
 finishes a fault that had to wait for the pager from a worker thread. That
 worker asks for the page writable, regardless of the guest's access type. So a guest
 that only reads memory it inherited reaches the pager as a store. When a store
@@ -680,7 +780,8 @@ per 4 KiB. A GCE fan-out on 2026-09-22 took 21,130 faults, and 20,016 of them
 were copy-on-writes.
 
 The run is installed shared. Every page of it except the faulting one is mapped
-read-only under the identity its volume gives it. So the pages the guest reads
+read-only under the identity its volume gives it, the ones already resident by
+the store and the rest by the prefetch as they land. So the pages the guest reads
 next are served without a fault and stay shared. Only the page the guest stored
 into becomes private. The faulting page is not mapped read-only first, because
 its copy is about to replace it. So a store still costs no revocation. The
@@ -869,8 +970,9 @@ each window, then k+1 of the window's ranks, and the store only for a page
 fewer than k stripes of which exist
 ([reading from the cluster](hosting.md#reading-from-the-cluster)). The pager
 does nothing different for any of this. A fault waits for the cluster's read
-as it waits for the store's, and the cluster's read reads the store as well
-once it has waited past its bound. A page rebuilt from stripes is checked by
+of its page as it waits for the store's, and the cluster's read reads the store
+as well once it has waited past its bound. The prefetch of the rest of its run
+reads the cluster as background work, and never reads the store as a hedge. A page rebuilt from stripes is checked by
 its envelope's SHA-256, as a page from the store is.
 
 ### A pulled VM's faults
@@ -2018,8 +2120,10 @@ one memory region's state and is released with that memory region.
 An idle page is memory that nothing uses. So it is the first memory given up,
 and it is never a reason to wait. An allocation that needs a slot takes the
 oldest idle page before it evicts anything a memory region maps. A store's write-ahead
-run and a load's read-ahead take only free slots, and they give up idle pages to
-free slots. Idle pages also act as the cache of the host budget, so the other
+run and a fault's prefetch take only free slots, and they give up idle pages to
+free slots. A prefetch's pages are idle when they land, until it maps them, and
+an allocation short of a slot cancels the prefetches still reading before it
+evicts anything a memory region maps. Idle pages also act as the cache of the host budget, so the other
 pager and the checkpoint cache take them before they wait. A page placed at its
 own offset keeps that offset's extent while it is idle. So a memory region that finds
 no free extent gives up the idle pages of an extent whose memory region has gone.

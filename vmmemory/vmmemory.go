@@ -443,6 +443,12 @@ type Config struct {
 	// Read-ahead only uses free arena slots; it never evicts. Zero selects one
 	// page, and the range cannot exceed 16 MiB.
 	ReadAheadPages int
+	// PrefetchRuns bounds the prefetches reading at once: the rest of the
+	// runs faults read behind their own pages (see prefetch.go). Each holds
+	// one read-ahead buffer and slots of the arena it took while they were
+	// free. Past it a fault reads its own page and nothing else. Zero selects
+	// ConcurrentIO.
+	PrefetchRuns int
 	// WriteAheadPages bounds the run of pages one store into fresh zeros, a
 	// zero-mapped page or a hole the guest never touched, makes private
 	// at once: the faulting page, the fresh zero pages after it and, where its

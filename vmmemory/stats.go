@@ -58,6 +58,23 @@ type Stats struct {
 	// clean pages they covered.
 	Loads, LoadedPages, IdentityHits, Mappings, MappedPages uint64
 	MappingRuns                                             uint64
+	// Prefetches counts the runs read behind the faults that asked for them
+	// (see prefetch.go), each one of Loads, and PrefetchedPages the pages they
+	// landed, each one of LoadedPages. PrefetchMapped counts the landed pages
+	// mapped into the memory region that asked for them as they landed;
+	// the rest waited idle for a fault. PrefetchWaits counts the faults that
+	// waited for a prefetch already reading their page, rather than read it
+	// again. PrefetchRefused counts the runs left unread because as many
+	// prefetches as Config.PrefetchRuns were reading, PrefetchCancelled the
+	// prefetches an allocation cancelled to take their slots rather than
+	// evict a page a guest maps, and PrefetchDropped the pages a prefetch
+	// reserved a slot for that never landed: cancelled, failed, held by a
+	// migration's source, or made resident first by another load.
+	// PrefetchRandom counts the runs left unread because their fault
+	// followed none of its memory region's recent faults.
+	Prefetches, PrefetchedPages, PrefetchMapped, PrefetchWaits uint64
+	PrefetchRefused, PrefetchCancelled, PrefetchDropped        uint64
+	PrefetchRandom                                             uint64
 	// CheckpointPages counts pages as a capture checkpoint takes them, including
 	// those of a seal that failed partway and gave them back. UnchangedPages
 	// counts the pages a settle found to hold exactly the bytes of the page they
@@ -150,7 +167,10 @@ type Stats struct {
 	// behind that pause took — moving each sealed page into the checkpoint —
 	// which runs with the guest already running and holding the memory region, so it
 	// is not in the pause and only a fault of that memory region waits for it.
+	// Prefetch is one prefetch's read, which no fault waits on and Load
+	// leaves out.
 	FaultQueue, Fault, Mapping, Revoke, Protect, Resolve, Load, Seal, SealWalk Latency
+	Prefetch                                                                   Latency
 }
 
 // trapKind is what the kernel said of one page fault it reported: see
@@ -255,6 +275,7 @@ func (h *Host) Stats(ctx context.Context) (Stats, error) {
 	stats.Protect = h.protectLatency.Snapshot()
 	stats.Resolve = h.resolveLatency.Snapshot()
 	stats.Load = h.loadLatency.Snapshot()
+	stats.Prefetch = h.prefetchLatency.Snapshot()
 	stats.Seal = h.sealLatency.Snapshot()
 	stats.SealWalk = h.sealWalkLatency.Snapshot()
 	return stats, h.err

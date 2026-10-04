@@ -215,6 +215,7 @@ func TestMetricsExposeStallsAndFaultLatency(t *testing.T) {
 		Build: hostapi.Build{Version: "v1.2.3", APIRevision: 1, Arena: "isolated"},
 		Pager: hostapi.Pager{RAM: hostapi.PagerKind{DirtyWaits: 4, CheckpointRequests: 3, DirtyStalls: 1,
 			WindowWaits: 6, WindowStalls: 2, RefusedMappings: 5, RepeatedFaults: 9, PacedFaults: 7,
+			PrefetchedPages: 2047, PrefetchWaits: 11, PrefetchCancelled: 3,
 			Fault: hostapi.Latency{Count: 4, TotalNS: 9_000_000_000, Buckets: buckets}}},
 	})
 	for _, want := range []string{
@@ -227,6 +228,9 @@ func TestMetricsExposeStallsAndFaultLatency(t *testing.T) {
 		`sproutfs_pager_refused_mappings_total{kind="ram"} 5`,
 		`sproutfs_pager_repeated_faults_total{kind="ram"} 9`,
 		`sproutfs_pager_paced_faults_total{kind="ram"} 7`,
+		`sproutfs_pager_prefetched_pages_total{kind="ram"} 2047`,
+		`sproutfs_pager_prefetch_waits_total{kind="ram"} 11`,
+		`sproutfs_pager_prefetch_cancelled_total{kind="ram"} 3`,
 		"# TYPE sproutfs_pager_fault_seconds histogram",
 		`sproutfs_pager_fault_seconds_bucket{kind="ram",le="1e-06"} 2`,
 		`sproutfs_pager_fault_seconds_bucket{kind="ram",le="4e-06"} 2`,

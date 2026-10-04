@@ -74,7 +74,9 @@ func (b *peerBacking) LoadUnpublished(ctx context.Context, offset uint64, dst []
 	if err := b.backing.Load(ctx, offset, dst); err != nil {
 		return nil, err
 	}
+	b.installedMu.Lock()
 	b.loads++
+	b.installedMu.Unlock()
 	size := uint64(b.pageSize)
 	pages := uint64(len(dst)) / size
 	result := make([]bool, pages)

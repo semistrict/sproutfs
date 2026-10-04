@@ -286,7 +286,8 @@ func (p *windowPlan) needsLoad(page uint64) bool {
 	h := p.memoryRegion.host
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return h.clean[id] == nil
+	// A page a prefetch is reading is that prefetch's to bring in.
+	return h.clean[id] == nil && h.inflight[id] == nil
 }
 
 // fileOf is the file a load of this page by its identity goes in: the public

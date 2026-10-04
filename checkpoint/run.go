@@ -208,13 +208,17 @@ func (s *Store) fromCluster(ctx context.Context, geometry Geometry, run []pageRe
 		wants[at] = clusterWant{key: diskKey{cacheKey: keys[wanted[position]], span: windowSpan(geometry)},
 			maximum: int(geometry.PageSize), valid: validPage}
 	}
-	hedge := func(ctx context.Context, ats []int) ([][]byte, error) {
-		positions := make([]int, len(ats))
-		for at, want := range ats {
-			positions[at] = wanted[cluster[want]]
+	// A prefetch never reads the store as a hedge: nothing waits on it.
+	var hedge storeHedge
+	if !Prefetching(ctx) {
+		hedge = func(ctx context.Context, ats []int) ([][]byte, error) {
+			positions := make([]int, len(ats))
+			for at, want := range ats {
+				positions[at] = wanted[cluster[want]]
+			}
+			decoded, _, err := s.fromStore(ctx, geometry, run, keys, positions)
+			return decoded, err
 		}
-		decoded, _, err := s.fromStore(ctx, geometry, run, keys, positions)
-		return decoded, err
 	}
 	got, refill, err := s.cache.reader.read(ctx, s.codecs, wants, hedge)
 	if err != nil {

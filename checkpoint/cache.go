@@ -21,8 +21,13 @@ import (
 // CacheConfig bounds simultaneous cache misses. Retention uses the shared host
 // resource budget and yields unused entries to non-cache allocations.
 type CacheConfig struct {
-	// MaxConcurrentLoads bounds the fetches in flight. Default 16.
+	// MaxConcurrentLoads bounds the fetches in flight for reads something
+	// waits on. Default 16.
 	MaxConcurrentLoads int
+	// MaxConcurrentPrefetches bounds the fetches in flight for prefetches
+	// (WithPrefetch). They have slots of their own, so a fault never waits
+	// for a slot behind one. Default MaxConcurrentLoads.
+	MaxConcurrentPrefetches int
 	// Disk is the file on the host's own disk the cache keeps envelopes in:
 	// what a pull copies and what that VM's publications upload. What a file
 	// of this deployment holds is read back when the cache is made; any other
@@ -121,18 +126,24 @@ type Cache struct {
 	unregister func()
 	closed     bool
 	limit      int
-	used       int64
-	entries    map[cacheKey]*list.Element
-	lru        list.List
-	flights    map[cacheKey]*cacheFlight
-	active     int
-	changed    chan struct{}
-	generation uint64
-	hits       uint64
-	misses     uint64
-	coalesced  uint64
-	evictions  uint64
-	peak       int
+	// prefetchLimit bounds the prefetch loads in flight, and prefetches is
+	// how many are; active counts them too.
+	prefetchLimit int
+	prefetches    int
+	used          int64
+	entries       map[cacheKey]*list.Element
+	lru           list.List
+	flights       map[cacheKey]*cacheFlight
+	active        int
+	changed       chan struct{}
+	generation    uint64
+	hits          uint64
+	misses        uint64
+	coalesced     uint64
+	// prefetchLoads counts the loads prefetches started.
+	prefetchLoads uint64
+	evictions     uint64
+	peak          int
 }
 
 // cacheKey names what a cached copy holds. A page's bytes are immutable under
@@ -202,6 +213,8 @@ type cacheLoad struct {
 	keys    []cacheKey
 	flights []*cacheFlight
 	waiters int
+	// prefetch marks a load a prefetch started, which holds a prefetch slot.
+	prefetch bool
 }
 
 // CacheStats reports current occupancy and cumulative accounting. Hits, misses
@@ -213,9 +226,13 @@ type CacheStats struct {
 	// Entries is the number of retained objects.
 	Entries int
 	// ActiveLoads and PeakLoads are the fetches in flight now and the most
-	// that have ever been in flight at once.
+	// that have ever been in flight at once, prefetches among them.
 	ActiveLoads int
 	PeakLoads   int
+	// ActivePrefetches is the fetches in flight now that prefetches started,
+	// and PrefetchLoads how many prefetches have started.
+	ActivePrefetches int
+	PrefetchLoads    uint64
 	// Hits, Misses and CoalescedLoads count reads served from a retained
 	// object, reads that started a fetch, and reads that joined one.
 	Hits           uint64
@@ -240,6 +257,7 @@ func NewCache(ctx context.Context, resources *resource.Budget, config CacheConfi
 	if config.MaxConcurrentLoads == 0 {
 		config.MaxConcurrentLoads = 16
 	}
+	config.MaxConcurrentPrefetches = cmp.Or(config.MaxConcurrentPrefetches, config.MaxConcurrentLoads)
 	config.DiskRegionBytes = cmp.Or(config.DiskRegionBytes, DefaultDiskRegionBytes)
 	config.DiskIndexBytes = cmp.Or(config.DiskIndexBytes, DefaultDiskIndexBytes)
 	config.DiskSecondChanceReads = cmp.Or(config.DiskSecondChanceReads, 1)
@@ -254,7 +272,8 @@ func NewCache(ctx context.Context, resources *resource.Budget, config CacheConfi
 		config.ClusterHedgeFloor < 0 || config.ClusterBound < 0 || config.ClusterStripeTimeout <= 0 {
 		return nil, ErrInvalidConfig
 	}
-	if resources == nil || config.MaxConcurrentLoads < 1 || config.MaxConcurrentLoads > 1024 || config.DiskBytes < 0 ||
+	if resources == nil || config.MaxConcurrentLoads < 1 || config.MaxConcurrentLoads > 1024 ||
+		config.MaxConcurrentPrefetches < 1 || config.MaxConcurrentPrefetches > 1024 || config.DiskBytes < 0 ||
 		config.DiskRegionBytes < minimumDiskRegionBytes || config.DiskRegionBytes > maximumDiskRegionBytes ||
 		config.DiskRegionBytes%diskBlock != 0 || config.DiskIndexBytes < 0 || config.DiskSecondChanceReads < 0 ||
 		config.DiskSecondChanceReads > wordReadsMax || config.ClusterPercent < 0 || config.ClusterPercent > 100 ||
@@ -267,7 +286,8 @@ func NewCache(ctx context.Context, resources *resource.Budget, config CacheConfi
 	settings := diskSettings{regionBytes: config.DiskRegionBytes, indexLimit: config.DiskIndexBytes,
 		threshold: config.DiskSecondChanceReads, deployment: config.Deployment, entropy: config.Entropy,
 		cluster: shared}
-	cache := &Cache{resources: resources, limit: config.MaxConcurrentLoads, cluster: shared, shard: settings,
+	cache := &Cache{resources: resources, limit: config.MaxConcurrentLoads, prefetchLimit: config.MaxConcurrentPrefetches,
+		cluster: shared, shard: settings,
 		entries: make(map[cacheKey]*list.Element), flights: make(map[cacheKey]*cacheFlight), changed: make(chan struct{})}
 	budget := config.Budget
 	if budget == nil && config.DiskBytes > 0 {
@@ -313,7 +333,8 @@ func (c *Cache) Stats() CacheStats {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return CacheStats{ResidentBytes: c.used, Entries: len(c.entries), ActiveLoads: c.active,
-		PeakLoads: c.peak, Hits: c.hits, Misses: c.misses, CoalescedLoads: c.coalesced, Evictions: c.evictions,
+		PeakLoads: c.peak, ActivePrefetches: c.prefetches, PrefetchLoads: c.prefetchLoads,
+		Hits: c.hits, Misses: c.misses, CoalescedLoads: c.coalesced, Evictions: c.evictions,
 		Disk: disk, Shards: shards, Fill: fill, Read: read}
 }
 
@@ -541,7 +562,11 @@ func (c *Cache) admit(ctx context.Context, keys []cacheKey, fetch fetcher) cache
 			wanted = append(wanted, at)
 		}
 	}
-	if len(wanted) > 0 && c.active >= c.limit {
+	// A prefetch's load takes a slot of the prefetches', and every other load
+	// one of the rest, so a fault never waits for a slot a prefetch holds.
+	prefetch := Prefetching(ctx)
+	if len(wanted) > 0 && (prefetch && c.prefetches >= c.prefetchLimit ||
+		!prefetch && c.active-c.prefetches >= c.limit) {
 		return cacheAdmission{wait: c.changed}
 	}
 	found := cacheAdmission{entries: make([]*cacheEntry, len(keys)), flights: make([]*cacheFlight, len(keys))}
@@ -568,7 +593,7 @@ func (c *Cache) admit(ctx context.Context, keys []cacheKey, fetch fetcher) cache
 	// the fetch after the last waiter has left.
 	loadCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	load := &cacheLoad{cancel: cancel, keys: make([]cacheKey, 0, len(wanted)),
-		flights: make([]*cacheFlight, 0, len(wanted)), waiters: len(wanted)}
+		flights: make([]*cacheFlight, 0, len(wanted)), waiters: len(wanted), prefetch: prefetch}
 	for _, at := range wanted {
 		flight := &cacheFlight{done: make(chan struct{}), load: load, waiters: 1, generation: c.generation}
 		c.flights[keys[at]] = flight
@@ -579,6 +604,10 @@ func (c *Cache) admit(ctx context.Context, keys []cacheKey, fetch fetcher) cache
 	}
 	c.active++
 	c.peak = max(c.peak, c.active)
+	if prefetch {
+		c.prefetches++
+		c.prefetchLoads++
+	}
 	go c.run(loadCtx, load, wanted, fetch)
 	return found
 }
@@ -784,6 +813,9 @@ func (c *Cache) finish(load *cacheLoad, entries []*cacheEntry, err error) {
 		close(flight.done)
 	}
 	c.active--
+	if load.prefetch {
+		c.prefetches--
+	}
 	close(c.changed)
 	c.changed = make(chan struct{})
 }

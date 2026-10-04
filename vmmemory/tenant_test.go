@@ -178,8 +178,9 @@ func TestATenantsOwnPageNeverEntersThePublicFile(t *testing.T) {
 			t.Fatalf("alpha maps page 0 as file %d and its own page 1 as file %d, want the public file %d and its shared file 1",
 				am.number(0), am.number(1), publicFile)
 		}
-		if ab.loads != 1 {
-			t.Fatalf("the window read the volume %d times, want once for both files", ab.loads)
+		if ab.loads != 2 {
+			t.Fatalf("the window read the volume %d times, want the faulting page's read and one prefetch for both files",
+				ab.loads)
 		}
 		bb := f.publicBacking("beta", 4)
 		bb.sources = map[uint64]control.Ref{1: {VM: control.InTenant("beta", "vm-b"), Sequence: 3}}

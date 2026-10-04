@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/semistrict/sproutfs/checkpoint"
 	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/internal/blob"
 	"github.com/semistrict/sproutfs/internal/latency"
@@ -108,21 +109,24 @@ type PeerStats struct {
 	// FellBack reports that this memory region will never ask the source again.
 	FellBack bool
 	// Latency is how long this memory region's requests to the source took, guest
-	// faults and the post-copy stream apart.
+	// faults, the post-copy stream and the pager's prefetches apart.
 	Latency RequestLatency
 }
 
 // RequestLatency is how long requests to a migration's source took: a guest
-// fault's and the post-copy stream's, each in total and waiting for room in its
-// class's budget and on a connection.
+// fault's, the post-copy stream's and a prefetch's, each in total and waiting
+// for room in its class's budget and on a connection. A prefetch is the rest
+// of a guest fault's run, read behind it over the bulk class
+// (checkpoint.WithPrefetch).
 type RequestLatency struct {
-	Fault, FaultWait, Stream, StreamWait latency.Snapshot
+	Fault, FaultWait, Stream, StreamWait, Prefetch, PrefetchWait latency.Snapshot
 }
 
 // Merge adds another memory region's latencies to these.
 func (l RequestLatency) Merge(other RequestLatency) RequestLatency {
 	return RequestLatency{Fault: l.Fault.Merge(other.Fault), FaultWait: l.FaultWait.Merge(other.FaultWait),
-		Stream: l.Stream.Merge(other.Stream), StreamWait: l.StreamWait.Merge(other.StreamWait)}
+		Stream: l.Stream.Merge(other.Stream), StreamWait: l.StreamWait.Merge(other.StreamWait),
+		Prefetch: l.Prefetch.Merge(other.Prefetch), PrefetchWait: l.PrefetchWait.Merge(other.PrefetchWait)}
 }
 
 // PeerBacking is a pager backing whose loads ask the source host of a migration
@@ -169,8 +173,9 @@ type PeerBacking struct {
 	// peers holds it.
 	source *peer.Peer
 	// The latency of this memory region's requests to the source, a guest
-	// fault's and the stream's apart, each whole and waiting for room.
-	fault, faultWait, streamed, streamWait latency.Histogram
+	// fault's, the stream's and a prefetch's apart, each whole and waiting for
+	// room.
+	fault, faultWait, streamed, streamWait, prefetched, prefetchWait latency.Histogram
 
 	// mu guards unfetched, which is the part of unpublished the source has not
 	// served yet. It only ever shrinks, and empties when the source may stop
@@ -391,7 +396,8 @@ func (b *PeerBacking) Stats() PeerStats {
 		Requests: b.requests.Load(), Refusals: b.refusals.Load(), Stalls: b.stalls.Load(),
 		Unfetched: b.Unfetched(), Fetched: b.fetched.Load(), FellBack: b.gone(),
 		Latency: RequestLatency{Fault: b.fault.Snapshot(), FaultWait: b.faultWait.Snapshot(),
-			Stream: b.streamed.Snapshot(), StreamWait: b.streamWait.Snapshot()}}
+			Stream: b.streamed.Snapshot(), StreamWait: b.streamWait.Snapshot(),
+			Prefetch: b.prefetched.Snapshot(), PrefetchWait: b.prefetchWait.Snapshot()}}
 }
 
 // Unfetched reports how many pages no checkpoint holds are still only on the
@@ -778,7 +784,10 @@ func (b *PeerBacking) pages(ctx context.Context, first uint64, count int) (peer.
 	b.requests.Add(1)
 	began := b.config.Clock.Now()
 	total, wait := &b.fault, &b.faultWait
-	if peer.ClassOf(ctx) != peer.Fault {
+	switch {
+	case checkpoint.Prefetching(ctx):
+		total, wait = &b.prefetched, &b.prefetchWait
+	case peer.ClassOf(ctx) != peer.Fault:
 		total, wait = &b.streamed, &b.streamWait
 	}
 	reply, err := b.source.Pages(ctx, peer.PageRequest{VM: b.config.VM, Volume: b.config.Volume.Name(),

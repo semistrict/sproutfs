@@ -555,8 +555,10 @@ func (s *supervisor) pagerReport(ctx context.Context, slot pagerSlot, free int) 
 		DirtyWaits: stats.DirtyWaits, CheckpointRequests: stats.CheckpointRequests,
 		DirtyStalls: stats.DirtyStalls, WindowWaits: stats.WindowWaits, WindowStalls: stats.WindowStalls,
 		RefusedMappings: stats.RefusedMappings, RepeatedFaults: stats.RepeatedFaults,
-		PacedFaults: stats.PacedFaults,
-		Fault:       hostapi.LatencyOf(stats.Fault), Load: hostapi.LatencyOf(stats.Load),
+		PacedFaults:     stats.PacedFaults,
+		PrefetchedPages: stats.PrefetchedPages, PrefetchWaits: stats.PrefetchWaits,
+		PrefetchCancelled: stats.PrefetchCancelled,
+		Fault:             hostapi.LatencyOf(stats.Fault), Load: hostapi.LatencyOf(stats.Load),
 		Seal: hostapi.LatencyOf(stats.Seal),
 	}, nil
 }

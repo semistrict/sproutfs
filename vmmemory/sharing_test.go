@@ -2,9 +2,12 @@ package vmmemory_test
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"slices"
+	"sync"
 	"testing"
 	"testing/synctest"
 
@@ -85,18 +88,27 @@ func TestReadAheadLoadsTheWindowContiguouslyAndNeverEvicts(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 8, LogicalPages: 32, DirtyPages: 8, ReadAheadPages: 8})
 		r, m, b := f.memoryRegion(8)
+		var mu sync.Mutex
 		var loads [][2]int
 		b.onLoad = func(offset uint64, length int) {
+			mu.Lock()
+			defer mu.Unlock()
 			loads = append(loads, [2]int{int(offset) / pageSize, length / pageSize})
 		}
 		access(t, r, m, 5, false)
-		// One fault loads its whole window with one read into consecutive
-		// slots and installs it with one mapping command.
-		if len(loads) != 1 || loads[0] != [2]int{0, 8} {
+		// The prefetch's reads run beside the fault's.
+		slices.SortFunc(loads, func(a, b [2]int) int { return cmp.Compare(a[0], b[0]) })
+		// One fault loads its own page and maps it with one command; its
+		// prefetch loads the rest of the window behind it, into the
+		// consecutive slots the fault reserved around its page. This backing
+		// cannot leave a page out of a read, so the prefetch reads the pages
+		// before the faulting one and the pages after it apart, rather than
+		// read that page twice, and maps them with a command each.
+		if len(loads) != 3 || loads[0] != [2]int{0, 5} || loads[1] != [2]int{5, 1} || loads[2] != [2]int{6, 2} {
 			t.Fatalf("read-ahead loads = %v", loads)
 		}
-		if len(m.pages) != 8 || m.maps != 1 {
-			t.Fatalf("mapped %d pages with %d commands; want 8 pages in 1 command", len(m.pages), m.maps)
+		if len(m.pages) != 8 || m.maps != 3 {
+			t.Fatalf("mapped %d pages with %d commands; want 8 pages in 3 commands", len(m.pages), m.maps)
 		}
 		for page := uint64(1); page < 8; page++ {
 			if m.pages[page].place != m.pages[page-1].place.next() {
@@ -170,14 +182,15 @@ func TestAStoreReadsAheadOnlyIntoFreeSlots(t *testing.T) {
 // faults that would cost the same command and only for the pages the guest
 // reads. A run is the pages consecutive in both the memory region and the arena, which
 // is neither the window nor the order they were read in: pages 0 to 7 are two
-// such runs and are installed, while pages 8 and 9 are a run of two and the
-// sibling's own page 10 leaves page 11 a run of one, and neither is.
+// such runs and are installed, while page 9 is a run of one and is not.
 func TestPopulateMapsEveryResidentRunWorthItsCommandBeforeTheMachineRuns(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 16, LogicalPages: 64, DirtyPages: 16, ReadAheadPages: 4})
 		a, am, _ := f.memoryRegion(12)
 		access(t, a, am, 0, false) // window 0-3
-		access(t, a, am, 9, false) // window 8-11
+		// Window 8-11 follows none of the writer's faults, so this one reads
+		// page 9 alone (prefetch.go).
+		access(t, a, am, 9, false)
 		// The store takes a private page of its own, which nothing may share;
 		// the page it copied away from stays in the sharing index under the
 		// identity the volume gives it, and that is what the sibling maps. The
@@ -210,10 +223,10 @@ func TestPopulateMapsEveryResidentRunWorthItsCommandBeforeTheMachineRuns(t *test
 				t.Fatalf("page %d holds %d", page, got)
 			}
 		}
-		// Eight hits at the populate, and three more from the fault that mapped
-		// the short runs it left behind when the guest reached them.
+		// Eight hits at the populate, and one more from the fault that mapped
+		// page 9, the short run it left behind, when the guest reached it.
 		stats, err := f.h.Stats(t.Context())
-		if err != nil || stats.IdentityHits != 11 {
+		if err != nil || stats.IdentityHits != 9 {
 			t.Fatalf("stats: %+v %v", stats, err)
 		}
 	})

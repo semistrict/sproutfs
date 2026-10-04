@@ -48,14 +48,20 @@ func TestPartialReadAheadPublicationReturnsOnlyUnusedCapacity(t *testing.T) {
 			t.Fatal(err)
 		}
 		r, m, _ := f.memoryRegion(4)
-		if err := r.Fault(t.Context(), 0, false); !errors.Is(err, errInjected) {
-			t.Fatalf("partial publication: %v", err)
+		// The fault reads page 0 into slot 0, and its prefetch reads pages 1 to
+		// 3 into slots 1 to 3, the third of whose writes fails after taking
+		// effect. The fault is not the prefetch's, so it does not fail.
+		if err := r.Fault(t.Context(), 0, false); err != nil {
+			t.Fatalf("the fault failed with its prefetch: %v", err)
+		}
+		if err := r.SettlePrefetches(t.Context()); err != nil {
+			t.Fatal(err)
 		}
 		stats, err := f.h.Stats(t.Context())
-		if err != nil || stats.ResidentPages != 2 || shared.Stats().Used != int64(2*pageSize) {
-			t.Fatalf("only the two published pages should remain: %+v, %v", stats, err)
+		if err != nil || stats.ResidentPages != 3 || stats.PrefetchDropped != 1 || shared.Stats().Used != int64(3*pageSize) {
+			t.Fatalf("only the three published pages should remain: %+v, %v", stats, err)
 		}
-		for page := range uint64(2) {
+		for _, page := range []uint64{0, 1, 3} {
 			if got := access(t, r, m, page, false)[0]; got != byte(page+1) {
 				t.Fatalf("published page %d lost contents: %d", page, got)
 			}
@@ -64,7 +70,7 @@ func TestPartialReadAheadPublicationReturnsOnlyUnusedCapacity(t *testing.T) {
 		if err := r.Detach(t.Context()); err != nil {
 			t.Fatal(err)
 		}
-		expectIdleUntilReclaimed(t, f, shared, 2, int64(pageSize))
+		expectIdleUntilReclaimed(t, f, shared, 3, int64(pageSize))
 	})
 }
 

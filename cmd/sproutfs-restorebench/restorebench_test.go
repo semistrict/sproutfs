@@ -226,7 +226,8 @@ func simNodes(t *testing.T, ctx context.Context, runtime *sim.Runtime, hot platf
 	var nodes []controller
 	for index := range 6 {
 		name := fmt.Sprintf("node-%d", index)
-		file, err := runtime.NewDisk(name, sim.DiskConfig{}).Open(ctx, "cache", platform.OpenOptions{Create: true})
+		disk := runtime.NewDisk(name, sim.DiskConfig{})
+		file, err := disk.Open(ctx, "cache", platform.OpenOptions{Create: true})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -235,7 +236,7 @@ func simNodes(t *testing.T, ctx context.Context, runtime *sim.Runtime, hot platf
 			network: runtime.Network(), objects: runtime.ObjectStore(), file: file, cacheBytes: 512 << 20,
 			deployment:  checkpoint.CacheDeployment{Store: "sim", Bucket: "bench", Prefix: "run"},
 			memoryBytes: 64 << 20, fillQueueBytes: 1 << 30, serveRate: 500 << 20,
-			dropPageCache: func() error { return nil }, hotObjects: hot})
+			dropPageCache: func() error { return nil }, hotObjects: hot, disk: disk})
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -11,6 +11,7 @@ import (
 
 	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/internal/ctxsync"
+	"github.com/semistrict/sproutfs/internal/latency"
 	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/resource"
 	"github.com/semistrict/sproutfs/vmmemory/internal/pageranges"
@@ -32,8 +33,15 @@ type MemoryRegion struct {
 	mu             *ctxsync.RWMutex
 	stripes        []*ctxsync.Mutex
 	readAheadPages int
-	host           *Host
-	backing        Backing
+	// prefetchRunning counts this memory region's prefetches whose goroutines
+	// have not ended. It is guarded by Host.mu; a detach waits for it to reach
+	// zero. See prefetch.go.
+	prefetchRunning int
+	// history is the windows of this memory region's latest faults, which
+	// tell a guest reading forwards from one reading at random.
+	history faultHistory
+	host    *Host
+	backing Backing
 	// kind is what this memory region is to its guest, RAM or PMEM. Nothing about a
 	// fault, a seal or a page depends on it: it is what the host's sharing
 	// gauges are split by, and it is immutable for the memory region's life.
@@ -444,6 +452,13 @@ func (r *MemoryRegion) protectPages(ctx context.Context, page uint64, count int)
 // only a backing that fetches from somewhere else — a migration destination's
 // peer backing — ever does; for every other backing the result is nil.
 func (r *MemoryRegion) loadBacking(ctx context.Context, offset uint64, dst []byte) ([]bool, error) {
+	return r.loadBackingInto(ctx, offset, dst, &r.host.loadLatency)
+}
+
+// loadBackingInto is loadBacking timed into histogram: a prefetch's reads are
+// kept apart from the reads a fault waits on.
+func (r *MemoryRegion) loadBackingInto(ctx context.Context, offset uint64, dst []byte,
+	histogram *latency.Histogram) ([]bool, error) {
 	start := r.host.clock.Now()
 	var unpublished []bool
 	var err error
@@ -452,7 +467,7 @@ func (r *MemoryRegion) loadBacking(ctx context.Context, offset uint64, dst []byt
 	} else {
 		err = r.backing.Load(ctx, offset, dst)
 	}
-	r.host.loadLatency.Observe(r.host.clock.Since(start))
+	histogram.Observe(r.host.clock.Since(start))
 	return unpublished, err
 }
 
@@ -590,7 +605,7 @@ func (r *MemoryRegion) loadRun(ctx context.Context, first uint64, wanted []bool,
 	var unpublished []bool
 	err := r.withoutMemoryRegion(ctx, func() error {
 		var err error
-		unpublished, err = r.readRun(ctx, first, wanted, dst)
+		unpublished, err = r.readRun(ctx, first, wanted, dst, &r.host.loadLatency)
 		return err
 	})
 	if err != nil {
@@ -599,7 +614,9 @@ func (r *MemoryRegion) loadRun(ctx context.Context, first uint64, wanted []bool,
 	return unpublished, nil
 }
 
-func (r *MemoryRegion) readRun(ctx context.Context, first uint64, wanted []bool, dst []byte) ([]bool, error) {
+// histogram is what each backing read is timed into.
+func (r *MemoryRegion) readRun(ctx context.Context, first uint64, wanted []bool, dst []byte,
+	histogram *latency.Histogram) ([]bool, error) {
 	ps := r.host.pageSize
 	// A peer backing reports which pages the source still holds, which is a
 	// second answer per page; it is read stretch by stretch until it can give
@@ -607,7 +624,7 @@ func (r *MemoryRegion) readRun(ctx context.Context, first uint64, wanted []bool,
 	if sparse, ok := r.backing.(SparseLoader); ok && !r.peer {
 		start := r.host.clock.Now()
 		err := sparse.LoadPages(ctx, first*ps, dst, wanted)
-		r.host.loadLatency.Observe(r.host.clock.Since(start))
+		histogram.Observe(r.host.clock.Since(start))
 		return nil, err
 	}
 	var unpublished []bool
@@ -620,7 +637,7 @@ func (r *MemoryRegion) readRun(ctx context.Context, first uint64, wanted []bool,
 		for at+run < len(wanted) && wanted[at+run] {
 			run++
 		}
-		held, err := r.loadBacking(ctx, (first+uint64(at))*ps, dst[uint64(at)*ps:uint64(at+run)*ps])
+		held, err := r.loadBackingInto(ctx, (first+uint64(at))*ps, dst[uint64(at)*ps:uint64(at+run)*ps], histogram)
 		if err != nil {
 			return nil, err
 		}
@@ -698,6 +715,11 @@ func (r *MemoryRegion) Detach(ctx context.Context) error {
 		return err
 	}
 	defer r.live.Unlock()
+	// Its prefetches end before anything is taken away: they read its
+	// backing, which is the caller's to close once this returns.
+	if err := r.cancelPrefetches(ctx); err != nil {
+		return err
+	}
 	if err := r.mu.Lock(ctx); err != nil {
 		return err
 	}

@@ -530,8 +530,9 @@ func (r *Received) fetch(ctx context.Context, memoryRegion *vmmemory.MemoryRegio
 	}
 	// The stream's requests are marked as the stream's, so they go over the
 	// source's bulk connections and count against its bulk budget, and the
-	// guest's own faults never queue behind them.
-	fetchCtx, stop := context.WithCancel(peer.WithStream(ctx))
+	// guest's own faults never queue behind them. Its faults read whole runs:
+	// no guest waits on any one page of them.
+	fetchCtx, stop := context.WithCancel(vmmemory.WithStream(peer.WithStream(ctx)))
 	defer stop()
 	type turnPage struct{ turn, page uint64 }
 	pages := make(chan turnPage)

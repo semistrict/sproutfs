@@ -305,6 +305,14 @@ type PagerKind struct {
 	RefusedMappings uint64 `json:"refused_mappings"`
 	RepeatedFaults  uint64 `json:"repeated_faults"`
 	PacedFaults     uint64 `json:"paced_faults"`
+	// PrefetchedPages counts the pages the prefetches behind faults landed:
+	// the rest of each fault's read-ahead run, read behind its own page.
+	// PrefetchWaits counts the faults that waited for a prefetch already
+	// reading their page, and PrefetchCancelled the prefetches an allocation
+	// cancelled to take their slots rather than evict a page a guest maps.
+	PrefetchedPages   uint64 `json:"prefetched_pages"`
+	PrefetchWaits     uint64 `json:"prefetch_waits"`
+	PrefetchCancelled uint64 `json:"prefetch_cancelled"`
 	// Fault is how long each fault took from the kernel's report to the
 	// guest resuming, Load a read of pages from the backing, and Seal a
 	// checkpoint's write-protection of one memory region.

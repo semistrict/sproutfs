@@ -1287,6 +1287,9 @@ caller:
 | `checkpoint/give-up-on-existing-part` | Gives up on a part a retry of the same publication finds already written |
 | `control/slow-write` | Makes one control-record write take seconds |
 | `vmmemory/evict-past-a-free-slot` | Takes a victim although the arena has a free slot |
+| `vmmemory/prefetch-slow` | Holds a prefetch's read back for up to 50 ms, so faults meet it in flight |
+| `vmmemory/prefetch-refused` | Leaves the rest of a fault's run unread, as if the prefetches in flight were at their bound |
+| `vmmemory/prefetch-failed` | Fails a prefetch's read after the backing answered, so its pages are left to their faults |
 | `peer/busy` | Answers BUSY as a peer server at a peer's budget does |
 | `peer/slow-answer` | Holds one reply for up to two seconds, as a disk that stalls does |
 | `peer/stall` | Stops reading one connection for up to six seconds, as a paused process does |
@@ -1515,6 +1518,23 @@ disk that lied from a cache that misread: an item the cache refuses must be one
 the disk lied about to that read. Each test envelope ends in the SHA-256 of
 what comes before it, and a read checks that as an envelope's own check does,
 so another page's envelope passes it and only the key check refuses it.
+
+A fault's prefetch (vmmemory/prefetch.go) marks eight: a run left unread
+because its fault followed no recent fault, its pages landed, it
+mapped them into the memory region that asked, a fault waited for it, a run
+left unread at the bound, a prefetch an allocation cancelled for its slots, a
+landed page another load had made resident first, and a page a migration's
+source turned out still to hold. `TestPrefetchSurvivesItsFaultsAndReachesItsProbes`
+in `vmmemory` drives them. Each of twelve seeds runs three guests at once over
+an arena smaller than their memory with at most two prefetches in flight: two
+forks of one checkpoint, whose loads race for the same identities, and one
+behind a migration's source that serves two pages the volume names as its own.
+Each guest reads and stores, half the time the page after the last. Every read
+of a backing, and every point at which a prefetch begins, lands, maps or
+releases a fault waiting on it, completes when the seed's `sim.Scheduler`
+chooses, with the prefetch sites on. Every read must return what the guest
+last stored or what its volume holds, and across the seeds every prefetch site
+must fire and every prefetch probe be reached.
 
 The disk's stripes mark five more: a write that kept several indices of one
 envelope, a read that rebuilt an envelope from a parity stripe, a read that
@@ -1947,6 +1967,16 @@ SPROUTFS_SIM_BUG=pager-forget-spill \
   go test ./vmmemory -run '^TestASpilledPageFaultsBackWhatTheGuestStored$' -count=1
 SPROUTFS_SIM_BUG=pager-give-back-changed-copy \
   go test ./vmmemory -run '^TestAColdCopyTheGuestStoredIntoIsKept$' -count=1
+SPROUTFS_SIM_BUG=pager-read-the-run-first \
+  go test ./vmmemory -run '^TestADependentChainOfFaultsWaitsForOnePageAHop$' -count=1
+SPROUTFS_SIM_BUG=pager-fault-waits-for-its-prefetch \
+  go test ./vmmemory -run '^TestAFaultNeverWaitsForAPrefetchOfOtherPages$' -count=1
+SPROUTFS_SIM_BUG=pager-read-in-flight-again \
+  go test ./vmmemory -run '^TestAGuestReadingForwardsStillReadsItsMemoryInRuns$' -count=1
+SPROUTFS_SIM_BUG=pager-prefetch-ignores-pressure \
+  go test ./vmmemory -run '^TestAnAllocationCancelsAPrefetchRatherThanEvict$' -count=1
+SPROUTFS_SIM_BUG=pager-prefetch-every-fault \
+  go test ./vmmemory -run '^TestADependentChainOfFaultsWaitsForOnePageAHop$' -count=1
 SPROUTFS_SIM_BUG=spill-sparse \
   go test ./vmmemory -run '^TestASpillSucceedsOnADiskFilledFromOutside$' -count=1
 SPROUTFS_SIM_BUG=diskcache-skip-key-check \
@@ -2056,7 +2086,20 @@ pulled checkpoint as stripes it cannot rebuild alone. The two
 give up when the first k fail instead of trying other sets.
 `pager-give-back-changed-copy` gives back a cold copy the guest stored into,
 as though it still held its origin's bytes. Its test finds the copy given back
-and the guest's store gone. `migration-give-up-first-receive` gives a handoff up
+and the guest's store gone. Five guards undo a fault's page first
+(vm-memory.md, [faults and read-ahead](vm-memory.md#faults-and-read-ahead)).
+Their tests run over a backing whose reads take virtual time, a millisecond a
+read and a millisecond a page, so each states exactly what a fault waited for.
+`pager-read-the-run-first` reads a fault's whole run before its page, and
+every hop of a dependent chain then takes the run's 9 ms instead of the page's
+2 ms. `pager-fault-waits-for-its-prefetch` starts the prefetch and reads the
+page only once it is in, and a fault beside a held prefetch waits an hour.
+`pager-read-in-flight-again` reads a page a prefetch is already reading, and a
+guest reading forwards reads pages twice. `pager-prefetch-ignores-pressure`
+evicts a page the guest maps while a prefetch holds free slots, and its test
+counts the eviction. `pager-prefetch-every-fault` prefetches the run of a
+fault that follows none of its memory region's recent faults, and a chain at
+random then prefetches on every hop instead of on its first. `migration-give-up-first-receive` gives a handoff up
 after its first failed receive. In one retry scenario the destination cannot
 reach the store for ten seconds, so the handover must retry it; in the other
 the destination refuses until the source's hold is over, and the handoff must

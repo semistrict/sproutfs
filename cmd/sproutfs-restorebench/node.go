@@ -55,6 +55,8 @@ type nodeConfig struct {
 	dropPageCache func() error
 	// hotObjects is the hot tier's bucket, nil where the node has none.
 	hotObjects platform.ObjectStore
+	// disk is where a read through a pager keeps its pager's spill file.
+	disk platform.Disk
 }
 
 // node is one host of the cluster: its cache, the stores that read through
@@ -130,6 +132,11 @@ func runNode(ctx context.Context, args []string) error {
 		return err
 	}
 	defer file.Close()
+	// A read through a pager keeps its pager's spill file in the directory.
+	disk, err := adapters.NewDisk(*dir)
+	if err != nil {
+		return err
+	}
 	if *device != "" {
 		size, err := file.Size(ctx)
 		if err != nil {
@@ -139,7 +146,7 @@ func runNode(ctx context.Context, args []string) error {
 		*cacheBytes = min(*cacheBytes, size-checkpoint.DefaultDiskRegionBytes)
 	}
 	n, err := newNode(ctx, nodeConfig{address: platform.Address(*advertise), listen: platform.Address(*listen),
-		network: adapters.NewNetwork(),
+		network: adapters.NewNetwork(), disk: disk,
 		objects: store, file: file, cacheBytes: *cacheBytes,
 		deployment:  checkpoint.CacheDeployment{Store: "gcs", Bucket: *bucket, Prefix: *prefix},
 		memoryBytes: *memoryBytes, fillQueueBytes: *fillQueueBytes, serveRate: *serveRate,
@@ -509,9 +516,26 @@ type readRequest struct {
 // reads when one was asked for.
 type readReply struct {
 	walked
-	OpenSeconds float64 `json:"open_seconds"`
-	MemoryHits  uint64  `json:"memory_hits"`
-	Profile     []byte  `json:"profile,omitempty"`
+	OpenSeconds float64     `json:"open_seconds"`
+	MemoryHits  uint64      `json:"memory_hits"`
+	Profile     []byte      `json:"profile,omitempty"`
+	Pager       *pagerStats `json:"pager,omitempty"`
+}
+
+// pagerStats is what a read's pager did: its faults, its backing reads and
+// the pages they brought in, its prefetches and the pages they landed, the
+// faults that waited for a prefetch, the runs left unread at the bound and
+// for following no recent fault, and the evictions it made.
+type pagerStats struct {
+	Faults          uint64 `json:"faults"`
+	Loads           uint64 `json:"loads"`
+	LoadedPages     uint64 `json:"loaded_pages"`
+	Prefetches      uint64 `json:"prefetches"`
+	PrefetchedPages uint64 `json:"prefetched_pages"`
+	PrefetchWaits   uint64 `json:"prefetch_waits"`
+	PrefetchRefused uint64 `json:"prefetch_refused"`
+	PrefetchRandom  uint64 `json:"prefetch_random"`
+	Evictions       uint64 `json:"evictions"`
 }
 
 func (n *node) read(ctx context.Context, request readRequest) (readReply, error) {
@@ -532,13 +556,29 @@ func (n *node) read(ctx context.Context, request readRequest) (readReply, error)
 	}
 	out := readReply{OpenSeconds: time.Since(began).Seconds()}
 	hits := cache.Stats().Hits
+	read := func(ctx context.Context, offset uint64, dst []byte) error {
+		return store.Read(ctx, index, volume, offset, dst)
+	}
+	var pager *pagerReader
+	if pagerUnit(request.Access.Unit) {
+		if pager, err = newPagerReader(ctx, n.config.disk, store, index, g.pageSize, g.pages,
+			request.Access.Unit == unitRunFirst); err != nil {
+			return readReply{}, err
+		}
+		read = pager.read
+	}
 	out.Profile, err = profiled(request.Profile, func() error {
 		var err error
-		out.walked, err = walk(ctx, g, request.Access, func(ctx context.Context, offset uint64, dst []byte) error {
-			return store.Read(ctx, index, volume, offset, dst)
-		})
+		out.walked, err = walk(ctx, g, request.Access, read)
 		return err
 	})
+	if pager != nil {
+		stats, closeErr := pager.close(ctx)
+		err = errors.Join(err, closeErr)
+		out.Pager = &pagerStats{Faults: stats.Faults, Loads: stats.Loads, LoadedPages: stats.LoadedPages,
+			Prefetches: stats.Prefetches, PrefetchedPages: stats.PrefetchedPages, PrefetchWaits: stats.PrefetchWaits,
+			PrefetchRefused: stats.PrefetchRefused, PrefetchRandom: stats.PrefetchRandom, Evictions: stats.Evictions}
+	}
 	if err != nil {
 		return readReply{}, err
 	}

@@ -1,0 +1,217 @@
+package vmmemory_test
+
+import (
+	"context"
+	"fmt"
+	"maps"
+	"math/rand/v2"
+	"slices"
+	"sync"
+	"testing"
+	"testing/synctest"
+	"time"
+
+	"github.com/semistrict/sproutfs/control"
+	"github.com/semistrict/sproutfs/platform/sim"
+	"github.com/semistrict/sproutfs/vmmemory"
+)
+
+// slowPeerBacking is a peerBacking whose reads take time as slowBacking's do
+// and are released by a controlled run.
+type slowPeerBacking struct{ *peerBacking }
+
+func (b *slowPeerBacking) LoadUnpublished(ctx context.Context, offset uint64, dst []byte) ([]bool, error) {
+	timer := time.NewTimer(readCost + time.Duration(uint64(len(dst))/uint64(b.pageSize))*pageCost)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+	case <-ctx.Done():
+		return nil, context.Cause(ctx)
+	}
+	if err := sim.Admit(ctx, "slow-peer-backing/read"); err != nil {
+		return nil, err
+	}
+	return b.peerBacking.LoadUnpublished(ctx, offset, dst)
+}
+
+func (b *slowPeerBacking) Load(ctx context.Context, offset uint64, dst []byte) error {
+	_, err := b.LoadUnpublished(ctx, offset, dst)
+	return err
+}
+
+// prefetchCampaignSeeds are the seeds the campaign runs, which between them
+// fire every prefetch site and reach every prefetch probe.
+var prefetchCampaignSeeds = []uint64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}
+
+// campaignPages is each guest's memory, in pages.
+const campaignPages = 16
+
+// campaignGuest is one guest of the campaign: its memory region, what it maps,
+// and the byte it must read at each page.
+type campaignGuest struct {
+	name   string
+	region *vmmemory.MemoryRegion
+	m      *mapping
+	want   []byte
+}
+
+// Prefetches survive every fault their sites inject — a read held back, a run
+// left unread as if at the bound, a read that fails — beside guests that read
+// and store at once, an arena too small for them so allocations cancel
+// prefetches, two guests of one checkpoint whose loads race for the same
+// identities, and a migration's source holding pages the volume names. Every
+// read a guest makes returns what it last stored or what its volume holds, and
+// across the seeds every site fires and every probe is reached. Every read of
+// a backing and every point a prefetch begins, lands, maps or wakes a waiting
+// fault completes when the seed's scheduler chooses.
+func TestPrefetchSurvivesItsFaultsAndReachesItsProbes(t *testing.T) {
+	probes := make(map[string]uint64)
+	fired := make(map[string]uint64)
+	for _, seed := range prefetchCampaignSeeds {
+		t.Run(fmt.Sprintf("seed-%d", seed), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				reached, sites := prefetchCampaign(t, seed)
+				maps.Copy(probes, addCounts(probes, reached))
+				maps.Copy(fired, addCounts(fired, sites))
+			})
+		})
+	}
+	var missed []string
+	for _, name := range slices.Concat(vmmemory.PrefetchSites(), vmmemory.PrefetchProbes()) {
+		if probes[name]+fired[name] == 0 {
+			missed = append(missed, name)
+		}
+	}
+	if len(missed) != 0 {
+		t.Fatalf("the campaign never reached %v; it reached probes %v and fired %v", missed, probes, fired)
+	}
+}
+
+func addCounts(into, from map[string]uint64) map[string]uint64 {
+	sum := maps.Clone(into)
+	for name, count := range from {
+		sum[name] += count
+	}
+	return sum
+}
+
+// prefetchCampaign runs one seed and reports the probes it reached and the
+// sites it fired.
+func prefetchCampaign(t *testing.T, seed uint64) (map[string]uint64, map[string]uint64) {
+	scheduler := sim.NewScheduler(seed)
+	runtime := sim.New(sim.Config{Seed: seed, Wait: scheduler.Wait, Buggify: true})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ctx := sim.WithRuntime(t.Context(), runtime)
+		// The spill file's disk is a runtime's of its own: what is under test
+		// is the pager's order, and the fixture closes the file after the
+		// scheduler has stopped.
+		disk := sim.New(sim.Config{Seed: seed}).NewDisk("pager", sim.DiskConfig{})
+		f, err := newFixtureOn(t, ctx, disk, vmmemory.Config{PageSize: uint64(pageSize), Arena: suiteArena,
+			ResidentPages: 24, LogicalPages: 64, DirtyPages: 48, ReadAheadPages: 4, PrefetchRuns: 2})
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		guests := campaignGuests(f)
+		var wg sync.WaitGroup
+		for at, guest := range guests {
+			wg.Go(func() {
+				runCampaignGuest(sim.WithTask(ctx, guest.name), t, guest, rand.New(rand.NewPCG(seed, uint64(at))))
+			})
+		}
+		wg.Wait()
+		for _, guest := range guests {
+			if err := guest.region.SettlePrefetches(ctx); err != nil {
+				t.Error(err)
+				return
+			}
+			for page := range uint64(campaignPages) {
+				got, err := memoryByte(sim.WithTask(ctx, guest.name+"-check"), guest.region, guest.m, page, nil)
+				if err != nil || got != guest.want[page] {
+					t.Errorf("%s page %d reads %d at the end, want %d: %v", guest.name, page, got, guest.want[page], err)
+				}
+			}
+		}
+		// The guests stop and detach while the scheduler still runs: a
+		// detach waits for the prefetches it cancels.
+		for _, guest := range guests {
+			guest.m.arena.mu.Lock()
+			clear(guest.m.pages)
+			guest.m.arena.mu.Unlock()
+			if err := guest.region.Detach(ctx); err != nil {
+				t.Error(err)
+			}
+		}
+	}()
+	if err := scheduler.Run(done); err != nil {
+		t.Fatal(err)
+	}
+	return runtime.Probes(), runtime.FiredSites()
+}
+
+// campaignGuests attaches the campaign's three guests: two forks of one
+// checkpoint, whose loads race for the same identities, and one whose
+// migration source serves two pages the volume names as its own.
+func campaignGuests(f *fixture) []*campaignGuest {
+	var guests []*campaignGuest
+	for _, name := range []string{"fork-a", "fork-b"} {
+		b := f.slowBacking(campaignPages)
+		b.admit = true
+		r, m := f.attach(b)
+		guests = append(guests, &campaignGuest{name: name, region: r, m: m, want: initialBytes(campaignPages)})
+	}
+	peer := &slowPeerBacking{&peerBacking{backing: f.newBacking(campaignPages),
+		hidden: map[uint64]byte{5: 0xa5, 11: 0xab}}}
+	peer.source = control.Ref{VM: peer.owner + "-migrated", Sequence: 1}
+	r, m := f.attach(peer)
+	want := initialBytes(campaignPages)
+	want[5], want[11] = 0xa5, 0xab
+	guests = append(guests, &campaignGuest{name: "migrated", region: r, m: m, want: want})
+	return guests
+}
+
+// initialBytes is what a fixture backing holds: every byte of page i is i+1.
+func initialBytes(pages int) []byte {
+	want := make([]byte, pages)
+	for page := range want {
+		want[page] = byte(page + 1)
+	}
+	return want
+}
+
+// runCampaignGuest reads and stores a guest's memory, half the time the page
+// after the last and otherwise one at random, sometimes pausing, and requires
+// each read to return what the model holds.
+func runCampaignGuest(ctx context.Context, t *testing.T, g *campaignGuest, random *rand.Rand) {
+	page := uint64(0)
+	for op := range 60 {
+		if random.IntN(2) == 0 {
+			page = (page + 1) % campaignPages
+		} else {
+			page = random.Uint64N(campaignPages)
+		}
+		if random.IntN(4) == 0 {
+			value := byte(0x40 + op)
+			if _, err := memoryByte(ctx, g.region, g.m, page, &value); err != nil {
+				t.Errorf("%s storing into page %d: %v", g.name, page, err)
+				return
+			}
+			g.want[page] = value
+		} else {
+			got, err := memoryByte(ctx, g.region, g.m, page, nil)
+			if err != nil {
+				t.Errorf("%s reading page %d: %v", g.name, page, err)
+				return
+			}
+			if got != g.want[page] {
+				t.Errorf("%s page %d reads %d, want %d", g.name, page, got, g.want[page])
+				return
+			}
+		}
+		if random.IntN(3) == 0 {
+			time.Sleep(time.Duration(random.IntN(4)) * time.Millisecond)
+		}
+	}
+}
