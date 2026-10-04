@@ -32,7 +32,17 @@ const (
 	unitPage = "page"
 	// unitRun is the fault run the page is in, as a pager's fault reads it.
 	unitRun = "run"
+	// unitFault is one page, faulted in through a real pager that reads the
+	// faulting page first and the rest of its run behind it (pager.go).
+	unitFault = "fault"
+	// unitRunFirst is one page, faulted in through the same pager with every
+	// fault reading its whole run before the page is installed, as faults did
+	// before 2026-10-04.
+	unitRunFirst = "runfirst"
 )
+
+// pagerUnit reports a unit read through a pager.
+func pagerUnit(unit string) bool { return unit == unitFault || unit == unitRunFirst }
 
 // access is how one case reads a guest's memory.
 type access struct {
@@ -52,8 +62,8 @@ func (a access) check() error {
 	switch {
 	case a.Pattern != patternSequential && a.Pattern != patternRandom && a.Pattern != patternChain:
 		return fmt.Errorf("a pattern %q: want %s, %s or %s", a.Pattern, patternSequential, patternRandom, patternChain)
-	case a.Unit != unitPage && a.Unit != unitRun:
-		return fmt.Errorf("a unit %q: want %s or %s", a.Unit, unitPage, unitRun)
+	case a.Unit != unitPage && a.Unit != unitRun && !pagerUnit(a.Unit):
+		return fmt.Errorf("a unit %q: want %s, %s, %s or %s", a.Unit, unitPage, unitRun, unitFault, unitRunFirst)
 	case a.Concurrency < 1 || a.Pattern == patternChain && a.Concurrency != 1:
 		return fmt.Errorf("%d reads at a time of a %s: want one or more, and one for a chain", a.Concurrency, a.Pattern)
 	case a.Pattern != patternSequential && a.Reads < 1:

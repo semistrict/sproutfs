@@ -13,7 +13,11 @@
 # (three by default) of every case from every source, each round in its own
 # order, emptying every host's memory tiers and page cache before each read,
 # then reads the SPROUTFS_RESTORE_PROFILE cases once more with the reader's
-# CPU profiled.
+# CPU profiled. The units fault and runfirst read a page through a real
+# pager over the store (cmd/sproutfs-restorebench/pager.go): fault as the
+# pager reads, its page first and its run behind it, and runfirst with every
+# fault reading its whole run first, as before 2026-10-04
+# (docs/measurements/gce-fault-first-2026-10-04.md).
 #
 # SPROUTFS_GCE_BUCKET names the bucket, and SPROUTFS_GCE_SERVICE_ACCOUNT the
 # account the hosts reach it as. The run's objects are removed afterwards.
@@ -155,7 +159,7 @@ run() {
     (cd "$repo" && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o "$staging/sproutfs-restorebench" ./cmd/sproutfs-restorebench)
     {
         echo "revision $(git -C "$repo" rev-parse HEAD)"
-        git -C "$repo" status --porcelain=v1 -- cmd/sproutfs-restorebench checkpoint peer rank stripe | sed 's/^/changed /'
+        git -C "$repo" status --porcelain=v1 -- cmd/sproutfs-restorebench checkpoint peer rank stripe vmmemory | sed 's/^/changed /'
         (cd "$staging" && shasum -a 256 sproutfs-restorebench)
         echo "machine $machine ($platform), pages $pages and $small_pages, rounds $rounds,$drive_flags," \
             "objects gs://$bucket/$run_objects"

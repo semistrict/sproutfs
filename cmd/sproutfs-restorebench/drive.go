@@ -159,6 +159,8 @@ type caseResult struct {
 	StoreBytes int64                `json:"store_bytes"`
 	// Profile names the file holding the reader's CPU profile.
 	Profile string `json:"profile,omitempty"`
+	// Pager is what the reader's pager did, for a unit read through one.
+	Pager *pagerStats `json:"pager,omitempty"`
 }
 
 // driveResult is a whole run.
@@ -295,12 +297,14 @@ func drive(ctx context.Context, nodes []controller, config driveConfig) (driveRe
 	profiles := make(map[string][]byte)
 	one := func(round int, p planned, profile bool) error {
 		g := guests[p.spec.pageSize]
+		// A hop of a chain read run first reads a fault run as one of runs
+		// does, so it reads as many.
 		reads := config.reads
-		if p.spec.unit == unitRun {
+		if p.spec.unit == unitRun || p.spec.unit == unitRunFirst {
 			reads = config.runReads
 		}
 		units := g.Pages / (faultRunBytes / g.PageSize)
-		if p.spec.unit == unitPage {
+		if p.spec.unit != unitRun {
 			units = g.Pages
 		}
 		a := access{Pattern: p.spec.pattern, Unit: p.spec.unit, Concurrency: p.spec.concurrency,
@@ -425,7 +429,7 @@ func readCase(ctx context.Context, nodes []controller, config driveConfig, reque
 	one := readResult{caseResult: caseResult{PageSize: pageSizeName(request.Guest.PageSize),
 		Pattern: request.Access.Pattern, Unit: request.Access.Unit, Concurrency: request.Access.Concurrency,
 		Reads: len(got.Latencies), Seconds: got.Seconds, OpenSeconds: got.OpenSeconds, Latencies: got.Latencies,
-		Wrong: got.Wrong, Failed: got.Failed, MemoryHits: got.MemoryHits}, profile: got.Profile}
+		Wrong: got.Wrong, Failed: got.Failed, MemoryHits: got.MemoryHits, Pager: got.Pager}, profile: got.Profile}
 	one.Latency, one.Histogram = shape(got.Latencies)
 	for at := range nodes {
 		one.Served = append(one.Served, after[at].StripeBytes-before[at].StripeBytes)
