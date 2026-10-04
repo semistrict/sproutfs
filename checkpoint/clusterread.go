@@ -565,7 +565,7 @@ type windowRead struct {
 	r      *clusterReader
 	codecs *blob.Codecs
 	window rank.Window
-	m membership.Membership
+	m      membership.Membership
 	// code is the code the read takes stripes of. earlier marks a code the
 	// deployment used before its own, which the read does not repair under.
 	code    rank.Code

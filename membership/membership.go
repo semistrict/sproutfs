@@ -141,8 +141,8 @@ type Membership struct {
 	// window stored under one is still read under it.
 	earlier []rank.Code
 	nonce   []byte
-	members    []Member
-	disks      []Disk
+	members []Member
+	disks   []Disk
 	// list ranks windows over the disks, each at the address of the member
 	// that serves it, or at none.
 	list rank.List
