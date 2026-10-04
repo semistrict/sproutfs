@@ -9,10 +9,19 @@ import (
 	"github.com/semistrict/sproutfs/platform"
 )
 
+// listing is what a store owes a listing: the keys in order, or a refusal
+// where its bucket cannot list them in order (an S3 directory bucket).
+type listing int
+
+const (
+	listsInOrder listing = iota
+	refusesListing
+)
+
 // runObjectStoreConformance exercises the conditional-write contract every
 // platform.ObjectStore adapter owes its callers. newStore returns an empty
 // store; it is called once per subtest so one case cannot see another's keys.
-func runObjectStoreConformance(t *testing.T, newStore func(*testing.T) platform.ObjectStore) {
+func runObjectStoreConformance(t *testing.T, newStore func(*testing.T) platform.ObjectStore, lists listing) {
 	t.Helper()
 
 	t.Run("create_if_absent_rejects_an_existing_object", func(t *testing.T) {
@@ -215,64 +224,12 @@ func runObjectStoreConformance(t *testing.T, newStore func(*testing.T) platform.
 		}
 	})
 
-	t.Run("list_pages_the_prefix_in_order", func(t *testing.T) {
-		store := newStore(t)
-		want := []string{
-			"logs/segment-0",
-			"logs/segment-1",
-			"logs/segment-2",
-			"logs/segment-3",
-			"logs/segment-4",
-		}
-		for _, name := range want {
-			if _, err := store.Put(t.Context(), putRequest(objectKey(t, name), name, platform.PutConditions{})); err != nil {
-				t.Fatal(err)
-			}
-		}
-		if _, err := store.Put(t.Context(), putRequest(objectKey(t, "images/page-0"), "other", platform.PutConditions{})); err != nil {
-			t.Fatal(err)
-		}
-		prefix, err := platform.NewObjectPrefix("logs/")
-		if err != nil {
-			t.Fatal(err)
-		}
-		var got []string
-		var pages int
-		token := ""
-		for {
-			result, listErr := store.List(t.Context(), platform.ListRequest{
-				Prefix:            prefix,
-				ContinuationToken: token,
-				Limit:             2,
-			})
-			if listErr != nil {
-				t.Fatal(listErr)
-			}
-			pages++
-			if pages > len(want) {
-				t.Fatalf("listing did not terminate after %d pages, keys so far %v", pages, got)
-			}
-			for _, object := range result.Objects {
-				got = append(got, object.Key.String())
-				if object.Size != int64(len(object.Key.String())) {
-					t.Fatalf("size of %q = %d, want %d", object.Key.String(), object.Size, len(object.Key.String()))
-				}
-				if object.ETag == "" {
-					t.Fatalf("listing gave %q an empty ETag", object.Key.String())
-				}
-			}
-			token = result.NextContinuationToken
-			if token == "" {
-				break
-			}
-		}
-		if pages != 3 {
-			t.Fatalf("pages = %d, want 3", pages)
-		}
-		if strings.Join(got, ",") != strings.Join(want, ",") {
-			t.Fatalf("keys = %v, want %v", got, want)
-		}
-	})
+	switch lists {
+	case refusesListing:
+		t.Run("list_is_refused", func(t *testing.T) { conformRefusedListing(t, newStore(t)) })
+	case listsInOrder:
+		t.Run("list_pages_the_prefix_in_order", func(t *testing.T) { conformListing(t, newStore(t)) })
+	}
 
 	t.Run("delete_removes_the_object_and_forgives_a_missing_one", func(t *testing.T) {
 		store := newStore(t)
@@ -366,4 +323,77 @@ func objectKey(t *testing.T, value string) platform.ObjectKey {
 		t.Fatal(err)
 	}
 	return key
+}
+
+// conformListing lists a prefix of an empty store, two keys a page, and
+// wants its keys in order and nothing outside it.
+func conformListing(t *testing.T, store platform.ObjectStore) {
+	t.Helper()
+	want := []string{
+		"logs/segment-0",
+		"logs/segment-1",
+		"logs/segment-2",
+		"logs/segment-3",
+		"logs/segment-4",
+	}
+	for _, name := range want {
+		if _, err := store.Put(t.Context(), putRequest(objectKey(t, name), name, platform.PutConditions{})); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := store.Put(t.Context(), putRequest(objectKey(t, "images/page-0"), "other", platform.PutConditions{})); err != nil {
+		t.Fatal(err)
+	}
+	prefix, err := platform.NewObjectPrefix("logs/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	var pages int
+	token := ""
+	for {
+		result, listErr := store.List(t.Context(), platform.ListRequest{
+			Prefix:            prefix,
+			ContinuationToken: token,
+			Limit:             2,
+		})
+		if listErr != nil {
+			t.Fatal(listErr)
+		}
+		pages++
+		if pages > len(want) {
+			t.Fatalf("listing did not terminate after %d pages, keys so far %v", pages, got)
+		}
+		for _, object := range result.Objects {
+			got = append(got, object.Key.String())
+			if object.Size != int64(len(object.Key.String())) {
+				t.Fatalf("size of %q = %d, want %d", object.Key.String(), object.Size, len(object.Key.String()))
+			}
+			if object.ETag == "" {
+				t.Fatalf("listing gave %q an empty ETag", object.Key.String())
+			}
+		}
+		token = result.NextContinuationToken
+		if token == "" {
+			break
+		}
+	}
+	if pages != 3 {
+		t.Fatalf("pages = %d, want 3", pages)
+	}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("keys = %v, want %v", got, want)
+	}
+}
+
+// conformRefusedListing wants a listing refused as unsupported.
+func conformRefusedListing(t *testing.T, store platform.ObjectStore) {
+	t.Helper()
+	prefix, err := platform.NewObjectPrefix("logs/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.List(t.Context(), platform.ListRequest{Prefix: prefix}); !errors.Is(err, errors.ErrUnsupported) {
+		t.Fatalf("list error = %v, want errors.ErrUnsupported", err)
+	}
 }

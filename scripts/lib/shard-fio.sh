@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Run on a benchmark host: what one disk can do, read and written raw, as a
-# shard's disk is. The disk is named as the node's -device names it, its
-# block device /dev/disk/by-id/google-<name>. Every job uses O_DIRECT, so the
-# page cache plays no part, and each writes its fio JSON to the output
-# directory.
+# shard's disk is. The disk is named as the node's -device names it: a
+# Compute Engine disk by its name, its block device
+# /dev/disk/by-id/google-<name>, or an EBS volume by its ID, vol-<hex>, its
+# block device /dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_vol<hex>. Every
+# job uses O_DIRECT, so the page cache plays no part, and each writes its fio
+# JSON to the output directory.
 #
 # The first job writes the span the others use, in order, so no read is of a
 # block the disk has never written: a network disk answers those without
@@ -16,11 +18,19 @@ out=${2:?the output directory}
 span=${3:-8G}
 [[ $name =~ ^[a-z0-9-]+$ ]] || { echo "A disk name is lower-case letters, digits and dashes." >&2; exit 2; }
 [[ $span =~ ^[0-9]+[GM]$ ]] || { echo "A span is a size such as 8G." >&2; exit 2; }
-device=/dev/disk/by-id/google-$name
+if [[ $name =~ ^vol-([0-9a-f]+)$ ]]; then
+    device=/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_vol${BASH_REMATCH[1]}
+else
+    device=/dev/disk/by-id/google-$name
+fi
 [[ -b $device ]] || { echo "$device is not a block device." >&2; exit 1; }
 if ! command -v fio > /dev/null; then
-    sudo DEBIAN_FRONTEND=noninteractive apt-get -qq update
-    sudo DEBIAN_FRONTEND=noninteractive apt-get -qq install -y fio > /dev/null
+    if command -v dnf > /dev/null; then
+        sudo dnf install -y -q fio
+    else
+        sudo DEBIAN_FRONTEND=noninteractive apt-get -qq update
+        sudo DEBIAN_FRONTEND=noninteractive apt-get -qq install -y fio > /dev/null
+    fi
 fi
 mkdir -p "$out"
 fio --version > "$out/fio-version.txt"

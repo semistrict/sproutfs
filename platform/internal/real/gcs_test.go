@@ -18,7 +18,7 @@ const gcsTestBucket = "sproutfs-demo"
 
 func TestGCSObjectStoreConformance(t *testing.T) {
 	t.Parallel()
-	runObjectStoreConformance(t, newConditionalFakeGCS)
+	runObjectStoreConformance(t, newConditionalFakeGCS, listsInOrder)
 }
 
 // generationDeletes gives the GCS emulator the conditional delete GCS has and

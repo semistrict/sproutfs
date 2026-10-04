@@ -98,22 +98,31 @@ func runNode(ctx context.Context, args []string) error {
 	advertise := flags.String("advertise", "", "address peers reach this node's peer server at")
 	controlAddress := flags.String("control", ":7600", "address the control API listens on")
 	dir := flags.String("dir", "/mnt/ssd", "directory of the cache's file")
-	device := flags.String("device", "", "a Compute Engine disk attached to this instance, by its name, "+
-		"whose block device the cache keeps its disk on instead of a file in -dir, as a shard does")
+	cloudName := flags.String("cloud", "gce", "where the node runs, gce or aws: its buckets are Cloud Storage's "+
+		"or S3's, and its -device a Compute Engine disk or an EBS volume")
+	device := flags.String("device", "", "a network disk attached to this instance, a Compute Engine disk by its "+
+		"name or an EBS volume by its ID, whose block device the cache keeps its disk on instead of a file in -dir, "+
+		"as a shard does")
 	cacheBytes := flags.Int64("cache-bytes", 40<<30, "bytes of disk the cache may hold")
 	memoryBytes := flags.Int64("memory-bytes", 1<<30, "bytes of memory each cache's memory tier may hold")
 	fillQueueBytes := flags.Int64("fill-queue-bytes", 4<<30, "bytes of fills the cache holds before it drops them")
-	bucket := flags.String("bucket", "", "Cloud Storage bucket")
+	bucket := flags.String("bucket", "", "the regional bucket")
 	prefix := flags.String("prefix", "", "prefix of this run's objects in the bucket")
 	serveRate := flags.Int64("serve-bytes-per-second", 500<<20, "the peer server's serving bandwidth for stripes")
-	hotBucket := flags.String("hot-bucket", "", "Cloud Storage bucket of the hot tier, none when empty")
+	hotBucket := flags.String("hot-bucket", "", "the hot tier's bucket, none when empty: on aws an S3 Express "+
+		"One Zone directory bucket, bucket--<zone id>--x-s3")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	if *advertise == "" || *bucket == "" || *prefix == "" {
 		return errors.New("node needs -advertise, -bucket and -prefix")
 	}
-	store, closer, err := adapters.NewObjectStore(ctx, adapters.ObjectStoreConfig{Bucket: *bucket, Prefix: *prefix})
+	where, known := clouds[*cloudName]
+	if !known {
+		return fmt.Errorf("-cloud is %q, want gce or aws", *cloudName)
+	}
+	store, closer, err := adapters.NewObjectStore(ctx, adapters.ObjectStoreConfig{Provider: where.provider,
+		Bucket: *bucket, Prefix: *prefix})
 	if err != nil {
 		return err
 	}
@@ -121,14 +130,15 @@ func runNode(ctx context.Context, args []string) error {
 	var hotObjects platform.ObjectStore
 	if *hotBucket != "" {
 		// The hot tier keeps its copies under the run's prefix too.
-		hot, closer, err := adapters.NewObjectStore(ctx, adapters.ObjectStoreConfig{Bucket: *hotBucket, Prefix: *prefix})
+		hot, closer, err := adapters.NewObjectStore(ctx, adapters.ObjectStoreConfig{Provider: where.provider,
+			Bucket: *hotBucket, Prefix: *prefix})
 		if err != nil {
 			return err
 		}
 		defer closer.Close()
 		hotObjects = hot
 	}
-	file, err := openCacheFile(ctx, *dir, *device)
+	file, err := openCacheFile(ctx, *dir, where, *device)
 	if err != nil {
 		return err
 	}
@@ -149,7 +159,7 @@ func runNode(ctx context.Context, args []string) error {
 	n, err := newNode(ctx, nodeConfig{address: platform.Address(*advertise), listen: platform.Address(*listen),
 		network: adapters.NewNetwork(), disk: disk,
 		objects: store, file: file, cacheBytes: *cacheBytes,
-		deployment:  checkpoint.CacheDeployment{Store: "gcs", Bucket: *bucket, Prefix: *prefix},
+		deployment:  checkpoint.CacheDeployment{Store: where.provider, Bucket: *bucket, Prefix: *prefix},
 		memoryBytes: *memoryBytes, fillQueueBytes: *fillQueueBytes, serveRate: *serveRate,
 		dropPageCache: dropPageCache, hotObjects: hotObjects})
 	if err != nil {
@@ -169,11 +179,23 @@ func runNode(ctx context.Context, args []string) error {
 	return nil
 }
 
+// cloud is where a node runs: the provider of its buckets, and the network
+// disks attached to its instance.
+type cloud struct {
+	provider string
+	devices  func() platform.Devices
+}
+
+var clouds = map[string]cloud{
+	"gce": {provider: "gcs", devices: func() platform.Devices { return adapters.NewGCEDevices("") }},
+	"aws": {provider: "s3", devices: func() platform.Devices { return adapters.NewEBSDevices("") }},
+}
+
 // openCacheFile opens the file the cache keeps its disk in: the block device
 // of an attached disk, as a shard keeps it, or a file in a directory.
-func openCacheFile(ctx context.Context, dir, device string) (platform.File, error) {
+func openCacheFile(ctx context.Context, dir string, where cloud, device string) (platform.File, error) {
 	if device != "" {
-		return adapters.NewGCEDevices("").Open(ctx, device)
+		return where.devices().Open(ctx, device)
 	}
 	disk, err := adapters.NewDisk(dir)
 	if err != nil {

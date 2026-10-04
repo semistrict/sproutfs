@@ -24,6 +24,9 @@ func TestConfigReadsTheHotTier(t *testing.T) {
 		{"gs://hot", &adapters.ObjectStoreConfig{Provider: "gcs", Bucket: "hot"}},
 		{"s3://hot/deployment/a?endpoint=http://127.0.0.1:9000", &adapters.ObjectStoreConfig{Provider: "s3",
 			Bucket: "hot", Prefix: "deployment/a", Endpoint: "http://127.0.0.1:9000"}},
+		// An S3 Express One Zone directory bucket in the hosts' zone.
+		{"s3://hot--use1-az4--x-s3/sproutfs", &adapters.ObjectStoreConfig{Provider: "s3",
+			Bucket: "hot--use1-az4--x-s3", Prefix: "sproutfs"}},
 	} {
 		values := minimal()
 		if test.value != "" {

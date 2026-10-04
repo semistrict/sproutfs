@@ -103,6 +103,17 @@ func NewGCEDevices(dir string) platform.Devices {
 	return real.NewDevices(dir, "google-", real.GCEDeviceName)
 }
 
+// NewEBSDevices opens the EBS volumes attached to this Nitro instance, each by
+// its volume ID (vol-0123abcd), at nvme-Amazon_Elastic_Block_Store_vol0123abcd
+// in dir, the kernel's /dev/disk/by-id where dir is empty, each for this
+// process alone. Only Linux has them.
+func NewEBSDevices(dir string) platform.Devices {
+	if dir == "" {
+		dir = "/dev/disk/by-id"
+	}
+	return real.NewDevices(dir, real.EBSDevicePrefix, real.EBSDeviceName)
+}
+
 // noClose is a closer with nothing to release.
 type noClose struct{}
 

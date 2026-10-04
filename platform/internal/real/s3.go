@@ -22,15 +22,25 @@ const s3DefaultPageSize = 1000
 
 // S3ObjectStore adapts Amazon S3 to the platform seam. The object's ETag is the
 // validator, passed back as S3 returned it. For an object written in one PUT,
-// which is every object this store writes, it is the MD5 of the body, so two
-// writes of the same bytes share one. A compare-and-set on it is therefore a
-// compare-and-set on the object's bytes. That is what every caller means by
-// one: a control record is the whole of its state, and an immutable object
-// carries the digest of its bytes.
+// which is every object this store writes, it is the MD5 of the body in a
+// general purpose bucket, so two writes of the same bytes share one. A
+// compare-and-set on it is therefore a compare-and-set on the object's bytes.
+// That is what every caller means by one: a control record is the whole of its
+// state, and an immutable object carries the digest of its bytes.
+//
+// A directory bucket, S3 Express One Zone's bucket in one availability zone,
+// is named bucket--<zone id>--x-s3. The client reaches it at its zone's
+// endpoint and signs each request with a session it makes with CreateSession,
+// so the store needs nothing of its own for it but two things. Its ETag is
+// opaque: two writes of the same bytes have two, though a compare-and-set on
+// it still holds. And it lists in no order, and only under a prefix that ends
+// in a slash, so List refuses it. A directory bucket serves as a hot tier,
+// which only reads, writes and heads single objects.
 type S3ObjectStore struct {
-	client *s3.Client
-	bucket string
-	prefix string
+	client    *s3.Client
+	bucket    string
+	prefix    string
+	directory bool
 }
 
 func NewS3ObjectStore(client *s3.Client, bucket, prefix string) (*S3ObjectStore, error) {
@@ -41,8 +51,17 @@ func NewS3ObjectStore(client *s3.Client, bucket, prefix string) (*S3ObjectStore,
 	if prefix != "" && !strings.HasSuffix(prefix, "/") {
 		prefix += "/"
 	}
-	return &S3ObjectStore{client: client, bucket: bucket, prefix: prefix}, nil
+	return &S3ObjectStore{client: client, bucket: bucket, prefix: prefix,
+		directory: IsS3DirectoryBucket(bucket)}, nil
 }
+
+// IsS3DirectoryBucket is whether a bucket's name is a directory bucket's: the
+// names of S3 Express One Zone's buckets end in --x-s3.
+func IsS3DirectoryBucket(bucket string) bool { return strings.HasSuffix(bucket, "--x-s3") }
+
+// ErrUnorderedListing is a listing of a directory bucket, which S3 returns in
+// no order, where the seam promises the keys in order.
+var ErrUnorderedListing = fmt.Errorf("a directory bucket lists its keys in no order: %w", errors.ErrUnsupported)
 
 // NewS3Client opens an S3 client with the ambient AWS configuration: the
 // environment, the shared config files, or the instance's role. A non-empty
@@ -198,6 +217,9 @@ func (s *S3ObjectStore) Delete(ctx context.Context, request platform.DeleteReque
 func (s *S3ObjectStore) List(ctx context.Context, request platform.ListRequest) (platform.ListResult, error) {
 	if err := request.Validate(); err != nil {
 		return platform.ListResult{}, err
+	}
+	if s.directory {
+		return platform.ListResult{}, fmt.Errorf("listing s3://%s: %w", s.bucket, ErrUnorderedListing)
 	}
 	pageSize := int32(s3DefaultPageSize)
 	if request.Limit > 0 {
