@@ -624,9 +624,11 @@ The numbers are from two GCE runs on n2-standard-4 hosts: the stripe benchmark, 
 </div>
 <div class="space-y-5">
 
-<div v-click><b>ranks</b> — weighted rendezvous: each cache scores a window <code>w / −ln(u)</code></div>
+<div v-click><b>membership</b> — one object, changed only by compare-and-set; every request names its generation</div>
 
-<div v-click><b>weight</b> — the cache's disk, in 16 GiB steps, never its moving share</div>
+<div v-click><b>ranks</b> — weighted rendezvous: each disk scores a window <code>w / −ln(u)</code></div>
+
+<div v-click><b>weight</b> — the disk, in 16 GiB steps, never its moving share</div>
 
 <div v-click>a join or a leave moves <b>at most one</b> holder of a window</div>
 
@@ -640,7 +642,7 @@ There is no tier of whole local copies. A page read whole from the local disk wo
 
 The unit of placement is the window: the pages of one volume in one aligned 2 MiB span that one checkpoint published. A read-ahead run asks the same hosts for all its pages in one request each.
 
-Placement is computed, not recorded. Every host holds the list of caches, which the orchestrator serves. Each cache scores a window by w over minus ln u, where u is a hash of the cache's identity and the window, and w is its weight. Rendezvous ranks the next cache exactly, which repair depends on. The comparison is done in integers, so hosts of different architectures rank alike.
+Placement is computed, not recorded. Every host holds a copy of the membership: one object in the object store that says which disk each host serves, changed only by compare-and-set. Each disk scores a window by w over minus ln u, where u is a hash of the disk's identity and the window, and w is its weight. Rendezvous ranks the next disk exactly, which repair depends on. The comparison is done in integers, so hosts of different architectures rank alike. Every request between hosts names the generation of the membership its sender holds. A host behind it reads the object first; a host ahead of it says the sender is stale. So two hosts never exchange a stripe under different memberships.
 -->
 
 ---
@@ -1107,7 +1109,8 @@ cmd/sproutfs-host            the host process
 cmd/sproutfs-orchestrator    ids, placement, migrations, forks
 cmd/sproutfs-guest-witness   fill / mutate / check / grow, in the guest
 checkpoint          the store, and the page cache: memory, disk log, fills, cluster reads
-rank                windows, the list of caches, rendezvous ranking
+membership          the membership object, its steps, each host's copy
+rank                windows, rendezvous ranking over the disks
 stripe              Reed-Solomon split and join, finding a wrong stripe
 resource            budgets and the disk limiter
 control             control records
