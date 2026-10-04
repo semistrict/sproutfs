@@ -25,8 +25,10 @@ import (
 // installed, as every fault did before 2026-10-04 (vmmemory.WithStream).
 
 // pagerResidentBytes is the memory the pager's arena may hold, past which it
-// evicts. Pages read back are clean, so an eviction costs no spill.
-const pagerResidentBytes = 2 << 30
+// evicts. It holds either guest a run reads whole, so a read measures faults
+// and not memory pressure: under pressure an allocation cancels the
+// prefetches still reading.
+const pagerResidentBytes = 10 << 30
 
 // pagerReader is one read's pager: a host of its own, so nothing a case reads
 // is resident when it begins, and the one memory region it attaches.

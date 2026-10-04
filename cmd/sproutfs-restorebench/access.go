@@ -84,6 +84,9 @@ type walked struct {
 	Failed int `json:"failed"`
 }
 
+// readBound is the longest one read of a walk may take.
+const readBound = 2 * time.Minute
+
 // reader reads dst from a guest's memory at offset.
 type reader func(ctx context.Context, offset uint64, dst []byte) error
 
@@ -111,7 +114,12 @@ func walk(ctx context.Context, g *guest, a access, read reader) (walked, error) 
 	one := func(at, unit uint64, buffer []byte) error {
 		out.Units[at] = unit
 		start := time.Now()
-		err := read(ctx, unit*unitBytes, buffer)
+		// A read past the bound fails the walk, rather than holding a run of
+		// hosts for hours: on 2026-10-04 one GET of GCS waited 52 minutes for
+		// a response its HTTP/2 stream never got.
+		bounded, cancel := context.WithTimeout(ctx, readBound)
+		err := read(bounded, unit*unitBytes, buffer)
+		cancel()
 		out.Latencies[at] = int64(time.Since(start))
 		if err != nil {
 			failed.Add(1)
