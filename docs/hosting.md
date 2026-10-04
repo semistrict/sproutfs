@@ -1489,6 +1489,11 @@ rather than drop:
   marked down within a few seconds, and keeps to it are then dropped at once.
   So it costs a publication the bound at most.
 
+On GCE an 8 GiB guest published from an Ice Lake host under 4+2 used to drop
+two thirds of its stripes at the default queue. Paced, it drops none, and
+takes 69 s instead of 33 s, the pace of the host's keeps
+([the measurement](measurements/gce-fill-backpressure-2026-10-04.md)).
+
 **A read's fill never waits behind a publication's.** The last quarter of the
 queue is left to the fills of reads, repairs and peers' keeps, which never
 wait. The worker takes them before any of a publication's fills still to do,
