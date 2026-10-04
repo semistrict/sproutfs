@@ -229,7 +229,7 @@ type keyedStripe struct {
 type filler struct {
 	cluster *cluster
 	peers   *peer.Table
-	clock platform.Clock
+	clock   platform.Clock
 	// ctx is the fills' life, which carries what the cache was made under;
 	// Close ends it.
 	ctx    context.Context

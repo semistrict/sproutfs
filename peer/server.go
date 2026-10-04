@@ -155,7 +155,7 @@ func NewServer(ctx context.Context, config ServerConfig) (*Server, error) {
 	s := &Server{config: config, listener: listener, ctx: serverCtx, cancel: cancel,
 		handoffs: newHandoffs(), budgets: serverBudgets{held: make(map[budgetKey]int64)},
 		assigned: make(map[rank.Identity]uint64),
-		serving: newServingBudget(platform.ClockOr(config.Clock), config.StripeBytesPerSecond)}
+		serving:  newServingBudget(platform.ClockOr(config.Clock), config.StripeBytesPerSecond)}
 	s.wg.Go(s.accept)
 	return s, nil
 }

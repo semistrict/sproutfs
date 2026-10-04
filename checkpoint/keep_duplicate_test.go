@@ -35,7 +35,9 @@ func TestACacheDropsAKeepItHoldsOrIsWriting(t *testing.T) {
 		}
 		writing := keyOf("writing", 0)
 		first := make(chan error, 1)
-		go func() { first <- f.cache.Keep(t.Context(), f.m, f.cache.Identity(), keepOf(t, writing, code, []int{0, 1})) }()
+		go func() {
+			first <- f.cache.Keep(t.Context(), f.m, f.cache.Identity(), keepOf(t, writing, code, []int{0, 1}))
+		}()
 		synctest.Wait()
 		start := time.Now()
 		if err := f.cache.Keep(t.Context(), f.m, f.cache.Identity(), keepOf(t, writing, code, []int{0, 1})); !errors.Is(err, peer.ErrDropped) {
