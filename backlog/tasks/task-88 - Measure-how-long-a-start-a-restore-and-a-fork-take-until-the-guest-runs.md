@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-04 19:21'
-updated_date: '2026-10-04 21:58'
+updated_date: '2026-10-04 22:05'
 labels:
   - measurement
 dependencies: []
@@ -44,6 +44,8 @@ No report records the time from a start, a restore or a fork request to the gues
 
 <!-- SECTION:NOTES:BEGIN -->
 Ran scripts/bench-start-gce.sh on two n2-highmem-4 Ice Lake nodes, 400 starts per case, all succeeded; raw results in docs/measurements/gce-start-latency-2026-10-04/ (ignored). To running p50/p99: cold 476/514, restore 450/7337 (448/575 without the 56 throttled epoch writes), fork-local 342/380, fork-remote 375/439 ms. Largest step: root publication for cold (184 ms), VMM state load for the rest (226-242 ms, of which populate 170-190 ms). Store share 23-45 %. GCS direct: create-if-absent 46.5/65.7, compare-and-set 52.5/76.3 ms. A store-free fork saves 78 ms local and 107 ms remote at p50: TASK-89. Nodes, disks and objects deleted and verified. check-guards' migration-take-a-claim-after-close guard survived twice under load on this Mac (vmmigrate unchanged) and passed alone.
+
+The store-free fork task is TASK-91; TASK-89 above was renumbered at merge because TASK-89 and TASK-90 were taken by archived tasks.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
