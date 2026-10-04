@@ -362,32 +362,10 @@ func (r *MemoryRegion) readInWindow(ctx context.Context, index uint64) (pg *resi
 	if id, named := plan.identity(index); !named || id.zero() || plan.own(index) {
 		return nil, false, nil
 	}
-	// The faulting page comes first, waiting for its identity's resident while
-	// the plan holds no other, and reserving a slot for it among the run of
-	// pages around it so that the run lands in consecutive slots.
-	if err := plan.bindShared(ctx, index, true); err != nil {
+	if err := plan.takeFaulting(ctx, index); err != nil {
 		return nil, false, err
 	}
-	if plan.pages[index-start] == nil {
-		plan.reserveAround(index)
-		if plan.reserved[index-start].slot < 0 {
-			at, err := r.reclaim(ctx, plan.file)
-			if err != nil {
-				return nil, false, err
-			}
-			plan.reserve(index, at)
-		}
-	}
-	for page := start; page < end; page++ {
-		i := page - start
-		if plan.pages[i] != nil || plan.zeros[i] || plan.reserved[i].slot >= 0 || !plan.eligible(page) {
-			continue
-		}
-		if err := plan.bindShared(ctx, page, false); err != nil {
-			return nil, false, err
-		}
-	}
-	if err := plan.reserveRuns(ctx, index); err != nil {
+	if err := plan.takeRest(ctx, index, false); err != nil {
 		return nil, false, err
 	}
 	if err := plan.loadReserved(ctx); err != nil {
@@ -869,47 +847,73 @@ func (r *MemoryRegion) loadOnce(ctx context.Context, index uint64, spill *int) (
 		return false, errUnpublishedReservation
 	}
 	plan.spill = spill
-	// The faulting page comes first: bound to its resident identity if one
-	// exists, otherwise reserved together with the run of pages around it so
-	// the run lands in consecutive slots, and as a last resort by evicting.
-	// Waiting here is safe because the plan holds no other resident lock yet.
-	if err := plan.bindShared(ctx, index, true); err != nil {
+	if err := plan.takeFaulting(ctx, index); err != nil {
 		return false, err
 	}
-	if plan.pages[index-start] == nil && !plan.zeros[index-start] {
-		if plan.own(index) {
-			// Its bytes go in this memory region's own file, where it has a
-			// place of its own, and only it may evict for it.
-			at, err := r.reclaimOwn(ctx, index, !plan.unpublished(index))
-			if err != nil {
-				return false, err
-			}
-			plan.reserve(index, at)
-		} else {
-			plan.reserveAround(index)
-		}
-	}
-	if plan.pages[index-start] == nil && !plan.zeros[index-start] && plan.reserved[index-start].slot < 0 {
-		at, err := r.reclaim(ctx, plan.file)
-		if err != nil {
-			return false, err
-		}
-		plan.reserve(index, at)
-	}
-	for p := start; p < end; p++ {
-		if plan.pages[p-start] != nil || plan.zeros[p-start] || plan.reserved[p-start].slot >= 0 || !plan.eligible(p) {
-			continue
-		}
-		if err := plan.bindShared(ctx, p, false); err != nil {
-			return false, err
-		}
-	}
-	if err := plan.reserveRuns(ctx, index); err != nil {
+	if err := plan.takeRest(ctx, index, true); err != nil {
 		return false, err
 	}
-	plan.reserveOwn()
 	if err := plan.loadReserved(ctx); err != nil {
 		return false, err
 	}
 	return plan.install(ctx)
+}
+
+// takeFaulting takes the faulting page into the plan before any other: bound
+// to its resident identity if one exists, otherwise given a slot among the run
+// of pages around it so the run lands in consecutive slots, and as a last
+// resort one an eviction frees. Waiting here is safe because the plan holds no
+// other resident lock yet. A page whose bytes go in this memory region's own
+// file has a place of its own there, and only it may evict for it.
+func (p *windowPlan) takeFaulting(ctx context.Context, index uint64) error {
+	r := p.memoryRegion
+	if err := p.bindShared(ctx, index, true); err != nil {
+		return err
+	}
+	i := index - p.start
+	if p.pages[i] != nil || p.zeros[i] {
+		return nil
+	}
+	if p.own(index) {
+		at, err := r.reclaimOwn(ctx, index, !p.unpublished(index))
+		if err != nil {
+			return err
+		}
+		p.reserve(index, at)
+		return nil
+	}
+	p.reserveAround(index)
+	if p.reserved[i].slot >= 0 {
+		return nil
+	}
+	at, err := r.reclaim(ctx, p.file)
+	if err != nil {
+		return err
+	}
+	p.reserve(index, at)
+	return nil
+}
+
+// takeRest takes the rest of the window into the plan once the faulting page
+// is in it: every page whose identity is resident, bound to that page, and
+// free slots, never an eviction, for the pages that need reading, the pages
+// after the faulting one first. own says whether the pages whose bytes go in
+// this memory region's own file are reserved there too.
+func (p *windowPlan) takeRest(ctx context.Context, index uint64, own bool) error {
+	for page := p.start; page < p.end; page++ {
+		i := page - p.start
+		if p.pages[i] != nil || p.zeros[i] || p.reserved[i].slot >= 0 || !p.eligible(page) {
+			continue
+		}
+		if err := p.bindShared(ctx, page, false); err != nil {
+			return err
+		}
+	}
+	if err := p.reserveRuns(ctx, index); err != nil {
+		return err
+	}
+	if own {
+		p.reserveOwn()
+	}
+	return nil
 }
