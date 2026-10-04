@@ -151,7 +151,9 @@ if ctl migrate vm-4 --to sproutfs-host-1 > "$work/out" 2> "$work/err"; then
 else
     ok
 fi
-want_file_has "$work/err" '503 Service Unavailable' 'a refusal says what the deployment said'
+# The CLI prints the orchestrator's message and not its status line, and the
+# message of a placement with no room is the operation and errNoHost's text.
+want_file_has "$work/err" '^migrate: no host is available: ' 'a refusal says what the deployment said'
 unset SPROUTFS_FAKE_REFUSE
 
 # A cold start says so, and the checkpoint it names is the one that discarded

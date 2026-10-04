@@ -51,7 +51,8 @@
 # What it records, under $SPROUTFS_DEMO_RUN_DIR:
 #   operations.tsv  every operation, the VMs it touched and what it cost
 #   checks.tsv      every check: the VM, the (seed, step) and what it said
-#   refusals.tsv    every placement the deployment refused, which is not a failure
+#   refusals.tsv    every placement the deployment refused for want of room,
+#                   which is not a failure
 #   store.tsv       each host's object-store counters at every round boundary
 #   rounds.tsv      the wall-clock window each round occupied
 #   summary.txt     the tables this prints
@@ -64,7 +65,8 @@
 # SPROUTFS_DEMO_RUN_DIR, SPROUTFS_DEMO_EXEC_TIMEOUT.
 #
 # Non-zero exit on any check that failed, on any guest that stopped answering,
-# and on a deployment that disagrees with itself at the end.
+# on a placement that failed for any reason but want of room, and on a
+# deployment that disagrees with itself at the end.
 set -euo pipefail
 
 # The per-VM expectation is an associative array, which is bash 4 and up. The
@@ -262,6 +264,26 @@ record_refusal() {
     printf 'refused (%s %s): %s\n' "$2" "$3" "$reason"
 }
 
+# no_room reports whether what a failed placement said is the deployment turning
+# it down for want of room. The orchestrator's own placement says "no host is
+# available" (errNoHost, a 503), and a host whose pager or budget cannot admit
+# the VM says its capacity is exhausted. The CLI prints the message and not the
+# status, so the message is what there is to go on.
+no_room() { [[ $1 == *'no host is available'* || $1 == *'capacity exhausted'* ]]; }
+
+# placement_failed is what a create, fork, migration, stop or start that did not
+# happen does with what it said. A refusal for want of room is the deployment's
+# answer: it is recorded and the run goes on. Anything else — a CLI that never
+# reached the orchestrator, a host that broke rather than refused, a disk that
+# filled under the run — is not something the seed decided, and a run that went
+# on from it as if it were a refusal would pass with a shape no other run of
+# that seed has.
+placement_failed() {
+    local op=$1 vm=$2 said=$3
+    no_room "$said" || fail "$op $vm failed, and not for want of room: $said"
+    record_refusal "$round" "$op" "$vm" "$said"
+}
+
 # sample_store records what every host's object store has served at one
 # boundary. Two samples subtracted are one round's cost. These are the same
 # counters the hosts' /metrics exposition carries; the CLI is what already
@@ -370,7 +392,7 @@ create_vm() {
     local created vm began ended
     began=$(now)
     if ! created=$(ctl create --template "$template" 2>&1); then
-        record_refusal "$round" create - "$created"
+        placement_failed create - "$created"
         return 1
     fi
     ended=$(now)
@@ -400,12 +422,12 @@ fork_onto() {
     began=$(now)
     if [[ $to == "-" ]]; then
         table=$(ctl fork "$parent" --count "$count" 2>&1) || {
-            record_refusal "$round" fork "$parent" "$table"
+            placement_failed fork "$parent" "$table"
             return 0
         }
     else
         table=$(ctl fork "$parent" --count "$count" --to "$to" 2>&1) || {
-            record_refusal "$round" fork "$parent" "$table"
+            placement_failed fork "$parent" "$table"
             return 0
         }
     fi
@@ -449,7 +471,7 @@ migrate_vm() {
     check_at "$vm" before-migrate
     began=$(now)
     if ! line=$(ctl migrate "$vm" --to "$to" 2>&1); then
-        record_refusal "$round" migrate "$vm" "$line"
+        placement_failed migrate "$vm" "$line"
         return 0
     fi
     ended=$(now)
@@ -481,7 +503,7 @@ stop_and_start() {
     ((cold)) || stopping+=(--suspend)
     began=$(now)
     if ! line=$(ctl "${stopping[@]}" 2>&1); then
-        record_refusal "$round" stop "$vm" "$line"
+        placement_failed stop "$vm" "$line"
         return 0
     fi
     ended=$(now)
@@ -503,7 +525,7 @@ stop_and_start() {
     fi
     began=$(now)
     if ! line=$(ctl start "$vm" --to "$to" 2>&1); then
-        record_refusal "$round" start "$vm" "$line"
+        placement_failed start "$vm" "$line"
         return 0
     fi
     ended=$(now)
@@ -542,7 +564,7 @@ cold_start() {
     fi
     began=$(now)
     if ! line=$(ctl "${request[@]}" 2>&1); then
-        record_refusal "$round" cold-start "$vm" "$line"
+        placement_failed cold-start "$vm" "$line"
         return 0
     fi
     ended=$(now)
