@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/semistrict/sproutfs/membership"
 	"github.com/semistrict/sproutfs/rank"
 	"github.com/semistrict/sproutfs/stripe"
 )
@@ -65,3 +66,14 @@ func (c *Cache) SpoilStripe(ctx context.Context, window rank.Window, at uint32, 
 // read campaign must fire.
 var ReadSites = []string{buggifyClusterWrongStripe, buggifyClusterDamagedItem, buggifyClusterLoseAnswer,
 	buggifyClusterStoreHedgeNow, buggifyClusterFalseTimeout}
+
+// ServingOf is the membership in which every cache of list is a member of its
+// own serving its own disk, at the cache's address or at one named for it:
+// what a test that places windows by a fixed set of disks follows.
+func ServingOf(list rank.List) membership.Membership { return servingOf(list) }
+
+// FollowList has the cache follow ServingOf(list), as the member of its own
+// disk.
+func (c *Cache) FollowList(list rank.List) {
+	c.FollowMembership(membership.NewFixed(servingOf(list)), c.Identity())
+}

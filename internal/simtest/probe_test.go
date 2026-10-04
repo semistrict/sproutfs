@@ -67,12 +67,13 @@ func seedsThrough(last uint64) []uint64 {
 
 // elsewhere reports a probe another campaign is registered to cover, which
 // these campaigns reach too: the peer server's (TestThePeerServerCampaignNeverAnswersWrong),
-// the list of caches' (TestHostsAgreeOnceTheOrchestratorAnswersAgain), and
-// the page cache disk's, its stripes', its fills' and its reads of the
-// cluster (the disk, stripe, fill and read campaigns in checkpoint).
+// the membership's (TestConcurrentWritersNeverLoseAnUpdateOrGoBack, and the
+// read campaign in checkpoint for the protocol), and the page cache disk's,
+// its stripes', its fills' and its reads of the cluster (the disk, stripe,
+// fill and read campaigns in checkpoint).
 func elsewhere(name string) bool {
-	for _, prefix := range []string{"peer/", "rank/", "checkpoint/disk-", "checkpoint/fill-", "checkpoint/keep-",
-		"checkpoint/cluster-"} {
+	for _, prefix := range []string{"peer/", "membership/", "checkpoint/disk-", "checkpoint/fill-",
+		"checkpoint/keep-", "checkpoint/cluster-"} {
 		if strings.HasPrefix(name, prefix) && !slices.Contains(registeredProbes, name) {
 			return true
 		}

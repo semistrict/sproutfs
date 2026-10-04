@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/semistrict/sproutfs/internal/blob"
+	"github.com/semistrict/sproutfs/membership"
 	"github.com/semistrict/sproutfs/peer"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/platform/sim"
@@ -20,8 +21,15 @@ import (
 
 // Reading from the cluster. Inside the share the cluster cache is turned on
 // for, a page this host holds in neither its memory tier nor its pager's arena
-// is read from the caches the list ranks for its window before the store
+// is read from the disks the membership ranks for its window before the store
 // (plans/disk-cache-2026-10-02.md, "Reading a page").
+//
+// A read is made under one generation of the membership, which every request
+// it sends names. A holder ahead of it answers that it is stale; the read then
+// reads the membership and reads the window again under the newer one, so no
+// stripe is read under a membership the reader and its holder do not both
+// hold. A disk no member serves has no route, and is passed over as a holder
+// marked down is.
 //
 // A read takes the stripes of the window this host's own disk holds, which
 // cost no request. If they do not make k distinct indices of each page, it
@@ -81,6 +89,12 @@ const (
 	// two checks that the part behind a hit still exists.
 	DefaultHeadCheckEvery = 10000
 )
+
+// staleRetries is how many times a read or a fill told it is stale reads the
+// membership and tries again. Each time is under a newer generation, so this
+// bounds only a membership that changes faster than a request crosses the
+// network.
+const staleRetries = 3
 
 const (
 	// hedgeWindow is how many recent reads the delay is drawn from, and
@@ -208,6 +222,8 @@ var (
 	errNoPeers = errors.New("checkpoint: the cache reaches no peer")
 	// errAnswerLost is an answer the lose-answer site took.
 	errAnswerLost = errors.New("checkpoint: the answer was lost")
+	// errNoRoute answers a request of a disk no member serves.
+	errNoRoute = errors.New("checkpoint: no member serves the disk")
 )
 
 // clusterSettings is how a cache reads the cluster.
@@ -349,9 +365,9 @@ func (r *clusterReader) probe(name string)                 { sim.Probe(r.ctx, na
 func (r *clusterReader) buggify(id string, p float64) bool { return sim.Buggify(r.ctx, id, p) }
 
 // on reports whether key is read from the cluster: its window is inside the
-// share, on a disk that follows a list.
+// share, on a disk that follows a membership.
 func (r *clusterReader) on(key diskKey) bool {
-	_, ok := r.disk.listFor(key, false)
+	_, ok := r.disk.placedBy(key, false)
 	return ok
 }
 
@@ -499,16 +515,17 @@ type hedgeResult struct {
 	err  error
 }
 
-// windowGroup is the wants of one window, and where they are among a read's.
+// windowGroup is the wants of one window, and where they are among a read's,
+// and the membership they are read under.
 type windowGroup struct {
 	window rank.Window
-	list   rank.List
+	m      membership.Membership
 	ats    []int
 	wants  []clusterWant
 }
 
 // byWindow puts wants together by window, in the order their windows first
-// come, each placed by the list the disk follows now.
+// come, each placed by the membership the disk follows now.
 func (r *clusterReader) byWindow(wants []clusterWant) []windowGroup {
 	var groups []windowGroup
 	at := make(map[rank.Window]int)
@@ -516,10 +533,10 @@ func (r *clusterReader) byWindow(wants []clusterWant) []windowGroup {
 		window := want.key.rankWindow()
 		index, seen := at[window]
 		if !seen {
-			list, _ := r.disk.listFor(want.key, false)
+			m, _ := r.disk.placedBy(want.key, false)
 			index = len(groups)
 			at[window] = index
-			groups = append(groups, windowGroup{window: window, list: list})
+			groups = append(groups, windowGroup{window: window, m: m})
 		}
 		groups[index].ats = append(groups[index].ats, position)
 		groups[index].wants = append(groups[index].wants, want)
@@ -543,11 +560,12 @@ type stripeAnswer struct {
 }
 
 // windowRead is one read of the cluster for the wants of one window, under
-// one code.
+// one code, under one generation of the membership.
 type windowRead struct {
 	r      *clusterReader
 	codecs *blob.Codecs
 	window rank.Window
+	m      membership.Membership
 	// code is the code the read takes stripes of. earlier marks a code the
 	// deployment used before its own, which the read does not repair under.
 	code    rank.Code
@@ -556,6 +574,12 @@ type windowRead struct {
 	// and cut that the read's caller gave up on it before it ended.
 	own, cut bool
 	wants    []clusterWant
+	// owned says this host serves its disk under m, so its own stripes are
+	// part of the read.
+	owned bool
+	// newer is the newest generation a holder answered that the read is stale
+	// with, zero for none.
+	newer uint64
 	// pages is each want's page of the window.
 	pages []uint32
 	// ranks is the window's first k+m ranks, and holders the cache each index
@@ -594,12 +618,44 @@ type windowOut struct {
 	refill  []envelope
 }
 
-// readWindow reads the wants of one window from the cluster: under the list's
-// code, then what it could not rebuild under each earlier code in turn.
+// readWindow reads the wants of one window from the cluster, under one
+// generation of the membership: under its code, then what it could not
+// rebuild under each earlier code in turn. A read that a holder ahead of it
+// answers stale reads the membership and reads the window again under the
+// newer generation.
 func (r *clusterReader) readWindow(ctx context.Context, codecs *blob.Codecs, g windowGroup) windowOut {
+	for tries := 0; ; tries++ {
+		out, own, newer, cut := r.readCodes(ctx, codecs, g)
+		if cut {
+			// A read its caller gave up on counts nothing.
+			return out
+		}
+		if newer <= g.m.Generation() || tries == staleRetries {
+			r.counted(out, own)
+			return out
+		}
+		next, err := r.disk.catch(ctx, newer)
+		if err != nil || next.Generation() <= g.m.Generation() {
+			slog.DebugContext(ctx, "checkpoint: a read told it is stale could not read the membership",
+				"generation", g.m.Generation(), "holder", newer, "error", err)
+			r.counted(out, own)
+			return out
+		}
+		r.probe(membership.ProbeSenderCaughtUp)
+		g.m = next
+	}
+}
+
+// readCodes reads the wants of g's window under each of its membership's
+// codes in turn, and reports what they rebuilt, whether this host's own
+// stripes rebuilt every want under the membership's code, the generation of
+// a holder that answered the read is stale, and whether the read's caller
+// gave up on it.
+func (r *clusterReader) readCodes(ctx context.Context, codecs *blob.Codecs, g windowGroup) (windowOut, bool,
+	uint64, bool) {
 	out := windowOut{data: make([][]byte, len(g.wants))}
 	own := false
-	for at, code := range g.list.Codes() {
+	for at, code := range g.m.List().Codes() {
 		var missing []int
 		for position, data := range out.data {
 			if data == nil {
@@ -613,11 +669,13 @@ func (r *clusterReader) readWindow(ctx context.Context, codecs *blob.Codecs, g w
 		for want, position := range missing {
 			wants[want] = g.wants[position]
 		}
-		w := r.windowRead(codecs, g.window, g.list.Under(code), wants, at > 0)
+		w := r.windowRead(codecs, g.window, g.m, code, wants, at > 0)
 		w.run(ctx)
 		if w.cut {
-			// A read its caller gave up on counts nothing.
-			return out
+			return out, own, 0, true
+		}
+		if w.stale() {
+			return out, own, w.newer, false
 		}
 		own = own || at == 0 && w.own
 		for want, position := range missing {
@@ -633,17 +691,18 @@ func (r *clusterReader) readWindow(ctx context.Context, codecs *blob.Codecs, g w
 			}
 		}
 	}
-	r.counted(out, own)
-	return out
+	return out, own, 0, false
 }
 
-// windowRead starts the read of wants of window under the code list is of.
-// earlier marks a code the deployment used before its own.
-func (r *clusterReader) windowRead(codecs *blob.Codecs, window rank.Window, list rank.List, wants []clusterWant,
-	earlier bool) *windowRead {
+// windowRead starts the read of wants of window under m, of the stripes of
+// code, from the window's ranks under that code. earlier marks a code the
+// deployment used before its own.
+func (r *clusterReader) windowRead(codecs *blob.Codecs, window rank.Window, m membership.Membership, code rank.Code,
+	wants []clusterWant, earlier bool) *windowRead {
+	list := m.List().Under(code)
 	ranks := list.Ranks(window)
-	w := &windowRead{r: r, codecs: codecs, window: window, code: list.Code(), earlier: earlier, wants: wants,
-		ranks: ranks, holders: list.Holders(window), self: rank.Cache{Identity: r.disk.identity},
+	w := &windowRead{r: r, codecs: codecs, window: window, m: m, code: code, earlier: earlier, wants: wants,
+		owned: r.disk.owns(m), ranks: ranks, holders: list.Holders(window), self: rank.Cache{Identity: r.disk.identity},
 		held: make([][]heldStripe, len(wants)), tried: make([]int, len(wants)), out: make([][]byte, len(wants)),
 		envelopes: make([][]byte, len(wants)), answered: make(map[rank.Identity][][]int),
 		askedOf: make(map[rank.Identity]bool),
@@ -652,6 +711,16 @@ func (r *clusterReader) windowRead(codecs *blob.Codecs, window rank.Window, list
 		w.pages = append(w.pages, uint32(want.key.Page-window.Page(0)))
 	}
 	return w
+}
+
+// stale reports a read a holder ahead of it answered stale.
+func (w *windowRead) stale() bool { return w.newer > w.m.Generation() }
+
+// routed reports whether some member serves cache under the read's
+// membership, so a request has somewhere to go.
+func (w *windowRead) routed(cache rank.Cache) bool {
+	_, ok := w.m.Route(cache.Identity)
+	return ok
 }
 
 // run is the read: this host's own stripes, then k+1 of the ranks, then the
@@ -665,7 +734,7 @@ func (w *windowRead) run(ctx context.Context) {
 	}()
 	r := w.r
 	began := r.clock.Now()
-	own := w.readOwn(ctx)
+	own := w.owned && w.readOwn(ctx)
 	w.join(ctx)
 	if w.complete() {
 		w.own = true
@@ -681,7 +750,8 @@ func (w *windowRead) run(ctx context.Context) {
 	}
 	var others []rank.Cache
 	for _, cache := range w.ranks {
-		if cache.Identity != w.self.Identity && !r.marks.isDown(cache.Identity) && !w.tableDown(cache) {
+		if cache.Identity != w.self.Identity && w.routed(cache) && !r.marks.isDown(cache.Identity) &&
+			!w.tableDown(cache) {
 			others = append(others, cache)
 		}
 	}
@@ -720,6 +790,11 @@ func (w *windowRead) run(ctx context.Context) {
 		case answer := <-w.events:
 			w.pending--
 			if w.take(ctx, answer) {
+				if w.stale() {
+					// A holder is ahead of the read: it starts again under
+					// the holder's generation.
+					return
+				}
 				w.replace(ctx)
 			}
 			if w.join(ctx) {
@@ -860,14 +935,18 @@ func (w *windowRead) ask(ctx context.Context, cache rank.Cache) {
 	w.askedOf[cache.Identity] = true
 	r.count(func(stats *ReadStats) { stats.Requests++ })
 	read := peer.StripeRead{Window: w.window, Pages: w.pages, Code: w.code, MaxBytes: w.maxBytes(cache)}
+	route, routed := w.m.Route(cache.Identity)
 	if !r.spawn(func(life context.Context) {
 		answer := stripeAnswer{cache: cache}
-		if r.peers == nil {
+		switch {
+		case r.peers == nil:
 			answer.err = errNoPeers
-		} else {
+		case !routed:
+			answer.err = errNoRoute
+		default:
 			requestCtx, cancel := context.WithCancelCause(life)
 			timer := r.clock.AfterFunc(r.settings.stripeTimeout, func() { cancel(errStripeTimeout) })
-			answer.reply, answer.err = r.peers.Peer(cache.Address).ReadStripes(requestCtx, cache.Identity, read)
+			answer.reply, answer.err = r.peers.Peer(route.Address).ReadStripes(requestCtx, route, read)
 			timer.Stop()
 			cancel(nil)
 		}
@@ -937,9 +1016,17 @@ func (w *windowRead) finish() {
 }
 
 // take takes the stripes of one answer, and reports whether it gave nothing:
-// an error, BUSY, or no stripe that passed its checks.
+// an error, BUSY, or no stripe that passed its checks. An answer that the
+// read is stale, from a holder ahead of it, is noted, and the read starts
+// again under the holder's generation; one from a holder behind it, which
+// could not read the membership, is a miss.
 func (w *windowRead) take(ctx context.Context, answer stripeAnswer) bool {
 	if answer.err != nil {
+		var stale *peer.StaleError
+		if errors.As(answer.err, &stale) && stale.Generation > w.m.Generation() &&
+			!w.r.bug("membership-ignore-stale-answer") {
+			w.newer = max(w.newer, stale.Generation)
+		}
 		return true
 	}
 	defer answer.reply.Release()
@@ -958,7 +1045,7 @@ func (w *windowRead) take(ctx context.Context, answer stripeAnswer) bool {
 			continue
 		}
 		if w.r.bug("cluster-read-by-index") && w.holders[s.Index].Identity != answer.cache.Identity {
-			// The guard takes from each rank only the indices the list puts
+			// The guard takes from each rank only the indices the ranks put
 			// on it, which a change of ranks leaves few of (B5).
 			continue
 		}
@@ -1090,7 +1177,7 @@ func (w *windowRead) dropAt(ctx context.Context, cache rank.Cache, page uint32, 
 	if cache.Identity == w.self.Identity {
 		return
 	}
-	if w.r.filler.tell(cache, peer.Drop{Window: w.window, Page: page, Index: index, Code: w.code}) {
+	if w.r.filler.tell(w.m, cache, peer.Drop{Window: w.window, Page: page, Index: index, Code: w.code}) {
 		w.r.count(func(stats *ReadStats) { stats.DropsSent++ })
 		w.r.probe(ProbeClusterDrop)
 	}
@@ -1133,7 +1220,8 @@ func (r *clusterReader) counted(out windowOut, own bool) {
 
 // repair sends each index of a rebuilt envelope that no rank holds to a rank
 // that holds fewer of the window's stripes than the code puts on it, in rank
-// order, offering each rank first the indices the list puts on it. Only a read that heard from every rank knows what no rank holds, so
+// order, offering each rank first the indices the membership puts on it. Only
+// a read that heard from every rank knows what no rank holds, so
 // only such a read repairs; one that did not ask every rank leaves the window
 // to a reader that does. It never sends an index another rank holds, so a
 // change of ranks never leaves one index on two ranks. A window read under an
@@ -1190,13 +1278,13 @@ func (w *windowRead) repair(ctx context.Context) {
 		if repairs := sending[cache.Identity]; len(repairs) > 0 {
 			w.r.count(func(stats *ReadStats) { stats.Repairs += uint64(len(repairs)) })
 			w.r.probe(ProbeClusterRepair)
-			w.r.filler.repair(w.window, w.code, cache, repairs)
+			w.r.filler.repair(w.m, w.window, w.code, cache, repairs)
 		}
 	}
 }
 
 // preferred is the indices of the code in the order a repair offers them to
-// the cache of identity: those the list puts on it first, so a window that
+// the disk of identity: those the ranks put on it first, so a window that
 // lost a stripe gets back the placement a fill gives it, then the rest.
 func (w *windowRead) preferred(identity rank.Identity) []int {
 	var first, rest []int

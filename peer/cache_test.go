@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/semistrict/sproutfs/control"
+	"github.com/semistrict/sproutfs/membership"
 	"github.com/semistrict/sproutfs/peer"
 	"github.com/semistrict/sproutfs/peer/peertest"
 	"github.com/semistrict/sproutfs/platform"
@@ -30,7 +31,13 @@ type stripeKey struct {
 // file range of a file it writes the stripes into, as the checkpoint cache's
 // will.
 type memoryCache struct {
-	identity  rank.Identity
+	identity rank.Identity
+	// member is the host that keeps it, source the membership that host
+	// holds, which has it serve the disk, and route how a request reaches
+	// the disk under that membership.
+	member    rank.Identity
+	source    *membership.Fixed
+	route     membership.Route
 	dropKeeps bool
 	// reads, when set, is told of every read, which then waits for hold.
 	reads chan struct{}
@@ -40,15 +47,37 @@ type memoryCache struct {
 	stripes map[stripeKey][]byte
 	dropped []peer.Drop
 	kept    []peer.Keep
+	// asked counts the requests the server handed it.
+	asked int
 }
 
 func newMemoryCache(identity byte) *memoryCache {
-	return &memoryCache{identity: rank.Identity{identity}, stripes: make(map[stripeKey][]byte)}
+	c := &memoryCache{identity: rank.Identity{identity}, member: rank.Identity{15: identity},
+		stripes: make(map[stripeKey][]byte)}
+	c.source = membership.NewFixed(servedBy(c.member, c.identity, 1))
+	c.route, _ = c.source.Current().Route(c.identity)
+	return c
+}
+
+// servedBy is a membership at generation in which member serves disk, which
+// it was assigned at generation 1.
+func servedBy(member, disk rank.Identity, generation uint64) membership.Membership {
+	m, err := membership.New(generation, rank.Code{K: 1, M: 1},
+		[]membership.Member{{ID: member, Address: "holder", State: membership.Active}},
+		[]membership.Disk{{ID: disk, Volume: "cache-0", Weight: 1, Member: member, State: membership.Serving,
+			Assigned: 1}})
+	if err != nil {
+		panic(err)
+	}
+	return m
 }
 
 func (c *memoryCache) Identity() rank.Identity { return c.identity }
 
-func (c *memoryCache) ReadStripes(ctx context.Context, read peer.StripeRead) (peer.Stripes, error) {
+func (c *memoryCache) ReadStripes(ctx context.Context, _ membership.Membership, read peer.StripeRead) (peer.Stripes, error) {
+	c.mu.Lock()
+	c.asked++
+	c.mu.Unlock()
 	if c.reads != nil {
 		c.reads <- struct{}{}
 		select {
@@ -86,7 +115,7 @@ func (c *memoryCache) ReadStripes(ctx context.Context, read peer.StripeRead) (pe
 		FillRight: len(items) == 0}, nil
 }
 
-func (c *memoryCache) Keep(_ context.Context, keep peer.Keep) error {
+func (c *memoryCache) Keep(_ context.Context, _ membership.Membership, keep peer.Keep) error {
 	if c.dropKeeps {
 		return peer.ErrDropped
 	}
@@ -139,8 +168,11 @@ func cacheServing(t *testing.T, cache peer.Cache) (*peer.Peer, *[]*peertest.Fram
 func cacheServingWith(t *testing.T, cache peer.Cache, config peer.TableConfig) (*peer.Peer, *[]*peertest.Frame) {
 	t.Helper()
 	runtime := sim.New(sim.Config{Seed: 1})
-	server, err := peer.NewServer(sim.WithRuntime(t.Context(), runtime), peer.ServerConfig{Network: runtime.Network(), Address: "holder",
-		PageSize: pageSize, Cache: cache})
+	serving := peer.ServerConfig{Network: runtime.Network(), Address: "holder", PageSize: pageSize}
+	if memory, ok := cache.(*memoryCache); ok && memory != nil {
+		serving.Cache, serving.Membership, serving.Member = memory, memory.source, memory.member
+	}
+	server, err := peer.NewServer(sim.WithRuntime(t.Context(), runtime), serving)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,12 +221,12 @@ func TestStripesAreKeptAndReadBack(t *testing.T) {
 		cache := newMemoryCache(1)
 		holder, frames := cacheServing(t, cache)
 		code := rank.Code{K: 2, M: 1}
-		if err := holder.Keep(t.Context(), cache.identity, peer.Keep{Window: window, Code: code,
+		if err := holder.Keep(t.Context(), cache.route, peer.Keep{Window: window, Code: code,
 			Items:   []peer.StripeItem{{Page: 3, Index: 0, Length: 12, Size: 3}, {Page: 3, Index: 2, Length: 12, Size: 4}, {Page: 9, Index: 1, Length: 8, Size: 2}},
 			Payload: []byte("abcdefghi")}); err != nil {
 			t.Fatal(err)
 		}
-		reply, err := holder.ReadStripes(t.Context(), cache.identity, peer.StripeRead{Window: window, Pages: []uint32{3},
+		reply, err := holder.ReadStripes(t.Context(), cache.route, peer.StripeRead{Window: window, Pages: []uint32{3},
 			Code: code, MaxBytes: 1 << 20})
 		if err != nil {
 			t.Fatal(err)
@@ -211,19 +243,19 @@ func TestStripesAreKeptAndReadBack(t *testing.T) {
 		// A read of exactly what the cache holds is answered, and one of a
 		// byte less is not: the cache answering more than it was asked for is
 		// not passed on.
-		exact, err := holder.ReadStripes(t.Context(), cache.identity, peer.StripeRead{Window: window, Pages: []uint32{3},
+		exact, err := holder.ReadStripes(t.Context(), cache.route, peer.StripeRead{Window: window, Pages: []uint32{3},
 			Code: code, MaxBytes: 7})
 		if err != nil {
 			t.Fatalf("a read of exactly what the cache holds: %v", err)
 		}
 		exact.Release()
-		_, err = holder.ReadStripes(t.Context(), cache.identity, peer.StripeRead{Window: window, Pages: []uint32{3},
+		_, err = holder.ReadStripes(t.Context(), cache.route, peer.StripeRead{Window: window, Pages: []uint32{3},
 			Code: code, MaxBytes: 6})
 		if want := "peer: the cache could not answer: CACHE_STATUS_UNSPECIFIED"; err == nil || err.Error() != want {
 			t.Fatalf("a cache that answered 7 bytes of a read of 6 = %v, want %q", err, want)
 		}
 		// A page past the first byte of the request's bitmap of pages.
-		ninth, err := holder.ReadStripes(t.Context(), cache.identity, peer.StripeRead{Window: window, Pages: []uint32{9},
+		ninth, err := holder.ReadStripes(t.Context(), cache.route, peer.StripeRead{Window: window, Pages: []uint32{9},
 			Code: code, MaxBytes: 1 << 20})
 		if err != nil {
 			t.Fatal(err)
@@ -233,7 +265,7 @@ func TestStripesAreKeptAndReadBack(t *testing.T) {
 			string(ninth.Payload) != "hi" {
 			t.Fatalf("page 9 read back %+v %q", ninth.Items, ninth.Payload)
 		}
-		empty, err := holder.ReadStripes(t.Context(), cache.identity, peer.StripeRead{Window: rank.Window{Number: 1},
+		empty, err := holder.ReadStripes(t.Context(), cache.route, peer.StripeRead{Window: rank.Window{Number: 1},
 			Code: code, MaxBytes: 1 << 20})
 		if err != nil {
 			t.Fatal(err)
@@ -250,9 +282,9 @@ func TestStripesAreKeptAndReadBack(t *testing.T) {
 func TestAReusedAddressAnswersNotMe(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		code := rank.Code{K: 1, M: 1}
-		for _, cache := range []peer.Cache{newMemoryCache(2), nil} {
+		for _, cache := range []*memoryCache{newMemoryCache(2), nil} {
 			holder, _ := cacheServing(t, cache)
-			stale := rank.Identity{1}
+			stale := membership.Route{Disk: rank.Identity{1}, Generation: 1, Assigned: 1}
 			if _, err := holder.ReadStripes(t.Context(), stale, peer.StripeRead{Window: window, Code: code,
 				MaxBytes: 1024}); !errors.Is(err, peer.ErrNotMe) {
 				t.Fatalf("a read naming another cache = %v, want ErrNotMe", err)
@@ -267,12 +299,12 @@ func TestAReusedAddressAnswersNotMe(t *testing.T) {
 			if _, err := holder.Presence(t.Context(), stale, peer.Presence{Windows: []rank.Window{window}, Code: code}); !errors.Is(err, peer.ErrNotMe) {
 				t.Fatalf("a presence naming another cache = %v, want ErrNotMe", err)
 			}
-			held, err := holder.Probe(t.Context(), stale)
+			held, err := holder.Probe(t.Context(), stale.Disk)
 			if !errors.Is(err, peer.ErrNotMe) {
 				t.Fatalf("a probe naming another cache = %v, want ErrNotMe", err)
 			}
 			if want := (rank.Identity{}); cache != nil {
-				want = cache.Identity()
+				want = cache.identity
 				if held != want {
 					t.Fatalf("the probe reported cache %v, want %v", held, want)
 				}
@@ -312,7 +344,7 @@ func TestAKeepCarriesItsWindowAndItsPriority(t *testing.T) {
 			{Window: spanned, Code: rank.Code{K: 1, M: 1}, Items: []peer.StripeItem{{Page: 3, Size: 1}},
 				Payload: []byte("b"), Repair: true},
 		} {
-			if err := holder.Keep(t.Context(), cache.identity, keep); err != nil {
+			if err := holder.Keep(t.Context(), cache.route, keep); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -326,7 +358,7 @@ func TestAKeepCarriesItsWindowAndItsPriority(t *testing.T) {
 		}) {
 			t.Fatalf("the cache was sent %+v, want %+v", cache.kept, want)
 		}
-		reply, err := holder.ReadStripes(t.Context(), cache.identity, peer.StripeRead{Window: spanned, Pages: []uint32{511},
+		reply, err := holder.ReadStripes(t.Context(), cache.route, peer.StripeRead{Window: spanned, Pages: []uint32{511},
 			Code: rank.Code{K: 1, M: 1}, MaxBytes: 1 << 20})
 		if err != nil {
 			t.Fatal(err)
@@ -344,7 +376,7 @@ func TestAKeepTheCacheDoesNotWriteIsDropped(t *testing.T) {
 		cache := newMemoryCache(1)
 		cache.dropKeeps = true
 		holder, _ := cacheServing(t, cache)
-		err := holder.Keep(t.Context(), cache.identity, peer.Keep{Window: window, Code: rank.Code{K: 1, M: 1},
+		err := holder.Keep(t.Context(), cache.route, peer.Keep{Window: window, Code: rank.Code{K: 1, M: 1},
 			Items: []peer.StripeItem{{Size: 2}}, Payload: []byte("ab")})
 		if !errors.Is(err, peer.ErrDropped) {
 			t.Fatalf("a keep the cache dropped = %v, want ErrDropped", err)
@@ -360,7 +392,7 @@ func TestAKeepOverTheBackgroundBudgetIsDropped(t *testing.T) {
 		cache := newMemoryCache(1)
 		holder, _ := cacheServingWith(t, cache, peer.TableConfig{BackgroundBytes: 8})
 		keep := func(payload string, repair bool) error {
-			return holder.Keep(t.Context(), cache.identity, peer.Keep{Window: window, Code: rank.Code{K: 1, M: 1},
+			return holder.Keep(t.Context(), cache.route, peer.Keep{Window: window, Code: rank.Code{K: 1, M: 1},
 				Items: []peer.StripeItem{{Page: 1, Length: 4, Size: len(payload)}}, Payload: []byte(payload), Repair: repair})
 		}
 		if err := keep("abcdefghi", false); !errors.Is(err, peer.ErrDropped) || !errors.Is(err, peer.ErrNoRoom) {
@@ -389,17 +421,17 @@ func TestDropAndPresenceReachTheCache(t *testing.T) {
 		holder, _ := cacheServing(t, cache)
 		code := rank.Code{K: 1, M: 1}
 		other := rank.Window{Ref: control.Ref{VM: "vm", Sequence: 3}, Volume: "disk"}
-		if err := holder.Keep(t.Context(), cache.identity, peer.Keep{Window: window, Code: code,
+		if err := holder.Keep(t.Context(), cache.route, peer.Keep{Window: window, Code: code,
 			Items: []peer.StripeItem{{Page: 0, Size: 1}, {Page: 4, Size: 1}, {Page: 4, Index: 1, Size: 1}}, Payload: []byte("abc")}); err != nil {
 			t.Fatal(err)
 		}
-		if err := holder.Drop(t.Context(), cache.identity, peer.Drop{Window: window, Page: 0, Index: 0, Code: code}); err != nil {
+		if err := holder.Drop(t.Context(), cache.route, peer.Drop{Window: window, Page: 0, Index: 0, Code: code}); err != nil {
 			t.Fatal(err)
 		}
 		if want := []peer.Drop{{Window: window, Page: 0, Index: 0, Code: code}}; !slices.Equal(cache.dropped, want) {
 			t.Fatalf("the cache was told to drop %+v", cache.dropped)
 		}
-		held, err := holder.Presence(t.Context(), cache.identity, peer.Presence{Windows: []rank.Window{window, other}, Code: code})
+		held, err := holder.Presence(t.Context(), cache.route, peer.Presence{Windows: []rank.Window{window, other}, Code: code})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -421,7 +453,7 @@ func TestAReaderBoundsItsStripeBytesInFlight(t *testing.T) {
 		done := make(chan error, 2)
 		for range 2 {
 			go func() {
-				reply, err := holder.ReadStripes(t.Context(), cache.identity, read)
+				reply, err := holder.ReadStripes(t.Context(), cache.route, read)
 				if err == nil {
 					reply.Release()
 				}

@@ -129,10 +129,10 @@ func (f *fillCampaign) run(t *testing.T, draw sim.Random) {
 			}
 			f.published[vm], f.models[vm] = index, m
 		}
-		// A cache leaves the list, as a drained host does, and comes back in
-		// a later round. Some hosts read the list the orchestrator serves now
-		// at once, and the rest only in the next round, so two hosts may rank
-		// a window differently for a round.
+		// A disk leaves the membership, as a drained host's does, and comes
+		// back in a later round. Some hosts read the membership at once, and
+		// the rest only when a peer names its generation or in the next
+		// round.
 		served := full
 		if draw.Chance(id+"/leave", 0.4) && full.Len() > 1 {
 			served = full.Without(full.Caches()[draw.Intn(id+"/gone", full.Len())].Identity)
@@ -148,7 +148,7 @@ func (f *fillCampaign) run(t *testing.T, draw sim.Random) {
 			// Every host catches up with the list it was last served.
 			readers = f.c.hosts
 		}
-		f.c.hold(served, readers...)
+		f.c.hold(t, served, readers...)
 		f.burst(t, draw, id)
 	}
 }

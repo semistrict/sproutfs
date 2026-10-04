@@ -3,6 +3,7 @@ version: v2
 inputs:
   - directory: checkpoint/proto
   - directory: control/proto
+  - directory: membership/proto
   - directory: platform/proto
   - directory: peer/proto
   - directory: peer/internal/wire/proto

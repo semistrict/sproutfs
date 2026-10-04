@@ -9,7 +9,9 @@ import (
 	"testing"
 	"testing/synctest"
 
+	"github.com/semistrict/sproutfs/membership"
 	"github.com/semistrict/sproutfs/platform"
+	"github.com/semistrict/sproutfs/rank"
 	"github.com/semistrict/sproutfs/volume"
 )
 
@@ -310,6 +312,39 @@ func TestAnAbandonedForkTakesItsRecordWithIt(t *testing.T) {
 		checkStore(t, h)
 		if !pins(t, h, "parent").IsPinned(vm.Status().Checkpoint.Sequence) {
 			t.Fatal("the abandoned fork took the parent's pin with it")
+		}
+	})
+}
+
+// The membership is one object of the deployment, outside every VM's
+// namespace and billed to none. The check knows it: a membership every host
+// can route by is no violation, and one that does not parse is.
+func TestCheckDeploymentKnowsTheMembership(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		h := newHarness(t)
+		store, err := membership.NewStore(membership.Config{ObjectStore: h.objects, ObjectPrefix: h.prefix,
+			Entropy: h.runtime.NewEntropy("orchestrator")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.Update(t.Context(), func(m membership.Membership) (membership.Membership, error) {
+			return m.Join(membership.Member{ID: rank.Identity{1}, Address: "host-0:7000"},
+				membership.Disk{ID: rank.Identity{1}, Volume: "cache-0", Weight: 1})
+		}); err != nil {
+			t.Fatal(err)
+		}
+		checkStore(t, h)
+		key, err := platform.NewObjectKey(h.prefix.String() + membership.ObjectName)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := h.objects.Put(t.Context(), platform.PutRequest{Key: key, Body: strings.NewReader("not one"),
+			Size: 7}); err != nil {
+			t.Fatal(err)
+		}
+		found := violations(t, h)
+		if len(found) != 1 || found[0].Key != key.String() {
+			t.Fatalf("a membership that does not parse is reported as %v", found)
 		}
 	})
 }

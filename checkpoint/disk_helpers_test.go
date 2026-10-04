@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/semistrict/sproutfs/control"
+	"github.com/semistrict/sproutfs/membership"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/rank"
@@ -404,13 +405,33 @@ type diskFixtureConfig struct {
 	clusterPercent int
 }
 
-// follow has the fixture's disk follow its list of caches, if it has one.
+// follow has the fixture's disk follow the membership of its list of
+// caches, if it has one.
 func (f *diskFixture) follow() {
 	if f.caches == nil {
 		return
 	}
-	list := f.caches(f.disk.identity)
-	f.disk.follow(func() rank.List { return list })
+	f.disk.follow(membership.NewFixed(servingOf(f.caches(f.disk.identity))), f.disk.identity)
+}
+
+// servingOf is the membership in which every cache of list is a member of its
+// own serving its own disk, at the cache's address or at one named for it.
+func servingOf(list rank.List) membership.Membership {
+	caches := list.Caches()
+	for at := range caches {
+		if caches[at].Address == "" {
+			caches[at].Address = platform.Address("host-" + caches[at].Identity.String())
+		}
+	}
+	addressed, err := rank.NewList(list.Code(), caches, list.Earlier()...)
+	if err != nil {
+		panic(err)
+	}
+	m, err := membership.FromList(1, addressed)
+	if err != nil {
+		panic(err)
+	}
+	return m
 }
 
 // listOf is the list of the cache self and caches others, of weight one each,

@@ -20,7 +20,7 @@ import (
 // An entry is a run of one window's items that lie next to each other in one
 // region, in page order. Each item is one stripe of its page's envelope, and
 // every item of an entry is of one code. A host may hold several indices of a
-// window, where the list of caches is shorter than the code is wide, so each
+// window, where the membership has fewer disks than the code is wide, so each
 // page of an entry holds the same set of indices, in index order. The entry
 // holds the region, the run's first offset, which pages are present, the
 // indices each holds and each item's length, so an item's offset is the run's
@@ -74,7 +74,7 @@ func (k diskKey) window() (uint64, uint16) {
 	return hash.Sum64(), uint16(k.Page % span)
 }
 
-// rankWindow is the window the list of caches places key's stripes by.
+// rankWindow is the window the membership places key's stripes by.
 func (k diskKey) rankWindow() rank.Window {
 	span := max(k.span, 1)
 	return rank.Window{Ref: k.Ref, Volume: k.Volume, Segment: k.segment, Number: k.Page / uint64(span),

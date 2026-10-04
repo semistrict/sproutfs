@@ -14,12 +14,12 @@ import (
 	"os"
 	"runtime/pprof"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/semistrict/sproutfs/checkpoint"
 	"github.com/semistrict/sproutfs/control"
+	"github.com/semistrict/sproutfs/membership"
 	"github.com/semistrict/sproutfs/peer"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/platform/adapters"
@@ -78,7 +78,10 @@ type node struct {
 
 	mu     sync.Mutex
 	server *peer.Server
-	list   atomic.Pointer[rank.List]
+	// members is the membership the node holds: the one it was last sent,
+	// one generation after the one before, so every node sent every list in
+	// one order holds the same generations.
+	members *membership.Fixed
 	// served is what the servers this node has run served before the one
 	// running now.
 	served peer.ServerStats
@@ -189,9 +192,10 @@ func newNode(ctx context.Context, config nodeConfig) (*node, error) {
 	if err != nil {
 		return nil, err
 	}
-	alone := rank.Alone(rank.Cache{Identity: n.cache.Identity(), Weight: 1, Address: config.address})
-	n.list.Store(&alone)
-	n.cache.FollowCaches(func() rank.List { return *n.list.Load() })
+	identity := n.cache.Identity()
+	n.members = membership.NewFixed(membership.Alone(membership.Member{ID: identity, Address: config.address},
+		membership.Disk{ID: identity, Volume: "cache", Weight: 1}))
+	n.cache.FollowMembership(n.members, identity)
 	n.clustered, err = checkpoint.NewStore(checkpoint.Config{ObjectStore: metered, Cache: n.cache})
 	if err != nil {
 		return nil, err
@@ -301,7 +305,8 @@ func (n *node) close() {
 // serve starts the peer server.
 func (n *node) serve(ctx context.Context) error {
 	server, err := peer.NewServer(ctx, peer.ServerConfig{Network: n.config.network, Address: n.config.listen,
-		PageSize: checkpoint.PageSize2MiB, Cache: n.cache, StripeBytesPerSecond: n.config.serveRate})
+		PageSize: checkpoint.PageSize2MiB, Cache: n.cache, Membership: n.members, Member: n.cache.Identity(),
+		StripeBytesPerSecond: n.config.serveRate})
 	if err != nil {
 		return err
 	}
@@ -331,7 +336,8 @@ func (n *node) stopServing() {
 	n.mu.Unlock()
 }
 
-// identityReply is a node's cache as the list names it.
+// identityReply is a node's disk as the membership names it, and the node's
+// address.
 type identityReply struct {
 	Identity string `json:"identity"`
 	Address  string `json:"address"`
@@ -342,7 +348,8 @@ func (n *node) identity(context.Context, struct{}) (identityReply, error) {
 	return identityReply{Identity: hex.EncodeToString(identity[:]), Address: string(n.config.address)}, nil
 }
 
-// listRequest is the list of caches every node follows.
+// listRequest is the disks every node holds as its membership, each a node
+// of its own serving its disk, under a code.
 type listRequest struct {
 	Code   string          `json:"code"`
 	Caches []identityReply `json:"caches"`
@@ -365,7 +372,11 @@ func (n *node) follow(_ context.Context, request listRequest) (struct{}, error) 
 	if err != nil {
 		return struct{}{}, err
 	}
-	n.list.Store(&list)
+	m, err := membership.FromList(n.members.Current().Generation()+1, list)
+	if err != nil {
+		return struct{}{}, err
+	}
+	n.members.Set(m)
 	return struct{}{}, nil
 }
 

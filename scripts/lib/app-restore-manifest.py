@@ -11,8 +11,8 @@ scripts/bench-app-restore-gce.sh's nodes:
 - a RAM arena that holds the whole guest, out of the node's HugeTLB pool;
 - the page cache's file beside the scratch on the node's local SSD;
 - the valkey template alone, at the guest's size;
-- the cluster cache's share, and the code the orchestrator lists the caches
-  under;
+- the cluster cache's share, and the code the orchestrator writes in the
+  membership;
 - the orchestrator reachable from the nodes' network, where the hosts are.
 
 Everything else is deploy/ as it is, so the run measures the deployment.
@@ -85,8 +85,8 @@ def orchestrator_policy(policy, args):
     """Let the hosts reach the orchestrator from their nodes' network.
 
     A host on its node's network carries no pod's labels, so deploy/'s rule,
-    which admits pods of the deployment, refuses it: the host could not read
-    the list of caches. Its connection comes from the node's address, or from
+    which admits pods of the deployment, refuses it: the host could not ask
+    it where a drain's VMs go. Its connection comes from the node's address, or from
     the overlay's address on that node once it crosses to the orchestrator's,
     so both ranges are admitted. Nothing else runs on these nodes."""
     policy['spec']['ingress'][0]['from'] += [{'ipBlock': {'cidr': args.node_cidr}},

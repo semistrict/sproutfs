@@ -8,6 +8,7 @@ import (
 	"testing/synctest"
 
 	"github.com/semistrict/sproutfs/control"
+	"github.com/semistrict/sproutfs/membership"
 	"github.com/semistrict/sproutfs/rank"
 	"github.com/semistrict/sproutfs/stripe"
 )
@@ -66,7 +67,8 @@ func TestDiskKeepsTheStripesItsCacheIsRankedFor(t *testing.T) {
 				f := newDiskFixture(t, diskFixtureConfig{regions: 8, clusterPercent: 100, caches: func(self CacheIdentity) rank.List {
 					return listOf(code, self, otherCache)
 				}})
-				list, _ := f.disk.list()
+				held, _ := f.disk.following()
+				list := held.List()
 				several := uint64(0)
 				for _, key := range windowKeys("va", 24) {
 					f.write(t, key, testItemBytes)
@@ -116,7 +118,8 @@ func TestDiskStripesOnlyTheWindowsInItsShare(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				f := newDiskFixture(t, diskFixtureConfig{regions: 8, clusterPercent: percent,
 					caches: func(self CacheIdentity) rank.List { return listOf(code, self, otherCache) }})
-				list, _ := f.disk.list()
+				held, _ := f.disk.following()
+				list := held.List()
 				inside := 0
 				for _, key := range windowKeys("va", 40) {
 					f.write(t, key, testItemBytes)
@@ -441,7 +444,7 @@ func TestDiskReadsNoStripeOfAnotherCode(t *testing.T) {
 		key := keyOf("va", 0)
 		f.write(t, key, testItemBytes)
 		self := f.disk.identity
-		f.disk.follow(func() rank.List { return listOf(rank.Code{K: 2, M: 2}, self) })
+		f.disk.follow(membership.NewFixed(servingOf(listOf(rank.Code{K: 2, M: 2}, self))), self)
 		if data, outcome := f.disk.read(f.ctx(t), key, selfChecked); outcome != diskAbsent || data != nil {
 			t.Fatalf("a page kept under 2+1 read under 2+2 found %d and %d bytes, want a miss", outcome, len(data))
 		}
@@ -456,7 +459,7 @@ func TestDiskReadsNoStripeOfAnotherCode(t *testing.T) {
 		}
 		f.write(t, key, testItemBytes)
 		f.read(t, key)
-		f.disk.follow(func() rank.List { return listOf(code, self) })
+		f.disk.follow(membership.NewFixed(servingOf(listOf(code, self))), self)
 		f.read(t, key)
 		f.disk.checkInvariants(t)
 	})
@@ -480,7 +483,7 @@ func TestDiskReadsAPageUnderTheCodeItWasKeptUnder(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		f.disk.follow(func() rank.List { return changed })
+		f.disk.follow(membership.NewFixed(servingOf(changed)), self)
 		data, code, outcome := f.disk.readCode(f.ctx(t), key, selfChecked)
 		if outcome != diskHit || code != before || !bytes.Equal(data, f.model[key]) {
 			t.Fatalf("a page kept under 2+1 read under 2+2 after 2+1 found %d under %s, want a hit under 2+1",

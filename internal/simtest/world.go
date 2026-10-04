@@ -23,6 +23,7 @@ import (
 	"github.com/semistrict/sproutfs/internal/testarena"
 	"github.com/semistrict/sproutfs/internal/testpager"
 	"github.com/semistrict/sproutfs/internal/testresource"
+	"github.com/semistrict/sproutfs/membership"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/rank"
@@ -161,11 +162,13 @@ type World struct {
 	guestSeq int
 	// closed reports that Close has run, after which nothing may be driven.
 	closed bool
-	// caches is each host's cache as the list of caches names it, by host,
-	// once the host has started with one: what an orchestrator lists, and
-	// code the code it lists them under.
-	caches map[string]rank.Cache
-	code   rank.Code
+	// members is each host as it last reported itself to the membership, by
+	// host, once it has started with a disk and while it is not unlisted: what
+	// an orchestrator moves the membership towards, under code. membership is
+	// the object, which the world changes as an orchestrator does.
+	members    map[string]membership.Host
+	code       rank.Code
+	membership *membership.Store
 	// hot is the hot tier's bucket every host reads through, nil in a world
 	// without one.
 	hot *sim.ObjectStore
@@ -401,11 +404,17 @@ func start(ctx context.Context, config Config) (*World, error) {
 		instances: map[string]*instance{}, published: map[string]map[uint64]bool{},
 		points: map[string]pendingPoint{},
 		kept:   map[string]map[uint64]durableState{}, receivedGuests: map[string]int{},
-		ownership: newOwnership(config.Prefix.String()), caches: map[string]rank.Cache{},
+		ownership: newOwnership(config.Prefix.String()), members: map[string]membership.Host{},
 		// The code is the deployment's setting: the one the table gives the
 		// topology's size, as an operator sets it, and never changed by a
 		// host joining or leaving.
 		code: rank.CodeFor(len(config.Topology.Hosts))}
+	var err error
+	w.membership, err = membership.NewStore(membership.Config{ObjectStore: w.runtime.ObjectStore(),
+		ObjectPrefix: config.Prefix, Entropy: w.runtime.NewEntropy(config.Namespace + "orchestrator")})
+	if err != nil {
+		return nil, err
+	}
 	w.runtime.ObjectStore().Observe(w.ownership.observe)
 	if config.HotTier {
 		w.hot = w.runtime.NewObjectStore(config.Namespace+"hot", sim.ObjectStoreConfig{})
@@ -575,8 +584,9 @@ func (w *World) hostConfig(h *hostState) host.Config {
 	}
 	if w.config.ClusterCache {
 		// Each incarnation opens the cache's file on the host's own disk, which
-		// it reads back after a restart. The list is read whenever a host
-		// starts, never on a timer the world's clocks would have to reach.
+		// it reads back after a restart. The membership is read whenever the
+		// world changes it and when a peer names a newer generation, never on
+		// a timer the world's clocks would have to reach.
 		// A read of the cluster asks k+1 ranks and replaces a miss at once,
 		// which is a choice of the answers alone. Its delay, its bound and its
 		// timeouts are choices of time: whether a read crossed one turns on
@@ -587,7 +597,7 @@ func (w *World) hostConfig(h *hostState) host.Config {
 		config.Cache = checkpoint.CacheConfig{DiskBytes: clusterCacheBytes, DiskRegionBytes: clusterCacheRegion,
 			ClusterPercent: 100, ClusterHedgeFloor: time.Hour, ClusterBound: time.Hour,
 			ClusterStripeTimeout: time.Hour}
-		config.CacheList = host.CacheListConfig{Read: w.readCaches, Interval: -1}
+		config.CacheVolume, config.MembershipInterval = "cache", -1
 	}
 	if w.config.HotTier {
 		// A read of the hot tier's bound, a mark of it down and the rate of
@@ -611,51 +621,55 @@ const (
 	clusterCacheRegion = 8 << 20
 )
 
-// readCaches is the list of caches as an orchestrator serves it: every host's
-// cache the world has started, a host that is down keeping its place, under
-// the world's code.
-func (w *World) readCaches(context.Context) (rank.List, error) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	caches := make([]rank.Cache, 0, len(w.caches))
-	for _, name := range slices.Sorted(maps.Keys(w.caches)) {
-		caches = append(caches, w.caches[name])
-	}
-	return rank.NewList(w.code, caches)
-}
-
-// listCache puts a host that has started on the list of caches under the
-// cache it keeps now, which a restart over a damaged file draws anew, and has
-// every host that is up read the list again. A read that fails leaves a host
-// with the list it held, as a host's own timer would.
-func (w *World) listCache(ctx context.Context, h *hostState) {
-	cache, ok := h.host.Cache()
+// listMember has the membership follow a host that has started, as it
+// reports itself now: a restart over a damaged file draws a new disk, and so
+// a new member. Every host that is up then reads the membership.
+func (w *World) listMember(ctx context.Context, h *hostState) {
+	self, ok := h.host.Member()
 	w.mu.Lock()
 	if ok {
-		w.caches[h.name] = cache
+		w.members[h.name] = self
 	}
 	w.mu.Unlock()
-	for index, other := range w.hosts {
-		if running := w.up(index); running != nil {
-			if err := running.RefreshCaches(ctx); err != nil {
-				w.logf("%s: reading the list of caches: %v", other.name, err)
-			}
-		}
-	}
+	w.settleMembership(ctx)
 }
 
-// Unlist takes one host's cache off the list of caches, as the orchestrator
-// does once that host's pod is no longer listed, which is what a drain ends
-// in. Every host that is up reads the list again. A host started again is
-// listed again.
+// Unlist takes one host out of the membership, as the orchestrator does once
+// that host's pod is no longer listed, which is what a drain ends in: its
+// member drains, its disk is let go and removed, and it leaves. Every host
+// that is up then reads the membership. A host started again joins again.
 func (w *World) Unlist(ctx context.Context, index int) {
 	w.mu.Lock()
-	delete(w.caches, w.hosts[index].name)
+	delete(w.members, w.hosts[index].name)
 	w.mu.Unlock()
-	for at, other := range w.hosts {
-		if running := w.up(at); running != nil {
-			if err := running.RefreshCaches(ctx); err != nil {
-				w.logf("%s: reading the list of caches: %v", other.name, err)
+	w.settleMembership(ctx)
+}
+
+// settleMembership moves the membership to every host the world lists, a
+// host that is down keeping its place, one step a generation as an
+// orchestrator does, and has every host that is up read it. A read that fails
+// leaves a host with the generation it held, until a peer names a newer one.
+func (w *World) settleMembership(ctx context.Context) {
+	w.mu.Lock()
+	want := membership.Want{Code: w.code}
+	for _, name := range slices.Sorted(maps.Keys(w.members)) {
+		want.Hosts = append(want.Hosts, w.members[name])
+	}
+	w.mu.Unlock()
+	for {
+		_, changed, err := w.membership.Reconcile(ctx, want)
+		if err != nil {
+			w.logf("orchestrator: a step of the membership: %v", err)
+			return
+		}
+		if !changed {
+			break
+		}
+	}
+	for index, other := range w.hosts {
+		if running := w.up(index); running != nil {
+			if err := running.RefreshMembership(ctx); err != nil {
+				w.logf("%s: reading the membership: %v", other.name, err)
 			}
 		}
 	}
@@ -806,7 +820,7 @@ func (w *World) launch(h *hostState) error {
 		return err
 	}
 	if w.config.ClusterCache {
-		w.listCache(w.ctx, h)
+		w.listMember(w.ctx, h)
 	}
 	return nil
 }

@@ -31,7 +31,7 @@ func TestAKeepIsKeptOverTCP(t *testing.T) {
 	network := adapters.NewNetwork()
 	cache := newMemoryCache(1)
 	server, err := peer.NewServer(ctx, peer.ServerConfig{Network: network, Address: address, PageSize: pageSize,
-		Cache: cache})
+		Cache: cache, Membership: cache.source, Member: cache.member})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,11 +46,11 @@ func TestAKeepIsKeptOverTCP(t *testing.T) {
 	holder := table.Peer(address)
 	stripe := bytes.Repeat([]byte("stripe"), 100_000)
 	code := rank.Code{K: 1, M: 1}
-	if err := holder.Keep(t.Context(), cache.identity, peer.Keep{Window: window, Code: code,
+	if err := holder.Keep(t.Context(), cache.route, peer.Keep{Window: window, Code: code,
 		Items: []peer.StripeItem{{Page: 0, Index: 0, Length: len(stripe), Size: len(stripe)}}, Payload: stripe}); err != nil {
 		t.Fatalf("a keep of %d bytes over TCP: %v", len(stripe), err)
 	}
-	reply, err := holder.ReadStripes(t.Context(), cache.identity, peer.StripeRead{Window: window, Code: code,
+	reply, err := holder.ReadStripes(t.Context(), cache.route, peer.StripeRead{Window: window, Code: code,
 		MaxBytes: int64(len(stripe))})
 	if err != nil {
 		t.Fatal(err)

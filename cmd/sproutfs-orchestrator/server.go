@@ -36,11 +36,6 @@ func newServer(o *orchestrator, token string) http.Handler {
 		hosts, err := o.Hosts(r.Context())
 		reply(w, r, "hosts", hosts, err)
 	})
-	// Every host reads the list of caches on a timer and ranks windows by it.
-	mux.HandleFunc("GET /caches", func(w http.ResponseWriter, r *http.Request) {
-		caches, err := o.Caches(r.Context())
-		reply(w, r, "caches", caches, err)
-	})
 	mux.HandleFunc("GET /vms", func(w http.ResponseWriter, r *http.Request) {
 		vms, err := o.VMs(r.Context())
 		reply(w, r, "vms", vms, err)

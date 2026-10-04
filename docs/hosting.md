@@ -5,10 +5,10 @@ network and one RAM allotment. The host has no durable local state. A VM's
 authority is the epoch in its [control record](metadata.md), and its data is the
 checkpoint that record selects. The host also has no identity of its own. Its
 page cache's disk has one, which names it in
-[the list of caches](#the-list-of-caches). A host dials the peer-server
-address that a [handoff](migration.md) carries, and the addresses of the
-caches in that list, which its cache [fills](#filling-the-cluster). Who may
-reach those addresses is the [transport's](#transport) business.
+[the membership](#the-membership). A host dials the peer-server address that
+a [handoff](migration.md) carries, and the addresses of the members of the
+membership, which its cache reads from and [fills](#filling-the-cluster). Who
+may reach those addresses is the [transport's](#transport) business.
 
 ## Assembly
 
@@ -879,8 +879,8 @@ one the pager evicted since. With the cluster cache off, as a deployment
 runs it today, every page is kept whole on this disk. A window inside the
 share the cluster cache is turned on for is a fill
 ([filling the cluster](#filling-the-cluster)): the pull hands it over and
-does not wait, and its stripes go to the caches the list ranks for it, this
-host's own among them.
+does not wait, and its stripes go to the disks the membership ranks for it,
+this host's own among them.
 
 - **The guest runs while the copy is made.** The pull starts when the machine
   is registered, after its VMM runs. A fault is never queued behind it: the
@@ -963,70 +963,168 @@ mark, and a survey writes it down again. A host reports each marked
 VM's progress in its status (`hostapi.VM.Pull`), and the disk's use beside the
 page cache's (`Resources.CacheDiskUsed`).
 
-## The list of caches
+## The membership
 
-The hosts' disks are to become one cache for the cluster
-([the plan](../plans/disk-cache-2026-10-02.md)). For that, every host must know
-every cache, and which caches hold each window. The list and the ranks below
-are that. For the windows the cluster cache is turned on for, a host keeps on
-its own disk the stripes the list ranks its cache for ([the code](#the-code)),
-fills its peers with theirs ([filling the cluster](#filling-the-cluster)), and
-reads a page from the hosts' disks before the store
+The hosts' disks are one cache for the cluster
+([the plan](../plans/disk-cache-2026-10-02.md)). For that, every host must
+know every disk, which host serves it, and which disks hold each window. The
+membership and the ranks below are that. For the windows the cluster cache is
+turned on for, a host keeps on its own disk the stripes the membership ranks
+it for ([the code](#the-code)), fills its peers with theirs
+([filling the cluster](#filling-the-cluster)), and reads a page from the
+hosts' disks before the store
 ([reading from the cluster](#reading-from-the-cluster)).
 
-**A host's cache.** A host with a page cache disk reports its cache in
-`/status`, under `cache`:
+**One object.** The membership is one object in the object store, at
+`membership` under the deployment's prefix (package `membership`). Nothing
+else is an authority for it. The orchestrator's copy and each host's are
+copies. It holds:
 
-- `identity`: the identity in the cache file's header, in hex. It is drawn when
-  the file is made, so a host restarted over the same file keeps it.
-- `weight`: the size of the disk the cache is given, in steps of 16 GiB,
-  rounded to the nearest, and at least one. The size is the filesystem less the
-  free-space floor, the reserve and the promises, under the used goal. The host
-  reads it once, when it starts. It never follows the limiter's share, which moves as the disk fills,
-  because every change of a weight moves windows between hosts.
-- `address`: the peer-server address, which `page_address` also reports
-  under the name it had.
+- a **generation**, which counts its changes;
+- the deployment's code, k and m;
+- every **member**: a host's identity, the address its peer server answers
+  at, and its state: joining, active or draining;
+- every **disk**: the identity in its cache file's header, the name of its
+  volume, its weight, the member it is assigned to or none, its state
+  (attaching, serving, releasing or released), and the generation that
+  assigned it to that member;
+- the nonce of the process that wrote this generation.
 
-A host that keeps no cache disk, or gives it no space, reports no `cache` and is
-in no list.
+It is protobuf, format version 1, and at most 1 MiB.
 
-**The orchestrator's list.** Every survey asks each host pod for its status.
-The orchestrator keeps the cache each pod last reported. A pod that answered
-without one has none. A pod that did not answer keeps the cache it reported
-before. A quiet host may be serving its windows perfectly well, and a list
-that dropped it would move every window it holds. A pod the Kubernetes API no
-longer lists leaves the list. Two pods that report one identity are a copied
-disk, and the list holds it once, as the first pod by name reported it.
-`GET /hosts` shows each pod's cache.
+**Changed only by compare-and-set.** A change reads the object, builds the
+next generation, and writes it conditional on the object it read (`IfMatch`
+on its ETag, or `IfNoneMatch` for the first). The generation goes up by one.
+A write another writer beat is tried again from a fresh read. A write whose
+reply was lost is read back: one that carries the writer's nonce landed. One
+that later writers' changes cover is made again over what is there, and every
+change says when it finds itself already done. Any process may change the
+membership. Nothing depends on there being one writer.
 
-`GET /caches` serves the list: `k`, `m`, the codes the deployment used before
-(`earlier`, newest first, each written as `4+2`), and the caches in identity
-order. The code is the orchestrator's `SPROUTFS_CACHE_CODE`, written as `4+2`,
-and 4+2 when it is unset. The earlier codes are its
-`SPROUTFS_CACHE_EARLIER_CODES`, a comma-separated list of at most three. The
-code never follows the number of hosts or caches: a drain, a join or a restart
-of the orchestrator leaves it as it is. See [the code](#the-code).
+`membership.Step` says what may follow what, and `Store.Update` writes nothing
+it refuses, whoever built the change:
 
-**Each host's copy.** A host reads the list as it starts, and then every ten
-seconds on its own clock. It keeps the last list it read. A read that fails
-leaves the list as it was, so an orchestrator that is down changes nothing.
-Until a read succeeds, a host holds its own cache alone, under the code 1+0.
-`/status` reports the list it holds under `caches`: `k`, `m`, the earlier
-codes, the caches, when the last read that succeeded finished (`read`), the
+- A disk goes from attaching to serving, from either to releasing, and from
+  releasing to released, assigned to nobody. It never goes back.
+- A disk is assigned only from released, or as it is added, and never to a
+  draining member. The generation that assigns it is the one it carries.
+- A disk is removed only once released. A member leaves only once it is
+  draining and assigned no disk.
+
+So a disk is released before it is assigned again, and the member that held
+it stops serving it at the generation that releases it.
+
+**Ranks are over disks.** Every disk listed ranks windows, whatever its
+state. A disk is at its member's address only while it serves. While nobody
+serves it, a request has nowhere to go and a reader asks the next rank. So a
+disk that moves to another member keeps its windows, and only adding or
+removing a disk, or changing a weight, moves windows.
+
+**A host's identity is its disk's.** A host with a page cache disk is a
+member. Its identity is the identity in its cache file's header, drawn when
+the file is made. A pod replaced on the same node opens the same file, keeps
+the identity, and keeps its place. A pod on another node opens that node's
+file and takes its identity. A host reports itself in `/status`, under
+`member`:
+
+- `identity`: its identity, in hex;
+- `address`: its peer-server address, which `page_address` also reports;
+- `disks`: its disk, with its `identity`, its `volume` (the cache file, such
+  as `cache-0`), its `weight` and its `state` in the membership it holds. The
+  weight is the size of the disk the cache is given, in steps of 16 GiB,
+  rounded to the nearest, and at least one. The size is the filesystem less
+  the free-space floor, the reserve and the promises, under the used goal.
+  The host reads it once, when it starts. It never follows the limiter's
+  share, which moves as the disk fills, because every change of a weight
+  moves windows.
+
+A host that keeps no cache disk, or gives it no space, reports no `member`,
+is no member, and never reads the membership.
+
+**The orchestrator moves it one step at a time.** Every five seconds the
+orchestrator surveys the host pods and takes one step towards them
+(`membership.Next`). It keeps the member each pod last reported. A pod that
+answered without one has none. A pod that did not answer keeps what it
+reported before: a quiet host may be serving its windows perfectly well, and a
+membership that drained it would move every window it holds. A pod the
+Kubernetes API no longer lists is gone. Two pods that report one identity are
+a copied disk, and the membership holds it once, as the first pod by name
+reported it. The steps, in order:
+
+0. The membership takes the deployment's codes, so a new deployment's disks
+   are filled under its code from the start.
+1. A member whose pod is gone drains: it is draining, and its disks are
+   releasing.
+2. A releasing disk whose member's pod is gone is let go: nobody serves it.
+3. A released disk no pod reports is removed. This is the leave, and it moves
+   that disk's windows.
+4. A draining member with no disk leaves.
+5. A pod that is not listed joins, with its disk attaching: the join, one
+   generation.
+6. A member follows its pod's address.
+7. An attaching disk its member reports is served.
+8. A disk follows the weight its member reports.
+
+So a host drains before it leaves, and a join, a leave or a change of weight
+is one generation. The code is the orchestrator's `SPROUTFS_CACHE_CODE`,
+written as `4+2`, and 4+2 when it is unset. The earlier codes are its
+`SPROUTFS_CACHE_EARLIER_CODES`, newest first, a comma-separated list of at
+most three. The orchestrator writes both in the membership, in one
+generation that moves no disk. The code never follows the number of hosts or
+disks: a drain, a join or a restart of the orchestrator leaves it as it is.
+See [the code](#the-code). `GET /hosts` shows each pod's member.
+
+**Each host's copy.** A host holds the membership in a view. It reads the
+object as it starts, then every thirty seconds on its own clock, and at once
+whenever a peer names a newer generation. It only moves forward: a read that
+fails, or finds an older generation, leaves the copy as it was. Until a read
+succeeds, a host holds its own disk alone, at generation zero, under 1+0.
+`/status` reports under `membership` the generation held, its code and
+earlier codes, its members and disks, when the last read that succeeded finished (`read`), the
 reads, the failures, and why the last read failed (`error`). The host logs
-when its reads start failing and when they recover. Two hosts that hold different lists disagree only about
-whom to ask, and the worst a stale list costs is a miss.
+when its reads start failing and when they recover.
+
+**Every request names its generation.** A stripe read, a keep, a drop, a
+presence check and a fill right name the disk they expect and the generation
+of the membership the sender holds. The peer server answers:
+
+- A host behind the request reads the membership first.
+- A host on another generation then, ahead of the sender or unable to read
+  the membership, answers `CACHE_STATUS_STALE` with its own generation.
+- A host that the membership at that generation does not have serve the disk
+  named answers not me. An address can come to belong to another host, and a
+  disk to another member.
+- Otherwise it answers, and the cache checks a keep's ranks and a fill
+  right's under that same generation.
+
+Every answer names the generation that assigned the disk to the host
+answering, as the last membership that had it serve the disk said. A sender
+refuses an answer under another generation, or naming another assignment of
+the disk than its own membership's. So a host that lost a disk is never taken
+for its server again. A sender told it is stale by a host ahead of it reads
+the membership and asks again, at most three times. A read of the cluster
+reads the window again under the newer ranks. A keep, a drop and a fill right
+go again to the member that serves their disk under the newer generation. So
+no stripe is placed, served or repaired under a membership the two sides do
+not both hold.
 
 **Ranks.** The package `rank` places windows. A window is the pages of one
 volume, in one aligned 2 MiB span, that one checkpoint published, and a segment
-is a window of its own. Each cache scores a window by its weight over -ln(u),
-where u is a 64-bit hash of the cache's identity and the window, mapped into
-(0, 1). Equal scores go to the lower identity. `List.Ranks` is the caches
+is a window of its own. Each disk scores a window by its weight over -ln(u),
+where u is a 64-bit hash of the disk's identity and the window, mapped into
+(0, 1). Equal scores go to the lower identity. `List.Ranks` is the disks
 ranked 1 to k+m. `List.Holders` puts stripe i on rank ((i − 1) mod n) + 1, so a
-list shorter than k+m takes the stripes round its caches. The scores are
-compared in integer arithmetic, with a fixed-point logarithm, so hosts of
-different architectures rank alike. A host alone ranks first for every window,
-and its one stripe is the envelope whole.
+membership of fewer disks than k+m takes the stripes round its disks. The
+scores are compared in integer arithmetic, with a fixed-point logarithm, so
+hosts of different architectures rank alike. A host alone ranks first for
+every window, and its one stripe is the envelope whole.
+
+**Network disks.** The membership already holds a disk's move between
+members: released, let go once its member has stopped serving it, assigned to
+another, and served once that member has it attached. The hosts' side of it,
+attaching and detaching a network disk and letting go of one they released,
+is TASK-86. Today each host's disk is a file on its node, and a disk moves
+only with its node.
 
 ## The code
 
@@ -1039,13 +1137,13 @@ k − 1 are the envelope itself, so a reader that has them does no decoding. A
 code with k = 1 is whole copies: every stripe is the envelope, so 1+1 is two
 copies, with no second mechanism for replication.
 
-The code is a deployment setting, the orchestrator's `SPROUTFS_CACHE_CODE`
-([the list of caches](#the-list-of-caches)), and every host reads it with the
-list. It never follows the number of hosts. A code that changed when a host
-was drained, joined or lost would leave every stripe in the cluster to the
-store at once. A deployment that sets no code runs 4+2. An operator sets the
-code for the size the cluster usually runs at, not the size it may briefly
-fall to:
+The code is a deployment setting, the orchestrator's `SPROUTFS_CACHE_CODE`,
+which the orchestrator writes in [the membership](#the-membership), and every
+host reads it there. It never follows the number of hosts. A code that changed
+when a host was drained, joined or lost would leave every stripe in the
+cluster to the store at once. A deployment that sets no code runs 4+2. An
+operator sets the code for the size the cluster usually runs at, not the size
+it may briefly fall to:
 
 | Hosts | Code | Extra disk | Survives |
 | --- | --- | --- | --- |
@@ -1064,56 +1162,58 @@ table.
 old code first in `SPROUTFS_CACHE_EARLIER_CODES`, for example
 `SPROUTFS_CACHE_CODE=2+1` and `SPROUTFS_CACHE_EARLIER_CODES=4+2`. Every stripe
 names its code, and every window is read and rebuilt under the code it was
-stored under. A read tries the list's code first, then each earlier code,
+stored under. A read tries the membership's code first, then each earlier code,
 newest first. Under an earlier code it asks the window's ranks under that
 code: the caches rank a window in one order whatever the code, so these are
 the first ranks of the widest code. No envelope is rebuilt from stripes of two
 codes. A window rebuilt under an earlier code is filled under the new code,
 as a read of the store fills it ([filling the cluster](#filling-the-cluster)),
 and its stripes under the earlier code age out. Fills and repairs are only
-ever under the list's own code. So a change of the code costs no read of the
+ever under the membership's own code. So a change of the code costs no read of the
 store for a window the cluster held. Each earlier code costs a read one more
 round of requests when the codes before it found nothing. Once `earlier_hits`
 in `cache_read` stops growing, the old code can leave
-`SPROUTFS_CACHE_EARLIER_CODES`. A stripe of a code the list does not name is a
-miss. The earlier codes live in the deployment's settings, beside the code,
-so no process has to remember them and a restarted orchestrator serves the
-same list.
+`SPROUTFS_CACHE_EARLIER_CODES`. A stripe of a code the membership does not
+name is a miss. The earlier codes live in the deployment's settings, beside
+the code, and the orchestrator writes both in the membership by
+compare-and-set, so a restarted orchestrator writes the same codes and every
+host reads them in one generation.
 
 **The share it is on for.** The cluster cache is rolled out a share of
 windows at a time: `SPROUTFS_CACHE_CLUSTER_PERCENT`, 0 to 100, and 0 when
 unset (`CacheConfig.ClusterPercent`). A window is inside the share by a hash
 of the window, so every host puts it on the same side, and raising the share
 only adds windows. A window outside the share is kept whole on the host that
-reads it, under 1+0, whatever the list says, exactly as before there were
-stripes; only the windows inside it are placed by the list's ranks and code.
+reads it, under 1+0, whatever the membership says, exactly as before there
+were stripes; only the windows inside it are placed by the membership's ranks
+and code.
 The manifest still sets it to 0. Hosts now read stripes from each other, so a
 deployment can raise it a share at a time once it has watched `cache_read`.
 The cluster cache and the [hot tier](#reading-through-a-hot-tier) are
 alternatives. A host given a hot tier and a share above 0 refuses to start.
 
 **What a host keeps.** For each window inside the share, `List.Holders` puts
-stripe i on rank ((i − 1) mod n) + 1 of the window's n ranked caches. A host
-keeps every index
-whose holder is its own cache, under the list's code, and nothing of a window
-the list does not rank it for. A list shorter than k+m takes the stripes round
-its caches, so a host may hold several indices of one window; with 4+2 on five
-hosts, any one host can still be lost. A host alone holds each envelope whole,
+stripe i on rank ((i − 1) mod n) + 1 of the window's n ranked disks. A host
+keeps every index whose holder is its own disk, under the membership's code,
+while the membership has it serve that disk, and nothing of a window the
+membership does not rank its disk for. A membership of fewer disks than k+m
+takes the stripes round its disks, so a host may hold several indices of one
+window; with 4+2 on five hosts, any one host can still be lost. A host alone holds each envelope whole,
 under 1+0. Each stripe is stored as an item that names its index, its code and
 its envelope's length ([the page cache's disk](volumes.md#the-page-caches-disk)).
 
 **What a read of the disk takes.** A read of a window outside the share asks
 the disk for the envelope whole, under 1+0. A read inside the share asks it
-for every index of the list's code it holds, and then the window's other
-ranks ([reading from the cluster](#reading-from-the-cluster)), and then the
-same under each earlier code. Either way it checks each item's key, index,
+for every index of the membership's code it holds, and then the window's
+other ranks ([reading from the cluster](#reading-from-the-cluster)), and then
+the same under each earlier code. Either way it checks each item's key, index,
 code and checksum, and rebuilds the envelope from the first k of one code
 that pass. It then checks the envelope's SHA-256 as a read of the store does.
 If that fails with more than k stripes in hand, it rebuilds from other sets of
 k, at most 64 of them, and the stripes that do not match the envelope that
 passed are named wrong and forgotten. With exactly k, which one is wrong cannot
-be told, and all are forgotten. A stripe of a code the list does not name is a
-miss and never part of an envelope, so it reads no wrong bytes.
+be told, and all are forgotten. A stripe of a code the membership does not
+name is a miss and never part of an envelope, so it reads no wrong bytes.
 
 Under 1+1 every host holds each window whole, so it reads its windows from
 its own disk with no request. Under 2+1 and wider a host holds fewer than k
@@ -1125,14 +1225,14 @@ stripes of 4+2 takes 0.17 ms and rebuilding from four stripes 0.07 ms, or
 ## Filling the cluster
 
 Inside the share the cluster cache is turned on for, a host puts each window
-it has in hand on the caches the list ranks for it. That is a **fill**. Three
+it has in hand on the disks the membership ranks for it. That is a **fill**. Three
 things fill:
 
-- **A read of the store.** The run the store served is split under the list's
-  code, and each stripe goes to the cache that holds it. The fill starts once
-  the read's callers have their pages, never before. A window a read of the
-  cluster rebuilt under an earlier code is filled the same way, so it moves
-  to the list's code ([changing the code](#the-code)).
+- **A read of the store.** The run the store served is split under the
+  membership's code, and each stripe goes to the disk that holds it. The fill
+  starts once the read's callers have their pages, never before. A window a
+  read of the cluster rebuilt under an earlier code is filled the same way, so
+  it moves to the membership's code ([changing the code](#the-code)).
 - **A publication.** Each part is filled once its PUT has succeeded, and the
   segments once the index object's has. So no cache holds the bytes of a part
   the store refused. The parts are handed over in their own order: a part
@@ -1143,11 +1243,12 @@ things fill:
   and a template import.
 - **A pull.** What a pull copies of a window inside the share is a fill.
 
-A fill splits each envelope with `stripe.Split` and puts stripe i on the cache
-`List.Holders` names. This host's own stripes go to its own disk. Every other
-cache that holds some gets one **keep**: a peer-server request with that
-cache's stripes of the window, each as its disk stores it, with its own
-checksum.
+A fill splits each envelope with `stripe.Split` and puts stripe i on the disk
+`List.Holders` names. This host's own stripes go to its own disk. The member
+that serves every other disk that holds some gets one **keep**: a peer-server
+request with that disk's stripes of the window, each as the disk stores it,
+with its own checksum, under the generation the fill was placed by. A disk no
+member serves gets nothing, and its stripes are dropped as `stale`.
 
 **Nothing waits on a fill.** A host holds the fills handed to it, and its
 peers' keeps, in one queue, `CacheConfig.FillQueueBytes` (64 MiB by default).
@@ -1182,10 +1283,11 @@ holds nothing of the pages asked for. Every other reader sends nothing. A rank
 none. A stripe read that wants bytes is a read of the cluster, and is never
 given a right.
 
-**What a cache takes.** A cache takes a keep only for a window inside the share
-that its own list ranks it for, under its own list's code. Its own fills are
-held to the same rule, because the list a fill was placed by may have changed
-since. It drops every stripe it holds, or is writing for another keep, as a
+**What a cache takes.** A cache takes a keep only under the generation the
+keep names, for a window inside the share that this generation ranks its disk
+for, under its code, while it has this host serve the disk. Its own fills are
+held to the same rule under the membership it holds when it writes them,
+because the one a fill was placed by may have changed since. It drops every stripe it holds, or is writing for another keep, as a
 duplicate. Each write asks the disk's write budget at the fill's priority: a
 fill from a publication is refused last, and a fill from a read before it (see
 [budgets](#budgets)). A keep says which it is.
@@ -1196,8 +1298,10 @@ for want of the right, the rights its cache gave out, the stripes it sent that
 their holders kept and their bytes, the stripes kept on its disk, the stripes
 dropped by reason, the duplicates, the stripes of keeps it refused, and its
 queue. The reasons are `queue`, `rate`, `budget` (this host's background
-budget), `busy` (the holder's budget for this host), `down`, `stale` (an
-address that answered for another cache), `peer` (the holder dropped it),
+budget), `busy` (the holder's budget for this host), `down`, `stale` (a
+host that does not serve the disk at its address, a disk no member serves,
+or a holder on another generation that a newer one did not settle), `peer`
+(the holder dropped it),
 `disk` (this host's disk refused it) and `failed`. `/metrics` carries the same
 as `sproutfs_cache_fills_total`, `sproutfs_cache_fill_*` and
 `sproutfs_cache_keep_stripes_refused_total`.
@@ -1214,14 +1318,16 @@ order:
 
 1. this host's memory tier, then the pager's arena, as before;
 2. the cluster: this host's own stripes of the window, then its peers', under
-   the list's code and then under each earlier code
+   the membership's code and then under each earlier code
    ([changing the code](#the-code));
 3. the object store.
 
 **Its own stripes first.** A read takes every stripe of the window this host's
 own disk holds, of any index. They cost no request. If they make k distinct
 indices of every page it wants, the read is done. This is every read under
-1+1, and any read whose window went round a short list onto this host.
+1+1, and any read whose window went round a short membership onto this
+host. A host reads its own stripes only while the membership has it serve its
+disk.
 
 **Then k+1 of the ranks.** Otherwise the read asks k+1 of the window's first
 k+m ranks, counting this host when it is one of them and holds a stripe. A
@@ -1279,8 +1385,9 @@ own. While a host is marked down, this reader does not ask it for stripes and
 sends it no fills (`down` in `cache_fill`). A probe goes after ten seconds,
 then at intervals half as long again, up to sixty seconds, spread by a hash of
 the host and the attempt. Only a probe that succeeds clears the mark. A miss,
-`BUSY`, an answer for another cache and a stripe that fails its checks are not
-failures of the host. A reader marks down at most a fifth of its list, and
+`BUSY`, an answer for another disk, a stale answer and a stripe that fails
+its checks are not failures of the host. A reader marks down at most a fifth
+of the disks of its membership, and
 always at least one host, so a small cluster can still mark one. Past that it
 marks no more: so many failing at once more likely means its own network
 failed.
@@ -1643,7 +1750,8 @@ The host's status reports:
 - under `peers`, each host this host has asked anything of: the version it
   speaks, its connections of each class, and whether it is down, and why, or of
   a release this host cannot talk to;
-- its cache's identity, weight and address, and the list of caches it holds;
+- under `member`, its identity, address and disk as the membership names
+  them, and under `membership` the generation it holds and how it read it;
 - what its fills of the cluster did, under `cache_fill`
   ([filling the cluster](#filling-the-cluster)), and what its reads of it did
   and its peer server served of it, under `cache_read`

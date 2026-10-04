@@ -18,6 +18,7 @@ import (
 	"github.com/semistrict/sproutfs/api/orch"
 	"github.com/semistrict/sproutfs/internal/ctxsync"
 	"github.com/semistrict/sproutfs/internal/handover"
+	"github.com/semistrict/sproutfs/membership"
 	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/rank"
 	"github.com/semistrict/sproutfs/volume"
@@ -169,12 +170,15 @@ type orchestrator struct {
 	resumes  sync.WaitGroup
 
 	// code is the deployment's code, as configured, and earlier the codes it
-	// replaced, newest first.
+	// replaced, newest first, which the orchestrator writes in the membership.
 	code    rank.Code
 	earlier []rank.Code
-	// caches is the cache each listed host pod last reported, by pod name.
-	cacheMu sync.Mutex
-	caches  map[string]host.Cache
+	// members is the membership the orchestrator moves towards the host
+	// pods, nil for a deployment that keeps none, and reported the member
+	// each listed host pod last reported, by pod name.
+	members  *membership.Store
+	memberMu sync.Mutex
+	reported map[string]host.Member
 }
 
 const (
@@ -329,8 +333,9 @@ func (o *orchestrator) recent(ctx context.Context) ([]liveHost, error) {
 
 // moving marks an operation that moves a VM, from its call to the call of the
 // function it returns. Both drop the remembered survey. Dropping it only when
-// the operation began was not enough: every host reads the list of caches
-// every ten seconds, and each read surveys and remembers. A survey taken while
+// the operation began was not enough: a console polls the hosts, and the
+// membership's step surveys every few seconds, and each surveys and
+// remembers. A survey taken while
 // a start was opening the VM, before the host ran it, answered the command
 // sent as the start returned, and said no host ran the VM.
 func (o *orchestrator) moving(ctx context.Context) (done func()) {
@@ -422,14 +427,14 @@ func (o *orchestrator) fanOut(ctx context.Context, remember bool) ([]liveHost, e
 			hosts[index].report.Store = status.Store
 			hosts[index].vms = status.VMs
 			hosts[index].templates = status.Templates
-			hosts[index].report.Cache = status.Cache
+			hosts[index].report.Member = status.Member
 			if status.PageAddress != "" {
 				hosts[index].report.Page = status.PageAddress
 			}
 		})
 	}
 	wg.Wait()
-	o.noteCaches(ctx, hosts)
+	o.noteMembers(ctx, hosts)
 	o.surveyMu.Lock()
 	if remember && moves == o.moves {
 		o.recentHosts, o.recentAt = hosts, time.Now()

@@ -77,11 +77,14 @@ message Ping {}
 // Pong answers a Ping.
 message Pong {}
 
-// The requests of the cluster's disk cache. Every one names the cache it
-// expects to reach, by the identity in the list of caches: an address can
-// come to belong to another cache — a pod that took the address of one that
-// left — and a cache that is not the one named answers CACHE_STATUS_NOT_ME,
-// which is a stale list rather than a down host.
+// The requests of the cluster's disk cache. Every one names the disk it
+// expects to reach, by its identity, and the generation of the membership its
+// sender routed it by. A host answers only under that generation: one behind
+// reads the membership first, and one ahead, or one that cannot read it,
+// answers CACHE_STATUS_STALE with its own. A host the membership does not
+// have serve the disk named answers CACHE_STATUS_NOT_ME: an address can come
+// to belong to another host, and a disk to another member. Every answer of a
+// disk names the generation that assigned it to the member answering.
 
 // CacheStatus is how a cache answered.
 enum CacheStatus {
@@ -94,6 +97,11 @@ enum CacheStatus {
   // stripe already, or its budget for writes is spent. Nothing waits on a
   // keep, so it is dropped rather than queued.
   CACHE_STATUS_DROPPED = 3;
+  // CACHE_STATUS_STALE answers a request under another generation of the
+  // membership than the host holds, which the answer names: its sender is
+  // behind and reads the membership again, or the host is behind and could
+  // not read it.
+  CACHE_STATUS_STALE = 4;
 }
 
 // Window is the unit of placement: the pages of one volume, in one aligned
@@ -134,6 +142,7 @@ message ReadStripes {
   uint32 m = 5;
   // max_bytes is the most the reply may carry.
   uint64 max_bytes = 6;
+  uint64 generation = 7;
 }
 
 // Stripes answers ReadStripes with the stripes the cache holds, which may be
@@ -143,6 +152,10 @@ message Stripes {
   CacheStatus status = 1;
   repeated StripeItem items = 2;
   bool fill_right = 3;
+  // generation is the membership's the host answered under, and assigned
+  // the generation that assigned it the disk.
+  uint64 generation = 4;
+  uint64 assigned = 5;
 }
 
 // Keep asks a cache to write the stripes its payload carries. A repair is the
@@ -156,11 +169,14 @@ message Keep {
   repeated StripeItem items = 5;
   bool repair = 6;
   bool publication = 7;
+  uint64 generation = 8;
 }
 
 // Kept answers a Keep: written, or dropped.
 message Kept {
   CacheStatus status = 1;
+  uint64 generation = 2;
+  uint64 assigned = 3;
 }
 
 // Drop tells a cache to forget one stripe a reader found wrong.
@@ -171,11 +187,14 @@ message Drop {
   uint32 index = 4;
   uint32 k = 5;
   uint32 m = 6;
+  uint64 generation = 7;
 }
 
 // Dropped answers a Drop.
 message Dropped {
   CacheStatus status = 1;
+  uint64 generation = 2;
+  uint64 assigned = 3;
 }
 
 // Presence asks which pages of some windows a cache holds a stripe of.
@@ -184,6 +203,7 @@ message Presence {
   repeated Window windows = 2;
   uint32 k = 3;
   uint32 m = 4;
+  uint64 generation = 5;
 }
 
 // Present answers Presence with a bitmap of pages per window, in the order the
@@ -191,16 +211,18 @@ message Presence {
 message Present {
   CacheStatus status = 1;
   repeated bytes pages = 2;
+  uint64 generation = 3;
+  uint64 assigned = 4;
 }
 
-// Probe asks whether this host is there and keeps the cache named. An empty
+// Probe asks whether this host is there and keeps the disk named. An empty
 // cache asks only whether the host is there.
 message Probe {
   bytes cache = 1;
 }
 
-// Probed answers a Probe with this host's cache identity, empty for a host
-// that keeps none.
+// Probed answers a Probe with the identity of the disk this host keeps, empty
+// for a host that keeps none.
 message Probed {
   CacheStatus status = 1;
   bytes cache = 2;

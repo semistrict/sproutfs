@@ -9,6 +9,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/semistrict/sproutfs/membership"
 	"github.com/semistrict/sproutfs/peer"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/platform/sim"
@@ -142,7 +143,7 @@ func markedCache(t *testing.T) (*Cache, []rank.Cache) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cache.FollowCaches(func() rank.List { return list })
+	cache.FollowMembership(membership.NewFixed(servingOf(list)), cache.Identity())
 	return cache, caches[1:]
 }
 

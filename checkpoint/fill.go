@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/semistrict/sproutfs/membership"
 	"github.com/semistrict/sproutfs/peer"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/platform/sim"
@@ -20,9 +21,12 @@ import (
 // Filling the cluster. Inside the share the cluster cache is turned on for,
 // three things bring a window to the cluster: a read of the store, a
 // publication and a pull. Each hands the envelopes it has in hand to the
-// cache's filler, which splits them under the list's code and puts each
-// stripe on the cache the list holds it on: this host's own stripes on its
-// own disk, and every other as a keep to the host whose cache holds it.
+// cache's filler, which splits them under the membership's code and puts each
+// stripe on the disk the membership ranks for it: this host's own stripes on
+// its own disk, and every other as a keep to the member that serves its disk.
+// Every keep, fill right and drop names the generation it was placed under; a
+// holder ahead of it answers stale, and the filler reads the membership and
+// sends it again under the newer generation.
 //
 // A read hands over the run the store served once the read's callers have
 // their bytes, never before. A read of the cluster that rebuilt a window
@@ -60,9 +64,9 @@ import (
 // bytes; a reader that is not given it sends nothing. A publication and a pull
 // need no right: each is the only one of its kind for its window.
 //
-// The cache takes a keep only for a window its own list ranks it for, under
-// its list's code, and drops every stripe of it that it already holds or is
-// already writing.
+// The cache takes a keep only for a window the membership ranks its disk for,
+// under the membership's code, at the generation the keep names, and drops
+// every stripe of it that it already holds or is already writing.
 
 // Defaults of a cache's fills.
 const (
@@ -90,8 +94,9 @@ const (
 	DropBusy
 	// DropDown is a holder marked down.
 	DropDown
-	// DropStale is a holder's address answering for another cache: the list
-	// held is stale.
+	// DropStale is a holder that does not serve the disk at its address, or
+	// a disk no member serves, or a holder on another generation that a
+	// newer one did not settle: the membership held is stale.
 	DropStale
 	// DropPeer is a keep its holder dropped: its queue was full or its disk
 	// refused the write. A holder that already held every stripe of a keep
@@ -139,7 +144,7 @@ type FillStats struct {
 	Dropped [dropReasons]uint64
 	// Duplicates is the stripes a fill or a keep carried that this cache
 	// already held or was already writing. Refused is the stripes of keeps
-	// this cache refused: for a window its list does not rank it for, under
+	// this cache refused: for a window the membership does not rank it for, under
 	// another code, or that do not hold together.
 	Duplicates, Refused uint64
 	// Queued is the bytes of the queue held now, and QueueBytes its bound.
@@ -167,15 +172,15 @@ const (
 	ProbeFillPeerDropped = "checkpoint/fill-dropped-by-holder"
 	// ProbeFillWriteRefused is a fill's write this host's disk refused.
 	ProbeFillWriteRefused = "checkpoint/fill-write-refused"
-	// ProbeFillRanksChanged is a fill placed by a list other than the one
+	// ProbeFillRanksChanged is a fill placed by ranks other than the ones
 	// its right was asked under.
 	ProbeFillRanksChanged = "checkpoint/fill-ranks-changed"
 	// ProbeKeepKept is a keep a cache wrote.
 	ProbeKeepKept = "checkpoint/keep-kept"
 	// ProbeKeepDuplicate is a stripe of a keep the cache held or was writing.
 	ProbeKeepDuplicate = "checkpoint/keep-duplicate"
-	// ProbeKeepRefused is a keep for a window the cache's list does not rank
-	// it for.
+	// ProbeKeepRefused is a keep for a window the membership does not rank
+	// the cache's disk for.
 	ProbeKeepRefused = "checkpoint/keep-refused"
 	// ProbeKeepDropped is a keep a cache dropped as one whose write budget is
 	// spent does.
@@ -188,8 +193,8 @@ const (
 	buggifyFillQueueFull = "checkpoint/fill-queue-full"
 	// buggifyFillLoseRight loses the answer that carried a fill right.
 	buggifyFillLoseRight = "checkpoint/fill-lose-right"
-	// buggifyFillRanksChange places a fill by the list less one of the
-	// caches it ranks, as a list that changed between the read and the fill.
+	// buggifyFillRanksChange places a fill by its ranks less one of the
+	// disks, as ranks that changed between the read and the fill.
 	buggifyFillRanksChange = "checkpoint/fill-ranks-change"
 	// buggifyFillSendTwice sends a keep twice, as a sender that retried one
 	// whose answer it lost.
@@ -505,16 +510,18 @@ func (f *filler) drop(ctx context.Context, reason DropReason, stripes int) {
 	f.count(func(stats *FillStats) { stats.Dropped[reason] += uint64(stripes) })
 }
 
-// windowFill is the envelopes of one window a fill hands over.
+// windowFill is the envelopes of one window a fill hands over, and the
+// membership it was handed over under.
 type windowFill struct {
 	window    rank.Window
-	list      rank.List
+	m         membership.Membership
 	envelopes []envelope
 	bytes     int64
 }
 
 // windows groups envelopes by the window they are in, in the order they come,
-// keeping only the windows inside the share that the disk places by its list.
+// keeping only the windows inside the share that the disk places by its
+// membership.
 func (f *filler) windows(envelopes []envelope) []*windowFill {
 	var fills []*windowFill
 	at := make(map[rank.Window]*windowFill)
@@ -522,11 +529,11 @@ func (f *filler) windows(envelopes []envelope) []*windowFill {
 		window := e.key.rankWindow()
 		fill := at[window]
 		if fill == nil {
-			list, ok := f.disk.listFor(e.key, false)
+			m, ok := f.disk.placedBy(e.key, false)
 			if !ok {
 				continue
 			}
-			fill = &windowFill{window: window, list: list}
+			fill = &windowFill{window: window, m: m}
 			at[window] = fill
 			fills = append(fills, fill)
 		}
@@ -536,11 +543,11 @@ func (f *filler) windows(envelopes []envelope) []*windowFill {
 	return fills
 }
 
-// inShare reports whether the disk places key's window by its list: inside
-// the share, on a host that follows a list. Such a window is the fills', and
-// nothing writes it to the disk but them.
+// inShare reports whether the disk places key's window by its membership:
+// inside the share, on a host that follows a membership. Such a window is the
+// fills', and nothing writes it to the disk but them.
 func (f *filler) inShare(key diskKey) bool {
-	_, ok := f.disk.listFor(key, false)
+	_, ok := f.disk.placedBy(key, false)
 	return ok
 }
 
@@ -552,7 +559,7 @@ func (f *filler) inShare(key diskKey) bool {
 func (f *filler) fill(kind WriteKind, envelopes []envelope) {
 	ctx := f.ctx
 	for _, fill := range f.windows(envelopes) {
-		stripes := len(fill.envelopes) * fill.list.Code().Width()
+		stripes := len(fill.envelopes) * fill.m.Code().Width()
 		if !f.reserve(ctx, fill.bytes) {
 			f.drop(ctx, DropQueue, stripes)
 			continue
@@ -611,27 +618,44 @@ func (fill *windowFill) pages() []uint32 {
 	return pages
 }
 
-// right asks the cache ranked first for fill's window for its fill right: of
-// this host's own cache, or of its host by a read of the window's stripes that
-// wants no bytes. A cache that cannot be asked gives none.
+// right asks the disk ranked first for fill's window for its fill right: of
+// this host's own disk, or of the member that serves it by a read of the
+// window's stripes that wants no bytes, under the fill's generation. A rank 1
+// ahead of it answers stale, and the right is asked again of rank 1 under the
+// newer generation. A disk that cannot be asked gives none.
 func (f *filler) right(ctx context.Context, fill *windowFill) bool {
-	ranks := fill.list.Ranks(fill.window)
-	if len(ranks) == 0 {
-		return false
-	}
-	first, granted := ranks[0], false
-	if first.Identity == f.disk.identity {
-		granted = f.grant(ctx, fill.window, fill.pages(), fill.list.Code())
-	} else if f.peers != nil {
-		reply, err := f.peers.Peer(first.Address).ReadStripes(peer.WithClass(ctx, peer.BulkRead), first.Identity,
-			peer.StripeRead{Window: fill.window, Pages: fill.pages(), Code: fill.list.Code()})
-		if err != nil {
-			slog.DebugContext(ctx, "checkpoint: rank 1 could not be asked for a fill right", "window", fill.window,
-				"cache", first.Identity, "error", err)
+	granted := false
+	for tries := 0; ; tries++ {
+		ranks := fill.m.List().Ranks(fill.window)
+		if len(ranks) == 0 {
 			return false
 		}
-		reply.Release()
-		granted = reply.FillRight
+		first := ranks[0]
+		if first.Identity == f.disk.identity {
+			granted = f.disk.owns(fill.m) && f.grant(ctx, fill.m, fill.window, fill.pages(), fill.m.Code())
+			break
+		}
+		if f.peers == nil {
+			return false
+		}
+		route, routed := fill.m.Route(first.Identity)
+		if !routed {
+			return false
+		}
+		reply, err := f.peers.Peer(route.Address).ReadStripes(peer.WithClass(ctx, peer.BulkRead), route,
+			peer.StripeRead{Window: fill.window, Pages: fill.pages(), Code: fill.m.Code()})
+		if err == nil {
+			reply.Release()
+			granted = reply.FillRight
+			break
+		}
+		if newer, ok := f.newer(ctx, fill.m, err, tries); ok {
+			fill.m = newer
+			continue
+		}
+		slog.DebugContext(ctx, "checkpoint: rank 1 could not be asked for a fill right", "window", fill.window,
+			"cache", first.Identity, "error", err)
+		return false
 	}
 	if granted && sim.Buggify(ctx, buggifyFillLoseRight, 0.1) {
 		sim.Probe(ctx, ProbeFillRightLost)
@@ -643,16 +667,16 @@ func (f *filler) right(ctx context.Context, fill *windowFill) bool {
 	return granted
 }
 
-// grant decides a fill right as the cache ranked first for window: given to
-// the first reader that asks for it under this cache's own list and code,
-// while the cache holds nothing of the pages asked for, once per window per
-// interval. Pages nil asks for every page of the window.
-func (f *filler) grant(ctx context.Context, window rank.Window, pages []uint32, code rank.Code) bool {
-	list, ok := f.disk.list()
-	if !ok || !validWindow(window, pages) || !window.InShare(f.disk.clusterPercent) || list.Code() != code {
+// grant decides a fill right as the disk ranked first for window under m: given
+// to the first reader that asks for it under m's code, while the disk holds
+// nothing of the pages asked for, once per window per interval. Pages nil
+// asks for every page of the window.
+func (f *filler) grant(ctx context.Context, m membership.Membership, window rank.Window, pages []uint32,
+	code rank.Code) bool {
+	if !validWindow(window, pages) || !window.InShare(f.disk.clusterPercent) || m.Code() != code {
 		return false
 	}
-	ranks := list.Ranks(window)
+	ranks := m.List().Ranks(window)
 	if len(ranks) == 0 || ranks[0].Identity != f.disk.identity || f.disk.holdsAnyOf(window, pages, code) {
 		return false
 	}
@@ -691,20 +715,21 @@ func validWindow(window rank.Window, pages []uint32) bool {
 	return true
 }
 
-// place splits fill's envelopes under the list held now and puts each stripe
-// on the cache the list holds it on: this host's own on its own disk, the
-// rest as keeps to their holders, one holder after another in the order the
-// list names them. It is the worker of fills', and returns once its own
+// place splits fill's envelopes under the membership held now and puts each
+// stripe on the disk its ranks hold it on: this host's own on its own disk,
+// the rest as keeps to the members that serve theirs, one holder after
+// another in rank order. It is the worker of fills', and returns once its own
 // stripes are written and every keep is answered or dropped.
 func (f *filler) place(ctx context.Context, kind WriteKind, fill *windowFill) {
 	if ctx.Err() != nil {
-		f.drop(ctx, DropFailed, len(fill.envelopes)*fill.list.Code().Width())
+		f.drop(ctx, DropFailed, len(fill.envelopes)*fill.m.Code().Width())
 		return
 	}
-	list, ok := f.disk.listFor(fill.envelopes[0].key, false)
+	m, ok := f.disk.placedBy(fill.envelopes[0].key, false)
 	if !ok {
 		return
 	}
+	list := m.List()
 	if sim.Buggify(ctx, buggifyFillRanksChange, 0.1) {
 		for _, cache := range list.Ranks(fill.window) {
 			if cache.Identity != f.disk.identity {
@@ -744,18 +769,19 @@ func (f *filler) place(ctx context.Context, kind WriteKind, fill *windowFill) {
 			f.written(func(ctx context.Context) { f.writeOwn(ctx, kind, fill.window, code, held[holder.Identity]) })
 			continue
 		}
-		f.send(ctx, kind, fill.window, code, holder, held[holder.Identity])
+		f.send(ctx, kind, m, fill.window, code, holder, held[holder.Identity])
 	}
 }
 
-// writeOwn writes the stripes of a fill of window this host's own cache
+// writeOwn writes the stripes of a fill of window this host's own disk
 // holds, leaving out those it holds or is writing already. It is the worker
 // of writes', so nothing writes between what it finds held and what it
-// writes. The list it was placed by may not be the one the cache holds now,
-// which is the one a keep is held to, and so is this.
+// writes. The membership it was placed by may not be the one the host holds
+// now, which is the one its own fills are held to, as a keep is to its own.
 func (f *filler) writeOwn(ctx context.Context, kind WriteKind, window rank.Window, code rank.Code,
 	stripes []keyedStripe) {
-	if err := f.ranked(window, code); err != nil && !f.bug("keep-unranked") {
+	m, _ := f.disk.following()
+	if err := f.ranked(m, window, code); err != nil && !f.bug("keep-unranked") {
 		sim.Probe(ctx, ProbeKeepRefused)
 		f.count(func(stats *FillStats) { stats.Refused += uint64(len(stripes)) })
 		return
@@ -815,10 +841,12 @@ func (f *filler) write(ctx context.Context, kind WriteKind, stripes []keyedStrip
 }
 
 // send hands one holder's stripes of a window to the rate, sends them as one
-// keep and returns once it is answered. The keep carries each stripe as the
-// holder's disk stores it, header and checksum included.
-func (f *filler) send(ctx context.Context, kind WriteKind, window rank.Window, code rank.Code, holder rank.Cache,
-	stripes []keyedStripe) {
+// keep under m and returns once it is answered. The keep carries each stripe
+// as the holder's disk stores it, header and checksum included. A holder
+// ahead of m answers stale, and the keep is sent again under the newer
+// generation, which the holder then checks its ranks under.
+func (f *filler) send(ctx context.Context, kind WriteKind, m membership.Membership, window rank.Window,
+	code rank.Code, holder rank.Cache, stripes []keyedStripe) {
 	keep := peer.Keep{Window: window, Code: code, Publication: kind == WriteFillPublication, Repair: kind == WriteRepair}
 	for _, s := range stripes {
 		item := encodeItem(s.key, s.stripe)
@@ -840,13 +868,17 @@ func (f *filler) send(ctx context.Context, kind WriteKind, window rank.Window, c
 		return
 	}
 	request := func(ctx context.Context) {
-		err := f.peers.Peer(holder.Address).Keep(ctx, holder.Identity, keep)
+		var last membership.Route
+		err := f.routed(ctx, m, holder.Identity, func(route membership.Route) error {
+			last = route
+			return f.peers.Peer(route.Address).Keep(ctx, route, keep)
+		})
 		f.sent(ctx, err, len(stripes), len(keep.Payload))
-		if sim.Buggify(ctx, buggifyFillSendTwice, 0.1) {
+		if err == nil && sim.Buggify(ctx, buggifyFillSendTwice, 0.1) {
 			// The second is what a sender that lost the first's answer
 			// sends: its holder drops what it already holds, and the second
 			// answer counts for nothing.
-			_ = f.peers.Peer(holder.Address).Keep(ctx, holder.Identity, keep)
+			_ = f.peers.Peer(last.Address).Keep(ctx, last, keep)
 		}
 	}
 	if !f.bug("fill-concurrently") {
@@ -874,7 +906,7 @@ func (f *filler) sent(ctx context.Context, err error, stripes, bytes int) {
 		f.drop(ctx, DropBusy, stripes)
 	case errors.Is(err, peer.ErrDown):
 		f.drop(ctx, DropDown, stripes)
-	case errors.Is(err, peer.ErrNotMe):
+	case errors.Is(err, peer.ErrNotMe), errors.Is(err, peer.ErrStale), errors.Is(err, errNoRoute):
 		f.drop(ctx, DropStale, stripes)
 	case errors.Is(err, peer.ErrDropped):
 		f.drop(ctx, DropPeer, stripes)
@@ -886,14 +918,15 @@ func (f *filler) sent(ctx context.Context, err error, stripes, bytes int) {
 	}
 }
 
-// keep writes what a peer's keep carries, if this cache's own list ranks it
-// for the window under the keep's code: every stripe it does not hold or
-// write already, through the queue, at the keep's priority. It reports
-// peer.ErrDropped when it writes nothing.
-func (f *filler) keep(ctx context.Context, keep peer.Keep) error {
+// keep writes what a peer's keep carries, if m, the membership at the
+// generation the keep named, ranks this host's disk for the window under the
+// keep's code: every stripe it does not hold or write already, through the
+// queue, at the keep's priority. It reports peer.ErrDropped when it writes
+// nothing.
+func (f *filler) keep(ctx context.Context, m membership.Membership, keep peer.Keep) error {
 	stripes, err := f.parseKeep(keep)
 	if err == nil && !f.bug("keep-unranked") {
-		err = f.ranked(keep.Window, keep.Code)
+		err = f.ranked(m, keep.Window, keep.Code)
 	}
 	if err != nil {
 		sim.Probe(ctx, ProbeKeepRefused)
@@ -1004,22 +1037,62 @@ func (f *filler) parseKeep(keep peer.Keep) ([]keyedStripe, error) {
 	return stripes, nil
 }
 
-// ranked checks that this cache's own list ranks it for window, under code,
-// and that the window is inside the share. Every stripe the cache writes for
-// the cluster, its own fills' and its peers' keeps, is held to it.
-func (f *filler) ranked(window rank.Window, code rank.Code) error {
-	list, ok := f.disk.list()
+// ranked checks that m has this host serve its disk, ranks the disk for
+// window under code, and that the window is inside the share. Every stripe the
+// cache writes for the cluster, its own fills' and its peers' keeps, is held
+// to it.
+func (f *filler) ranked(m membership.Membership, window rank.Window, code rank.Code) error {
 	switch {
-	case !ok || !window.InShare(f.disk.clusterPercent):
+	case !window.InShare(f.disk.clusterPercent):
 		return fmt.Errorf("%w: the cluster cache is not on for the window", errKeepRefused)
-	case list.Code() != code:
-		return fmt.Errorf("%w: the list's code is %s, not %s", errKeepRefused, list.Code(), code)
-	case !slices.ContainsFunc(list.Ranks(window), func(cache rank.Cache) bool {
+	case !f.disk.owns(m):
+		return fmt.Errorf("%w: generation %d does not have this host serve its disk", errKeepRefused,
+			m.Generation())
+	case m.Code() != code:
+		return fmt.Errorf("%w: the membership's code is %s, not %s", errKeepRefused, m.Code(), code)
+	case !slices.ContainsFunc(m.List().Ranks(window), func(cache rank.Cache) bool {
 		return cache.Identity == f.disk.identity
 	}):
-		return fmt.Errorf("%w: the list does not rank this cache for the window", errKeepRefused)
+		return fmt.Errorf("%w: the membership does not rank this disk for the window", errKeepRefused)
 	}
 	return nil
+}
+
+// routed sends one request to the member that serves disk under m, and when
+// that member answers that m is stale, reads the membership and sends it
+// again under the newer generation. It reports errNoRoute for a disk no
+// member serves.
+func (f *filler) routed(ctx context.Context, m membership.Membership, disk rank.Identity,
+	request func(membership.Route) error) error {
+	for tries := 0; ; tries++ {
+		route, ok := m.Route(disk)
+		if !ok {
+			return errNoRoute
+		}
+		err := request(route)
+		newer, again := f.newer(ctx, m, err, tries)
+		if !again {
+			return err
+		}
+		m = newer
+	}
+}
+
+// newer is the membership to send a request again under, after err answered
+// one made under m on its tries'th try: a holder ahead of m said m is stale,
+// and the membership read since is newer than m.
+func (f *filler) newer(ctx context.Context, m membership.Membership, err error, tries int) (membership.Membership, bool) {
+	var stale *peer.StaleError
+	if !errors.As(err, &stale) || stale.Generation <= m.Generation() || tries == staleRetries ||
+		f.bug("membership-ignore-stale-answer") {
+		return membership.Membership{}, false
+	}
+	newer, catchErr := f.disk.catch(ctx, stale.Generation)
+	if catchErr != nil || newer.Generation() <= m.Generation() {
+		return membership.Membership{}, false
+	}
+	sim.Probe(ctx, membership.ProbeSenderCaughtUp)
+	return newer, true
 }
 
 // tokenBucket is a rate of bytes per second with a burst of one second of it,
@@ -1061,7 +1134,8 @@ func (b *tokenBucket) take(bytes int64) bool {
 // the background budget at the repair priority, or written to this host's own
 // disk at it; one that finds any of them without room is dropped, never
 // queued.
-func (f *filler) repair(window rank.Window, code rank.Code, holder rank.Cache, stripes []keyedStripe) {
+func (f *filler) repair(m membership.Membership, window rank.Window, code rank.Code, holder rank.Cache,
+	stripes []keyedStripe) {
 	ctx := f.ctx
 	bytes := int64(0)
 	for _, s := range stripes {
@@ -1081,18 +1155,21 @@ func (f *filler) repair(window rank.Window, code rank.Code, holder rank.Cache, s
 			f.written(func(ctx context.Context) { f.writeOwn(ctx, WriteRepair, window, code, stripes) })
 			return
 		}
-		f.send(ctx, WriteRepair, window, code, holder, stripes)
+		f.send(ctx, WriteRepair, m, window, code, holder, stripes)
 	})
 }
 
-// tell sends a holder a drop of a stripe a read found wrong, behind the fills,
-// and reports whether it was handed over. Nothing waits for its answer.
-func (f *filler) tell(holder rank.Cache, drop peer.Drop) bool {
+// tell sends a holder a drop of a stripe a read found wrong under m, behind
+// the fills, and reports whether it was handed over. Nothing waits for its
+// answer.
+func (f *filler) tell(m membership.Membership, holder rank.Cache, drop peer.Drop) bool {
 	if f.peers == nil {
 		return false
 	}
 	return f.behind(func(ctx context.Context) {
-		if err := f.peers.Peer(holder.Address).Drop(ctx, holder.Identity, drop); err != nil {
+		if err := f.routed(ctx, m, holder.Identity, func(route membership.Route) error {
+			return f.peers.Peer(route.Address).Drop(ctx, route, drop)
+		}); err != nil {
 			slog.DebugContext(ctx, "checkpoint: a holder could not be told to drop a wrong stripe", "cache",
 				holder.Identity, "window", drop.Window, "page", drop.Page, "index", drop.Index, "error", err)
 		}

@@ -3,6 +3,7 @@ version: v2
 modules:
   - path: checkpoint/proto
   - path: control/proto
+  - path: membership/proto
   - path: platform/proto
   - path: peer/proto
   - path: peer/internal/wire/proto

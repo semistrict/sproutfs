@@ -240,7 +240,7 @@ byte afterwards. Every page it touched must be the parent's page again.
 `crypto/rand`, and bare `time.Now`, `time.Since`, `time.After`, `time.Sleep`,
 `time.NewTimer`, `time.NewTicker`, `time.Tick`, `time.AfterFunc` and
 `ctxsync.Sleep` in the non-test code of
-`{volume,checkpoint,control,vmmigrate,host,vmmemory,internal/handover,resource,rank}`. This includes
+`{volume,checkpoint,control,vmmigrate,host,vmmemory,internal/handover,resource,rank,membership,stripe}`. This includes
 the Linux-only files that this machine does not build. A stray wall-clock read
 decides how long a hold lives. A stray `math/rand` call decides which VM
 checkpoints first. If a run cannot reproduce either, its seed reports nothing
@@ -1306,24 +1306,62 @@ may and spill files that fill as guests spill. It requires every site to fire
 and every disk limiter probe to be reached. When the faults stop and the disk
 stands still, the share must be exactly what the disk as it is implies.
 
-Each host reads [the list of caches](hosting.md#the-list-of-caches) on a
-timer, and `rank` has two sites in that read. The host must keep a list it
-read, or stay alone, whatever they do.
+[The membership](hosting.md#the-membership) is one object every host reads
+and any process writes by compare-and-set. `membership` has three sites in
+its store. The writers must lose no update and never write an older
+generation, and a host must keep the newest generation it read, whatever they
+do.
 
 | Site | What it does |
 | --- | --- |
-| `rank/list-read-fails` | Fails a read of the list, as an orchestrator that is down does |
-| `rank/list-lags-a-cache` | Takes the list read without its last cache, as a host that has not heard of that cache yet holds it |
+| `membership/read-fails` | Fails a read of the object, as a store that is down does |
+| `membership/write-fails` | Fails a write before the store applies it |
+| `membership/reply-lost` | Loses the reply to a write the store applied |
 
-`TestHostsAgreeOnceTheOrchestratorAnswersAgain` in `rank` drives them. Four
-hosts follow one orchestrator for twelve seeds. Caches join and leave, and the
-orchestrator goes down and comes back. A `sim.Scheduler` releases the hosts'
-reads and the orchestrator's changes in the seed's order. At every step, each
-host must hold its own cache alone, a list the orchestrator served, or such a
-list less its last cache. Once the orchestrator answers and the sites are off,
-every host must hold the orchestrator's list and rank 256 windows alike. Every
-site must fire and every list probe must be reached across the seeds. Ranking
-itself is a pure function, so `rank`'s property tests state it: a join or a
+`TestConcurrentWritersNeverLoseAnUpdateOrGoBack` in `membership` drives them.
+Four writers change one membership at once for sixteen seeds: each joins a
+member with a disk, serves it and sets its weight three times, two of them
+drain and leave, and two take a shared disk from each other again and again,
+through release and let-go. Two views read it as it changes. The world takes
+the store down and brings it back, loses replies after the store applied a
+write, and fails requests, at moments a `sim.Scheduler` chooses against the
+writers, with the sites on. The store must apply one line of generations from
+1, each one write that `membership.Step` admits after the one before, each
+with a nonce of its own; every update that returned must be the generation
+the store holds at its number; at the end each member that stayed must have
+its last weight and the others must be gone; and no view may go back. Every
+site must fire and every store and view probe be reached across the seeds.
+With `membership-write-unconditional` a writer writes over another's change,
+and the store's writes stop being one line.
+
+The protocol every request follows is stated beside it.
+`TestAHolderBehindReadsTheMembershipBeforeItAnswers`,
+`TestAHolderOnAnotherGenerationAnswersStaleWithItsOwn` and
+`TestAMemberThatLostADiskNeverServesItAgain` in `peer` run two peer servers
+over one disk, as two pods over a copied cache file, with views over a
+simulated store. A holder behind the request reads the membership and
+answers; a holder ahead, or one that cannot read it, answers stale with its
+own generation and never asks its cache; and once the membership moves the
+disk from A to B through release, let-go, assignment and serving, A answers
+not me under the new generation and stale under the old one, and B serves.
+`TestAReaderBehindItsHoldersReadsTheMembershipAndAsksAgain` and
+`TestAFillToHoldersAheadIsSentAgainUnderTheirGeneration` in `checkpoint` put
+one host behind the rest: its reads come from the cluster with no read of the
+store but the open of the index object, and its fills land on the ranks with
+none dropped as stale. `TestADiskIsAssignedToASecondMemberOnlyOnceTheFirstLetItGo`
+in `membership` asks for a disk its member serves, and is refused until the
+member lets it go. In the read campaign in `checkpoint`, only some hosts read
+each new membership at once and the rest learn of it from a peer, so the
+campaign must reach a holder that caught up, a stale answer and a sender that
+caught up. The orchestrator's tests in `cmd/sproutfs-orchestrator` run it as
+the controller over a simulated store: a join is one generation and its disk
+serves in the next, a host drains before it leaves in four generations of
+which one moves windows, no generation moves the windows of more than one
+disk, a quiet host keeps its place, the code never follows the hosts, and two
+orchestrators at once leave one line of generations that ends where one alone
+would.
+
+Ranking itself is a pure function, so `rank`'s property tests state it: a join or a
 leave changes a window's first k+m by at most one cache, weights spread windows
 in proportion within half a point over 100,000 windows, equal scores go to the
 lower identity, and the ranks of a few windows are written out, so a host of
@@ -1348,8 +1386,13 @@ what it did not reach. The registered probes are:
 - a disk limiter whose promises do not fit;
 - a cache write refused for its priority that a publication's fill would have
   been admitted for;
-- a read of the list of caches that failed while the host was still alone,
-  one that failed and kept the list held, and one that replaced the list.
+- a write of the membership whose reply was lost and that its nonce found
+  landed, one another writer's change beat, and one whose outcome later
+  changes hid, which the change finds done or makes again; a view that
+  adopted a newer generation and one whose read failed;
+- a holder behind a request's generation that caught up, a request answered
+  stale, a request for a disk the holder does not serve, and a sender that
+  caught up after a stale answer.
 
 The page cache's disk marks ten more: an item written again by a second
 chance, a second chance stopped at half a region, a second chance opening the
@@ -1716,7 +1759,7 @@ with the sites on, each once with no cache disk and once with the cluster
 cache on, plus four seeds of the two-writer campaign. It requires every probe
 that the campaigns are registered to cover to have fired, a fill right given
 and a keep kept among them, and a page rebuilt from a peer's stripes. The peer
-server's, the list of caches' and the page cache disk's, stripes', fills' and
+server's, the membership's and the page cache disk's, stripes', fills' and
 reads' probes are reached here too, and each is asserted by its own campaign.
 No campaign in this
 repository covers one of the registered probes, which `unreachedProbes` in
@@ -1868,8 +1911,8 @@ it. The five guards of the disk's stripes look a stripe up under any code,
 read under the list's code alone so a page kept under the earlier code is a
 miss, find a page's first item whatever index was asked for, put stripe i on
 rank i alone so a short list drops indices, and keep a stripe found wrong.
-`diskcache-share-ignored` places every window by the list of caches whatever
-share the cluster cache is on for, so a host whose list holds others keeps a
+`diskcache-share-ignored` places every window by the membership whatever
+share the cluster cache is on for, so a host whose membership holds others keeps a
 pulled checkpoint as stripes it cannot rebuild alone. The two
 `stripe-` guards rebuild from a stripe of another code whose length fits, and
 give up when the first k fail instead of trying other sets.
@@ -2166,27 +2209,42 @@ PUT. The fifth holds every fill whatever the queue's
 bound. The hot tier campaign (`TestHotTierSurvivesItsFaultsAndReachesItsProbes`)
 kills `hot-tier-read-fails` too.
 
-Five guards break the list of caches:
+Eight guards break the membership:
 
 ```sh
-SPROUTFS_SIM_BUG=rank-forget-list-on-failure \
-  go test ./rank -run '^TestAHostKeepsItsListWhileTheOrchestratorIsDown$' -count=1
-SPROUTFS_SIM_BUG=rank-keep-first-list \
-  go test ./rank -run '^TestAHostReadsTheListAtOnceAndThenOnItsTimer$' -count=1
+SPROUTFS_SIM_BUG=membership-write-unconditional \
+  go test ./membership -run '^TestConcurrentWritersNeverLoseAnUpdateOrGoBack$' -count=1
+SPROUTFS_SIM_BUG=membership-assign-without-release \
+  go test ./membership -run '^TestADiskIsAssignedToASecondMemberOnlyOnceTheFirstLetItGo$' -count=1
+SPROUTFS_SIM_BUG=membership-serve-stale-generation \
+  go test ./peer -run '^TestAHolderBehindReadsTheMembershipBeforeItAnswers$' -count=1
+SPROUTFS_SIM_BUG=membership-serve-stale-assignment \
+  go test ./peer -run '^TestAMemberThatLostADiskNeverServesItAgain$' -count=1
+SPROUTFS_SIM_BUG=membership-ignore-stale-answer \
+  go test ./checkpoint -run '^(TestAReaderBehindItsHoldersReadsTheMembershipAndAsksAgain|TestAFillToHoldersAheadIsSentAgainUnderTheirGeneration)$' -count=1
 SPROUTFS_SIM_BUG=host-weight-from-share \
   go test ./host -run '^TestACachesWeightIsItsDiskNotItsShare$' -count=1
 SPROUTFS_SIM_BUG=orchestrator-code-follows-the-hosts \
   go test ./cmd/sproutfs-orchestrator -run '^TestTheCodeNeverFollowsTheHosts$' -count=1
-SPROUTFS_SIM_BUG=orchestrator-drop-quiet-cache \
-  go test ./cmd/sproutfs-orchestrator -run '^TestAQuietHostStaysInTheListOfCaches$' -count=1
+SPROUTFS_SIM_BUG=orchestrator-drop-quiet-member \
+  go test ./cmd/sproutfs-orchestrator -run '^TestAQuietHostKeepsItsPlace$' -count=1
 ```
 
-The first sends a host back to being alone when a read fails, and the second
-keeps the first list a host read. The third weighs a cache by the limiter's
-share, which other writers move. The last two are the orchestrator's: a code
-taken from the table for the number of caches listed now, which a drain
-changes, and a quiet host dropped from the list. Ranking takes no context, so no guard reaches it, and
-Gremlins mutates it instead.
+The first writes the membership without the condition on the object it read:
+two writers of one generation both land, and the store's writes stop being
+one line. The second admits assigning a disk its member still holds. The
+next two break a holder: one answers under whatever generation it holds,
+reading no newer one and telling no sender it is stale, so a holder behind a
+read answers under its old generation and the read is refused; one serves
+the disk a request names whether or not the membership has it serve it, so a
+host that lost a disk asks its cache. The fifth breaks a sender, which takes
+a stale answer as a miss: a reader behind its holders reads the store, and a
+publisher behind them drops its keeps. The sixth weighs a disk by the
+limiter's share, which other writers move. The last two are the
+orchestrator's: a code taken from the table for the number of disks wanted
+now, which a drain changes, and a quiet host forgotten, so the membership
+drains it. Ranking takes no context, so no guard reaches it, and Gremlins
+mutates it instead.
 
 `TestAdversarialStarters` runs a fake VMM, not Firecracker, but it runs only on
 Linux and as root, because it gives the process's directory to another user.
@@ -2282,6 +2340,26 @@ one that ignores `DROP_FILE` does. Its invariant, `Isolated`, is that no VMM
 holds a file with a page of another tenant's VM in it, unless the page is
 public.
 
+`spec/membership/Membership.tla` is the membership: one object written by
+compare-and-set by two hosts and a controller, each from a generation it
+read; disks released, let go, assigned, served, removed and listed again as
+`membership.Step` admits; a member that lets a disk go only once its own
+copy shows the release, and a controller that lets go the disk of a host
+that died; hosts that read late and hosts that die; and stripe requests and
+keeps delivered to either host, as an address that came to belong to
+another host would. A holder behind a request reads the object first,
+answers only under the request's generation, and serves only a disk that
+generation has it serve. Its invariants are `OneMembership` (no stripe served
+or placed under a membership the sender and the holder do not both hold),
+`NoRegress` (the store applies one line of generations) and `OneServer` (no
+two live hosts serve one disk by the copies they hold). `MCMembership` runs
+two hosts over six generations in ten seconds, and `deep/Seven` over seven
+in about 25. Its mutants drop the generation check, the assignment check,
+the condition on a write and the release before an assignment, and fail
+`OneMembership`, `OneMembership`, `NoRegress` and `OneServer`. The first run
+found the model's own gap: a host that wrote a let-go had not adopted the
+generation it wrote, and still served the disk by its old copy.
+
 Three specs model the cluster's disk cache that
 [the plan](../plans/disk-cache-2026-10-02.md) proposes, before its code. Each
 abstracts the others to the little it needs, so that no run of TLC takes more
@@ -2289,7 +2367,8 @@ than a minute or two.
 
 `spec/diskcache/DiskCache.tla` is the cluster: publications that fail and are
 retried, a VM deleted and its name created again, windows striped over the
-ranks each host's own list gives, fills, fill rights, repair, reads of every
+ranks each host's own list gives (the generation of the membership it holds,
+which spec/membership checks two hosts never mix), fills, fill rights, repair, reads of every
 rank, hosts marked down, hosts that crash, leave and join, peers that answer
 with a wrong stripe, damaged headers, eviction of any stripe, and a deliberate
 change of the code. Every stripe names its code. A read tries the host's code
@@ -2491,18 +2570,39 @@ takes off the list, a slice's capacity, a zero-sized item that fails its
 header anyway, an error message's arithmetic, and a refill of no time. Two
 `case` lines Gremlins reports uncovered are run by the refusal tests.
 
-The list of caches is mutated the same way. The orchestrator is a package
-below `cmd`, which Gremlins names wrongly on its own, so its run adds
-`--integration`:
+The membership is mutated the same way, with the peer server's side of its
+protocol. The orchestrator is a package below `cmd`, which Gremlins names
+wrongly on its own, so its run adds `--integration`:
 
 ```sh
-python3 scripts/mutate-gremlins.py --package rank --suite full \
-  --file rank.go --file window.go --file follower.go \
-  --gremlins /path/to/gremlins --output /tmp/rank-mutations
+python3 scripts/mutate-gremlins.py --package membership --suite full \
+  --file membership.go --file change.go --file controller.go --file store.go --file view.go --file format.go \
+  --gremlins /path/to/gremlins --output /tmp/membership-mutations
+python3 scripts/mutate-gremlins.py --package peer --suite full --file cache.go \
+  --gremlins /path/to/gremlins --output /tmp/peer-cache-mutations
 python3 scripts/mutate-gremlins.py --package cmd/sproutfs-orchestrator --suite full --integration \
-  --file caches.go --run '^(TestTheListOfCaches|TestAConfiguredCode|TestADrainDoesNot|TestAQuietHostStays|TestTheListFollows|TestTheListHolds|TestTheCodeIs)' \
-  --gremlins /path/to/gremlins --output /tmp/orchestrator-cache-mutations
+  --file membership.go --run '^(TestTheMembership|TestAHostDrains|TestEachStep|TestAConfiguredCode|TestTheCodeNever|TestAQuietHostKeeps|TestTwoOrchestrators|TestTheCodeIs)' \
+  --gremlins /path/to/gremlins --output /tmp/orchestrator-membership-mutations
 ```
+
+On 2026-10-03 the first killed 109 of 165 mutants, with 9 alive and 47 not
+covered. Tests of what four survivors changed brought it to 113 killed and 5
+alive: draining the member listed first, draining a member that holds no
+disk, a view that reads the generation it holds and must not say it changed,
+and a host that comes back while its disk is released but still listed. The
+5 left change nothing a run can see: a size bound at exactly 1 MiB, an
+interval whose zero the default has already replaced, a log line's
+condition, the condition of the lost-reply site, and the first of a view's
+two checks of the generation it holds, which the second repeats under the
+lock. The 47 not covered are `case` lines of `switch` statements the tests
+run, the error branches of `New`'s checks, and the constants. The second
+killed 55 of 62 in `cache.go`; every mutant of the admission and of
+`replied` died but one `case` line Gremlins reports not covered, and the 5
+alive are in code this change did not touch: the page bitmap's growth, the
+sign of a busy answer's shortfall, a read that names no pages, and the
+condition of a guard. The third killed all 5 it covered; the 5 not covered are
+the interval constant, a `case` line, and the loop that steps on a timer,
+which the tests drive by calling `StepMembership`.
 
 The peer server is mutated the same way. Its page serving moved from
 `vmmigrate`, whose tests still drive most of it, so that part runs with
@@ -2572,8 +2672,8 @@ python3 scripts/mutate-gremlins.py --package checkpoint --suite full \
 python3 scripts/mutate-gremlins.py --package rank --suite full --file rank.go \
   --gremlins /path/to/gremlins --output /tmp/rank-mutations
 python3 scripts/mutate-gremlins.py --package cmd/sproutfs-orchestrator --suite full --integration \
-  --file caches.go --file main.go \
-  --run '^(TestTheListOfCaches|TestAConfiguredCode|TestTheCodeNever|TestAQuietHostStays|TestTheListFollows|TestTheListHolds|TestTheCodeIs)' \
+  --file membership.go --file main.go \
+  --run '^(TestTheMembership|TestAConfiguredCode|TestTheCodeNever|TestAQuietHostKeeps|TestTheCodeIs)' \
   --gremlins /path/to/gremlins --output /tmp/orchestrator-code-mutations
 ```
 

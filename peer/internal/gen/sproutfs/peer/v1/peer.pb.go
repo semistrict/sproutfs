@@ -137,6 +137,11 @@ const (
 	// stripe already, or its budget for writes is spent. Nothing waits on a
 	// keep, so it is dropped rather than queued.
 	CacheStatus_CACHE_STATUS_DROPPED CacheStatus = 3
+	// CACHE_STATUS_STALE answers a request under another generation of the
+	// membership than the host holds, which the answer names: its sender is
+	// behind and reads the membership again, or the host is behind and could
+	// not read it.
+	CacheStatus_CACHE_STATUS_STALE CacheStatus = 4
 )
 
 // Enum value maps for CacheStatus.
@@ -146,12 +151,14 @@ var (
 		1: "CACHE_STATUS_OK",
 		2: "CACHE_STATUS_NOT_ME",
 		3: "CACHE_STATUS_DROPPED",
+		4: "CACHE_STATUS_STALE",
 	}
 	CacheStatus_value = map[string]int32{
 		"CACHE_STATUS_UNSPECIFIED": 0,
 		"CACHE_STATUS_OK":          1,
 		"CACHE_STATUS_NOT_ME":      2,
 		"CACHE_STATUS_DROPPED":     3,
+		"CACHE_STATUS_STALE":       4,
 	}
 )
 
@@ -1233,6 +1240,7 @@ type ReadStripes struct {
 	xxx_hidden_K           uint32                 `protobuf:"varint,4,opt,name=k"`
 	xxx_hidden_M           uint32                 `protobuf:"varint,5,opt,name=m"`
 	xxx_hidden_MaxBytes    uint64                 `protobuf:"varint,6,opt,name=max_bytes,json=maxBytes"`
+	xxx_hidden_Generation  uint64                 `protobuf:"varint,7,opt,name=generation"`
 	XXX_raceDetectHookData protoimpl.RaceDetectHookData
 	XXX_presence           [1]uint32
 	unknownFields          protoimpl.UnknownFields
@@ -1306,12 +1314,19 @@ func (x *ReadStripes) GetMaxBytes() uint64 {
 	return 0
 }
 
+func (x *ReadStripes) GetGeneration() uint64 {
+	if x != nil {
+		return x.xxx_hidden_Generation
+	}
+	return 0
+}
+
 func (x *ReadStripes) SetCache(v []byte) {
 	if v == nil {
 		v = []byte{}
 	}
 	x.xxx_hidden_Cache = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 0, 6)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 0, 7)
 }
 
 func (x *ReadStripes) SetWindow(v *Window) {
@@ -1323,22 +1338,27 @@ func (x *ReadStripes) SetPages(v []byte) {
 		v = []byte{}
 	}
 	x.xxx_hidden_Pages = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 2, 6)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 2, 7)
 }
 
 func (x *ReadStripes) SetK(v uint32) {
 	x.xxx_hidden_K = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 3, 6)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 3, 7)
 }
 
 func (x *ReadStripes) SetM(v uint32) {
 	x.xxx_hidden_M = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 4, 6)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 4, 7)
 }
 
 func (x *ReadStripes) SetMaxBytes(v uint64) {
 	x.xxx_hidden_MaxBytes = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 5, 6)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 5, 7)
+}
+
+func (x *ReadStripes) SetGeneration(v uint64) {
+	x.xxx_hidden_Generation = v
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 6, 7)
 }
 
 func (x *ReadStripes) HasCache() bool {
@@ -1383,6 +1403,13 @@ func (x *ReadStripes) HasMaxBytes() bool {
 	return protoimpl.X.Present(&(x.XXX_presence[0]), 5)
 }
 
+func (x *ReadStripes) HasGeneration() bool {
+	if x == nil {
+		return false
+	}
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 6)
+}
+
 func (x *ReadStripes) ClearCache() {
 	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 0)
 	x.xxx_hidden_Cache = nil
@@ -1412,6 +1439,11 @@ func (x *ReadStripes) ClearMaxBytes() {
 	x.xxx_hidden_MaxBytes = 0
 }
 
+func (x *ReadStripes) ClearGeneration() {
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 6)
+	x.xxx_hidden_Generation = 0
+}
+
 type ReadStripes_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
@@ -1423,7 +1455,8 @@ type ReadStripes_builder struct {
 	K     *uint32
 	M     *uint32
 	// max_bytes is the most the reply may carry.
-	MaxBytes *uint64
+	MaxBytes   *uint64
+	Generation *uint64
 }
 
 func (b0 ReadStripes_builder) Build() *ReadStripes {
@@ -1431,25 +1464,29 @@ func (b0 ReadStripes_builder) Build() *ReadStripes {
 	b, x := &b0, m0
 	_, _ = b, x
 	if b.Cache != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 0, 6)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 0, 7)
 		x.xxx_hidden_Cache = b.Cache
 	}
 	x.xxx_hidden_Window = b.Window
 	if b.Pages != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 2, 6)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 2, 7)
 		x.xxx_hidden_Pages = b.Pages
 	}
 	if b.K != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 3, 6)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 3, 7)
 		x.xxx_hidden_K = *b.K
 	}
 	if b.M != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 4, 6)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 4, 7)
 		x.xxx_hidden_M = *b.M
 	}
 	if b.MaxBytes != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 5, 6)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 5, 7)
 		x.xxx_hidden_MaxBytes = *b.MaxBytes
+	}
+	if b.Generation != nil {
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 6, 7)
+		x.xxx_hidden_Generation = *b.Generation
 	}
 	return m0
 }
@@ -1462,6 +1499,8 @@ type Stripes struct {
 	xxx_hidden_Status      CacheStatus            `protobuf:"varint,1,opt,name=status,enum=sproutfs.peer.v1.CacheStatus"`
 	xxx_hidden_Items       *[]*StripeItem         `protobuf:"bytes,2,rep,name=items"`
 	xxx_hidden_FillRight   bool                   `protobuf:"varint,3,opt,name=fill_right,json=fillRight"`
+	xxx_hidden_Generation  uint64                 `protobuf:"varint,4,opt,name=generation"`
+	xxx_hidden_Assigned    uint64                 `protobuf:"varint,5,opt,name=assigned"`
 	XXX_raceDetectHookData protoimpl.RaceDetectHookData
 	XXX_presence           [1]uint32
 	unknownFields          protoimpl.UnknownFields
@@ -1518,9 +1557,23 @@ func (x *Stripes) GetFillRight() bool {
 	return false
 }
 
+func (x *Stripes) GetGeneration() uint64 {
+	if x != nil {
+		return x.xxx_hidden_Generation
+	}
+	return 0
+}
+
+func (x *Stripes) GetAssigned() uint64 {
+	if x != nil {
+		return x.xxx_hidden_Assigned
+	}
+	return 0
+}
+
 func (x *Stripes) SetStatus(v CacheStatus) {
 	x.xxx_hidden_Status = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 0, 3)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 0, 5)
 }
 
 func (x *Stripes) SetItems(v []*StripeItem) {
@@ -1529,7 +1582,17 @@ func (x *Stripes) SetItems(v []*StripeItem) {
 
 func (x *Stripes) SetFillRight(v bool) {
 	x.xxx_hidden_FillRight = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 2, 3)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 2, 5)
+}
+
+func (x *Stripes) SetGeneration(v uint64) {
+	x.xxx_hidden_Generation = v
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 3, 5)
+}
+
+func (x *Stripes) SetAssigned(v uint64) {
+	x.xxx_hidden_Assigned = v
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 4, 5)
 }
 
 func (x *Stripes) HasStatus() bool {
@@ -1546,6 +1609,20 @@ func (x *Stripes) HasFillRight() bool {
 	return protoimpl.X.Present(&(x.XXX_presence[0]), 2)
 }
 
+func (x *Stripes) HasGeneration() bool {
+	if x == nil {
+		return false
+	}
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 3)
+}
+
+func (x *Stripes) HasAssigned() bool {
+	if x == nil {
+		return false
+	}
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 4)
+}
+
 func (x *Stripes) ClearStatus() {
 	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 0)
 	x.xxx_hidden_Status = CacheStatus_CACHE_STATUS_UNSPECIFIED
@@ -1556,12 +1633,26 @@ func (x *Stripes) ClearFillRight() {
 	x.xxx_hidden_FillRight = false
 }
 
+func (x *Stripes) ClearGeneration() {
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 3)
+	x.xxx_hidden_Generation = 0
+}
+
+func (x *Stripes) ClearAssigned() {
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 4)
+	x.xxx_hidden_Assigned = 0
+}
+
 type Stripes_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
 	Status    *CacheStatus
 	Items     []*StripeItem
 	FillRight *bool
+	// generation is the membership's the host answered under, and assigned
+	// the generation that assigned it the disk.
+	Generation *uint64
+	Assigned   *uint64
 }
 
 func (b0 Stripes_builder) Build() *Stripes {
@@ -1569,13 +1660,21 @@ func (b0 Stripes_builder) Build() *Stripes {
 	b, x := &b0, m0
 	_, _ = b, x
 	if b.Status != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 0, 3)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 0, 5)
 		x.xxx_hidden_Status = *b.Status
 	}
 	x.xxx_hidden_Items = &b.Items
 	if b.FillRight != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 2, 3)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 2, 5)
 		x.xxx_hidden_FillRight = *b.FillRight
+	}
+	if b.Generation != nil {
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 3, 5)
+		x.xxx_hidden_Generation = *b.Generation
+	}
+	if b.Assigned != nil {
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 4, 5)
+		x.xxx_hidden_Assigned = *b.Assigned
 	}
 	return m0
 }
@@ -1592,6 +1691,7 @@ type Keep struct {
 	xxx_hidden_Items       *[]*StripeItem         `protobuf:"bytes,5,rep,name=items"`
 	xxx_hidden_Repair      bool                   `protobuf:"varint,6,opt,name=repair"`
 	xxx_hidden_Publication bool                   `protobuf:"varint,7,opt,name=publication"`
+	xxx_hidden_Generation  uint64                 `protobuf:"varint,8,opt,name=generation"`
 	XXX_raceDetectHookData protoimpl.RaceDetectHookData
 	XXX_presence           [1]uint32
 	unknownFields          protoimpl.UnknownFields
@@ -1674,12 +1774,19 @@ func (x *Keep) GetPublication() bool {
 	return false
 }
 
+func (x *Keep) GetGeneration() uint64 {
+	if x != nil {
+		return x.xxx_hidden_Generation
+	}
+	return 0
+}
+
 func (x *Keep) SetCache(v []byte) {
 	if v == nil {
 		v = []byte{}
 	}
 	x.xxx_hidden_Cache = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 0, 7)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 0, 8)
 }
 
 func (x *Keep) SetWindow(v *Window) {
@@ -1688,12 +1795,12 @@ func (x *Keep) SetWindow(v *Window) {
 
 func (x *Keep) SetK(v uint32) {
 	x.xxx_hidden_K = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 2, 7)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 2, 8)
 }
 
 func (x *Keep) SetM(v uint32) {
 	x.xxx_hidden_M = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 3, 7)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 3, 8)
 }
 
 func (x *Keep) SetItems(v []*StripeItem) {
@@ -1702,12 +1809,17 @@ func (x *Keep) SetItems(v []*StripeItem) {
 
 func (x *Keep) SetRepair(v bool) {
 	x.xxx_hidden_Repair = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 5, 7)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 5, 8)
 }
 
 func (x *Keep) SetPublication(v bool) {
 	x.xxx_hidden_Publication = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 6, 7)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 6, 8)
+}
+
+func (x *Keep) SetGeneration(v uint64) {
+	x.xxx_hidden_Generation = v
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 7, 8)
 }
 
 func (x *Keep) HasCache() bool {
@@ -1752,6 +1864,13 @@ func (x *Keep) HasPublication() bool {
 	return protoimpl.X.Present(&(x.XXX_presence[0]), 6)
 }
 
+func (x *Keep) HasGeneration() bool {
+	if x == nil {
+		return false
+	}
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 7)
+}
+
 func (x *Keep) ClearCache() {
 	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 0)
 	x.xxx_hidden_Cache = nil
@@ -1781,6 +1900,11 @@ func (x *Keep) ClearPublication() {
 	x.xxx_hidden_Publication = false
 }
 
+func (x *Keep) ClearGeneration() {
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 7)
+	x.xxx_hidden_Generation = 0
+}
+
 type Keep_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
@@ -1791,6 +1915,7 @@ type Keep_builder struct {
 	Items       []*StripeItem
 	Repair      *bool
 	Publication *bool
+	Generation  *uint64
 }
 
 func (b0 Keep_builder) Build() *Keep {
@@ -1798,26 +1923,30 @@ func (b0 Keep_builder) Build() *Keep {
 	b, x := &b0, m0
 	_, _ = b, x
 	if b.Cache != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 0, 7)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 0, 8)
 		x.xxx_hidden_Cache = b.Cache
 	}
 	x.xxx_hidden_Window = b.Window
 	if b.K != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 2, 7)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 2, 8)
 		x.xxx_hidden_K = *b.K
 	}
 	if b.M != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 3, 7)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 3, 8)
 		x.xxx_hidden_M = *b.M
 	}
 	x.xxx_hidden_Items = &b.Items
 	if b.Repair != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 5, 7)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 5, 8)
 		x.xxx_hidden_Repair = *b.Repair
 	}
 	if b.Publication != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 6, 7)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 6, 8)
 		x.xxx_hidden_Publication = *b.Publication
+	}
+	if b.Generation != nil {
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 7, 8)
+		x.xxx_hidden_Generation = *b.Generation
 	}
 	return m0
 }
@@ -1826,6 +1955,8 @@ func (b0 Keep_builder) Build() *Keep {
 type Kept struct {
 	state                  protoimpl.MessageState `protogen:"opaque.v1"`
 	xxx_hidden_Status      CacheStatus            `protobuf:"varint,1,opt,name=status,enum=sproutfs.peer.v1.CacheStatus"`
+	xxx_hidden_Generation  uint64                 `protobuf:"varint,2,opt,name=generation"`
+	xxx_hidden_Assigned    uint64                 `protobuf:"varint,3,opt,name=assigned"`
 	XXX_raceDetectHookData protoimpl.RaceDetectHookData
 	XXX_presence           [1]uint32
 	unknownFields          protoimpl.UnknownFields
@@ -1866,9 +1997,33 @@ func (x *Kept) GetStatus() CacheStatus {
 	return CacheStatus_CACHE_STATUS_UNSPECIFIED
 }
 
+func (x *Kept) GetGeneration() uint64 {
+	if x != nil {
+		return x.xxx_hidden_Generation
+	}
+	return 0
+}
+
+func (x *Kept) GetAssigned() uint64 {
+	if x != nil {
+		return x.xxx_hidden_Assigned
+	}
+	return 0
+}
+
 func (x *Kept) SetStatus(v CacheStatus) {
 	x.xxx_hidden_Status = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 0, 1)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 0, 3)
+}
+
+func (x *Kept) SetGeneration(v uint64) {
+	x.xxx_hidden_Generation = v
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 1, 3)
+}
+
+func (x *Kept) SetAssigned(v uint64) {
+	x.xxx_hidden_Assigned = v
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 2, 3)
 }
 
 func (x *Kept) HasStatus() bool {
@@ -1878,15 +2033,41 @@ func (x *Kept) HasStatus() bool {
 	return protoimpl.X.Present(&(x.XXX_presence[0]), 0)
 }
 
+func (x *Kept) HasGeneration() bool {
+	if x == nil {
+		return false
+	}
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 1)
+}
+
+func (x *Kept) HasAssigned() bool {
+	if x == nil {
+		return false
+	}
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 2)
+}
+
 func (x *Kept) ClearStatus() {
 	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 0)
 	x.xxx_hidden_Status = CacheStatus_CACHE_STATUS_UNSPECIFIED
 }
 
+func (x *Kept) ClearGeneration() {
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 1)
+	x.xxx_hidden_Generation = 0
+}
+
+func (x *Kept) ClearAssigned() {
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 2)
+	x.xxx_hidden_Assigned = 0
+}
+
 type Kept_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	Status *CacheStatus
+	Status     *CacheStatus
+	Generation *uint64
+	Assigned   *uint64
 }
 
 func (b0 Kept_builder) Build() *Kept {
@@ -1894,8 +2075,16 @@ func (b0 Kept_builder) Build() *Kept {
 	b, x := &b0, m0
 	_, _ = b, x
 	if b.Status != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 0, 1)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 0, 3)
 		x.xxx_hidden_Status = *b.Status
+	}
+	if b.Generation != nil {
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 1, 3)
+		x.xxx_hidden_Generation = *b.Generation
+	}
+	if b.Assigned != nil {
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 2, 3)
+		x.xxx_hidden_Assigned = *b.Assigned
 	}
 	return m0
 }
@@ -1909,6 +2098,7 @@ type Drop struct {
 	xxx_hidden_Index       uint32                 `protobuf:"varint,4,opt,name=index"`
 	xxx_hidden_K           uint32                 `protobuf:"varint,5,opt,name=k"`
 	xxx_hidden_M           uint32                 `protobuf:"varint,6,opt,name=m"`
+	xxx_hidden_Generation  uint64                 `protobuf:"varint,7,opt,name=generation"`
 	XXX_raceDetectHookData protoimpl.RaceDetectHookData
 	XXX_presence           [1]uint32
 	unknownFields          protoimpl.UnknownFields
@@ -1982,12 +2172,19 @@ func (x *Drop) GetM() uint32 {
 	return 0
 }
 
+func (x *Drop) GetGeneration() uint64 {
+	if x != nil {
+		return x.xxx_hidden_Generation
+	}
+	return 0
+}
+
 func (x *Drop) SetCache(v []byte) {
 	if v == nil {
 		v = []byte{}
 	}
 	x.xxx_hidden_Cache = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 0, 6)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 0, 7)
 }
 
 func (x *Drop) SetWindow(v *Window) {
@@ -1996,22 +2193,27 @@ func (x *Drop) SetWindow(v *Window) {
 
 func (x *Drop) SetPage(v uint32) {
 	x.xxx_hidden_Page = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 2, 6)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 2, 7)
 }
 
 func (x *Drop) SetIndex(v uint32) {
 	x.xxx_hidden_Index = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 3, 6)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 3, 7)
 }
 
 func (x *Drop) SetK(v uint32) {
 	x.xxx_hidden_K = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 4, 6)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 4, 7)
 }
 
 func (x *Drop) SetM(v uint32) {
 	x.xxx_hidden_M = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 5, 6)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 5, 7)
+}
+
+func (x *Drop) SetGeneration(v uint64) {
+	x.xxx_hidden_Generation = v
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 6, 7)
 }
 
 func (x *Drop) HasCache() bool {
@@ -2056,6 +2258,13 @@ func (x *Drop) HasM() bool {
 	return protoimpl.X.Present(&(x.XXX_presence[0]), 5)
 }
 
+func (x *Drop) HasGeneration() bool {
+	if x == nil {
+		return false
+	}
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 6)
+}
+
 func (x *Drop) ClearCache() {
 	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 0)
 	x.xxx_hidden_Cache = nil
@@ -2085,15 +2294,21 @@ func (x *Drop) ClearM() {
 	x.xxx_hidden_M = 0
 }
 
+func (x *Drop) ClearGeneration() {
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 6)
+	x.xxx_hidden_Generation = 0
+}
+
 type Drop_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	Cache  []byte
-	Window *Window
-	Page   *uint32
-	Index  *uint32
-	K      *uint32
-	M      *uint32
+	Cache      []byte
+	Window     *Window
+	Page       *uint32
+	Index      *uint32
+	K          *uint32
+	M          *uint32
+	Generation *uint64
 }
 
 func (b0 Drop_builder) Build() *Drop {
@@ -2101,25 +2316,29 @@ func (b0 Drop_builder) Build() *Drop {
 	b, x := &b0, m0
 	_, _ = b, x
 	if b.Cache != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 0, 6)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 0, 7)
 		x.xxx_hidden_Cache = b.Cache
 	}
 	x.xxx_hidden_Window = b.Window
 	if b.Page != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 2, 6)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 2, 7)
 		x.xxx_hidden_Page = *b.Page
 	}
 	if b.Index != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 3, 6)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 3, 7)
 		x.xxx_hidden_Index = *b.Index
 	}
 	if b.K != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 4, 6)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 4, 7)
 		x.xxx_hidden_K = *b.K
 	}
 	if b.M != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 5, 6)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 5, 7)
 		x.xxx_hidden_M = *b.M
+	}
+	if b.Generation != nil {
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 6, 7)
+		x.xxx_hidden_Generation = *b.Generation
 	}
 	return m0
 }
@@ -2128,6 +2347,8 @@ func (b0 Drop_builder) Build() *Drop {
 type Dropped struct {
 	state                  protoimpl.MessageState `protogen:"opaque.v1"`
 	xxx_hidden_Status      CacheStatus            `protobuf:"varint,1,opt,name=status,enum=sproutfs.peer.v1.CacheStatus"`
+	xxx_hidden_Generation  uint64                 `protobuf:"varint,2,opt,name=generation"`
+	xxx_hidden_Assigned    uint64                 `protobuf:"varint,3,opt,name=assigned"`
 	XXX_raceDetectHookData protoimpl.RaceDetectHookData
 	XXX_presence           [1]uint32
 	unknownFields          protoimpl.UnknownFields
@@ -2168,9 +2389,33 @@ func (x *Dropped) GetStatus() CacheStatus {
 	return CacheStatus_CACHE_STATUS_UNSPECIFIED
 }
 
+func (x *Dropped) GetGeneration() uint64 {
+	if x != nil {
+		return x.xxx_hidden_Generation
+	}
+	return 0
+}
+
+func (x *Dropped) GetAssigned() uint64 {
+	if x != nil {
+		return x.xxx_hidden_Assigned
+	}
+	return 0
+}
+
 func (x *Dropped) SetStatus(v CacheStatus) {
 	x.xxx_hidden_Status = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 0, 1)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 0, 3)
+}
+
+func (x *Dropped) SetGeneration(v uint64) {
+	x.xxx_hidden_Generation = v
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 1, 3)
+}
+
+func (x *Dropped) SetAssigned(v uint64) {
+	x.xxx_hidden_Assigned = v
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 2, 3)
 }
 
 func (x *Dropped) HasStatus() bool {
@@ -2180,15 +2425,41 @@ func (x *Dropped) HasStatus() bool {
 	return protoimpl.X.Present(&(x.XXX_presence[0]), 0)
 }
 
+func (x *Dropped) HasGeneration() bool {
+	if x == nil {
+		return false
+	}
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 1)
+}
+
+func (x *Dropped) HasAssigned() bool {
+	if x == nil {
+		return false
+	}
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 2)
+}
+
 func (x *Dropped) ClearStatus() {
 	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 0)
 	x.xxx_hidden_Status = CacheStatus_CACHE_STATUS_UNSPECIFIED
 }
 
+func (x *Dropped) ClearGeneration() {
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 1)
+	x.xxx_hidden_Generation = 0
+}
+
+func (x *Dropped) ClearAssigned() {
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 2)
+	x.xxx_hidden_Assigned = 0
+}
+
 type Dropped_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	Status *CacheStatus
+	Status     *CacheStatus
+	Generation *uint64
+	Assigned   *uint64
 }
 
 func (b0 Dropped_builder) Build() *Dropped {
@@ -2196,8 +2467,16 @@ func (b0 Dropped_builder) Build() *Dropped {
 	b, x := &b0, m0
 	_, _ = b, x
 	if b.Status != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 0, 1)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 0, 3)
 		x.xxx_hidden_Status = *b.Status
+	}
+	if b.Generation != nil {
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 1, 3)
+		x.xxx_hidden_Generation = *b.Generation
+	}
+	if b.Assigned != nil {
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 2, 3)
+		x.xxx_hidden_Assigned = *b.Assigned
 	}
 	return m0
 }
@@ -2209,6 +2488,7 @@ type Presence struct {
 	xxx_hidden_Windows     *[]*Window             `protobuf:"bytes,2,rep,name=windows"`
 	xxx_hidden_K           uint32                 `protobuf:"varint,3,opt,name=k"`
 	xxx_hidden_M           uint32                 `protobuf:"varint,4,opt,name=m"`
+	xxx_hidden_Generation  uint64                 `protobuf:"varint,5,opt,name=generation"`
 	XXX_raceDetectHookData protoimpl.RaceDetectHookData
 	XXX_presence           [1]uint32
 	unknownFields          protoimpl.UnknownFields
@@ -2270,12 +2550,19 @@ func (x *Presence) GetM() uint32 {
 	return 0
 }
 
+func (x *Presence) GetGeneration() uint64 {
+	if x != nil {
+		return x.xxx_hidden_Generation
+	}
+	return 0
+}
+
 func (x *Presence) SetCache(v []byte) {
 	if v == nil {
 		v = []byte{}
 	}
 	x.xxx_hidden_Cache = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 0, 4)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 0, 5)
 }
 
 func (x *Presence) SetWindows(v []*Window) {
@@ -2284,12 +2571,17 @@ func (x *Presence) SetWindows(v []*Window) {
 
 func (x *Presence) SetK(v uint32) {
 	x.xxx_hidden_K = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 2, 4)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 2, 5)
 }
 
 func (x *Presence) SetM(v uint32) {
 	x.xxx_hidden_M = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 3, 4)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 3, 5)
+}
+
+func (x *Presence) SetGeneration(v uint64) {
+	x.xxx_hidden_Generation = v
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 4, 5)
 }
 
 func (x *Presence) HasCache() bool {
@@ -2313,6 +2605,13 @@ func (x *Presence) HasM() bool {
 	return protoimpl.X.Present(&(x.XXX_presence[0]), 3)
 }
 
+func (x *Presence) HasGeneration() bool {
+	if x == nil {
+		return false
+	}
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 4)
+}
+
 func (x *Presence) ClearCache() {
 	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 0)
 	x.xxx_hidden_Cache = nil
@@ -2328,13 +2627,19 @@ func (x *Presence) ClearM() {
 	x.xxx_hidden_M = 0
 }
 
+func (x *Presence) ClearGeneration() {
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 4)
+	x.xxx_hidden_Generation = 0
+}
+
 type Presence_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	Cache   []byte
-	Windows []*Window
-	K       *uint32
-	M       *uint32
+	Cache      []byte
+	Windows    []*Window
+	K          *uint32
+	M          *uint32
+	Generation *uint64
 }
 
 func (b0 Presence_builder) Build() *Presence {
@@ -2342,17 +2647,21 @@ func (b0 Presence_builder) Build() *Presence {
 	b, x := &b0, m0
 	_, _ = b, x
 	if b.Cache != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 0, 4)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 0, 5)
 		x.xxx_hidden_Cache = b.Cache
 	}
 	x.xxx_hidden_Windows = &b.Windows
 	if b.K != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 2, 4)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 2, 5)
 		x.xxx_hidden_K = *b.K
 	}
 	if b.M != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 3, 4)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 3, 5)
 		x.xxx_hidden_M = *b.M
+	}
+	if b.Generation != nil {
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 4, 5)
+		x.xxx_hidden_Generation = *b.Generation
 	}
 	return m0
 }
@@ -2363,6 +2672,8 @@ type Present struct {
 	state                  protoimpl.MessageState `protogen:"opaque.v1"`
 	xxx_hidden_Status      CacheStatus            `protobuf:"varint,1,opt,name=status,enum=sproutfs.peer.v1.CacheStatus"`
 	xxx_hidden_Pages       [][]byte               `protobuf:"bytes,2,rep,name=pages"`
+	xxx_hidden_Generation  uint64                 `protobuf:"varint,3,opt,name=generation"`
+	xxx_hidden_Assigned    uint64                 `protobuf:"varint,4,opt,name=assigned"`
 	XXX_raceDetectHookData protoimpl.RaceDetectHookData
 	XXX_presence           [1]uint32
 	unknownFields          protoimpl.UnknownFields
@@ -2410,13 +2721,37 @@ func (x *Present) GetPages() [][]byte {
 	return nil
 }
 
+func (x *Present) GetGeneration() uint64 {
+	if x != nil {
+		return x.xxx_hidden_Generation
+	}
+	return 0
+}
+
+func (x *Present) GetAssigned() uint64 {
+	if x != nil {
+		return x.xxx_hidden_Assigned
+	}
+	return 0
+}
+
 func (x *Present) SetStatus(v CacheStatus) {
 	x.xxx_hidden_Status = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 0, 2)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 0, 4)
 }
 
 func (x *Present) SetPages(v [][]byte) {
 	x.xxx_hidden_Pages = v
+}
+
+func (x *Present) SetGeneration(v uint64) {
+	x.xxx_hidden_Generation = v
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 2, 4)
+}
+
+func (x *Present) SetAssigned(v uint64) {
+	x.xxx_hidden_Assigned = v
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 3, 4)
 }
 
 func (x *Present) HasStatus() bool {
@@ -2426,16 +2761,42 @@ func (x *Present) HasStatus() bool {
 	return protoimpl.X.Present(&(x.XXX_presence[0]), 0)
 }
 
+func (x *Present) HasGeneration() bool {
+	if x == nil {
+		return false
+	}
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 2)
+}
+
+func (x *Present) HasAssigned() bool {
+	if x == nil {
+		return false
+	}
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 3)
+}
+
 func (x *Present) ClearStatus() {
 	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 0)
 	x.xxx_hidden_Status = CacheStatus_CACHE_STATUS_UNSPECIFIED
 }
 
+func (x *Present) ClearGeneration() {
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 2)
+	x.xxx_hidden_Generation = 0
+}
+
+func (x *Present) ClearAssigned() {
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 3)
+	x.xxx_hidden_Assigned = 0
+}
+
 type Present_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	Status *CacheStatus
-	Pages  [][]byte
+	Status     *CacheStatus
+	Pages      [][]byte
+	Generation *uint64
+	Assigned   *uint64
 }
 
 func (b0 Present_builder) Build() *Present {
@@ -2443,14 +2804,22 @@ func (b0 Present_builder) Build() *Present {
 	b, x := &b0, m0
 	_, _ = b, x
 	if b.Status != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 0, 2)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 0, 4)
 		x.xxx_hidden_Status = *b.Status
 	}
 	x.xxx_hidden_Pages = b.Pages
+	if b.Generation != nil {
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 2, 4)
+		x.xxx_hidden_Generation = *b.Generation
+	}
+	if b.Assigned != nil {
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 3, 4)
+		x.xxx_hidden_Assigned = *b.Assigned
+	}
 	return m0
 }
 
-// Probe asks whether this host is there and keeps the cache named. An empty
+// Probe asks whether this host is there and keeps the disk named. An empty
 // cache asks only whether the host is there.
 type Probe struct {
 	state                  protoimpl.MessageState `protogen:"opaque.v1"`
@@ -2530,8 +2899,8 @@ func (b0 Probe_builder) Build() *Probe {
 	return m0
 }
 
-// Probed answers a Probe with this host's cache identity, empty for a host
-// that keeps none.
+// Probed answers a Probe with the identity of the disk this host keeps, empty
+// for a host that keeps none.
 type Probed struct {
 	state                  protoimpl.MessageState `protogen:"opaque.v1"`
 	xxx_hidden_Status      CacheStatus            `protobuf:"varint,1,opt,name=status,enum=sproutfs.peer.v1.CacheStatus"`
@@ -2684,19 +3053,26 @@ const file_sproutfs_peer_v1_peer_proto_rawDesc = "" +
 	"\x04page\x18\x01 \x01(\rR\x04page\x12\x14\n" +
 	"\x05index\x18\x02 \x01(\rR\x05index\x12\x16\n" +
 	"\x06length\x18\x03 \x01(\rR\x06length\x12\x12\n" +
-	"\x04size\x18\x04 \x01(\rR\x04size\"\xa4\x01\n" +
+	"\x04size\x18\x04 \x01(\rR\x04size\"\xc4\x01\n" +
 	"\vReadStripes\x12\x14\n" +
 	"\x05cache\x18\x01 \x01(\fR\x05cache\x120\n" +
 	"\x06window\x18\x02 \x01(\v2\x18.sproutfs.peer.v1.WindowR\x06window\x12\x14\n" +
 	"\x05pages\x18\x03 \x01(\fR\x05pages\x12\f\n" +
 	"\x01k\x18\x04 \x01(\rR\x01k\x12\f\n" +
 	"\x01m\x18\x05 \x01(\rR\x01m\x12\x1b\n" +
-	"\tmax_bytes\x18\x06 \x01(\x04R\bmaxBytes\"\x93\x01\n" +
+	"\tmax_bytes\x18\x06 \x01(\x04R\bmaxBytes\x12\x1e\n" +
+	"\n" +
+	"generation\x18\a \x01(\x04R\n" +
+	"generation\"\xcf\x01\n" +
 	"\aStripes\x125\n" +
 	"\x06status\x18\x01 \x01(\x0e2\x1d.sproutfs.peer.v1.CacheStatusR\x06status\x122\n" +
 	"\x05items\x18\x02 \x03(\v2\x1c.sproutfs.peer.v1.StripeItemR\x05items\x12\x1d\n" +
 	"\n" +
-	"fill_right\x18\x03 \x01(\bR\tfillRight\"\xd8\x01\n" +
+	"fill_right\x18\x03 \x01(\bR\tfillRight\x12\x1e\n" +
+	"\n" +
+	"generation\x18\x04 \x01(\x04R\n" +
+	"generation\x12\x1a\n" +
+	"\bassigned\x18\x05 \x01(\x04R\bassigned\"\xf8\x01\n" +
 	"\x04Keep\x12\x14\n" +
 	"\x05cache\x18\x01 \x01(\fR\x05cache\x120\n" +
 	"\x06window\x18\x02 \x01(\v2\x18.sproutfs.peer.v1.WindowR\x06window\x12\f\n" +
@@ -2704,26 +3080,47 @@ const file_sproutfs_peer_v1_peer_proto_rawDesc = "" +
 	"\x01m\x18\x04 \x01(\rR\x01m\x122\n" +
 	"\x05items\x18\x05 \x03(\v2\x1c.sproutfs.peer.v1.StripeItemR\x05items\x12\x16\n" +
 	"\x06repair\x18\x06 \x01(\bR\x06repair\x12 \n" +
-	"\vpublication\x18\a \x01(\bR\vpublication\"=\n" +
+	"\vpublication\x18\a \x01(\bR\vpublication\x12\x1e\n" +
+	"\n" +
+	"generation\x18\b \x01(\x04R\n" +
+	"generation\"y\n" +
 	"\x04Kept\x125\n" +
-	"\x06status\x18\x01 \x01(\x0e2\x1d.sproutfs.peer.v1.CacheStatusR\x06status\"\x94\x01\n" +
+	"\x06status\x18\x01 \x01(\x0e2\x1d.sproutfs.peer.v1.CacheStatusR\x06status\x12\x1e\n" +
+	"\n" +
+	"generation\x18\x02 \x01(\x04R\n" +
+	"generation\x12\x1a\n" +
+	"\bassigned\x18\x03 \x01(\x04R\bassigned\"\xb4\x01\n" +
 	"\x04Drop\x12\x14\n" +
 	"\x05cache\x18\x01 \x01(\fR\x05cache\x120\n" +
 	"\x06window\x18\x02 \x01(\v2\x18.sproutfs.peer.v1.WindowR\x06window\x12\x12\n" +
 	"\x04page\x18\x03 \x01(\rR\x04page\x12\x14\n" +
 	"\x05index\x18\x04 \x01(\rR\x05index\x12\f\n" +
 	"\x01k\x18\x05 \x01(\rR\x01k\x12\f\n" +
-	"\x01m\x18\x06 \x01(\rR\x01m\"@\n" +
+	"\x01m\x18\x06 \x01(\rR\x01m\x12\x1e\n" +
+	"\n" +
+	"generation\x18\a \x01(\x04R\n" +
+	"generation\"|\n" +
 	"\aDropped\x125\n" +
-	"\x06status\x18\x01 \x01(\x0e2\x1d.sproutfs.peer.v1.CacheStatusR\x06status\"p\n" +
+	"\x06status\x18\x01 \x01(\x0e2\x1d.sproutfs.peer.v1.CacheStatusR\x06status\x12\x1e\n" +
+	"\n" +
+	"generation\x18\x02 \x01(\x04R\n" +
+	"generation\x12\x1a\n" +
+	"\bassigned\x18\x03 \x01(\x04R\bassigned\"\x90\x01\n" +
 	"\bPresence\x12\x14\n" +
 	"\x05cache\x18\x01 \x01(\fR\x05cache\x122\n" +
 	"\awindows\x18\x02 \x03(\v2\x18.sproutfs.peer.v1.WindowR\awindows\x12\f\n" +
 	"\x01k\x18\x03 \x01(\rR\x01k\x12\f\n" +
-	"\x01m\x18\x04 \x01(\rR\x01m\"V\n" +
+	"\x01m\x18\x04 \x01(\rR\x01m\x12\x1e\n" +
+	"\n" +
+	"generation\x18\x05 \x01(\x04R\n" +
+	"generation\"\x92\x01\n" +
 	"\aPresent\x125\n" +
 	"\x06status\x18\x01 \x01(\x0e2\x1d.sproutfs.peer.v1.CacheStatusR\x06status\x12\x14\n" +
-	"\x05pages\x18\x02 \x03(\fR\x05pages\"\x1d\n" +
+	"\x05pages\x18\x02 \x03(\fR\x05pages\x12\x1e\n" +
+	"\n" +
+	"generation\x18\x03 \x01(\x04R\n" +
+	"generation\x12\x1a\n" +
+	"\bassigned\x18\x04 \x01(\x04R\bassigned\"\x1d\n" +
 	"\x05Probe\x12\x14\n" +
 	"\x05cache\x18\x01 \x01(\fR\x05cache\"U\n" +
 	"\x06Probed\x125\n" +
@@ -2738,12 +3135,13 @@ const file_sproutfs_peer_v1_peer_proto_rawDesc = "" +
 	"\vCLASS_FAULT\x10\x01\x12\x13\n" +
 	"\x0fCLASS_BULK_READ\x10\x02\x12\x14\n" +
 	"\x10CLASS_BULK_WRITE\x10\x03\x12\x10\n" +
-	"\fCLASS_STRIPE\x10\x04*s\n" +
+	"\fCLASS_STRIPE\x10\x04*\x8b\x01\n" +
 	"\vCacheStatus\x12\x1c\n" +
 	"\x18CACHE_STATUS_UNSPECIFIED\x10\x00\x12\x13\n" +
 	"\x0fCACHE_STATUS_OK\x10\x01\x12\x17\n" +
 	"\x13CACHE_STATUS_NOT_ME\x10\x02\x12\x18\n" +
-	"\x14CACHE_STATUS_DROPPED\x10\x03BJZHgithub.com/semistrict/sproutfs/peer/internal/gen/sproutfs/peer/v1;peerv1b\beditionsp\xe9\a"
+	"\x14CACHE_STATUS_DROPPED\x10\x03\x12\x16\n" +
+	"\x12CACHE_STATUS_STALE\x10\x04BJZHgithub.com/semistrict/sproutfs/peer/internal/gen/sproutfs/peer/v1;peerv1b\beditionsp\xe9\a"
 
 var file_sproutfs_peer_v1_peer_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
 var file_sproutfs_peer_v1_peer_proto_msgTypes = make([]protoimpl.MessageInfo, 17)

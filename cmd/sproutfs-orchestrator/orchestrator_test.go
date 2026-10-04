@@ -202,9 +202,9 @@ type fakeHostClient struct {
 	// onOpen runs as an open begins, before the host runs the VM, which is
 	// where a test puts what the deployment does while a start is under way.
 	onOpen func()
-	// cache is the disk cache this host reports, nil for a host that keeps
-	// none.
-	cache    *host.Cache
+	// member is what this host reports to the membership, nil for a host that
+	// keeps no cache disk.
+	member   *host.Member
 	held     chan struct{}
 	heldOnce sync.Once
 }
@@ -285,7 +285,7 @@ func (f *fakeHostClient) Status(ctx context.Context) (host.Status, error) {
 		record.RootPending = f.rootPending[id]
 		records = append(records, record)
 	}
-	return host.Status{Host: f.name, PageAddress: f.page, Cache: f.cache,
+	return host.Status{Host: f.name, PageAddress: f.page, Member: f.member,
 		Running: running, Serving: slices.Clone(f.serving),
 		Receiving: slices.Clone(f.receiving), VMs: records, Templates: slices.Clone(f.templates),
 		// A placement measures a host by the RAM arena against the guest RAM it

@@ -282,22 +282,40 @@
     "purpose": "Give back a disk region whose table is torn without scanning its items."
   },
   {
-    "id": "rank-forget-list-on-failure",
-    "package": "rank",
-    "run": "^TestAHostKeepsItsListWhileTheOrchestratorIsDown$",
-    "purpose": "Go back to the host's own cache alone when a read of the list of caches fails, instead of keeping the last list read."
+    "id": "membership-write-unconditional",
+    "package": "membership",
+    "run": "^TestConcurrentWritersNeverLoseAnUpdateOrGoBack$",
+    "purpose": "Write the membership without the condition on the object read, so a writer that lost the race writes over another's change and the generation goes back."
   },
   {
-    "id": "rank-keep-first-list",
-    "package": "rank",
-    "run": "^TestAHostReadsTheListAtOnceAndThenOnItsTimer$",
-    "purpose": "Keep the first list of caches read and ignore every later one."
+    "id": "membership-assign-without-release",
+    "package": "membership",
+    "run": "^TestADiskIsAssignedToASecondMemberOnlyOnceTheFirstLetItGo$",
+    "purpose": "Admit assigning a disk to another member while its member still holds it, before it is released and let go."
+  },
+  {
+    "id": "membership-serve-stale-generation",
+    "package": "peer",
+    "run": "^TestAHolderBehindReadsTheMembershipBeforeItAnswers$",
+    "purpose": "Answer a cache request under whatever generation the host holds: neither read a newer one first nor tell the sender it is stale."
+  },
+  {
+    "id": "membership-serve-stale-assignment",
+    "package": "peer",
+    "run": "^TestAMemberThatLostADiskNeverServesItAgain$",
+    "purpose": "Serve the disk a request names whether or not the membership at its generation has this host serve it."
+  },
+  {
+    "id": "membership-ignore-stale-answer",
+    "package": "checkpoint",
+    "run": "^(TestAReaderBehindItsHoldersReadsTheMembershipAndAsksAgain|TestAFillToHoldersAheadIsSentAgainUnderTheirGeneration)$",
+    "purpose": "Take a holder's answer that the sender is stale as a miss, instead of reading the membership and asking again."
   },
   {
     "id": "host-weight-from-share",
     "package": "host",
     "run": "^TestACachesWeightIsItsDiskNotItsShare$",
-    "purpose": "Weigh the host's cache by the disk limiter's moving share instead of the disk it is given."
+    "purpose": "Weigh the host's disk by the disk limiter's moving share instead of the disk it is given."
   },
   {
     "id": "host-refuse-start-while-the-disk-is-held",
@@ -327,13 +345,13 @@
     "id": "orchestrator-code-follows-the-hosts",
     "package": "cmd/sproutfs-orchestrator",
     "run": "^TestTheCodeNeverFollowsTheHosts$",
-    "purpose": "Take the code from the number of caches listed now, so a drain changes it and every stripe becomes a miss."
+    "purpose": "Take the code from the number of disks wanted now, so a drain changes it and every stripe becomes a miss."
   },
   {
-    "id": "orchestrator-drop-quiet-cache",
+    "id": "orchestrator-drop-quiet-member",
     "package": "cmd/sproutfs-orchestrator",
-    "run": "^TestAQuietHostStaysInTheListOfCaches$",
-    "purpose": "Drop the cache of a host pod that did not answer one survey from the list of caches."
+    "run": "^TestAQuietHostKeepsItsPlace$",
+    "purpose": "Forget the member of a host pod that did not answer one survey, so the membership drains it."
   },
   {
     "id": "stripe-mix-codes",

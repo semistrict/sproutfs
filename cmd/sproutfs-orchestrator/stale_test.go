@@ -12,13 +12,14 @@ import (
 )
 
 // TestACommandRightAfterAStartFindsTheVM: a read routed to the host running a
-// VM — a command, a console — answers from a survey up to a second old. Every
-// host reads the list of caches every ten seconds, and each of those reads
-// surveys the hosts and remembers the survey. One that ran while a start was
-// opening the VM saw no host running it, and was remembered after the start's
-// own survey had dropped the last one, so a command sent as the start returned
-// was told no host ran the VM. On GCE that ended a restored guest's walk
-// before its first request.
+// VM — a command, a console — answers from a survey up to a second old. A
+// console's listing of the hosts, and every step of the membership, surveys
+// the hosts and remembers the survey. One that ran while a start was opening
+// the VM saw no host running it, and was remembered after the start's own
+// survey had dropped the last one, so a command sent as the start returned was
+// told no host ran the VM. On GCE that ended a restored guest's walk before
+// its first request, when hosts read a list of caches the orchestrator served
+// from such a survey.
 func TestACommandRightAfterAStartFindsTheVM(t *testing.T) {
 	ctx := simulated(t)
 	d := newDeployment(t, map[string][]string{"host-0": {}, "host-1": {}})
@@ -29,8 +30,8 @@ func TestACommandRightAfterAStartFindsTheVM(t *testing.T) {
 	}
 	d.orchestrator.note(ctx, vmRecord{ID: "vm-a", State: stateStopped, Template: "workload"})
 	d.hosts["host-1"].onOpen = func() {
-		if _, err := d.orchestrator.Caches(ctx); err != nil {
-			t.Errorf("a host's read of the list of caches during the start: %v", err)
+		if _, err := d.orchestrator.Hosts(ctx); err != nil {
+			t.Errorf("a listing of the hosts during the start: %v", err)
 		}
 	}
 	if _, err := d.orchestrator.Start(ctx, "vm-a", orch.StartRequest{To: "host-1"}); err != nil {

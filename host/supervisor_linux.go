@@ -24,7 +24,6 @@ import (
 	"github.com/semistrict/sproutfs/internal/ctxsync"
 	"github.com/semistrict/sproutfs/peer"
 	"github.com/semistrict/sproutfs/platform"
-	"github.com/semistrict/sproutfs/rank"
 	"github.com/semistrict/sproutfs/resource"
 	"github.com/semistrict/sproutfs/vmmachine"
 	"github.com/semistrict/sproutfs/vmmemory"
@@ -68,8 +67,6 @@ const (
 	// diagnostic, and it is sent on a context of its own so that the VM whose
 	// handover just ran out of time is still reported as having done so.
 	drainReportTimeout = 5 * time.Second
-	// cacheListTimeout bounds one read of the list of caches.
-	cacheListTimeout = 5 * time.Second
 )
 
 // machine is one VM this host runs: the handle that owns its volumes and
@@ -86,8 +83,8 @@ type machine struct {
 type supervisor struct {
 	config SupervisorConfig
 	// orchestrator is asked, and only during a drain, where this host's VMs
-	// should go. lists reads the list of caches from it on a timer.
-	orchestrator, lists *orch.Client
+	// should go.
+	orchestrator *orch.Client
 
 	resources *resource.Budget
 	objects   *platform.MeteredObjectStore
@@ -148,10 +145,7 @@ func Start(ctx context.Context, config SupervisorConfig) (Service, error) {
 		// is never answered and never closed would hold one open past every
 		// deadline the drain gives it.
 		orchestrator: orch.NewClient(config.Orchestrator,
-			&http.Client{Timeout: drainVMTimeout}, config.APIToken),
-		// A read of the list of caches is small and comes round again every
-		// interval, so one that is not answered gives up well before the next.
-		lists: orch.NewClient(config.Orchestrator, &http.Client{Timeout: cacheListTimeout}, config.APIToken)}
+			&http.Client{Timeout: drainVMTimeout}, config.APIToken)}
 	started := false
 	defer func() {
 		if !started {
@@ -259,7 +253,7 @@ func Start(ctx context.Context, config SupervisorConfig) (Service, error) {
 			ClusterPercent: config.CacheClusterPercent},
 		HotTier:            checkpoint.HotTierConfig{Store: config.HotTier},
 		DiskLimiter:        s.disk,
-		CacheList:          CacheListConfig{Read: s.readCaches},
+		CacheVolume:        s.cacheFile,
 		CheckpointInterval: config.CheckpointInterval,
 		LossWindow:         config.LossWindow,
 		FlushBound:         config.FlushBound,
@@ -365,15 +359,6 @@ func (s *supervisor) Live(context.Context) error {
 	return nil
 }
 
-// readCaches reads the list of caches the orchestrator serves.
-func (s *supervisor) readCaches(ctx context.Context) (rank.List, error) {
-	caches, err := s.lists.Caches(ctx)
-	if err != nil {
-		return rank.List{}, err
-	}
-	return caches.List()
-}
-
 func address(ip string, port int) platform.Address {
 	return platform.Address(net.JoinHostPort(ip, strconv.Itoa(port)))
 }
@@ -428,7 +413,7 @@ func (s *supervisor) Status(ctx context.Context) (hostapi.Status, error) {
 		Store: apiStore(s.objects.Traffic(), s.objects.Latency()),
 		Disk:  diskReport(s.disk.Status()),
 	}
-	report.Cache, report.Caches = cacheReport(status.Self, status.Caches)
+	report.Member, report.Membership = memberReport(status.Member, status.Membership)
 	report.CacheMemory = hostapi.CacheMemory{Entries: status.Cache.Entries, Hits: status.Cache.Hits,
 		Misses: status.Cache.Misses, Coalesced: status.Cache.CoalescedLoads, Evictions: status.Cache.Evictions}
 	report.CacheDisk = cacheDiskReport(s.cacheFile, status.Cache.Disk)

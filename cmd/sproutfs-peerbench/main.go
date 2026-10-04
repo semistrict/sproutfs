@@ -29,6 +29,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/semistrict/sproutfs/membership"
 	"github.com/semistrict/sproutfs/peer"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/platform/adapters"
@@ -70,6 +71,19 @@ const (
 
 var cacheIdentity = rank.Identity{0x70, 0x65, 0x65, 0x72}
 
+// benchMembership is the membership the server and its client both hold: the
+// server, a member of its own, serving its one disk.
+var benchMembership = func() membership.Membership {
+	m, err := membership.New(1, rank.CodeFor(1),
+		[]membership.Member{{ID: cacheIdentity, Address: "server", State: membership.Active}},
+		[]membership.Disk{{ID: cacheIdentity, Volume: "peerbench-stripes", Weight: 1, Member: cacheIdentity,
+			State: membership.Serving, Assigned: 1}})
+	if err != nil {
+		panic(err)
+	}
+	return m
+}()
+
 func runServer(ctx context.Context, args []string) error {
 	flags := flag.NewFlagSet("server", flag.ContinueOnError)
 	listen := flags.String("listen", ":7500", "address to serve on")
@@ -85,7 +99,8 @@ func runServer(ctx context.Context, args []string) error {
 	}
 	pool := noisePages(16, pageBytes)
 	server, err := peer.NewServer(ctx, peer.ServerConfig{Network: adapters.NewNetwork(),
-		Address: platform.Address(*listen), PageSize: pageBytes, Cache: cache})
+		Address: platform.Address(*listen), PageSize: pageBytes, Cache: cache,
+		Membership: membership.NewFixed(benchMembership), Member: cacheIdentity})
 	if err != nil {
 		return err
 	}
@@ -158,7 +173,7 @@ func openCache(ctx context.Context, dir string) (*benchCache, error) {
 
 func (c *benchCache) Identity() rank.Identity { return cacheIdentity }
 
-func (c *benchCache) ReadStripes(_ context.Context, read peer.StripeRead) (peer.Stripes, error) {
+func (c *benchCache) ReadStripes(_ context.Context, _ membership.Membership, read peer.StripeRead) (peer.Stripes, error) {
 	if read.MaxBytes < stripeBytes || len(read.Pages) != 1 {
 		return peer.Stripes{}, fmt.Errorf("a read of %d bytes of %d pages", read.MaxBytes, len(read.Pages))
 	}
@@ -168,7 +183,9 @@ func (c *benchCache) ReadStripes(_ context.Context, read peer.StripeRead) (peer.
 		Size: stripeBytes}, nil
 }
 
-func (c *benchCache) Keep(context.Context, peer.Keep) error { return peer.ErrDropped }
+func (c *benchCache) Keep(context.Context, membership.Membership, peer.Keep) error {
+	return peer.ErrDropped
+}
 
 func (c *benchCache) Drop(context.Context, peer.Drop) error { return nil }
 
@@ -254,7 +271,8 @@ func (c tableClient) ask(ctx context.Context, region int, page uint64) (bool, er
 }
 
 func (c tableClient) readStripe(ctx context.Context, n uint64) error {
-	reply, err := c.source.ReadStripes(ctx, cacheIdentity, peer.StripeRead{
+	route, _ := benchMembership.Route(cacheIdentity)
+	reply, err := c.source.ReadStripes(ctx, route, peer.StripeRead{
 		Window: rank.Window{Volume: "ram0", Number: n / 512}, Pages: []uint32{uint32(n % 512)},
 		Code: rank.Code{K: 4, M: 2}, MaxBytes: 128 << 10})
 	if err != nil {

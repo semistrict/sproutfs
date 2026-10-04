@@ -184,8 +184,8 @@ hosts for all its pages, in one request each. A segment is its own window.
 
 ### Ranks
 
-Placement is computed, not recorded. Every host holds the list of caches in
-the cluster. For each window, weighted rendezvous hashing ranks every cache:
+Placement is computed, not recorded. Every host holds the caches of the
+cluster, which the membership below lists. For each window, weighted rendezvous hashing ranks every cache:
 each cache scores the window by `w / -ln(u)`, where `u` is a 64-bit hash of the
 cache's identity and the window, mapped into (0, 1), and `w` is the cache's
 weight. Ties go to the lower cache identity. The caches ranked 1 to k+m hold
@@ -215,8 +215,12 @@ the same persistent volume, keeps its identity and its windows.
 Which hosts are in the cluster is one object in the object store, the
 **membership**. It is not the cache's own: anything that routes between hosts
 reads it, and the disk cache is the first. It holds a **generation**, the
-deployment's code, and for each host its identity, its peer-server address,
-its weight and its state: joining, active or draining.
+deployment's code and the codes before it, for each host its identity, its
+peer-server address and its state (joining, active or draining), and for each
+cache disk its identity, its volume, its weight, the member it is assigned to,
+its state (attaching, serving, releasing or released) and the generation that
+assigned it. Windows are ranked over the disks, so a disk that moves to
+another member keeps its windows.
 
 It changes only by compare-and-set. A change reads the object, changes it, and
 writes it back conditional on the generation it read, raising the generation
@@ -241,10 +245,17 @@ the two sides do not both hold. A host also reads the object on a slow timer,
 to learn of a change while it is idle. An object store that is down leaves
 every host with the membership it holds.
 
-Decided on 2026-10-03. Step 4 first built a list of caches that the
-orchestrator assembled from its survey and served at `GET /caches`, which each
-host read every 10 s. It had no source of truth, and two hosts could hold
-different lists for that long. The membership replaces it.
+A disk moves between members in steps: released, which its member answers
+for no longer from that generation; let go, once its member has stopped;
+assigned to another, at a generation every reply of its new member names;
+and served, once that member has it attached. A member that lost a disk names
+an older assignment, which no sender that knows of the move accepts.
+
+Decided on 2026-10-03, and built in TASK-83 (docs/hosting.md, "The
+membership"). Step 4 first built a list of caches that the orchestrator
+assembled from its survey and served at `GET /caches`, which each host read
+every 10 s. It had no source of truth, and two hosts could hold different
+lists for that long. The membership replaced it.
 
 ### Shards on network disks
 

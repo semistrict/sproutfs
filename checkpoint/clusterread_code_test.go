@@ -32,7 +32,7 @@ func (c *fillCluster) changeCode(t *testing.T, after rank.Code) rank.List {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c.hold(changed)
+	c.hold(t, changed)
 	return changed
 }
 
@@ -229,7 +229,7 @@ func TestADroppedEarlierCodeIsAMiss(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		c.hold(dropped)
+		c.hold(t, dropped)
 		reader := c.hosts[1]
 		if gets := c.readEvery(t, reader, ref, m, []uint64{0}); gets != 3 {
 			t.Fatalf("%s made %d requests of the store, want the index, the segment and the page", reader.name, gets)

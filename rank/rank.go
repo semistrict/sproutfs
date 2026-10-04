@@ -1,18 +1,19 @@
-// Package rank says which hosts' disk caches hold a window's stripes.
+// Package rank says which cache disks hold a window's stripes.
 //
-// Every host holds the list of caches in the cluster and the deployment's
-// code, with the codes the deployment used before it. For each window,
-// weighted rendezvous hashing ranks every cache: each scores the window by
-// w / -ln(u), where u is a 64-bit hash of the cache's identity and the window
-// mapped into (0, 1) and w is the cache's weight. Ties go to the lower
-// identity. The caches ranked 1 to k+m hold the window's stripes, and a list
-// shorter than k+m takes them round its caches. The order does not depend on
-// the code, so a window stored under an earlier code lies on the first ranks
-// of that code's width.
+// Every host holds the membership (package membership), whose disks and codes
+// make a List: the deployment's code, with the codes it used before. For each
+// window, weighted rendezvous hashing ranks every disk: each scores the
+// window by w / -ln(u), where u is a 64-bit hash of the disk's identity and
+// the window mapped into (0, 1) and w is the disk's weight. Ties go to the
+// lower identity. The disks ranked 1 to k+m hold the window's stripes, and a
+// list shorter than k+m takes them round its disks. Ranks are over disks, not
+// hosts, so a disk that moves to another host keeps its windows. The order
+// does not depend on the code, so a window stored under an earlier code lies
+// on the first ranks of that code's width.
 //
-// Placement is computed, not recorded, so two hosts with the same list rank
-// every window alike. The ranking uses integer arithmetic only, so hosts of
-// different architectures agree too.
+// Placement is computed, not recorded, so two hosts that hold one generation
+// of the membership rank every window alike. The ranking uses integer
+// arithmetic only, so hosts of different architectures agree too.
 package rank
 
 import (
@@ -54,7 +55,8 @@ func ParseIdentity(text string) (Identity, error) {
 	return identity, nil
 }
 
-// Cache is one host's disk cache as the list names it.
+// Cache is one cache disk as a list ranks it, at the address of the host
+// that serves it, or at none while no host does.
 type Cache struct {
 	Identity Identity
 	// Weight is how many windows the cache holds against the others: twice
@@ -63,7 +65,7 @@ type Cache struct {
 	// disk limiter moves all the time, because every change of a weight
 	// moves windows.
 	Weight uint32
-	// Address is where the cache's host serves pages.
+	// Address is where the host that serves the disk answers.
 	Address platform.Address
 }
 
@@ -147,7 +149,7 @@ func CodeFor(hosts int) Code {
 	}
 }
 
-// List is the list of caches in the cluster, the deployment's code and the
+// List is the disks windows are ranked over, the deployment's code and the
 // codes it used before. It is a value: a host replaces its list, it never
 // changes one.
 type List struct {
@@ -165,7 +167,8 @@ type List struct {
 // NewList is the list of caches under code, which the deployment used the
 // earlier codes before, newest first. Every cache needs an identity and a
 // weight, and no two may share an identity. Each earlier code is named once,
-// never the code itself, and there are at most MaxEarlierCodes of them.
+// never the code itself, and there are at most MaxEarlierCodes of them. The
+// membership makes one of its disks.
 func NewList(code Code, caches []Cache, earlier ...Code) (List, error) {
 	if err := code.Validate(); err != nil {
 		return List{}, err

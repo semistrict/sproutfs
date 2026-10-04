@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/semistrict/sproutfs/internal/blob"
+	"github.com/semistrict/sproutfs/membership"
 	"github.com/semistrict/sproutfs/platform"
+	"github.com/semistrict/sproutfs/rank"
 )
 
 // defaultInFlight is how many requests one connection may carry at once. A
@@ -49,6 +51,13 @@ type ServerConfig struct {
 	// Cache is this host's disk cache, which answers the cache's requests. Nil
 	// is a host that keeps none: every cache request is answered not me.
 	Cache Cache
+	// Membership is this host's copy of the membership, and Member its
+	// identity in it. A cache request is answered only under the generation
+	// it names, which a host behind reads first, and only for the disk this
+	// host keeps while that generation has it serve the disk. Nil answers
+	// every cache request not me.
+	Membership membership.Source
+	Member     rank.Identity
 	// StripeBytesPerSecond is this host's serving bandwidth for stripes: the
 	// bytes of stripe replies it sends all its peers each second, with a burst
 	// of a tenth of a second of it. A read that finds it spent is answered
@@ -99,6 +108,11 @@ type Server struct {
 	budgets  serverBudgets
 	// serving is the bandwidth stripe replies may take.
 	serving *servingBudget
+	// assigned is the generation that assigned this host the disk it keeps,
+	// as the last membership that had it serve the disk said: what every
+	// answer for the disk names. A host that lost the disk names it still,
+	// which no sender that knows of the loss accepts.
+	assigned atomic.Uint64
 
 	requests, servedPages, absentPages, refused, listings, incompatible atomic.Int64
 	stripeReads, stripes, stripeBytes, stripesBusy                      atomic.Int64

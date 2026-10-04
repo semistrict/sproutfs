@@ -31,9 +31,10 @@ func TestOnTwoHostsAVMOpenedOnTheOtherHostReadsItsPagesFromThatHostsDisk(t *test
 		world := simtest.MustStart(t, ctx, simtest.Config{Runtime: runtime, Topology: topology,
 			Knobs: campaignKnobs(t, runtime, topology), Prefix: newPrefix(t, "pair/"), Log: t.Logf,
 			ClusterCache: true})
-		if caches := world.Host(1).Caches(); caches.Len() != 2 || caches.Code().String() != "1+1" {
-			t.Fatalf("host-1 holds a list of %d caches under %s, want both hosts under 1+1", caches.Len(),
-				caches.Code())
+		if held := world.Host(1).Membership(); held.List().Len() != 2 || held.Code().String() != "1+1" ||
+			len(held.Members()) != 2 {
+			t.Fatalf("host-1 holds a membership of %d disks under %s, want both hosts under 1+1",
+				held.List().Len(), held.Code())
 		}
 		if err := world.StoreAll("vm-0", 9); err != nil {
 			t.Fatal(err)

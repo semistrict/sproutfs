@@ -274,7 +274,8 @@ probes the peer back, first after about a second and then up to every ten.
 **Marked down**: A host a reader of the cluster's disk cache does not ask for
 stripes and sends no fills, after three of its stripe requests to it in a row
 timed out or one connection to it was refused. Each reader keeps its own
-marks, of at most a fifth of its list and at least one host. It probes a
+marks, of at most a fifth of the disks of its membership and at least one
+host. It probes a
 marked host after ten seconds, then up to every sixty, and only a probe that
 answers clears the mark. A miss is not a failure of the host.
 
@@ -293,24 +294,48 @@ checkpoint published. It is what the cluster's disk cache places. At a 2 MiB
 page it is one envelope, and at a 4 KiB page up to 512. A segment of a page
 table is a window of its own.
 
-**List of caches**: Every host's page cache disk that the orchestrator found,
-the deployment's code, and the earlier codes. A cache is named by its identity, a random value in
-its file's header that a restart over the same file keeps. It has a weight,
-from the size of the disk it is given, and its host's peer-server address. The
-orchestrator serves the list at `GET /caches`. Each host reads it on a timer
-and keeps the last list it read. A host that has read none holds its own cache
-alone. See [hosting](hosting.md#the-list-of-caches).
+**Membership**: Which hosts are in the cluster and which cache disk each
+serves: one object in the object store, at `membership`. It holds a
+generation, the deployment's code, every member and every disk. Anything that
+routes requests between hosts reads it, and the cluster's disk cache places
+windows by it. It changes only by compare-and-set: a change reads the object
+and writes the next generation conditional on the object it read. Any process
+may change it, and usually the orchestrator does, one step at a time. Every
+process holds a copy and never an authority. See
+[hosting](hosting.md#the-membership).
 
-**Rank**: A cache's place in one window's order. Each cache scores the window
-by its weight over -ln(u), where u is a hash of the cache's identity and the
+**Generation**: The count of the membership's changes. Every write raises it
+by one. Every request that routes by the membership names the generation its
+sender holds. A host behind it reads the membership first, and a host ahead
+of it answers that the sender is stale, so two hosts never exchange a stripe
+under different memberships.
+
+**Member**: A host in the membership: its identity, which is the identity in
+its cache file's header, so a pod replaced on the same node keeps it; the
+address its peer server answers at; and its state, joining, active or
+draining. A host drains before it leaves.
+
+**Disk**: A cache disk in the membership: the identity in its file's header,
+its volume, its weight from the size of the disk it is given, the member it is
+assigned to, its state (attaching, serving, releasing or released), and the
+generation that assigned it. Windows are ranked over disks, so a disk that
+moves to another member keeps its windows. A disk is released before it is
+assigned again, and every answer its member sends names the generation that
+assigned it, so a member that lost a disk is never taken for its server
+again.
+
+**Rank**: A disk's place in one window's order. Each disk scores the window
+by its weight over -ln(u), where u is a hash of the disk's identity and the
 window. The highest score ranks first, and equal scores go to the lower
-identity. The caches ranked 1 to k+m hold the window's stripes. Two hosts with
-the same list rank every window alike.
+identity. The disks ranked 1 to k+m hold the window's stripes. Two hosts that
+hold one generation of the membership rank every window alike.
 
 **Code**: The deployment's erasure code: k data stripes and m parity stripes
 of each envelope, any k of which rebuild it. A code with k = 1 is whole copies.
-It is a deployment setting, 4+2 when unset, and never follows the number of
-hosts. A host alone in its list uses 1+0, so it holds each envelope whole. See
+It is in the membership: a deployment setting, 4+2 when unset, that never
+follows the number of hosts, with the codes the deployment used before it. A
+host that has read no membership holds its own disk alone under 1+0, so it
+holds each envelope whole. See
 [hosting](hosting.md#the-code).
 
 **Earlier code**: A code the deployment used before its code, which the list
@@ -321,14 +346,14 @@ deployment's code. Nothing else is stored under an earlier code. See
 
 **Stripe**: One of the k+m pieces an envelope is split into under a code. It
 names its index, its code and its envelope's length. Stripe i of a window's
-envelopes goes on rank ((i − 1) mod n) + 1 of its n ranked caches, so a cache
+envelopes goes on rank ((i − 1) mod n) + 1 of its n ranked disks, so a disk
 may hold several indices of a window. An envelope is rebuilt from stripes of
-one code. A stripe of a code the list does not name is a miss.
+one code. A stripe of a code the membership does not name is a miss.
 
-**Fill**: Putting the stripes of a window on the caches the list ranks for it,
-under the list's code. Inside the share the cluster cache is on for, three
-things fill: a read of the store, or of the cluster under an earlier code,
-once its callers have their pages; a publication, for each part once
+**Fill**: Putting the stripes of a window on the disks the membership ranks
+for it, under the membership's code. Inside the share the cluster cache is on
+for, three things fill: a read of the store, or of the cluster under an
+earlier code, once its callers have their pages; a publication, for each part once
 its PUT has succeeded, in part order, and for its segments once the index
 object's has; and a
 pull, for what it copies. A host does its fills one at a time, in the order
@@ -339,18 +364,21 @@ budget without room is dropped, and the window is read from the store next
 time. Nothing waits on a fill. See [hosting](hosting.md#filling-the-cluster).
 
 **Keep**: The peer-server request that fills a cache: the stripes of one window
-the cache holds, each as its disk stores it, with its own checksum. A cache
-takes a keep only for a window its own list ranks it for, under its list's
-code. It drops every stripe it holds or is writing already.
+the disk holds, each as the disk stores it, with its own checksum, under the
+sender's generation. A cache takes a keep only under that generation, for a
+window it ranks the cache's disk for, under its code. It drops every stripe it
+holds or is writing already.
 
 **Read from the cluster**: A read of a page inside the share that misses in
 memory. It takes this host's own stripes of the window, then asks k+1 of the
 window's ranks, chosen by a hash of the reader and the window, for every
 stripe they hold of it, and rebuilds the page from any k distinct indices. A
-rank that answers with nothing is replaced at once. What the list's code does
-not rebuild is read the same way under each earlier code. The store is read
-only for a page fewer than k stripes of which exist under every code, or past
-the read's bound within a token bucket.
+rank that answers with nothing is replaced at once. What the membership's
+code does not rebuild is read the same way under each earlier code. The store
+is read only for a page fewer than k stripes of which exist under every code,
+or past the read's bound within a token bucket. A holder ahead of the read's
+generation answers that it is stale, and the read reads the membership and
+asks again.
 
 **Second request**: Asking the rest of a window's ranks once k stripes have
 not arrived after a delay, about the 95th percentile of the reader's recent
@@ -359,7 +387,7 @@ so when every holder is slow the reader waits rather than doubling their load.
 
 **Repair**: A stripe a reader sends a rank that holds fewer of a window's
 stripes than the code puts on it: an index no rank holds, of a page it
-rebuilt under the list's code having heard from every rank. It is a keep of
+rebuilt under the membership's code having heard from every rank. It is a keep of
 the lowest priority, dropped rather than queued.
 
 **Fill right**: The right to fill a window from a read of the store. The

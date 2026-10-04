@@ -6,6 +6,7 @@ import (
 	"testing"
 	"testing/synctest"
 
+	"github.com/semistrict/sproutfs/membership"
 	"github.com/semistrict/sproutfs/peer"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/platform/sim"
@@ -21,6 +22,9 @@ type keepFixture struct {
 	cache   *Cache
 	clock   *sim.Clock
 	list    rank.List
+	// m is the membership of the list, which the cache follows and its
+	// peers' requests are answered under.
+	m membership.Membership
 }
 
 // newKeepFixture is a cache whose cluster cache is on for percent of windows,
@@ -46,7 +50,8 @@ func newKeepFixture(t *testing.T, percent int, disk sim.DiskConfig,
 	}
 	t.Cleanup(f.cache.Close)
 	f.list = caches(f.cache.Identity())
-	f.cache.FollowCaches(func() rank.List { return f.list })
+	f.m = servingOf(f.list)
+	f.cache.FollowMembership(membership.NewFixed(f.m), f.cache.Identity())
 	return f
 }
 
@@ -119,7 +124,7 @@ func TestACacheKeepsWhatItsListRanksItFor(t *testing.T) {
 				mine = append(mine, index)
 			}
 		}
-		if err := f.cache.Keep(t.Context(), keepOf(t, key, code, mine)); err != nil {
+		if err := f.cache.Keep(t.Context(), f.m, keepOf(t, key, code, mine)); err != nil {
 			t.Fatal(err)
 		}
 		if got := f.held(key, code); !slices.Equal(got, mine) || len(mine) != 2 {
@@ -161,7 +166,7 @@ func TestACacheRefusesAKeepItsListDoesNotRankItFor(t *testing.T) {
 			{"a misnamed item", misnamed},
 		} {
 			before := f.cache.Stats().Fill.Refused
-			if err := f.cache.Keep(t.Context(), refused.keep); !errors.Is(err, peer.ErrDropped) {
+			if err := f.cache.Keep(t.Context(), f.m, refused.keep); !errors.Is(err, peer.ErrDropped) {
 				t.Fatalf("a keep of %s = %v, want it dropped", refused.name, err)
 			}
 			if got := f.cache.Stats().Fill.Refused - before; got != uint64(len(refused.keep.Items)) {

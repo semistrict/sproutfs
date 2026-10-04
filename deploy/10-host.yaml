@@ -162,7 +162,7 @@ spec:
             - name: SPROUTFS_CACHE_WRITE_BYTES_PER_DAY
               value: "1099511627776"
             # The cluster cache is off: every window is kept whole on the
-            # host that reads it, whatever the list of caches says, until
+            # host that reads it, whatever the membership says, until
             # hosts read stripes from each other.
             - name: SPROUTFS_CACHE_CLUSTER_PERCENT
               value: "0"

@@ -13,6 +13,7 @@ import (
 
 	"github.com/semistrict/sproutfs/checkpoint"
 	"github.com/semistrict/sproutfs/control"
+	"github.com/semistrict/sproutfs/membership"
 	"github.com/semistrict/sproutfs/peer"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/platform/sim"
@@ -134,7 +135,7 @@ func TestAPageSurvivesLosingDrainingOrRestartingAnyOneHost(t *testing.T) {
 	events := []event{
 		{"lost", func(t *testing.T, c *fillCluster, host int) { c.hosts[host].shut() }, false},
 		{"drained", func(t *testing.T, c *fillCluster, host int) {
-			c.hold(c.list.Load().Without(c.hosts[host].cache.Identity()))
+			c.hold(t, c.list.Load().Without(c.hosts[host].cache.Identity()))
 		}, true},
 		{"restarted", func(t *testing.T, c *fillCluster, host int) { c.restart(t, host) }, true},
 	}
@@ -226,13 +227,13 @@ type countingCache struct {
 	reads map[rank.Window]int
 }
 
-func (c *countingCache) ReadStripes(ctx context.Context, read peer.StripeRead) (peer.Stripes, error) {
+func (c *countingCache) ReadStripes(ctx context.Context, m membership.Membership, read peer.StripeRead) (peer.Stripes, error) {
 	if read.MaxBytes > 0 {
 		c.mu.Lock()
 		c.reads[read.Window]++
 		c.mu.Unlock()
 	}
-	return c.Cache.ReadStripes(ctx, read)
+	return c.Cache.ReadStripes(ctx, m, read)
 }
 
 func (c *countingCache) asked(window rank.Window) int {
@@ -778,7 +779,7 @@ func TestRepairAfterAJoinSendsTheIndexNoRankHolds(t *testing.T) {
 		c := newFillCluster(t, fillConfig{hosts: 7, code: code, share: 100,
 			cache: func(_ int, cache *checkpoint.CacheConfig) { cache.ClusterHedgeFloor = time.Second }})
 		joining := c.hosts[6]
-		c.hold(c.list.Load().Without(joining.cache.Identity()))
+		c.hold(t, c.list.Load().Without(joining.cache.Identity()))
 		var pages []uint64
 		for page := range uint64(16) {
 			pages = append(pages, page)
@@ -792,7 +793,7 @@ func TestRepairAfterAJoinSendsTheIndexNoRankHolds(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		c.hold(joined)
+		c.hold(t, joined)
 		reader := c.hosts[0]
 		// A page whose window the new cache ranks for, among the reader's
 		// first picks, and whose index the list puts on it another rank holds.
@@ -846,7 +847,7 @@ func TestAReaderRebuildsFromAnyIndicesAfterTheRanksShift(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		c := newFillCluster(t, fillConfig{hosts: 7, code: rank.Code{K: 4, M: 2}, share: 100})
 		joining := c.hosts[6]
-		c.hold(c.list.Load().Without(joining.cache.Identity()))
+		c.hold(t, c.list.Load().Without(joining.cache.Identity()))
 		var pages []uint64
 		for page := range uint64(12) {
 			pages = append(pages, page)
@@ -871,7 +872,7 @@ func TestAReaderRebuildsFromAnyIndicesAfterTheRanksShift(t *testing.T) {
 		if shifted == 0 {
 			t.Fatal("the join shifted the ranks of no window")
 		}
-		c.hold(joined)
+		c.hold(t, joined)
 		for _, h := range c.hosts[:6] {
 			if gets := c.readEvery(t, h, ref, m, pages); gets != int64(len(pages)) {
 				t.Fatalf("%s made %d requests of the store for %d pages after %d windows' ranks shifted, want only the opens",

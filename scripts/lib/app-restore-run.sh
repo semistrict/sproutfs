@@ -108,7 +108,8 @@ address_of() {
 }
 
 # wait_hosts returns once every host pod is ready, the orchestrator sees them
-# all, and each holds the full list of caches under the code.
+# all, and each holds the same membership: every node serving its disk under
+# the code.
 wait_hosts() {
     local want=$1 deadline=$(($(date +%s) + 900)) ready at listed
     kubectl rollout status -n "$namespace" deployment/sproutfs-host --timeout=900s > /dev/null
@@ -122,8 +123,9 @@ wait_hosts() {
                 if host_api "${addresses[$at]}" /status 2> /dev/null | python3 -c '
 import json, sys
 status = json.load(sys.stdin)
-caches = status["caches"]
-sys.exit(0 if len(caches["caches"]) == int(sys.argv[1]) and caches["k"] + caches["m"] > 1 else 1)' "$want"; then
+held = status["membership"]
+mine = (status.get("member") or {}).get("disks") or [{}]
+sys.exit(0 if held["disks"] == int(sys.argv[1]) and held["k"] + held["m"] > 1 and mine[0].get("state") == "serving" else 1)' "$want"; then
                     listed=$((listed + 1))
                 fi
             done
