@@ -76,6 +76,9 @@ type Host struct {
 	prefetching     int
 	prefetchRunning int
 	prefetchNumber  uint64
+	// readNumber is every faulting page's read ever begun on a task of its
+	// own (faultfirst.go), which names the task. Guarded by mu.
+	readNumber uint64
 	// memory regions is every attached memory region, which is what the dirty budget's
 	// pressure is measured and acted on across: the budget is the host's, so
 	// the checkpoint that relieves it need not be the waiting memory region's.

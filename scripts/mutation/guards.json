@@ -144,6 +144,12 @@
     "purpose": "Prefetch the rest of every fault's run, whether or not the fault follows a recent fault of its memory region. A chain of faults at random then prefetches on every hop."
   },
   {
+    "id": "pager-plan-the-window-first",
+    "package": "vmmemory",
+    "run": "^TestADependentChainOf4KiBFaultsPaysOnePageReadAHop$",
+    "purpose": "Plan a fault's whole window before its own page's read starts, as every fault did. Each hop of a chain of 4 KiB faults then pays the window's planning on top of its read."
+  },
+  {
     "id": "checkpoint-decode-every-lookup",
     "package": "checkpoint",
     "run": "^TestASegmentIsDecodedOncePerCheckpointWhileCached$",

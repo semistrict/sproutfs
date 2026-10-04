@@ -348,15 +348,15 @@ func (r *MemoryRegion) readIn(ctx context.Context, index uint64) (*resident, err
 // shared and mapped; or that the faulting page lost a publication race and the
 // store must try again, holding nothing.
 func (r *MemoryRegion) readInWindow(ctx context.Context, index uint64) (pg *resident, retry bool, err error) {
-	start, end := r.window(index)
 	// The plan names no faulting page: nothing here resolves the guest's access
 	// or maps the page it trapped on, which the store does for itself once it
 	// holds its copy.
-	plan, err := r.plan(ctx, start, end, end)
+	plan, err := r.planFault(ctx, index, r.end(index))
 	if err != nil {
 		return nil, false, err
 	}
 	defer plan.unlock()
+	start := plan.start
 	// The faulting page is the store's, so the plan leaves it bound to nothing
 	// and maps nothing for it; every other page of the window is this memory region's
 	// to hold and to map.
@@ -369,13 +369,7 @@ func (r *MemoryRegion) readInWindow(ctx context.Context, index uint64) (pg *resi
 		// it has landed. The plan holds nothing yet.
 		return nil, true, r.awaitPrefetch(ctx, pf)
 	}
-	if err := plan.takeFaulting(ctx, index); err != nil {
-		return nil, false, err
-	}
-	if err := plan.takeRest(ctx, index, false); err != nil {
-		return nil, false, err
-	}
-	if err := plan.loadFaulting(ctx, index); err != nil {
+	if err := plan.read(ctx, index, false); err != nil {
 		return nil, false, err
 	}
 	if pg = plan.pages[index-start]; pg == nil {
@@ -553,13 +547,18 @@ func (r *MemoryRegion) storeFresh(ctx context.Context, index uint64, spill *int)
 	if untouched {
 		// Whether an untouched page is a hole is volume metadata, which the
 		// window's extents answer for its neighbours too; no bytes are read.
+		// The page is asked first, alone: a store into a page that is no hole
+		// is a read fault first, which plans its own page first too.
 		start, end := r.window(index)
 		var err error
-		if plan, err = r.plan(ctx, start, end, index); err != nil {
+		if plan, err = r.planPage(ctx, start, end, index, index); err != nil {
 			return false, err
 		}
 		if id, ok := plan.identity(index); !ok || !id.zero() {
 			return false, nil
+		}
+		if err := plan.locateWindow(ctx); err != nil {
+			return false, err
 		}
 	}
 	first, last := r.zeroRun(index, plan)
@@ -839,8 +838,7 @@ func (r *MemoryRegion) loadOnce(ctx context.Context, index uint64, spill *int) (
 		}
 		return true, nil
 	}
-	start, end := r.window(index)
-	plan, err := r.plan(ctx, start, end, index)
+	plan, err := r.planFault(ctx, index, index)
 	if err != nil {
 		return false, err
 	}
@@ -859,83 +857,63 @@ func (r *MemoryRegion) loadOnce(ctx context.Context, index uint64, spill *int) (
 		return false, errUnpublishedReservation
 	}
 	plan.spill = spill
-	if err := plan.takeFaulting(ctx, index); err != nil {
-		return false, err
-	}
-	if err := plan.takeRest(ctx, index, true); err != nil {
-		return false, err
-	}
-	if err := plan.loadFaulting(ctx, index); err != nil {
+	if err := plan.read(ctx, index, true); err != nil {
 		return false, err
 	}
 	return plan.install(ctx)
 }
 
-// loadFaulting reads the faulting page, and hands the rest of its window to a
-// prefetch, which reads it beside this read and behind the fault: the fault
-// installs its page and wakes the guest without waiting for the run. See
-// prefetch.go.
-func (p *windowPlan) loadFaulting(ctx context.Context, index uint64) error {
-	if pf := p.splitPrefetch(ctx, index); pf != nil {
-		pf.begin()
-		if sim.Bug(ctx, "pager-fault-waits-for-its-prefetch") {
-			// The bug reads the page only once the rest of its run is in.
-			if err := p.memoryRegion.withoutMemoryRegion(ctx, func() error {
-				select {
-				case <-pf.done:
-					return nil
-				case <-ctx.Done():
-					return context.Cause(ctx)
-				}
-			}); err != nil {
-				return err
-			}
-		}
+// end is the window end that names no faulting page: a plan for it resolves
+// nothing.
+func (r *MemoryRegion) end(index uint64) uint64 {
+	_, end := r.window(index)
+	return end
+}
+
+// planFault plans the window of the page index for the faulting page fault, or
+// the window's end for none. A post-copy stream's fault, which reads its whole
+// run with its page, locates the whole window at once; every other locates its
+// page alone and the rest of the window once that page's read is under way
+// (readFirst).
+func (r *MemoryRegion) planFault(ctx context.Context, index, fault uint64) (*windowPlan, error) {
+	start, end := r.window(index)
+	if runFirst(ctx) {
+		return r.plan(ctx, start, end, fault)
+	}
+	return r.planPage(ctx, start, end, fault, index)
+}
+
+// runFirst reports a fault that reads its whole run before its page is
+// installed: a post-copy stream's, and every fault under the in-tree bug that
+// puts the run back in front of the faulting page.
+func runFirst(ctx context.Context) bool {
+	return streaming(ctx) || sim.Bug(ctx, "pager-read-the-run-first")
+}
+
+// read brings the faulting page of a plan planFault made in: its whole run in
+// one read for a fault that reads its run first, and its page first, the rest
+// of its window planned behind the read, for every other. own says whether a
+// run read first reads the pages whose bytes go in this memory region's own
+// file too.
+func (p *windowPlan) read(ctx context.Context, index uint64, own bool) error {
+	if !p.located {
+		return p.readFirst(ctx, index)
+	}
+	if err := p.takeFaulting(ctx, index, restPrefetched); err != nil {
+		return err
+	}
+	if err := p.takeRun(ctx, index, own); err != nil {
+		return err
 	}
 	return p.loadReserved(ctx)
 }
 
-// takeFaulting takes the faulting page into the plan before any other: bound
-// to its resident identity if one exists, otherwise given a slot among the run
-// of pages around it so the run lands in consecutive slots, and as a last
-// resort one an eviction frees. Waiting here is safe because the plan holds no
-// other resident lock yet. A page whose bytes go in this memory region's own
-// file has a place of its own there, and only it may evict for it.
-func (p *windowPlan) takeFaulting(ctx context.Context, index uint64) error {
-	r := p.memoryRegion
-	if err := p.bindShared(ctx, index, true); err != nil {
-		return err
-	}
-	i := index - p.start
-	if p.pages[i] != nil || p.zeros[i] {
-		return nil
-	}
-	if p.own(index) {
-		at, err := r.reclaimOwn(ctx, index, !p.unpublished(index))
-		if err != nil {
-			return err
-		}
-		p.reserve(index, at)
-		return nil
-	}
-	p.reserveAround(index)
-	if p.reserved[i].slot >= 0 {
-		return nil
-	}
-	at, err := r.reclaim(ctx, p.file)
-	if err != nil {
-		return err
-	}
-	p.reserve(index, at)
-	return nil
-}
-
-// takeRest takes the rest of the window into the plan once the faulting page
-// is in it: every page whose identity is resident, bound to that page, and
-// free slots, never an eviction, for the pages that need reading, the pages
-// after the faulting one first. own says whether the pages whose bytes go in
-// this memory region's own file are reserved there too.
-func (p *windowPlan) takeRest(ctx context.Context, index uint64, own bool) error {
+// takeRun takes the rest of a run read first into the plan once the faulting
+// page is in it: every page whose identity is resident, bound to that page,
+// and free slots, never an eviction, for the pages that need reading, the
+// pages after the faulting one first. own says whether the pages whose bytes
+// go in this memory region's own file are reserved there too.
+func (p *windowPlan) takeRun(ctx context.Context, index uint64, own bool) error {
 	for page := p.start; page < p.end; page++ {
 		i := page - p.start
 		if p.pages[i] != nil || p.zeros[i] || p.reserved[i].slot >= 0 || !p.eligible(page) {
@@ -945,7 +923,7 @@ func (p *windowPlan) takeRest(ctx context.Context, index uint64, own bool) error
 			return err
 		}
 	}
-	if err := p.reserveRuns(ctx, index); err != nil {
+	if err := p.reserveRuns(ctx, index, p.needsLoad); err != nil {
 		return err
 	}
 	if own {

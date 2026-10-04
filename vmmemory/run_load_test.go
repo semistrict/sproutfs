@@ -210,10 +210,15 @@ func (b *publishedBacking) reset() {
 	b.loads = nil
 }
 
+// recorded is every load in the order of its first page. A fault's read of its
+// own page and its prefetch's read of the rest run side by side, so the order
+// they reached the backing in is the Go scheduler's.
 func (b *publishedBacking) recorded() [][2]uint64 {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return slices.Clone(b.loads)
+	loads := slices.Clone(b.loads)
+	slices.SortFunc(loads, func(x, y [2]uint64) int { return int(x[0]) - int(y[0]) })
+	return loads
 }
 
 // newRunPager is the pager these measure a window against: a 4 KiB page, a
