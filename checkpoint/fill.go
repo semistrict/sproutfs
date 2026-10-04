@@ -22,8 +22,9 @@ import (
 // three things bring a window to the cluster: a read of the store, a
 // publication and a pull. Each hands the envelopes it has in hand to the
 // cache's filler, which splits them under the membership's code and puts each
-// stripe on the disk the membership ranks for it: this host's own stripes on
-// its own disk, and every other as a keep to the member that serves its disk.
+// stripe on the disk the membership ranks for it: a stripe of a disk this host
+// keeps on that disk, and every other as a keep to the member that serves its
+// disk.
 // Every keep, fill right and drop names the generation it was placed under; a
 // holder ahead of it answers stale, and the filler reads the membership and
 // sends it again under the newer generation.
@@ -226,9 +227,9 @@ type keyedStripe struct {
 // that drains it, the rate of its keeps, and the fill rights it gives out as
 // rank 1.
 type filler struct {
-	disk  *cacheDisk
-	peers *peer.Table
-	clock platform.Clock
+	cluster *cluster
+	peers   *peer.Table
+	clock   platform.Clock
 	// ctx is the fills' life, which carries what the cache was made under;
 	// Close ends it.
 	ctx    context.Context
@@ -259,15 +260,21 @@ type filler struct {
 	// and replaced each time it falls to zero.
 	busy int
 	idle chan struct{}
-	// writing is the stripes the queue holds for a keep, which a stripe of
-	// another fill or keep is a duplicate of.
-	writing map[stripeKey]bool
+	// writing is the stripes the queue holds for a keep, by the disk they
+	// go on, which a stripe of another fill or keep is a duplicate of.
+	writing map[writingKey]bool
 	// granted is when each window's right was last given out, and grants the
 	// windows in the order they were, which is the order they lapse in.
 	granted map[rank.Window]time.Time
 	grants  []grant
 	stats   FillStats
 	closed  bool
+}
+
+// writingKey is one stripe the queue holds for the disk it goes on.
+type writingKey struct {
+	disk rank.Identity
+	stripeKey
 }
 
 // grant is one fill right given out.
@@ -284,14 +291,14 @@ type fillSettings struct {
 	rightInterval              time.Duration
 }
 
-// newFiller starts a disk's fills under ctx.
-func newFiller(ctx context.Context, disk *cacheDisk, settings fillSettings) *filler {
+// newFiller starts a cache's fills under ctx.
+func newFiller(ctx context.Context, shared *cluster, settings fillSettings) *filler {
 	ctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	clock := platform.ClockOr(settings.clock)
-	f := &filler{disk: disk, peers: settings.peers, clock: clock, ctx: ctx, cancel: cancel,
+	f := &filler{cluster: shared, peers: settings.peers, clock: clock, ctx: ctx, cancel: cancel,
 		queueBytes: settings.queueBytes, rightInterval: settings.rightInterval,
 		rate: newTokenBucket(clock, settings.bytesPerSecond), fills: newLane(), writes: newLane(),
-		idle: make(chan struct{}), writing: make(map[stripeKey]bool), granted: make(map[rank.Window]time.Time)}
+		idle: make(chan struct{}), writing: make(map[writingKey]bool), granted: make(map[rank.Window]time.Time)}
 	f.group.Go(func() { f.fills.run(ctx) })
 	f.group.Go(func() { f.writes.run(ctx) })
 	return f
@@ -520,7 +527,7 @@ type windowFill struct {
 }
 
 // windows groups envelopes by the window they are in, in the order they come,
-// keeping only the windows inside the share that the disk places by its
+// keeping only the windows inside the share that the cache places by its
 // membership.
 func (f *filler) windows(envelopes []envelope) []*windowFill {
 	var fills []*windowFill
@@ -529,7 +536,7 @@ func (f *filler) windows(envelopes []envelope) []*windowFill {
 		window := e.key.rankWindow()
 		fill := at[window]
 		if fill == nil {
-			m, ok := f.disk.placedBy(e.key, false)
+			m, ok := f.cluster.placedBy(e.key, false)
 			if !ok {
 				continue
 			}
@@ -543,11 +550,11 @@ func (f *filler) windows(envelopes []envelope) []*windowFill {
 	return fills
 }
 
-// inShare reports whether the disk places key's window by its membership:
+// inShare reports whether the cache places key's window by its membership:
 // inside the share, on a host that follows a membership. Such a window is the
-// fills', and nothing writes it to the disk but them.
+// fills', and nothing writes it to a disk but them.
 func (f *filler) inShare(key diskKey) bool {
-	_, ok := f.disk.placedBy(key, false)
+	_, ok := f.cluster.placedBy(key, false)
 	return ok
 }
 
@@ -619,7 +626,7 @@ func (fill *windowFill) pages() []uint32 {
 }
 
 // right asks the disk ranked first for fill's window for its fill right: of
-// this host's own disk, or of the member that serves it by a read of the
+// a disk this host keeps, or of the member that serves it by a read of the
 // window's stripes that wants no bytes, under the fill's generation. A rank 1
 // ahead of it answers stale, and the right is asked again of rank 1 under the
 // newer generation. A disk that cannot be asked gives none.
@@ -631,8 +638,9 @@ func (f *filler) right(ctx context.Context, fill *windowFill) bool {
 			return false
 		}
 		first := ranks[0]
-		if first.Identity == f.disk.identity {
-			granted = f.disk.owns(fill.m) && f.grant(ctx, fill.m, fill.window, fill.pages(), fill.m.Code())
+		if disk, release, kept := f.cluster.hold(first.Identity); kept {
+			granted = disk.owns(fill.m) && f.grant(ctx, disk, fill.m, fill.window, fill.pages(), fill.m.Code())
+			release()
 			break
 		}
 		if f.peers == nil {
@@ -667,17 +675,17 @@ func (f *filler) right(ctx context.Context, fill *windowFill) bool {
 	return granted
 }
 
-// grant decides a fill right as the disk ranked first for window under m: given
+// grant decides a fill right as disk, ranked first for window under m: given
 // to the first reader that asks for it under m's code, while the disk holds
 // nothing of the pages asked for, once per window per interval. Pages nil
 // asks for every page of the window.
-func (f *filler) grant(ctx context.Context, m membership.Membership, window rank.Window, pages []uint32,
-	code rank.Code) bool {
-	if !validWindow(window, pages) || !window.InShare(f.disk.clusterPercent) || m.Code() != code {
+func (f *filler) grant(ctx context.Context, disk *cacheDisk, m membership.Membership, window rank.Window,
+	pages []uint32, code rank.Code) bool {
+	if !validWindow(window, pages) || !window.InShare(f.cluster.percent) || m.Code() != code {
 		return false
 	}
 	ranks := m.List().Ranks(window)
-	if len(ranks) == 0 || ranks[0].Identity != f.disk.identity || f.disk.holdsAnyOf(window, pages, code) {
+	if len(ranks) == 0 || ranks[0].Identity != disk.identity || disk.holdsAnyOf(window, pages, code) {
 		return false
 	}
 	now := f.clock.Now()
@@ -716,23 +724,23 @@ func validWindow(window rank.Window, pages []uint32) bool {
 }
 
 // place splits fill's envelopes under the membership held now and puts each
-// stripe on the disk its ranks hold it on: this host's own on its own disk,
-// the rest as keeps to the members that serve theirs, one holder after
-// another in rank order. It is the worker of fills', and returns once its own
+// stripe on the disk its ranks hold it on: those of a disk this host keeps on
+// that disk, the rest as keeps to the members that serve theirs, one holder
+// after another in rank order. It is the worker of fills', and returns once its own
 // stripes are written and every keep is answered or dropped.
 func (f *filler) place(ctx context.Context, kind WriteKind, fill *windowFill) {
 	if ctx.Err() != nil {
 		f.drop(ctx, DropFailed, len(fill.envelopes)*fill.m.Code().Width())
 		return
 	}
-	m, ok := f.disk.placedBy(fill.envelopes[0].key, false)
+	m, ok := f.cluster.placedBy(fill.envelopes[0].key, false)
 	if !ok {
 		return
 	}
 	list := m.List()
 	if sim.Buggify(ctx, buggifyFillRanksChange, 0.1) {
 		for _, cache := range list.Ranks(fill.window) {
-			if cache.Identity != f.disk.identity {
+			if !f.cluster.keeps(cache.Identity) {
 				list = list.Without(cache.Identity)
 				sim.Probe(ctx, ProbeFillRanksChanged)
 				break
@@ -765,30 +773,39 @@ func (f *filler) place(ctx context.Context, kind WriteKind, fill *windowFill) {
 		}
 	}
 	for _, holder := range order {
-		if holder.Identity == f.disk.identity {
-			f.written(func(ctx context.Context) { f.writeOwn(ctx, kind, fill.window, code, held[holder.Identity]) })
+		if f.cluster.keeps(holder.Identity) {
+			f.written(func(ctx context.Context) {
+				f.writeOwn(ctx, holder.Identity, kind, fill.window, code, held[holder.Identity])
+			})
 			continue
 		}
 		f.send(ctx, kind, m, fill.window, code, holder, held[holder.Identity])
 	}
 }
 
-// writeOwn writes the stripes of a fill of window this host's own disk
+// writeOwn writes the stripes of a fill of window that a disk this host keeps
 // holds, leaving out those it holds or is writing already. It is the worker
 // of writes', so nothing writes between what it finds held and what it
 // writes. The membership it was placed by may not be the one the host holds
 // now, which is the one its own fills are held to, as a keep is to its own.
-func (f *filler) writeOwn(ctx context.Context, kind WriteKind, window rank.Window, code rank.Code,
-	stripes []keyedStripe) {
-	m, _ := f.disk.following()
-	if err := f.ranked(m, window, code); err != nil && !f.bug("keep-unranked") {
+// A disk the host stopped keeping since is a stale placement.
+func (f *filler) writeOwn(ctx context.Context, identity rank.Identity, kind WriteKind, window rank.Window,
+	code rank.Code, stripes []keyedStripe) {
+	disk, release, kept := f.cluster.hold(identity)
+	if !kept {
+		f.drop(ctx, DropStale, len(stripes))
+		return
+	}
+	defer release()
+	m, _ := f.cluster.following()
+	if err := f.ranked(m, disk, window, code); err != nil && !f.bug("keep-unranked") {
 		sim.Probe(ctx, ProbeKeepRefused)
 		f.count(func(stats *FillStats) { stats.Refused += uint64(len(stripes)) })
 		return
 	}
 	var missing []keyedStripe
 	for _, s := range stripes {
-		if f.held(stripeKey{key: s.key, code: codeOf(s.stripe)}) {
+		if f.held(disk, stripeKey{key: s.key, code: codeOf(s.stripe)}) {
 			f.count(func(stats *FillStats) { stats.Duplicates++ })
 			continue
 		}
@@ -801,22 +818,22 @@ func (f *filler) writeOwn(ctx context.Context, kind WriteKind, window rank.Windo
 		f.drop(ctx, DropDisk, len(missing))
 		return
 	}
-	f.write(ctx, kind, missing)
+	f.write(ctx, disk, kind, missing)
 }
 
-// held reports whether the disk holds a stripe or the queue holds it for a
-// keep.
-func (f *filler) held(s stripeKey) bool {
+// held reports whether disk holds a stripe or the queue holds it for a keep
+// of disk.
+func (f *filler) held(disk *cacheDisk, s stripeKey) bool {
 	f.mu.Lock()
-	writing := f.writing[s]
+	writing := f.writing[writingKey{disk: disk.identity, stripeKey: s}]
 	f.mu.Unlock()
-	return writing || f.disk.holdsStripe(s.key, s.code)
+	return writing || disk.holdsStripe(s.key, s.code)
 }
 
-// write puts stripes on this host's own disk, the stripes of each envelope
+// write puts stripes on a disk this host keeps, the stripes of each envelope
 // next to each other, and counts what it kept and what the disk refused. It
 // reports how many it kept.
-func (f *filler) write(ctx context.Context, kind WriteKind, stripes []keyedStripe) int {
+func (f *filler) write(ctx context.Context, disk *cacheDisk, kind WriteKind, stripes []keyedStripe) int {
 	kept := 0
 	for start := 0; start < len(stripes); {
 		end := start + 1
@@ -827,7 +844,7 @@ func (f *filler) write(ctx context.Context, kind WriteKind, stripes []keyedStrip
 		for _, s := range stripes[start:end] {
 			group = append(group, s.stripe)
 		}
-		written, err := f.disk.writeStripes(ctx, stripes[start].key, group, kind)
+		written, err := disk.writeStripes(ctx, stripes[start].key, group, kind)
 		if errors.Is(err, ErrDiskRefused) {
 			f.drop(ctx, DropDisk, len(group))
 		} else if err != nil {
@@ -918,15 +935,14 @@ func (f *filler) sent(ctx context.Context, err error, stripes, bytes int) {
 	}
 }
 
-// keep writes what a peer's keep carries, if m, the membership at the
-// generation the keep named, ranks this host's disk for the window under the
-// keep's code: every stripe it does not hold or write already, through the
-// queue, at the keep's priority. It reports peer.ErrDropped when it writes
-// nothing.
-func (f *filler) keep(ctx context.Context, m membership.Membership, keep peer.Keep) error {
+// keep writes what a peer's keep of disk carries, if m, the membership at the
+// generation the keep named, ranks the disk for the window under the keep's
+// code: every stripe it does not hold or write already, through the queue, at
+// the keep's priority. It reports peer.ErrDropped when it writes nothing.
+func (f *filler) keep(ctx context.Context, m membership.Membership, disk *cacheDisk, keep peer.Keep) error {
 	stripes, err := f.parseKeep(keep)
 	if err == nil && !f.bug("keep-unranked") {
-		err = f.ranked(m, keep.Window, keep.Code)
+		err = f.ranked(m, disk, keep.Window, keep.Code)
 	}
 	if err != nil {
 		sim.Probe(ctx, ProbeKeepRefused)
@@ -938,7 +954,7 @@ func (f *filler) keep(ctx context.Context, m membership.Membership, keep peer.Ke
 		f.drop(ctx, DropDisk, len(stripes))
 		return fmt.Errorf("%w: its write budget is spent", peer.ErrDropped)
 	}
-	missing, bytes := f.markWriting(ctx, stripes)
+	missing, bytes := f.markWriting(ctx, disk, stripes)
 	if len(missing) == 0 {
 		return fmt.Errorf("%w: the cache holds every stripe", peer.ErrDropped)
 	}
@@ -946,7 +962,7 @@ func (f *filler) keep(ctx context.Context, m membership.Membership, keep peer.Ke
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		for _, s := range missing {
-			delete(f.writing, stripeKey{key: s.key, code: codeOf(s.stripe)})
+			delete(f.writing, writingKey{disk: disk.identity, stripeKey: stripeKey{key: s.key, code: codeOf(s.stripe)}})
 		}
 	}
 	if !f.reserve(ctx, bytes) {
@@ -961,11 +977,22 @@ func (f *filler) keep(ctx context.Context, m membership.Membership, keep peer.Ke
 	case keep.Publication:
 		kind = WriteFillPublication
 	}
+	// The write holds the disk until it is done, past the keep's answer
+	// should its caller give up first: a shard is closed only once nothing
+	// writes it.
+	holder, release, kept := f.cluster.hold(disk.identity)
+	if !kept {
+		unmark()
+		f.release(bytes)
+		f.drop(ctx, DropStale, len(missing))
+		return fmt.Errorf("%w: %w", peer.ErrDropped, ErrNotKept)
+	}
 	result := make(chan int, 1)
 	f.writes.push(f.ctx, func(ctx context.Context) {
 		defer f.release(bytes)
 		defer unmark()
-		result <- f.write(ctx, kind, missing)
+		defer release()
+		result <- f.write(ctx, holder, kind, missing)
 	})
 	select {
 	case written := <-result:
@@ -979,14 +1006,15 @@ func (f *filler) keep(ctx context.Context, m membership.Membership, keep peer.Ke
 	}
 }
 
-// markWriting marks the stripes of a keep the cache neither holds nor writes as
-// being written, and reports them and their bytes. The rest are duplicates.
-func (f *filler) markWriting(ctx context.Context, stripes []keyedStripe) ([]keyedStripe, int64) {
+// markWriting marks the stripes of a keep of disk the cache neither holds nor
+// writes as being written, and reports them and their bytes. The rest are
+// duplicates.
+func (f *filler) markWriting(ctx context.Context, disk *cacheDisk, stripes []keyedStripe) ([]keyedStripe, int64) {
 	var missing []keyedStripe
 	var bytes int64
 	for _, s := range stripes {
-		named := stripeKey{key: s.key, code: codeOf(s.stripe)}
-		duplicate := f.disk.holdsStripe(named.key, named.code)
+		named := writingKey{disk: disk.identity, stripeKey: stripeKey{key: s.key, code: codeOf(s.stripe)}}
+		duplicate := disk.holdsStripe(named.key, named.code)
 		f.mu.Lock()
 		if duplicate || f.writing[named] && !f.bug("keep-while-writing") {
 			f.stats.Duplicates++
@@ -1037,21 +1065,20 @@ func (f *filler) parseKeep(keep peer.Keep) ([]keyedStripe, error) {
 	return stripes, nil
 }
 
-// ranked checks that m has this host serve its disk, ranks the disk for
-// window under code, and that the window is inside the share. Every stripe the
-// cache writes for the cluster, its own fills' and its peers' keeps, is held
-// to it.
-func (f *filler) ranked(m membership.Membership, window rank.Window, code rank.Code) error {
+// ranked checks that m has this host serve disk, ranks the disk for window
+// under code, and that the window is inside the share. Every stripe the cache
+// writes for the cluster, its own fills' and its peers' keeps, is held to it.
+func (f *filler) ranked(m membership.Membership, disk *cacheDisk, window rank.Window, code rank.Code) error {
 	switch {
-	case !window.InShare(f.disk.clusterPercent):
+	case !window.InShare(f.cluster.percent):
 		return fmt.Errorf("%w: the cluster cache is not on for the window", errKeepRefused)
-	case !f.disk.owns(m):
-		return fmt.Errorf("%w: generation %d does not have this host serve its disk", errKeepRefused,
-			m.Generation())
+	case !disk.owns(m):
+		return fmt.Errorf("%w: generation %d does not have this host serve disk %s", errKeepRefused,
+			m.Generation(), disk.identity)
 	case m.Code() != code:
 		return fmt.Errorf("%w: the membership's code is %s, not %s", errKeepRefused, m.Code(), code)
 	case !slices.ContainsFunc(m.List().Ranks(window), func(cache rank.Cache) bool {
-		return cache.Identity == f.disk.identity
+		return cache.Identity == disk.identity
 	}):
 		return fmt.Errorf("%w: the membership does not rank this disk for the window", errKeepRefused)
 	}
@@ -1087,7 +1114,7 @@ func (f *filler) newer(ctx context.Context, m membership.Membership, err error, 
 		f.bug("membership-ignore-stale-answer") {
 		return membership.Membership{}, false
 	}
-	newer, catchErr := f.disk.catch(ctx, stale.Generation)
+	newer, catchErr := f.cluster.catch(ctx, stale.Generation)
 	if catchErr != nil || newer.Generation() <= m.Generation() {
 		return membership.Membership{}, false
 	}
@@ -1151,8 +1178,8 @@ func (f *filler) repair(m membership.Membership, window rank.Window, code rank.C
 			f.drop(ctx, DropFailed, len(stripes))
 			return
 		}
-		if holder.Identity == f.disk.identity {
-			f.written(func(ctx context.Context) { f.writeOwn(ctx, WriteRepair, window, code, stripes) })
+		if f.cluster.keeps(holder.Identity) {
+			f.written(func(ctx context.Context) { f.writeOwn(ctx, holder.Identity, WriteRepair, window, code, stripes) })
 			return
 		}
 		f.send(ctx, WriteRepair, m, window, code, holder, stripes)

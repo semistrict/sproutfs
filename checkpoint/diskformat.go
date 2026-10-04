@@ -519,6 +519,77 @@ func readDiskHeader(ctx context.Context, file platform.File, limit int64) (diskH
 	return header, nil
 }
 
+// A shard's header region ends with its lease, which no host disk has:
+//
+//	lease, the header region's last 64 bytes:
+//	0  4  magic "SFCL"
+//	4  1  version, 1
+//	5  3  zero
+//	8  8  the file's generation
+//	16 8  the generation of the membership that assigned the shard to the
+//	      member serving it
+//	24 16 that member's identity
+//	40 8  the regions the file has ever opened, from its start
+//	48 4  CRC32C of the first 48 bytes
+//	52 12 zero
+//
+// The lease is written whenever a member opens the shard under an assignment,
+// before anything is read back, and again whenever the shard opens a region it
+// has never opened, before that region is written. It names the file's
+// generation, so a lease a file made before left behind is never taken for
+// this file's. A restart reads back only the regions the lease says were
+// opened, so a device of hundreds of gigabytes that holds a few regions is read
+// back in a few reads.
+const (
+	diskLeaseSize    = 64
+	diskLeaseVersion = 1
+)
+
+var diskLeaseMagic = [4]byte{'S', 'F', 'C', 'L'}
+
+// diskLease is what a shard's lease says.
+type diskLease struct {
+	generation uint64
+	lease      Lease
+	slots      int64
+}
+
+// leaseOffset is where a shard's lease lies: at the end of its header region.
+func leaseOffset(regionBytes int64) int64 { return regionBytes - diskLeaseSize }
+
+func encodeDiskLease(lease diskLease) []byte {
+	encoded := make([]byte, diskLeaseSize)
+	copy(encoded[0:4], diskLeaseMagic[:])
+	encoded[4] = diskLeaseVersion
+	binary.LittleEndian.PutUint64(encoded[8:], lease.generation)
+	binary.LittleEndian.PutUint64(encoded[16:], lease.lease.Assigned)
+	copy(encoded[24:40], lease.lease.Member[:])
+	binary.LittleEndian.PutUint64(encoded[40:], uint64(lease.slots))
+	binary.LittleEndian.PutUint32(encoded[48:], crc32.Checksum(encoded[:48], diskChecksum))
+	return encoded
+}
+
+// errNoLease reports a header region that ends with no lease that holds
+// together.
+var errNoLease = errors.New("checkpoint: the shard has no lease")
+
+// readDiskLease reads back a shard's lease.
+func readDiskLease(ctx context.Context, file platform.File, regionBytes int64) (diskLease, error) {
+	encoded := make([]byte, diskLeaseSize)
+	if err := readFull(ctx, file, encoded, leaseOffset(regionBytes)); err != nil {
+		return diskLease{}, err
+	}
+	if [4]byte(encoded[0:4]) != diskLeaseMagic || encoded[4] != diskLeaseVersion ||
+		crc32.Checksum(encoded[:48], diskChecksum) != binary.LittleEndian.Uint32(encoded[48:]) {
+		return diskLease{}, errNoLease
+	}
+	lease := diskLease{generation: binary.LittleEndian.Uint64(encoded[8:]),
+		lease: Lease{Assigned: binary.LittleEndian.Uint64(encoded[16:])},
+		slots: int64(binary.LittleEndian.Uint64(encoded[40:]))}
+	copy(lease.lease.Member[:], encoded[24:40])
+	return lease, nil
+}
+
 // readFull reads exactly len(buffer) bytes at offset.
 func readFull(ctx context.Context, file platform.File, buffer []byte, offset int64) error {
 	n, err := file.ReadAt(ctx, buffer, offset)

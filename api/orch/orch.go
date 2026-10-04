@@ -29,9 +29,11 @@ type Host struct {
 	Page string `json:"page"`
 	// Ready is the pod's own readiness, and Running what the host answered when
 	// asked what it runs. Error is why it did not answer, if it did not.
-	Ready   bool     `json:"ready"`
-	Running []string `json:"running"`
-	Serving []string `json:"serving"`
+	Ready bool `json:"ready"`
+	// Terminating is a pod being deleted: it still answers while it drains.
+	Terminating bool     `json:"terminating,omitempty"`
+	Running     []string `json:"running"`
+	Serving     []string `json:"serving"`
 	// Receiving is every VM a receive is in flight for on the host, including
 	// one whose caller hung up.
 	Receiving []string `json:"receiving"`

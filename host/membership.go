@@ -53,8 +53,15 @@ func cacheDisk(ctx context.Context, config Config) int64 {
 }
 
 // Member is this host as the membership names it, and whether it is one: a
-// host that keeps no cache disk is not.
-func (h *Host) Member() (membership.Host, bool) { return h.self, !h.self.ID.IsZero() }
+// host that keeps no cache disk and serves no shard is not. A host that serves
+// shards reports the shards it holds open.
+func (h *Host) Member() (membership.Host, bool) {
+	self := h.self
+	if h.shards != nil {
+		self.Disks = h.shards.held()
+	}
+	return self, !self.ID.IsZero()
+}
 
 // Membership is the membership this host holds now, which it ranks windows
 // and routes its cache's requests by.
@@ -67,6 +74,17 @@ func (h *Host) Membership() membership.Membership { return h.view.Current() }
 func (h *Host) RefreshMembership(ctx context.Context) error {
 	_, err := h.view.Refresh(ctx)
 	return err
+}
+
+// SettleShards opens and closes the shards the membership this host holds
+// calls for now, and returns once it has: what a test, or a simulated
+// deployment that steps its controller by hand, does after the host read a
+// new generation or the cloud attached a shard. A host that serves no shard
+// does nothing.
+func (h *Host) SettleShards(ctx context.Context) {
+	if h.shards != nil {
+		h.shards.pass(ctx)
+	}
 }
 
 // SettleFills returns once every fill of the cluster's cache this host's

@@ -91,11 +91,18 @@ func (b *Background) fits(bytes, budget int64) bool {
 // dropped: Unpublished or Resident. It is admitted after every waiter of a
 // higher priority and every earlier one of its own.
 func (b *Background) Acquire(ctx context.Context, priority Priority, bytes int64) error {
+	_, err := b.acquire(ctx, priority, bytes)
+	return err
+}
+
+// acquire is Acquire, reporting whether the work waited for its room: one
+// release may grant several waiters at once, and they then go on together.
+func (b *Background) acquire(ctx context.Context, priority Priority, bytes int64) (waited bool, err error) {
 	b.mu.Lock()
 	if len(b.waiting) == 0 && b.fits(bytes, b.effective()) {
 		b.held += bytes
 		b.mu.Unlock()
-		return nil
+		return false, nil
 	}
 	waiter := &backgroundWaiter{priority: priority, bytes: bytes, ready: make(chan struct{})}
 	// Behind every waiter of its own priority or a higher one, ahead of the
@@ -112,7 +119,7 @@ func (b *Background) Acquire(ctx context.Context, priority Priority, bytes int64
 	b.mu.Unlock()
 	select {
 	case <-waiter.ready:
-		return nil
+		return true, nil
 	case <-ctx.Done():
 		b.mu.Lock()
 		defer b.mu.Unlock()
@@ -123,7 +130,7 @@ func (b *Background) Acquire(ctx context.Context, priority Priority, bytes int64
 			b.waiting = slices.DeleteFunc(b.waiting, func(other *backgroundWaiter) bool { return other == waiter })
 			b.grant()
 		}
-		return context.Cause(ctx)
+		return true, context.Cause(ctx)
 	}
 }
 

@@ -199,7 +199,7 @@ func TestRepairAfterACodeChangeStaysUnderTheNewCode(t *testing.T) {
 		}
 		lost := c.hostOf(changed.Ranks(window)[0])
 		index := lost.cache.HeldIndices(window, 0, after)[0]
-		if err := lost.cache.Drop(c.ctx(t), peer.Drop{Window: window, Index: index, Code: after}); err != nil {
+		if err := lost.cache.Drop(c.ctx(t), lost.cache.Identity(), peer.Drop{Window: window, Index: index, Code: after}); err != nil {
 			t.Fatal(err)
 		}
 		reader := c.hosts[5]

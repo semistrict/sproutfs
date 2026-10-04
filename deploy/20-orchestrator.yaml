@@ -1,6 +1,7 @@
 # The demo orchestrator: stateless, one replica. It finds hosts through the
-# Kubernetes API and VMs by listing control records in the bucket, so its only
-# cluster privilege is over the pods in this namespace.
+# Kubernetes API and VMs by listing control records in the bucket, so its
+# cluster privileges are over the pods in this namespace, and, for a cache on
+# shards, reading the shards' claims and the volumes they are bound to.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -23,6 +24,40 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list", "watch", "delete"]
+  # The shards' claims, which name the network disks the cache is on.
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list"]
+---
+# A claim's volume, whose CSI handle is the disk's name in the cloud's attach
+# API. Volumes belong to no namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: sproutfs-orchestrator-volumes
+  labels:
+    app.kubernetes.io/name: sproutfs-orchestrator
+    app.kubernetes.io/part-of: sproutfs
+rules:
+  - apiGroups: [""]
+    resources: ["persistentvolumes"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: sproutfs-orchestrator-volumes
+  labels:
+    app.kubernetes.io/name: sproutfs-orchestrator
+    app.kubernetes.io/part-of: sproutfs
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: sproutfs-orchestrator-volumes
+subjects:
+  - kind: ServiceAccount
+    name: sproutfs-orchestrator
+    namespace: sproutfs
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -134,6 +169,18 @@ spec:
             # that was in flight while it was down.
             - name: SPROUTFS_TABLE_PATH
               value: /var/lib/sproutfs/orchestrator.db
+            # The cache on shards: the ConfigMap's shards key, gce, has the
+            # orchestrator list the claims below and attach and detach their
+            # disks as the membership assigns them, through Compute Engine's
+            # API with the pod's own credentials. deploy/README.md, "Shards".
+            - name: SPROUTFS_SHARDS
+              valueFrom:
+                configMapKeyRef:
+                  name: sproutfs-demo
+                  key: shards
+                  optional: true
+            - name: SPROUTFS_SHARD_CLAIMS
+              value: app.kubernetes.io/component=sproutfs-shard
           resources:
             requests:
               cpu: 200m

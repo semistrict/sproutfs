@@ -31,6 +31,9 @@ type pod struct {
 	Name  string
 	IP    string
 	Ready bool
+	// Terminating is a pod being deleted, as a node the autoscaler removes
+	// has its pods deleted: it still answers, and drains.
+	Terminating bool
 }
 
 // pods is where the hosts are. The orchestrator holds no roster of its own: it
@@ -179,6 +182,14 @@ type orchestrator struct {
 	members  *membership.Store
 	memberMu sync.Mutex
 	reported map[string]host.Member
+	// leaving is each host pod that is terminating, by name, from the last
+	// survey: its member drains, and its shards move off it.
+	leaving map[string]bool
+	// shards carries out the membership's shards through the cloud's attach
+	// API, nil for a deployment whose hosts keep disks of their own, and
+	// shardVolumes lists the shards' volumes from their claims.
+	shards       *membership.ShardControl
+	shardVolumes func(context.Context) ([]string, error)
 }
 
 const (
@@ -398,8 +409,8 @@ func (o *orchestrator) fanOut(ctx context.Context, remember bool) ([]liveHost, e
 	hosts := make([]liveHost, len(found))
 	var wg sync.WaitGroup
 	for index, p := range found {
-		report := orch.Host{Name: p.Name, Ready: p.Ready, Running: []string{}, Serving: []string{},
-			Receiving: []string{}}
+		report := orch.Host{Name: p.Name, Ready: p.Ready, Terminating: p.Terminating, Running: []string{},
+			Serving: []string{}, Receiving: []string{}}
 		if p.IP != "" {
 			report.API = "http://" + net.JoinHostPort(p.IP, strconv.Itoa(o.apiPort))
 			report.Page = net.JoinHostPort(p.IP, strconv.Itoa(o.pagePort))

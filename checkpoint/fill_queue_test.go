@@ -170,7 +170,7 @@ func TestACacheRefusesAKeepWhoseItemsDoNotFillItsPayload(t *testing.T) {
 		trailing := keepOf(t, key, code, []int{0})
 		trailing.Payload = append(trailing.Payload, 0)
 		for name, keep := range map[string]peer.Keep{"an item past the payload": past, "bytes past the items": trailing} {
-			if err := f.cache.Keep(t.Context(), f.m, keep); !errors.Is(err, peer.ErrDropped) {
+			if err := f.cache.Keep(t.Context(), f.m, f.cache.Identity(), keep); !errors.Is(err, peer.ErrDropped) {
 				t.Fatalf("a keep with %s = %v, want it dropped", name, err)
 			}
 		}

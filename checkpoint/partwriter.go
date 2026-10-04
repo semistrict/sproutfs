@@ -2,6 +2,7 @@ package checkpoint
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"sync"
 
@@ -55,6 +56,8 @@ type partWriter struct {
 	encoding []*batch
 	open     *batch
 	encodes  sync.WaitGroup
+	// batches counts the batches dispatched.
+	batches int
 	// planned is the bytes of members the publication has said are still to
 	// come, each counted with its envelope's header, which is what a new
 	// part's body is made room for.
@@ -196,6 +199,14 @@ func (w *partWriter) window(ctx context.Context) int {
 
 // dispatch starts encoding the open batch, first taking the oldest batches
 // into parts while the window is full.
+//
+// The batch's encoder is taken here, on the publication's goroutine, before
+// the batch's own goroutine starts: batches are admitted to the encoders in
+// the order they were filled. Were each batch's goroutine to take its own,
+// a later batch could take the encoder an earlier one was waiting for,
+// whenever the Go scheduler ran it first, and the publication, which takes
+// batches into parts oldest first, would wait a whole encode for the earlier
+// one with an encoder idle.
 func (w *partWriter) dispatch(ctx context.Context) error {
 	if w.open == nil || len(w.open.members) == 0 {
 		return nil
@@ -205,24 +216,49 @@ func (w *partWriter) dispatch(ctx context.Context) error {
 			return err
 		}
 	}
+	var encoder *blob.Encoder
+	if !sim.Bug(ctx, "checkpoint-encode-admitted-in-any-order") {
+		var err error
+		if encoder, err = w.store.codecs.Encoder(ctx); err != nil {
+			return err
+		}
+	}
 	b := w.open
 	w.open = nil
 	b.out = w.take(b.bytes + len(b.members)*blob.HeaderSize + memberSlack)[:0]
 	w.encoding = append(w.encoding, b)
 	w.encodes.Add(1)
+	ctx = w.batchTask(ctx)
 	go func() {
 		defer w.encodes.Done()
 		defer close(b.done)
+		if encoder == nil {
+			if encoder, b.err = w.store.codecs.Encoder(ctx); b.err != nil {
+				return
+			}
+		}
+		defer encoder.Release()
 		for _, m := range b.members {
 			start := len(b.out)
-			b.out, b.err = w.store.codecs.AppendEncode(ctx, b.out, m.data)
-			if b.err != nil {
+			if b.out, b.err = encoder.AppendEncode(ctx, b.out, m.data); b.err != nil {
 				return
 			}
 			m.envelope = [2]int{start, len(b.out)}
 		}
 	}()
 	return nil
+}
+
+// batchTask names the next batch's encoding as a task of its own in a
+// simulation, by the order the batches were filled, so a run can see the
+// order its encodes began in (sim.Runtime.WorkOrder). Outside a simulation it
+// is ctx.
+func (w *partWriter) batchTask(ctx context.Context) context.Context {
+	w.batches++
+	if sim.RuntimeFrom(ctx) == nil {
+		return ctx
+	}
+	return sim.WithTask(ctx, fmt.Sprintf("encode-%d", w.batches))
 }
 
 // memberSlack is what encoding a member may write beyond its envelope's size

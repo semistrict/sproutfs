@@ -259,7 +259,12 @@ lists for that long. The membership replaced it.
 
 ### Shards on network disks
 
-Decided on 2026-10-03, and not built yet (TASK-86). The cache's disks are not
+Decided on 2026-10-03, and built in TASK-86 (docs/hosting.md, "Shards on
+network disks"). The membership is the authority: the orchestrator carries
+its assignments out through the cloud's attach API, and the host opens the
+attached block device and serves it under the generation that assigned it.
+Kubernetes provisions the disks from a StorageClass and never attaches them,
+because a running pod cannot gain a volume. The cache's disks are not
 the hosts' own SSDs. They are a fixed set of **shards**, each one network disk
 (Hyperdisk Balanced on GCP, gp3 on AWS) with the disk log on it, and windows
 are ranked over the shards, never over hosts.

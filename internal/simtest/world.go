@@ -84,6 +84,15 @@ type Config struct {
 	// read and publication fills. It is an alternative to ClusterCache, and a
 	// world given both refuses to start.
 	HotTier bool
+	// Shards puts the cluster's cache on that many shards instead of the
+	// hosts' own disks: network disks of a simulated cloud, which the
+	// membership assigns to the hosts and a controller attaches to their
+	// machines, each host its own machine. The cluster cache is on for every
+	// window, under the code of the table for that many shards. It is an
+	// alternative to ClusterCache and HotTier. The controller takes its passes
+	// whenever the world settles, starts a host or takes one out of the
+	// membership.
+	Shards int
 }
 
 // World is a running deployment of one topology: every host is a real
@@ -169,6 +178,12 @@ type World struct {
 	members    map[string]membership.Host
 	code       rank.Code
 	membership *membership.Store
+	// cloud is the network disks a world with shards keeps them on, control
+	// the controller that carries the membership out on them, and leaving
+	// each host taken out of the membership while it still runs, by index.
+	cloud   *sim.NetworkDisks
+	control *membership.ShardControl
+	leaving map[int]bool
 	// hot is the hot tier's bucket every host reads through, nil in a world
 	// without one.
 	hot *sim.ObjectStore
@@ -397,6 +412,9 @@ func start(ctx context.Context, config Config) (*World, error) {
 	if config.HotTier && config.ClusterCache {
 		return nil, errors.New("simtest: the hot tier and the cluster cache are alternatives")
 	}
+	if config.Shards > 0 && (config.HotTier || config.ClusterCache) {
+		return nil, errors.New("simtest: shards are an alternative to the hosts' own cache disks and the hot tier")
+	}
 	if config.Log == nil {
 		config.Log = func(string, ...any) {}
 	}
@@ -409,6 +427,9 @@ func start(ctx context.Context, config Config) (*World, error) {
 		// topology's size, as an operator sets it, and never changed by a
 		// host joining or leaving.
 		code: rank.CodeFor(len(config.Topology.Hosts))}
+	if config.Shards > 0 {
+		w.code = rank.CodeFor(config.Shards)
+	}
 	var err error
 	w.membership, err = membership.NewStore(membership.Config{ObjectStore: w.runtime.ObjectStore(),
 		ObjectPrefix: config.Prefix, Entropy: w.runtime.NewEntropy(config.Namespace + "orchestrator")})
@@ -416,6 +437,11 @@ func start(ctx context.Context, config Config) (*World, error) {
 		return nil, err
 	}
 	w.runtime.ObjectStore().Observe(w.ownership.observe)
+	if config.Shards > 0 {
+		if err := w.makeShards(ctx); err != nil {
+			return nil, err
+		}
+	}
 	if config.HotTier {
 		w.hot = w.runtime.NewObjectStore(config.Namespace+"hot", sim.ObjectStoreConfig{})
 	}
@@ -599,6 +625,16 @@ func (w *World) hostConfig(h *hostState) host.Config {
 			ClusterStripeTimeout: time.Hour}
 		config.CacheVolume, config.MembershipInterval = "cache", -1
 	}
+	if w.config.Shards > 0 {
+		// A host that serves shards keeps no cache disk of its own; it opens
+		// the shards the membership assigns it on its machine, which is its
+		// own. The timing of reads is out of reach, as for the hosts' own
+		// disks.
+		config.Cache = checkpoint.CacheConfig{DiskRegionBytes: clusterCacheRegion, ClusterPercent: 100,
+			ClusterHedgeFloor: time.Hour, ClusterBound: time.Hour, ClusterStripeTimeout: time.Hour}
+		config.Shards = host.ShardsConfig{Devices: w.cloud.Devices(h.name), Machine: h.name}
+		config.MembershipInterval = -1
+	}
 	if w.config.HotTier {
 		// A read of the hot tier's bound, a mark of it down and the rate of
 		// its fills are choices of time, and whether a burst of fills found
@@ -637,11 +673,20 @@ func (w *World) listMember(ctx context.Context, h *hostState) {
 // Unlist takes one host out of the membership, as the orchestrator does once
 // that host's pod is no longer listed, which is what a drain ends in: its
 // member drains, its disk is let go and removed, and it leaves. Every host
-// that is up then reads the membership. A host started again joins again.
+// that is up then reads the membership. A host started again joins again. In
+// a world with shards the host is leaving, as a pod being deleted is: its
+// shards move to the others while it still runs.
 func (w *World) Unlist(ctx context.Context, index int) {
 	w.mu.Lock()
 	delete(w.members, w.hosts[index].name)
+	if w.leaving != nil {
+		w.leaving[index] = true
+	}
 	w.mu.Unlock()
+	if w.config.Shards > 0 {
+		w.settleShards(ctx)
+		return
+	}
 	w.settleMembership(ctx)
 }
 
@@ -821,6 +866,12 @@ func (w *World) launch(h *hostState) error {
 	}
 	if w.config.ClusterCache {
 		w.listMember(w.ctx, h)
+	}
+	if w.config.Shards > 0 {
+		w.mu.Lock()
+		delete(w.leaving, slices.Index(w.hosts, h))
+		w.mu.Unlock()
+		w.settleShards(w.ctx)
 	}
 	return nil
 }
@@ -2675,6 +2726,9 @@ func (w *World) Settle(ctx context.Context) error {
 		}
 	}
 	w.survey()
+	if w.config.Shards > 0 {
+		w.settleShards(ctx)
+	}
 	errs = append(errs, w.settleFills(ctx))
 	return errors.Join(errs...)
 }
@@ -2683,7 +2737,7 @@ func (w *World) Settle(ctx context.Context) error {
 // dropped the fills the step before handed it, so a step's fills do not race
 // the next step's operation.
 func (w *World) settleFills(ctx context.Context) error {
-	if !w.config.ClusterCache {
+	if !w.config.ClusterCache && w.config.Shards == 0 {
 		return nil
 	}
 	var errs []error
@@ -3053,6 +3107,13 @@ func (w *World) Kill(ctx context.Context, index int, mode sim.FailureMode) error
 		return nil
 	}
 	h.dead.Store(true)
+	if w.cloud != nil {
+		// The machine goes with its host: the shards attached to it lose what
+		// it had not synced, and its handles of them fail.
+		if err := w.cloud.Crash(ctx, h.name); err != nil {
+			return err
+		}
+	}
 	w.mu.Lock()
 	h.down, h.crashed = true, true
 	h.lose()

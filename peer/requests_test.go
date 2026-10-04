@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
+	"time"
 
 	"github.com/semistrict/sproutfs/internal/blob"
 	"github.com/semistrict/sproutfs/peer"
@@ -410,6 +411,94 @@ func TestAnAlreadyCanceledRequestIsStillAdmitted(t *testing.T) {
 	}
 	if s.dials.Load() != 0 {
 		t.Fatalf("a canceled listing dialed %d connections", s.dials.Load())
+	}
+}
+
+// A request that waited for room is offered to the admitter again when it is
+// woken, before it looks for a connection. The room one request gives back —
+// the hello its dial was waiting on, or the background budget its reply frees —
+// wakes every request waiting for it beside the one that gave it back, and
+// without a point a controlled run orders, the Go scheduler chose which of
+// them took which connection and went first on it: one run in a few hundred of
+// the scheduled world sent a destination's guest fault and its stream's
+// listing of resident pages in either order.
+//
+// The second request is held at its second admission while the first, whose
+// dial woke it or whose reply freed its room, goes on alone.
+func TestARequestWokenFromAWaitForRoomIsAdmittedAgain(t *testing.T) {
+	for _, wait := range []struct {
+		name string
+		// class is the class both requests are made in, and background the
+		// host's background budget.
+		class      func(context.Context) context.Context
+		background int64
+	}{
+		{name: "for the dial another request began", class: func(ctx context.Context) context.Context { return ctx }},
+		{name: "for the background budget", class: peer.WithStream, background: pageSize},
+	} {
+		t.Run(wait.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				s := newServing(t, peer.ServerConfig{})
+				destination := s.table(t, "destination", peer.TableConfig{BackgroundBytes: wait.background})
+				// Nothing the source sends arrives for a second: the first
+				// request's dial is heard, and its reply arrives, only then.
+				heard := time.Now().Add(time.Second)
+				s.runtime.Network().Hold("source", "destination", heard)
+				var mu sync.Mutex
+				var admitted, sent []string
+				held := make(chan struct{})
+				request := func(name string, page uint64) <-chan error {
+					ctx := peer.WithAdmission(wait.class(t.Context()), func(ctx context.Context, _ string) error {
+						mu.Lock()
+						admitted = append(admitted, name)
+						again := slices.Index(admitted, name) != len(admitted)-1
+						mu.Unlock()
+						if name == "second" && again {
+							<-held
+						}
+						return context.Cause(ctx)
+					})
+					ctx = peer.WithSent(ctx, func() {
+						mu.Lock()
+						defer mu.Unlock()
+						sent = append(sent, name)
+					})
+					done := make(chan error, 1)
+					go func() {
+						_, err := askPages(ctx, destination, page, 1)
+						done <- err
+					}()
+					synctest.Wait()
+					return done
+				}
+				first := request("first", 0)
+				second := request("second", 1)
+				mu.Lock()
+				if want := []string{"first", "second"}; !slices.Equal(admitted, want) || len(sent) != 0 {
+					t.Fatalf("before the dial was heard: admitted %v and sent %v, want %v and nothing", admitted, sent, want)
+				}
+				mu.Unlock()
+				time.Sleep(time.Until(heard) + 10*time.Millisecond)
+				synctest.Wait()
+				mu.Lock()
+				if want := []string{"first", "second", "second"}; !slices.Equal(admitted, want) ||
+					!slices.Equal(sent, []string{"first"}) {
+					t.Fatalf("once the first request went on: admitted %v and sent %v, want %v and only the first",
+						admitted, sent, want)
+				}
+				mu.Unlock()
+				if err := <-first; err != nil {
+					t.Fatal(err)
+				}
+				close(held)
+				if err := <-second; err != nil {
+					t.Fatal(err)
+				}
+				if !slices.Equal(sent, []string{"first", "second"}) {
+					t.Fatalf("sent %v, want the first and then the second", sent)
+				}
+			})
+		})
 	}
 }
 

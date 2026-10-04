@@ -292,7 +292,13 @@ type pool struct {
 
 // acquire waits for room for a request of bytes and a slot on a connection, and
 // dials one if every connection is full and the class may hold another.
-func (p *pool) acquire(ctx context.Context, bytes int64) (*conn, error) {
+//
+// Room given back wakes every request waiting for it at once, beside the
+// request whose dial or reply gave it back. woken is called each time this
+// request is woken, before it looks for room again: it is what puts the
+// requests one wake set going back in an order of the caller's choosing,
+// rather than the Go scheduler's (see Peer.readmit).
+func (p *pool) acquire(ctx context.Context, bytes int64, woken func() error) (*conn, error) {
 	overBudget := false
 	for {
 		p.mu.Lock()
@@ -345,6 +351,9 @@ func (p *pool) acquire(ctx context.Context, bytes int64) (*conn, error) {
 		case <-ctx.Done():
 			return nil, context.Cause(ctx)
 		case <-changed:
+		}
+		if err := woken(); err != nil {
+			return nil, err
 		}
 	}
 }

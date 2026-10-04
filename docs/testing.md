@@ -436,6 +436,27 @@ guards `checkpoint-encode-one-batch-at-a-time` and
 `checkpoint-upload-one-part-at-a-time` serialize the encodes and the uploads,
 and each fails its test.
 
+A publication takes each batch's encoder itself, in the order it filled the
+batches. When each batch's goroutine took its own, the Go scheduler chose
+which batch got a free encoder: on one processor it runs the goroutine started
+last first, so a later batch took the encoder an earlier one needed, and the
+publication waited a whole encode for the earlier one. The parts then landed
+10 to 30 ms late, in 22 runs of 200 on the default processors and in most
+runs on one. `sim.Runtime.WorkPieces` reports
+the task and the instant each piece of priced work began, and the publication
+names each batch's encode as a task in a simulation.
+`TestAPublicationAdmitsItsBatchesToTheEncodersInOrder` publishes on one
+processor and on two and requires no batch to begin encoding before one
+filled earlier. The guard `checkpoint-encode-admitted-in-any-order` restores
+the old admission and fails it.
+
+The pull tests that read through the cluster run in a synctest bubble. A read
+of the cluster reads the store as well once its bound has passed, 10 ms by
+default, and on the wall clock a loaded machine sometimes took longer than
+that to read the fixture's own disk: the read then also asked the store, and
+the test counted a request it wanted none of. `pullAndRead` now also requires
+no read to have asked the store that way.
+
 Both the writer and the reader bound a part's table at 1 MiB. One test takes a
 checkpoint of 4,000 pages of a volume with the longest allowed name. Its entries
 are the widest that a table holds, and together they need more table space than
@@ -1137,6 +1158,19 @@ because every page the stream did not fetch is in the destination's own
 checkpoint. The admission point lets the scheduler order the two outcomes. It
 does not change either outcome.
 
+A request that waits for room is admitted again each time it is woken. It may
+wait for its class's budget at the peer, for a slot on a connection, for a dial
+that another request began, or for the host's background budget. One room
+given back wakes every request that waits for it, beside the request whose dial
+or reply gave it back. Without a second admission, the Go scheduler chose which
+of them took which connection and which went first on it. In one run of the
+scheduled scenario in a few hundred, a guest's fault and its post-copy stream's
+list of resident pages went to the source in either order, so seed 3 failed
+`TestScheduledWorldReproduces` now and then.
+`TestARequestWokenFromAWaitForRoomIsAdmittedAgain` holds the woken request at
+its second admission and requires the other to go on alone. The guard
+`peer-woken-requests-go-on-together` skips the second admission.
+
 
 The dynamic experiment runs four concurrent clients through three rounds each
 of requests, synced disk writes, object publication, replies and object
@@ -1378,6 +1412,59 @@ which one moves windows, no generation moves the windows of more than one
 disk, a quiet host keeps its place, the code never follows the hosts, and two
 orchestrators at once leave one line of generations that ends where one alone
 would.
+
+[Shards on network disks](hosting.md#shards-on-network-disks) move between
+hosts through the cloud's attach API. `platform/sim`'s `NetworkDisks` is a
+cloud of single-writer disks: each is a simulated disk of its own holding one
+device file, which a detach, or the crash of its machine, power-cuts, so what
+the machine had not synced is lost and every handle of it fails. The cloud and
+a host's shards have sites of their own:
+
+| Site | What it does |
+| --- | --- |
+| `sim/network-disk/attach-slow` | Holds an attach for up to half a minute |
+| `sim/network-disk/attach-fails` | Fails an attach before the cloud does it |
+| `sim/network-disk/attach-reply-lost` | Attaches the disk and tells its caller the attach failed |
+| `sim/network-disk/detach-slow` | Holds a detach for up to half a minute |
+| `sim/network-disk/detach-fails` | Fails a detach before the cloud does it |
+| `sim/network-disk/describe-fails` | Fails a read of where a disk is attached |
+| `host/shard-open-fails` | Fails an open of a shard's device, as one still settling after its attach |
+| `host/shard-close-slow` | Holds a released shard open for up to ten seconds |
+
+`TestShardsSurviveTheirFaultsAndReachTheirProbes` in `internal/simtest` drives
+them. Six hosts serve six shards under 4+2, and for eight seeds a seeded
+schedule has hosts leave as an autoscaler removes them, die with their shards
+open, die while a shard is moving to them, join again, have a shard detached
+under them by hand, and has a process open a shard's device beside its member
+and keep it while the shard moves. After every step the guest reads back every
+page it wrote. Across the seeds every site must fire and every shard probe be
+reached: a shard opened, closed, not attached yet, lost under its host, and
+refused by its lease. A shard fenced while a process still holds its device is
+not among them, because the simulated cloud, as Compute Engine does, takes a
+detached disk from every process of its machine, so that process's handle is
+gone first; `TestAStaleMemberThatStillHoldsTheDeviceIsFenced` in `checkpoint`
+keeps two handles of one device and reaches the fence.
+
+The properties are stated beside it. `TestHostsScaleUpAndDownWithNoStoreReadForACachedWindow`
+scales six hosts down to three and back, one at a time; after each, every
+shard serves, the hosts serve within one shard of each other, and a VM opened
+on a host that was there reads every page from the shards and nothing from the
+store but its VMM state. `TestReadsDuringAShardsMoveHedgeAroundIt` reads the
+VM while a shard is released and closed and not yet served elsewhere, and
+after a host is lost with its shard attached, with no read of the store. In
+`checkpoint`, `TestAShardMovesWithItsStripes` keeps a window on a shard, moves
+it to another member and machine, and reads the same stripes back there, and
+refuses the member it left; `TestAShardReadsBackOnlyTheRegionsItsLeaseNames`
+opens a device of 8,191 slots that holds a few regions in a few dozen reads. In
+`membership`, a model of hosts, machines and a cloud steps `Next` and `Carry`:
+shards spread over the members, move off a host being removed in the order
+released, closed, detached, let go, assigned, attached, opened, serving, and are
+let go off a dead host only once detached. In `host`, three hosts on a
+simulated cloud serve six shards and move them when one leaves, a host
+started again is a new member, and a host opens a shard only while the object,
+read again, still assigns it there. In `cmd/sproutfs-orchestrator`,
+`TestTheOrchestratorMovesShardsOffATerminatingHost` moves the shards off a
+host pod as soon as it is terminating.
 
 Ranking itself is a pure function, so `rank`'s property tests state it: a join or a
 leave changes a window's first k+m by at most one cache, weights spread windows
@@ -1722,9 +1809,11 @@ discovers that a source is being removed. How many of them dial before the
 first failure marks the source as fallen is a race between goroutines, not a
 choice the seed made. Every other event of that campaign is identical between
 two runs of a seed: every object-store request, every disk operation, every page
-served, every byte and every outcome. Each seed runs with no cache disk and
-with the cluster cache on, where the hosts fill each other beside everything
-else they do. A failure prints the work that differs between the two runs.
+served, every byte and every outcome. Each seed runs with no cache disk, with
+the cluster cache on, where the hosts fill each other beside everything else
+they do, through a hot tier, and with the cache on shards, which the
+controller moves as the campaign kills and restarts hosts. A failure prints
+the work that differs between the two runs.
 
 The second run of each seed is shaken (`sim.Config.Shake`). Before and after
 every wait in a simulated dependency, and before every send, a goroutine
@@ -2337,6 +2426,31 @@ now, which a drain changes, and a quiet host forgotten, so the membership
 drains it. Ranking takes no context, so no guard reaches it, and Gremlins
 mutates it instead.
 
+Five guards break the shards:
+
+```sh
+SPROUTFS_SIM_BUG=shard-ignore-lease \
+  go test ./checkpoint -run '^(TestAShardMovesWithItsStripes|TestAStaleMemberThatStillHoldsTheDeviceIsFenced)$' -count=1
+SPROUTFS_SIM_BUG=membership-let-attached-shard \
+  go test ./membership -run '^TestAShardIsLetGoOnlyOnceTheCloudHasItOnNoMachine$' -count=1
+SPROUTFS_SIM_BUG=membership-detach-held-shard \
+  go test ./membership -run '^TestCarryDetachesAReleasingShardOnlyOnceItsHostClosedIt$' -count=1
+SPROUTFS_SIM_BUG=host-open-shard-without-reading-again \
+  go test ./host -run '^TestAHostOpensAShardOnlyWhileTheObjectStillAssignsItThere$' -count=1
+SPROUTFS_SIM_BUG=orchestrator-keep-terminating-host \
+  go test ./cmd/sproutfs-orchestrator -run '^TestTheOrchestratorMovesShardsOffATerminatingHost$' -count=1
+```
+
+The first ignores a shard's lease: a member opens a shard under an assignment
+older than the lease, and one whose lease another member took goes on
+writing it. The second lets a releasing shard go while the cloud still has it
+attached, or cannot say where it is. The third detaches a releasing shard from
+under the host that still holds it open. The fourth opens a shard by the
+membership the host holds without reading the object again, so a host behind
+takes a shard that moved to another host of its machine and keeps that host
+from opening it. The last takes a terminating host pod for one that stays, so
+its shards stay on it until its node is gone.
+
 `TestAdversarialStarters` runs a fake VMM, not Firecracker, but it runs only on
 Linux and as root, because it gives the process's directory to another user.
 On a Mac, run these through the Lima instance, as the next section shows.
@@ -2451,6 +2565,26 @@ the condition on a write and the release before an assignment, and fail
 found the model's own gap: a host that wrote a let-go had not adopted the
 generation it wrote, and still served the disk by its old copy.
 
+`spec/shards/Shards.tla` is a shard moving between members: a controller
+that writes the membership one step at a time and acts on the cloud from a
+snapshot it read earlier, a cloud that attaches a disk to one machine at a
+time and takes it from every process of a machine it detaches it from, hosts
+of which two share a machine and open a device one process at a time, the
+lease in the shard's header, which a host takes as it opens the shard and
+reads again before every region it writes, reports of what a host holds that
+arrive late, and hosts that die with the shard open. Its invariants are
+`OneServer` (no two hosts serve the shard by the copies they hold),
+`OneOpenerAMachine` and `NoStaleWrite` (no host writes a region while another
+assignment holds the lease). `MCShards` runs three hosts over eight
+generations in about thirty seconds, `MCMultiAttach` two hosts under a cloud
+that may attach the disk to a second machine, and `deep/Nine` three hosts over
+nine generations, two of which may die, in about two minutes. Its mutants let
+a shard go as soon as it is released, which fails `OneServer` under the cloud
+that attaches twice, and ignore the lease as well, which fails `NoStaleWrite`.
+The model shows the guards are layered: under a single-writer cloud, a shard
+let go early is still never served twice, because the cloud refuses the second
+attach until a detach has taken the device from the first host.
+
 Three specs model the cluster's disk cache that
 [the plan](../plans/disk-cache-2026-10-02.md) proposes, before its code. Each
 abstracts the others to the little it needs, so that no run of TLC takes more
@@ -2472,10 +2606,14 @@ its code, and a filler is held to its own list and code as a cache taking a
 keep is, as `checkpoint`'s fills do. Its configurations run four hosts with a
 2+1 code, two with 1+1, three with 2+2 so that stripes go round the hosts,
 and three whose code changes from 2+1 to 1+1 (`MCChange`) and from 1+1 to
-2+1 (`MCWiden`). Its mutants put back a read without the key check, a stripe
+2+1 (`MCWiden`), and three shards that move between hosts without bound as
+compute scales (`MCShards`), whose `MovesKeepStripes` says a window all of
+whose stripes were readable has every one readable again once every shard
+serves. Its mutants put back a read without the key check, a stripe
 used without its checksum, a part filled before its PUT succeeded, a keep
 taken by a cache its own list does not rank, B5, and a read that tries only
-its own code, which fails `SurvivesLosses` once the code changes.
+its own code, which fails `SurvivesLosses` once the code changes, and a
+shard that loses its stripes as it moves, which fails `MovesKeepStripes`.
 `epoch-collision.cfg` is wired as a mutant too: a name created again that
 draws its old epoch must fail `NoWrongBytes`, which shows the model reaches
 the risk the plan accepts.
@@ -2695,6 +2833,45 @@ sign of a busy answer's shortfall, a read that names no pages, and the
 condition of a guard. The third killed all 5 it covered; the 5 not covered are
 the interval constant, a `case` line, and the loop that steps on a timer,
 which the tests drive by calling `StepMembership`.
+
+The shards are mutated the same way, a package at a time:
+
+```sh
+python3 scripts/mutate-gremlins.py --package checkpoint --suite full --file shards.go --file peercache.go \
+  --run '^(TestAShard|TestAStaleMember|TestRemovingAShard|TestACacheKeeps|TestACacheRefuses|TestACacheDrops|TestACacheReports|TestRankOneGives)' \
+  --gremlins /path/to/gremlins --output /tmp/shard-cache-mutations
+python3 scripts/mutate-gremlins.py --package membership --suite full --file attach.go --file shardcontrol.go \
+  --file controller.go --gremlins /path/to/gremlins --output /tmp/shard-membership-mutations
+python3 scripts/mutate-gremlins.py --package host --suite full --file shards.go \
+  --run '^(TestHostsServe|TestAHostStartedAgain|TestAHostOpensAShard|TestAHostReopensAShard)' \
+  --gremlins /path/to/gremlins --output /tmp/shard-host-mutations
+python3 scripts/mutate-gremlins.py --package platform/sim --suite full --file networkdisk.go \
+  --run '^(TestANetworkDisk|TestTheClouds|TestAMachineThatCrashes)' \
+  --gremlins /path/to/gremlins --output /tmp/network-disk-mutations
+python3 scripts/mutate-gremlins.py --package cmd/sproutfs-orchestrator --suite full --integration \
+  --file membership.go --run '^(TestTheOrchestratorMovesShards|TestTheMembership|TestAHostDrains|TestEachStep|TestAQuietHostKeeps)' \
+  --gremlins /path/to/gremlins --output /tmp/orchestrator-shard-mutations
+```
+
+On 2026-10-04 the first pass killed, of the cache's shards, 17 with 3 alive
+and 8 not covered; of the membership's steps and its carrying out, 39 with 2
+alive and 6 not covered; of the host's shards, 12 with 8 alive; of the
+simulated cloud, 28 with 6 alive; and of the orchestrator's, all 7 it
+covered. Tests of what the survivors changed brought them to 24, 42, 15, 32
+and 7 killed: a removal waits for a read in flight, a shard the cache keeps
+already is refused, a pass of the controller over a cloud that cannot
+describe a disk keeps its listed weight, and one with nothing to do reports
+no change, a shard assigned to its host again is reopened, a shard's share
+is its device less its header region, a host that left keeps no shard, a
+write that ends at a device's last byte is taken, and a crash leaves another
+machine's disk alone. The cache's add lost a check AddShard already makes.
+What is left alive changes nothing a run can see: a read of no bytes, which
+an earlier branch takes, the membership's nil check, which the reads of the
+cluster drive outside this selection, which of two members equally loaded
+takes a shard or gives one up, how long the slow-close site holds a shard,
+log lines' conditions, the size of a simulated disk's filesystem, and errors
+of the simulated disk that only a cancelled context makes. The orchestrator's
+5 not covered are its interval constant and the loop that steps on a timer.
 
 The peer server is mutated the same way. Its page serving moved from
 `vmmigrate`, whose tests still drive most of it, so that part runs with
