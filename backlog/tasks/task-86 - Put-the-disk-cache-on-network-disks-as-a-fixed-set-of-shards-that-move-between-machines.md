@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-03 23:10'
-updated_date: '2026-10-04 04:10'
+updated_date: '2026-10-04 05:57'
 labels:
   - cluster
   - storage
@@ -71,4 +71,6 @@ Progress 2026-10-04 (@claude). Mechanism chosen: the membership is the authority
 Merged main (d3377d88, guards.json kept both sides); just check exit 0 with check-guards.py killing all five TASK-86 guards. GCE move (scripts/bench-shard-move-gce.sh, 2 x c3-standard-4, Hyperdisk Balanced 256 GB, 32 GiB filled, controller pass 1 s): six moves, three drained and three died, 13.0 to 14.6 s each to serving on the other host; about 10 s is Compute Engine's detach and attach calls; read back 529 regions from tables in 0.30 s, none scanned, all 16,512 entries kept. Hyperdisk Balanced does not attach to N2 (API refuses), so its shards need C3/C4/N4; a 4-vCPU C3 reads 400 MiB/s from it, below the 500 MiB/s budget. Every VM and disk deleted and verified.
 
 Criteria checked on evidence: #2 internal/simtest TestHostsScaleUpAndDownWithNoStoreReadForACachedWindow; #4 membership Next/ShardControl compare-and-set (membership/shards_test.go); #5 checkpoint per-disk fills/reads and per-shard budget (checkpoint/shards_test.go, host/shards_test.go); #7 docs/measurements/gce-shards-2026-10-04.md; #8 campaign TestShardsSurviveTheirFaultsAndReachTheirProbes, five guards killed by check-guards.py, Gremlins in docs/testing.md, fingerprint shards arm stable, spec/shards and spec/diskcache MCShards within 70 s, deep Nine 1m58s; #9 Carry/ShardControl tests, spec/shards OneServer, GCE move timed. Left unchecked for the owner: #1 and #3 name a StatefulSet that Kubernetes reschedules, which the owner's later note replaced with membership-driven attachment (no StatefulSet; the orchestrator attaches through Compute Engine's API; read back, hedging and no store read are shown by TestReadsDuringAShardsMoveHedgeAroundIt); #6 manifests and sizing are written and pass the manifest tests, but were not applied to a real GKE or k3s cluster.
+
+Merged into main as 536a385b with just check passing. Open for the owner: criteria #1 and #3 still describe a StatefulSet that Kubernetes reschedules, which the membership-assignment decision replaced (left unchecked); #6 manifests never applied to a real GKE or k3s cluster; no AWS adapter yet; StorageClass pinned to us-east4-a; Hyperdisk Balanced needs C3/C4/N4 hosts (8 vCPU to serve 500 MiB/s).
 <!-- SECTION:NOTES:END -->
