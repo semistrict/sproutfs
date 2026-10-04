@@ -145,6 +145,28 @@ def main(root):
     out.append('\n### The scan, ZRANGE of 100 members at a time\n')
     out.append(table(header, phase_rows(cases, 'scan')))
 
+    out.append('\n### The chase\'s requests in each band of milliseconds, over every round\n')
+    bands = [(0, 0.5), (0.5, 1), (1, 2), (2, 4), (4, 8), (8, 16), (16, 32), (32, 64), (64, 128), (128, 256),
+             (256, 512), (512, None)]
+    rows = []
+    for name in CASES:
+        micros = [v for c in cases if c.meta['case'] == name for v in c.walk['chase']['micros']]
+        if micros:
+            rows.append([name] + [f'{sum(1 for v in micros if low * 1000 <= v and (high is None or v < high * 1000)):,}'
+                                  for low, high in bands])
+    out.append(table(['Case'] + [f'{low}–{high}' if high else f'{low}+' for low, high in bands], rows))
+
+    out.append('\n### The step of the chase by which 90 % of its time had passed\n')
+    rows = []
+    for c in sorted(cases, key=lambda c: (c.meta['case'], c.meta['round'])):
+        micros, passed = c.walk['chase']['micros'], 0
+        for step, value in enumerate(micros, 1):
+            passed += value
+            if passed >= 0.9 * sum(micros):
+                break
+        rows.append([c.meta['case'], str(c.meta['round']), f'{step:,}'])
+    out.append(table(['Case', 'round', 'step'], rows))
+
     out.append('\n### Each round\n')
     rows = []
     for c in sorted(cases, key=lambda c: (c.meta['case'], c.meta['round'])):

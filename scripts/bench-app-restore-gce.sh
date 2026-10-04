@@ -278,6 +278,11 @@ CONFIG
 
 run() {
     mkdir -p "$results"
+    # The rounds' files are unpacked over this directory, so the files of an
+    # earlier run there, even one that failed, would be summarised as this
+    # run's.
+    [[ ! -e $results/sproutfs-app-restore ]] ||
+        { echo "$results already holds a run's rounds; name another directory." >&2; return 1; }
     "${cloud[@]}" compute scp --zone="$zone" "$repo/scripts/lib/app-restore-run.sh" "$server:"
     # Every setting was checked above to be digits or case names and commas,
     # so each crosses the remote shell as one word.
