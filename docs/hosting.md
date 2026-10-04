@@ -1250,10 +1250,11 @@ staging, and no cache.
 orchestrator's `SPROUTFS_SHARDS=gce`, and `SPROUTFS_SHARD_CLAIMS`, the label
 selector of the shards' claims in its namespace. The orchestrator needs to
 list claims and get PersistentVolumes, and its service account needs
-`compute.instances.attachDisk`, `compute.instances.detachDisk`,
-`compute.disks.use` and `compute.disks.get`. `deploy/README.md` gives the
-manifests and the sizing. AWS is the same design over EC2's `AttachVolume`
-and `DetachVolume`, and its adapter is not written.
+`compute.disks.get` and `compute.disks.use` on the shards,
+`compute.instances.get`, `compute.instances.attachDisk` and
+`compute.instances.detachDisk` on the nodes, and `compute.zoneOperations.get`.
+`deploy/README.md` gives the manifests and the sizing. AWS is the same design
+over EC2's `AttachVolume` and `DetachVolume`, and its adapter is not written.
 
 ## The code
 
