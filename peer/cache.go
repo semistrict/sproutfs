@@ -546,25 +546,45 @@ func (p *Peer) ReadStripes(ctx context.Context, route membership.Route, read Str
 // Keep asks the peer to write stripes to the disk route names, under the
 // route's generation. A keep is bulk write, and nothing waits on it: one over
 // this host's background budget, or one the cache does not write, is
-// ErrDropped, never queued.
+// ErrDropped, never queued. It takes the keep's room in the budget, at the
+// priority of its kind, for as long as the keep is on its way.
 func (p *Peer) Keep(ctx context.Context, route membership.Route, keep Keep) error {
+	size := int64(len(keep.Payload))
+	if p.table.bug("peer-queue-keeps") {
+		if err := p.table.background.Acquire(ctx, Resident, size); err != nil {
+			return err
+		}
+	} else if !p.table.background.TryAcquire(keep.Priority(), size) {
+		return fmt.Errorf("%w: %w", ErrDropped, ErrNoRoom)
+	}
+	defer p.table.background.Release(size)
+	return p.KeepAdmitted(ctx, route, keep)
+}
+
+// Priority is the background budget's priority of a keep of this kind: a
+// repair's, a publication's fill's, or a fill's from a read or a pull.
+func (keep Keep) Priority() Priority {
+	switch {
+	case keep.Repair:
+		return Repair
+	case keep.Publication:
+		return PublicationFill
+	}
+	return Fill
+}
+
+// KeepAdmitted is Keep for a caller that holds the keep's room in this host's
+// background budget already, which it took at the keep's priority and gives
+// back once KeepAdmitted returns. A caller that decides which of its keeps
+// find room, in an order of its own, takes the room before it sends: keeps
+// sent beside each other would otherwise find the budget full in whatever
+// order the Go scheduler runs them.
+func (p *Peer) KeepAdmitted(ctx context.Context, route membership.Route, keep Keep) error {
 	if p.Down() {
 		p.table.probe(ProbeSkippedDown)
 		return ErrDown
 	}
 	size := int64(len(keep.Payload))
-	priority := Fill
-	if keep.Repair {
-		priority = Repair
-	}
-	if p.table.bug("peer-queue-keeps") {
-		if err := p.table.background.Acquire(ctx, Resident, size); err != nil {
-			return err
-		}
-	} else if !p.table.background.TryAcquire(priority, size) {
-		return fmt.Errorf("%w: %w", ErrDropped, ErrNoRoom)
-	}
-	defer p.table.background.Release(size)
 	request := peerv1.Keep_builder{Cache: route.Disk[:], Window: windowToWire(keep.Window),
 		K: proto.Uint32(uint32(keep.Code.K)), M: proto.Uint32(uint32(keep.Code.M)), Items: itemsToWire(keep.Items),
 		Repair: proto.Bool(keep.Repair), Publication: proto.Bool(keep.Publication),

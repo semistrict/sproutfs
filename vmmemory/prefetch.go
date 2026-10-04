@@ -120,10 +120,13 @@ type prefetch struct {
 	// what a fault waiting for one of them waits on.
 	done   chan struct{}
 	cancel context.CancelCauseFunc
-	// reading is set from the split until the pages have landed: the slots
-	// are reserved and not yet pages. cancelled marks one an allocation has
-	// cancelled already. Both are guarded by Host.mu.
-	reading, cancelled bool
+	// reading is set from the split until the read has ended, and holding
+	// until every slot is settled: given back, or holding a page that landed,
+	// idle. Until then a slot is neither free nor a page, and an allocation
+	// short of one waits for it rather than evict (cancelPrefetchesLocked).
+	// cancelled marks one an allocation has cancelled already. All are guarded
+	// by Host.mu.
+	reading, holding, cancelled bool
 	// finished is set once the read has ended (finish). Guarded by Host.mu.
 	finished bool
 	// ctx is what the prefetch runs under: the values of the context of the
@@ -154,11 +157,11 @@ func streaming(ctx context.Context) bool {
 
 // splitPrefetch takes every reservation of the window but the faulting page's
 // out of the plan, which is left to read the faulting page alone. The pages
-// that can land as clean shared pages become a prefetch, which the caller
-// starts; every other reservation goes back, and its page is left to its own
-// fault. It returns nil where nothing is prefetched. A fault that does not
-// prefetch reserved nothing for the rest of its window (planRest).
-func (p *windowPlan) splitPrefetch(ctx context.Context, index uint64) *prefetch {
+// that can land as clean shared pages, which into names the file of
+// (planRest), become a prefetch, which the caller starts; every other
+// reservation goes back, and its page is left to its own fault. It returns nil
+// where nothing is prefetched.
+func (p *windowPlan) splitPrefetch(ctx context.Context, index uint64, into []*arenaFile) *prefetch {
 	r := p.memoryRegion
 	h := r.host
 	var pages []prefetchPage
@@ -170,8 +173,7 @@ func (p *windowPlan) splitPrefetch(ctx context.Context, index uint64) *prefetch 
 			continue
 		}
 		p.reserved[i], p.fresh[i] = fileSlot{slot: -1}, false
-		key, named := p.identity(page)
-		if named && !key.zero() && at.file == p.fileOf(page) && !p.unpublished(page) {
+		if key, _ := p.identity(page); into[i] == at.file {
 			pages = append(pages, prefetchPage{page: page, key: key, at: at})
 		} else {
 			back = append(back, at)
@@ -211,7 +213,7 @@ func (p *windowPlan) splitPrefetch(ctx context.Context, index uint64) *prefetch 
 		return nil
 	}
 	pf := &prefetch{memoryRegion: r, start: p.start, end: p.end, pages: kept, done: make(chan struct{}),
-		reading: true}
+		reading: true, holding: true}
 	for _, page := range kept {
 		h.inflight[page.key] = pf
 	}
@@ -307,17 +309,28 @@ func (pf *prefetch) finish() {
 			delete(h.inflight, page.key)
 		}
 	}
-	delete(h.prefetches, pf)
 	h.prefetching--
 	h.signal()
 	h.mu.Unlock()
 	close(pf.done)
 }
 
+// settle ends the prefetch's hold on its slots, once each is given back or
+// holds a page that landed: an allocation waiting for them goes on.
+func (pf *prefetch) settle() {
+	h := pf.memoryRegion.host
+	h.mu.Lock()
+	pf.holding = false
+	delete(h.prefetches, pf)
+	h.signal()
+	h.mu.Unlock()
+}
+
 // land reads the prefetch's pages with one backing read and publishes each
 // as a clean idle page under its identity. It reports the pages that landed;
-// every slot it did not fill goes back.
+// every slot it did not fill goes back. It settles the slots when it returns.
 func (pf *prefetch) land(ctx context.Context) []prefetchPage {
+	defer pf.settle()
 	r := pf.memoryRegion
 	h := r.host
 	ps := h.pageSize
@@ -358,8 +371,14 @@ func (pf *prefetch) land(ctx context.Context) []prefetchPage {
 				"pages", len(pf.pages), "error", err)
 		}
 		pf.finish()
+		if prefetchSettleSeam != nil {
+			prefetchSettleSeam()
+		}
 		pf.drop(ctx, pf.pages)
 		return nil
+	}
+	if prefetchSettleSeam != nil {
+		prefetchSettleSeam()
 	}
 	h.mu.Lock()
 	h.stats.Loads++
@@ -415,6 +434,11 @@ func (pf *prefetch) land(ctx context.Context) []prefetchPage {
 	}
 	return landed
 }
+
+// prefetchSettleSeam runs once a prefetch's read is over and before its slots
+// are settled: given back where the read failed, or filled with the pages it
+// landed. A test holds a prefetch there to put an allocation in that moment.
+var prefetchSettleSeam func()
 
 // drop gives the slots of pages that did not land back.
 // They go back together, under one hold of the host lock, so an allocation
@@ -538,23 +562,27 @@ func (p *windowPlan) bindLanded(ctx context.Context, page prefetchPage) {
 
 // cancelPrefetchesLocked cancels every prefetch still reading, whose slots an
 // allocation that would otherwise evict a page a guest maps takes instead. It
-// reports whether any is still reading, cancelled now or before: the
-// allocation waits for their slots to come back. Caller holds h.mu.
+// reports whether any prefetch still holds slots, reading, cancelled, or
+// giving them back or landing its pages in them: the allocation waits for
+// those slots to come back free or as idle pages. A prefetch whose read ended
+// gives its slots back a moment later; until 2026-10-04 an allocation in that
+// moment found no prefetch reading and evicted a page the guest mapped.
+// Caller holds h.mu.
 func (h *Host) cancelPrefetchesLocked(ctx context.Context) bool {
-	reading := false
+	holding := false
 	for pf := range h.prefetches {
-		if !pf.reading {
+		if !pf.holding {
 			continue
 		}
-		reading = true
-		if !pf.cancelled {
+		holding = true
+		if pf.reading && !pf.cancelled {
 			pf.cancelled = true
 			pf.cancel(errMemoryPressure)
 			h.stats.PrefetchCancelled++
 			sim.Probe(ctx, ProbePrefetchCancelled)
 		}
 	}
-	return reading
+	return holding
 }
 
 // cancelPrefetches cancels this memory region's prefetches and waits until
@@ -641,7 +669,8 @@ type faultHistory struct {
 // or in the window before, and records the window. A memory region's first
 // fault counts as following: a boot and a restore begin by reading forwards.
 //
-// Only such a fault prefetches the rest of its run. On GCE on 2026-10-04 a
+// Only such a fault plans the rest of its window and prefetches it; every
+// other plans its page alone (planFault). On GCE on 2026-10-04 a
 // chain of dependent 4 KiB faults read from the cluster took 24 ms a hop when
 // every fault prefetched its run, against 0.67 ms for a page alone: each
 // 2,047-page prefetch is about 100 ms of processor, and the prefetches of the

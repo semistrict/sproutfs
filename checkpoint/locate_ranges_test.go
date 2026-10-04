@@ -87,3 +87,69 @@ func TestLocateCrossPageRangesAgainstPageIdentities(t *testing.T) {
 		}
 	})
 }
+
+// A 4 KiB-page volume of three segments and a short page: the first segment's
+// table ends in a hole and the pages past its last entry are holes, the
+// second's pages are published in runs between holes, and the third is
+// addressed by no table at all. Locating any range of it, one segment's table
+// lookup and a scan of its entries at a time, reports what the flat model of
+// pages says, wherever the range begins and ends.
+func TestLocateRangesAcrossSegmentsOf4KiBPages(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const (
+			page     = checkpoint.PageSize4KiB
+			segment  = 16 << 10
+			pages    = 3*segment + 1
+			size     = pages*page - checkpoint.SectorSize
+			sequence = 2
+		)
+		store := mustStore(t, checkpoint.Config{ObjectStore: sim.New(sim.Config{}).ObjectStore()})
+		ref := control.Ref{VM: "located-4k", Sequence: 1}
+		root, err := store.Root(t.Context(), ref, map[string]checkpoint.VolumeSpec{
+			"ram": {Size: size, PageSize: page}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ref.Sequence = sequence
+		publication := store.Begin(root, ref)
+		published := map[uint64]bool{}
+		for _, run := range [][2]uint64{{0, 1}, {5, 10}, {segment - 40, segment - 3},
+			{segment + 100, segment + 200}, {segment + 201, segment + 202}, {2*segment - 1, 2 * segment}} {
+			for number := run[0]; number < run[1]; number++ {
+				publication.Dirty("ram", number)
+				published[number] = true
+			}
+		}
+		index, err := publication.Commit(t.Context(), offsetSource{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		points := []uint64{0, page - 1, page, 5*page + 7, 9 * page, segment*page - 4*page - 1, segment * page,
+			(segment + 150) * page, (segment+201)*page + 3, 2*segment*page - page, 2 * segment * page,
+			(2*segment + 77) * page, size - 1, size}
+		for left, offset := range points {
+			for _, end := range points[left:] {
+				var want []control.Extent
+				for number := uint64(0); number < pages; number++ {
+					start, stop := max(offset, number*page), min(end, (number+1)*page)
+					if start >= stop {
+						continue
+					}
+					identity := control.ZeroIdentity
+					if published[number] {
+						identity = control.Identity{Ref: ref, Volume: "ram", Page: number}
+					}
+					if n := len(want); n > 0 && identity.Zero && want[n-1].Identity.Zero {
+						want[n-1].Length += stop - start
+						continue
+					}
+					want = append(want, control.Extent{Offset: start, Length: stop - start, Identity: identity})
+				}
+				got, err := index.Locate(t.Context(), "ram", offset, end-offset)
+				if err != nil || !slices.Equal(got, want) {
+					t.Fatalf("locate [%d,%d): got %+v, %v; want %+v", offset, end, got, err, want)
+				}
+			}
+		}
+	})
+}

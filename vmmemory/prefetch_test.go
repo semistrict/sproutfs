@@ -313,49 +313,60 @@ func TestAPrefetchTakesOnlyFreeSlots(t *testing.T) {
 // Memory pressure drops a prefetch. With a prefetch's read held and every
 // other slot a page the guest maps, a fault that needs a slot cancels the
 // prefetch and takes one of its slots instead of evicting a page the guest
-// is using. It waits for nothing but its own page's read.
+// is using. It waits for nothing but its own page's read and the cancelled
+// prefetch's slots: held, the cancelled prefetch gives them back a moment
+// after its read ends, and the fault waits that moment rather than evict.
 func TestAnAllocationCancelsAPrefetchRatherThanEvict(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 8, LogicalPages: 32, DirtyPages: 8,
-			ReadAheadPages: 4, PrefetchRuns: 1})
-		b := f.slowBacking(24)
-		b.held = make(chan struct{})
-		time.AfterFunc(time.Hour, func() { close(b.held) })
-		r, m := f.attach(b)
-		// The first fault's prefetch holds three slots and is the one in
-		// flight; the runs of the next three are left unread for the bound,
-		// and the fifth finds a slot for its own page alone.
-		for _, page := range []uint64{0, 4, 8, 12, 16} {
-			if err := r.Fault(f.ctx, page, false); err != nil {
-				t.Fatal(err)
-			}
-		}
-		started := time.Now()
-		if err := r.Fault(f.ctx, 20, false); err != nil {
-			t.Fatal(err)
-		}
-		if took := time.Since(started); took != pageRead {
-			t.Fatalf("the fault short of a slot took %v, want %v: its own page's read", took, pageRead)
-		}
-		if err := r.SettlePrefetches(f.ctx); err != nil {
-			t.Fatal(err)
-		}
-		s := hostStats(t, f)
-		// The cancelled prefetch's three slots came back, the fault took one,
-		// and its own prefetch, the one in flight now, the other two.
-		if s.Evictions != 0 || s.PrefetchCancelled != 1 || s.PrefetchRefused != 3 || s.PrefetchDropped != 3 ||
-			s.PrefetchedPages != 2 {
-			t.Fatalf("evictions %d, cancelled %d, refused %d, dropped %d, landed %d; want 0, 1, 3, 3, 2",
-				s.Evictions, s.PrefetchCancelled, s.PrefetchRefused, s.PrefetchDropped, s.PrefetchedPages)
-		}
-		for _, page := range []uint64{0, 4, 8, 12, 16, 20} {
-			requirePage(t, m, page)
-		}
-		if probes := sim.RuntimeFrom(f.ctx).Probes(); probes[vmmemory.ProbePrefetchCancelled] != 1 ||
-			probes[vmmemory.ProbePrefetchRefused] != 3 {
-			t.Fatalf("probes %v, want the prefetch cancelled once and refused three times", probes)
-		}
-	})
+	for _, held := range []time.Duration{0, time.Millisecond} {
+		t.Run(fmt.Sprintf("settle-after=%v", held), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 8, LogicalPages: 32, DirtyPages: 8,
+					ReadAheadPages: 4, PrefetchRuns: 1})
+				b := f.slowBacking(24)
+				b.held = make(chan struct{})
+				time.AfterFunc(time.Hour, func() { close(b.held) })
+				// A prefetch whose read is over settles its slots that much
+				// later, which is when an allocation waiting for them runs.
+				vmmemory.SetPrefetchSettleSeam(t, func() { time.Sleep(held) })
+				r, m := f.attach(b)
+				// The first fault's prefetch holds three slots and is the one
+				// in flight; the runs of the next three are left unread for
+				// the bound, and the fifth finds a slot for its own page alone.
+				for _, page := range []uint64{0, 4, 8, 12, 16} {
+					if err := r.Fault(f.ctx, page, false); err != nil {
+						t.Fatal(err)
+					}
+				}
+				started := time.Now()
+				if err := r.Fault(f.ctx, 20, false); err != nil {
+					t.Fatal(err)
+				}
+				if took := time.Since(started); took != held+pageRead {
+					t.Fatalf("the fault short of a slot took %v, want %v: the cancelled prefetch's slots, and "+
+						"its own page's read", took, held+pageRead)
+				}
+				if err := r.SettlePrefetches(f.ctx); err != nil {
+					t.Fatal(err)
+				}
+				s := hostStats(t, f)
+				// The cancelled prefetch's three slots came back, the fault
+				// took one, and its own prefetch, the one in flight now, the
+				// other two.
+				if s.Evictions != 0 || s.PrefetchCancelled != 1 || s.PrefetchRefused != 3 ||
+					s.PrefetchDropped != 3 || s.PrefetchedPages != 2 {
+					t.Fatalf("evictions %d, cancelled %d, refused %d, dropped %d, landed %d; want 0, 1, 3, 3, 2",
+						s.Evictions, s.PrefetchCancelled, s.PrefetchRefused, s.PrefetchDropped, s.PrefetchedPages)
+				}
+				for _, page := range []uint64{0, 4, 8, 12, 16, 20} {
+					requirePage(t, m, page)
+				}
+				if probes := sim.RuntimeFrom(f.ctx).Probes(); probes[vmmemory.ProbePrefetchCancelled] != 1 ||
+					probes[vmmemory.ProbePrefetchRefused] != 3 {
+					t.Fatalf("probes %v, want the prefetch cancelled once and refused three times", probes)
+				}
+			})
+		})
+	}
 }
 
 // A page a migration's source turns out still to hold is the guest's own state
@@ -408,8 +419,11 @@ func TestAStreamsFaultReadsItsWholeRun(t *testing.T) {
 		for page := range uint64(8) {
 			requirePage(t, m, page)
 		}
-		if s := hostStats(t, f); s.Prefetches != 0 || s.Loads != 1 {
-			t.Fatalf("prefetches %d, loads %d; want none and one", s.Prefetches, s.Loads)
+		// The run is reserved around the faulting page as one run of slots,
+		// so one mapping command installs it whole.
+		if s := hostStats(t, f); s.Prefetches != 0 || s.Loads != 1 || s.Mappings != 1 || s.MappingRuns != 1 {
+			t.Fatalf("prefetches %d, loads %d, mapping commands %d of %d runs; want none, one, and one of one",
+				s.Prefetches, s.Loads, s.Mappings, s.MappingRuns)
 		}
 	})
 }

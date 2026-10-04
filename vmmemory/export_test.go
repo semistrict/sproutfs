@@ -29,6 +29,15 @@ func SetEvictionSeam(t *testing.T, seam func(slot int)) {
 	t.Cleanup(func() { evictionSeam = previous })
 }
 
+// SetPrefetchSettleSeam installs what a prefetch runs once its read is over
+// and before its slots are given back or filled, so a test can put an
+// allocation in that moment. It is restored when the test ends.
+func SetPrefetchSettleSeam(t *testing.T, seam func()) {
+	previous := prefetchSettleSeam
+	prefetchSettleSeam = seam
+	t.Cleanup(func() { prefetchSettleSeam = previous })
+}
+
 // SetReclaimSeam installs what a reclaim for a private page runs while the
 // memory region is given up, so a test can end that page's dirty epoch in the one
 // window a fault serving it cannot see. It is restored when the test ends.

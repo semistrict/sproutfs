@@ -5,6 +5,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -50,15 +52,16 @@ func (chainSource) ReadPage(_ context.Context, _ string, page uint64, dst []byte
 }
 
 // chainStore is a store over the runtime's object store, reading through a
-// page cache, holding one checkpoint of one 4 KiB-page volume of chainPages
-// pages, all published.
+// page cache, holding one checkpoint of one 4 KiB-page volume of pages pages,
+// all published.
 type chainStore struct {
 	store *checkpoint.Store
 	cache *checkpoint.Cache
 	ref   control.Ref
+	pages uint64
 }
 
-func newChainStore(t *testing.T, ctx context.Context, runtime *sim.Runtime) *chainStore {
+func newChainStore(t testing.TB, ctx context.Context, runtime *sim.Runtime, pages uint64) *chainStore {
 	t.Helper()
 	cache, err := checkpoint.NewCache(ctx, testresource.New(), checkpoint.CacheConfig{})
 	if err != nil {
@@ -76,13 +79,13 @@ func newChainStore(t *testing.T, ctx context.Context, runtime *sim.Runtime) *cha
 	}
 	ref := control.Ref{VM: "chain", Sequence: 1}
 	root, err := store.Root(ctx, ref, map[string]checkpoint.VolumeSpec{
-		"ram": {Size: chainPages * checkpoint.PageSize4KiB, PageSize: checkpoint.PageSize4KiB}})
+		"ram": {Size: pages * checkpoint.PageSize4KiB, PageSize: checkpoint.PageSize4KiB}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	ref.Sequence++
 	publication := store.Begin(root, ref)
-	for page := range uint64(chainPages) {
+	for page := range pages {
 		publication.Dirty("ram", page)
 	}
 	if _, err := publication.Commit(ctx, chainSource{}); err != nil {
@@ -91,7 +94,7 @@ func newChainStore(t *testing.T, ctx context.Context, runtime *sim.Runtime) *cha
 	// The publication left the segment's table in the cache. The pager reads
 	// as a host that restores the checkpoint, which holds none of it.
 	cache.Clear()
-	return &chainStore{store: store, cache: cache, ref: ref}
+	return &chainStore{store: store, cache: cache, ref: ref, pages: pages}
 }
 
 // chainBacking is the checkpoint's volume as a pager's backing, opened by
@@ -99,18 +102,19 @@ func newChainStore(t *testing.T, ctx context.Context, runtime *sim.Runtime) *cha
 type chainBacking struct {
 	store *checkpoint.Store
 	index *checkpoint.Index
+	pages uint64
 }
 
-func (c *chainStore) backing(t *testing.T, ctx context.Context) *chainBacking {
+func (c *chainStore) backing(t testing.TB, ctx context.Context) *chainBacking {
 	t.Helper()
 	index, err := c.store.Open(ctx, c.ref)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &chainBacking{store: c.store, index: index}
+	return &chainBacking{store: c.store, index: index, pages: c.pages}
 }
 
-func (b *chainBacking) Size() uint64                 { return chainPages * checkpoint.PageSize4KiB }
+func (b *chainBacking) Size() uint64                 { return b.pages * checkpoint.PageSize4KiB }
 func (b *chainBacking) PageSize() uint64             { return checkpoint.PageSize4KiB }
 func (b *chainBacking) Verify(context.Context) error { return nil }
 
@@ -146,14 +150,48 @@ func requireChainPage(t *testing.T, m *mapping, page uint64) {
 	}
 }
 
+// faultPlanning is the planning the faults themselves did, as the pages each
+// piece of it located, in the order the pieces began: every piece of
+// vmmemory.WorkPlan but those of the prefetches' own tasks, which plan their
+// windows again to map what they landed.
+func faultPlanning(runtime *sim.Runtime) []int {
+	var pages []int
+	for _, piece := range runtime.WorkPieces(vmmemory.WorkPlan) {
+		if !strings.Contains(piece.Task, "prefetch-") {
+			pages = append(pages, piece.Bytes)
+		}
+	}
+	return pages
+}
+
+// chainPager is a 4 KiB pager over the chain's checkpoint with a read-ahead
+// run of chainWindow pages, and the memory region it attaches.
+func chainPager(t *testing.T, ctx context.Context, runtime *sim.Runtime) (*fixture, *vmmemory.MemoryRegion, *mapping,
+	*chainStore) {
+	t.Helper()
+	chain := newChainStore(t, ctx, runtime, chainPages)
+	f, err := newFixtureOn(t, ctx, runtime.NewDisk("pager", sim.DiskConfig{}), vmmemory.Config{
+		PageSize: checkpoint.PageSize4KiB, ResidentPages: 16 * chainWindow, LogicalPages: chainPages,
+		DirtyPages: chainWindow, ReadAheadPages: chainWindow, WriteAheadPages: 1, PrefetchRuns: 16})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, m := f.attach(chain.backing(t, ctx))
+	// A hop that fails leaves the prefetches to settle before the memory
+	// region is taken down.
+	t.Cleanup(func() { _ = r.SettlePrefetches(context.Background()) })
+	return f, r, m, chain
+}
+
 // A guest that follows pointers through 4 KiB pages faults once a hop, each
 // fault in a window of its own and none in the window after a recent one, so
 // none prefetches but the first. Each hop costs exactly one read of the store
-// and the planning of its own page: the fault plans the 512 pages of its
-// window while its read is under way, and the segment that locates them is
-// decoded once, by the first lookup, for every hop after. Planning the window
-// before the read (pager-plan-the-window-first) adds the window's planning to
-// every hop; decoding the segment for every lookup
+// and the planning of its own page, which is all a fault at random plans: one
+// lookup of one page. The first hop, the memory region's first fault, plans
+// its window too, in one lookup, and the segment that locates them is decoded
+// once, by the first lookup, for every hop after. Planning the window of a
+// fault at random (pager-plan-the-window-at-random) adds the window's 512 pages
+// to every hop; decoding the segment for every lookup
 // (checkpoint-decode-every-lookup) adds a read of the segment and its decode.
 // A store into a page the memory region holds nothing for asks the volume
 // about the page twice, whether it is a hole and then for its read, and costs
@@ -164,25 +202,17 @@ func TestADependentChainOf4KiBFaultsPaysOnePageReadAHop(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				runtime := chainRuntime()
 				ctx := sim.WithRuntime(t.Context(), runtime)
-				chain := newChainStore(t, ctx, runtime)
-				f, err := newFixtureOn(t, ctx, runtime.NewDisk("pager", sim.DiskConfig{}), vmmemory.Config{
-					PageSize: checkpoint.PageSize4KiB, ResidentPages: 4 * chainWindow, LogicalPages: chainPages,
-					DirtyPages: chainWindow, ReadAheadPages: chainWindow, WriteAheadPages: 1, PrefetchRuns: 16})
-				if err != nil {
-					t.Fatal(err)
-				}
-				r, m := f.attach(chain.backing(t, ctx))
-				// A hop that fails leaves the first hop's prefetch to settle
-				// before the memory region is taken down.
-				t.Cleanup(func() { _ = r.SettlePrefetches(context.Background()) })
+				f, r, m, chain := chainPager(t, ctx, runtime)
 				// Windows 30, 1, 20, 9, 25, 5, 15 and 11 of 32.
 				hops := []uint64{30*chainWindow + 77, chainWindow + 3, 20*chainWindow + 500, 9*chainWindow + 1,
 					25*chainWindow + 256, 5*chainWindow + 9, 15*chainWindow + 511, 11*chainWindow + 128}
-				plans := uint64(1)
+				// A read fault plans its page; a store asks about it first.
+				ownPage := []int{1}
 				if write {
-					plans = 2
+					ownPage = []int{1, 1}
 				}
-				hop := chainGet + time.Duration(plans)*planPage
+				hop := chainGet + time.Duration(len(ownPage))*planPage
+				planned := 0
 				for at, page := range hops {
 					started := time.Now()
 					if err := r.Fault(ctx, page, write); err != nil {
@@ -196,6 +226,15 @@ func TestADependentChainOf4KiBFaultsPaysOnePageReadAHop(t *testing.T) {
 					if at == 0 && took < 2*chainGet {
 						t.Fatalf("the first hop took %v, want at least the reads of the segment and the page", took)
 					}
+					want := ownPage
+					if at == 0 {
+						want = append(slices.Clone(ownPage), chainWindow)
+					}
+					pieces := faultPlanning(runtime)
+					if got := pieces[planned:]; !slices.Equal(got, want) {
+						t.Fatalf("hop %d, to page %d, planned %v pages a lookup, want %v", at, page, got, want)
+					}
+					planned = len(pieces)
 					requireChainPage(t, m, page)
 				}
 				if decodes := runtime.Work(checkpoint.WorkPageTable).Pieces; decodes != 1 {
@@ -215,6 +254,57 @@ func TestADependentChainOf4KiBFaultsPaysOnePageReadAHop(t *testing.T) {
 			})
 		})
 	}
+}
+
+// A guest that reads forwards through 4 KiB pages faults once a window, each
+// fault in the window after the one before, so each prefetches the rest of its
+// window. Each hop still costs exactly one read of the store and the planning
+// of its own page: the fault locates the rest of its window in one lookup of
+// its 512 pages while its read is under way, and plans it from that lookup.
+// Planning the window before the read (pager-plan-the-window-first) adds the
+// window's planning to every hop.
+func TestAForwardChainOf4KiBFaultsPlansItsWindowInOneLookup(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		runtime := chainRuntime()
+		ctx := sim.WithRuntime(t.Context(), runtime)
+		f, r, m, _ := chainPager(t, ctx, runtime)
+		// Windows 3 to 10 in turn.
+		hops := []uint64{3*chainWindow + 77, 4*chainWindow + 3, 5*chainWindow + 500, 6*chainWindow + 1,
+			7*chainWindow + 256, 8*chainWindow + 9, 9*chainWindow + 511, 10*chainWindow + 128}
+		hop := chainGet + planPage
+		planned := 0
+		for at, page := range hops {
+			started := time.Now()
+			if err := r.Fault(ctx, page, false); err != nil {
+				t.Fatal(err)
+			}
+			if took := time.Since(started); at > 0 && took != hop {
+				t.Fatalf("hop %d, to page %d, took %v, want %v: one read and its page's planning",
+					at, page, took, hop)
+			}
+			pieces := faultPlanning(runtime)
+			if got, want := pieces[planned:], []int{1, chainWindow}; !slices.Equal(got, want) {
+				t.Fatalf("hop %d, to page %d, planned %v pages a lookup, want %v: its page, and then its window "+
+					"in one lookup", at, page, got, want)
+			}
+			planned = len(pieces)
+			requireChainPage(t, m, page)
+		}
+		if err := r.SettlePrefetches(ctx); err != nil {
+			t.Fatal(err)
+		}
+		for _, page := range hops {
+			window := page - page%chainWindow
+			for at := window; at < window+chainWindow; at++ {
+				requireChainPage(t, m, at)
+			}
+		}
+		s := hostStats(t, f)
+		if s.Prefetches != uint64(len(hops)) || s.PrefetchRandom != 0 || s.PrefetchedPages != uint64(len(hops))*(chainWindow-1) {
+			t.Fatalf("prefetches %d of %d pages, runs left unread %d; want one a hop of the rest of its window, "+
+				"and none", s.Prefetches, s.PrefetchedPages, s.PrefetchRandom)
+		}
+	})
 }
 
 // errWindowUnlocated is what windowFailing answers a lookup of more than one
@@ -292,6 +382,71 @@ func TestAFaultThatCannotLocateItsWindowGivesBackEverySlot(t *testing.T) {
 		if s := hostStats(t, f); s.ResidentPages != 8 || s.Loads != 2 || s.Prefetches != 2 {
 			t.Fatalf("the fault after left %d pages held, %d loads and %d prefetches, want 8, 2 and 2, "+
 				"the failed fault's among them", s.ResidentPages, s.Loads, s.Prefetches)
+		}
+	})
+}
+
+// A fault at random plans nothing of its window but its page, so it maps
+// nothing beside its page, not even the pages another memory region holds
+// under the identities of its window's: a guest reading at random gains as
+// little from those as from a prefetch. The next fault in that window follows
+// it, and maps every one of them with its own page, reading none: what a fault
+// at random costs its guest is at most that one fault more in its window.
+// Planning the window of a fault at random (pager-plan-the-window-at-random)
+// maps them all with the first.
+func TestAFaultAtRandomMapsItsPageAloneAndTheNextInItsWindowTheRest(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := newConfiguredFixture(t, prefetchConfig())
+		const window = 8
+		child, cm := f.attach(f.slowBacking(64))
+		// The child's first fault, in window 1, prefetches as a memory
+		// region's first fault does.
+		if err := child.Fault(f.ctx, window+2, false); err != nil {
+			t.Fatal(err)
+		}
+		// A sibling reads window 5 whole, from its first fault.
+		parent, pm := f.attach(f.slowBacking(64))
+		if err := parent.Fault(f.ctx, 5*window, false); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.h.SettlePrefetches(f.ctx); err != nil {
+			t.Fatal(err)
+		}
+		for page := uint64(5 * window); page < 6*window; page++ {
+			requirePage(t, pm, page)
+		}
+		before := hostStats(t, f)
+		if err := child.Fault(f.ctx, 5*window+3, false); err != nil {
+			t.Fatal(err)
+		}
+		mapped := func() []uint64 {
+			var pages []uint64
+			for _, page := range cm.mappedPages() {
+				if page >= 5*window && page < 6*window {
+					pages = append(pages, page)
+				}
+			}
+			return pages
+		}
+		after := hostStats(t, f)
+		if got := mapped(); !slices.Equal(got, []uint64{5*window + 3}) || after.Loads != before.Loads ||
+			after.IdentityHits-before.IdentityHits != 1 {
+			t.Fatalf("the fault at random mapped %v of window 5 with %d identity hits and %d loads, "+
+				"want its own page alone, bound to the sibling's, reading nothing",
+				got, after.IdentityHits-before.IdentityHits, after.Loads-before.Loads)
+		}
+		if err := child.Fault(f.ctx, 5*window+6, false); err != nil {
+			t.Fatal(err)
+		}
+		last := hostStats(t, f)
+		if got := mapped(); !slices.Equal(got, pageRange(5*window, 6*window)) || last.Loads != before.Loads ||
+			last.IdentityHits-after.IdentityHits != window-1 || last.PrefetchRandom != after.PrefetchRandom {
+			t.Fatalf("the fault after it mapped %v of window 5 with %d identity hits and %d loads, "+
+				"want the whole window, every page but the first bound to the sibling's, reading nothing",
+				got, last.IdentityHits-after.IdentityHits, last.Loads-before.Loads)
+		}
+		for page := uint64(5 * window); page < 6*window; page++ {
+			requirePage(t, cm, page)
 		}
 	})
 }

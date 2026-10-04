@@ -66,8 +66,9 @@ type Host struct {
 	spill        platform.File
 	clean        map[pageKey]*resident
 	cleanVersion uint64
-	// inflight is the prefetch reading each page identity, and prefetches
-	// every prefetch whose pages have not landed yet, prefetching of them.
+	// inflight is the prefetch reading each page identity, prefetches every
+	// prefetch whose slots are not settled yet (holding), and prefetching how
+	// many of them are still reading.
 	// prefetchRunning counts the prefetches whose goroutines have not ended,
 	// mapping their pages included. All are guarded by mu. See prefetch.go.
 	inflight        map[pageKey]*prefetch

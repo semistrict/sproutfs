@@ -56,14 +56,16 @@ func TestWorkTakesTheTimeItsPriceSays(t *testing.T) {
 			t.Fatalf("unpriced work was counted: %+v", got)
 		}
 		// The first piece ran under a task of its own, at the start, and the
-		// three after it under none, half a second in.
+		// three after it under none, half a second in, each priced by its
+		// bytes.
 		pieces := runtime.WorkPieces("encode")
-		if len(pieces) != 4 || pieces[0].Task != `/"first"` || !pieces[0].Began.Equal(began) {
-			t.Fatalf("the pieces were %+v, want the first under its task at %v", pieces, began)
+		if len(pieces) != 4 || pieces[0].Task != `/"first"` || !pieces[0].Began.Equal(began) ||
+			pieces[0].Bytes != 512<<10 {
+			t.Fatalf("the pieces were %+v, want the first under its task at %v, of half a MiB", pieces, began)
 		}
 		for _, piece := range pieces[1:] {
-			if piece.Task != "" || piece.Began.Sub(began) != 500*time.Millisecond {
-				t.Fatalf("a piece side by side was %+v, want no task half a second in", piece)
+			if piece.Task != "" || piece.Began.Sub(began) != 500*time.Millisecond || piece.Bytes != 1<<20 {
+				t.Fatalf("a piece side by side was %+v, want no task half a second in, of a MiB", piece)
 			}
 		}
 	})

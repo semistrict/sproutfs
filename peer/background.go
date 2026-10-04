@@ -20,15 +20,20 @@ const (
 	// holds as well. It waits for room too, behind every Unpublished.
 	Resident
 	// Fill is a keep that fills the cluster's cache from a store read or a
-	// publication. One that finds no room is dropped.
+	// pull. One that finds no room is dropped.
 	Fill
+	// PublicationFill is a keep of a publication's fill. Its sender tries it
+	// again later rather than dropping it, and has several on their way at
+	// once, so it has three quarters of the budget: the last quarter is left
+	// to Fill.
+	PublicationFill
 	// Repair is a keep that rebuilds a stripe no rank holds, the lowest of
 	// every write. It is dropped as soon as half the budget is held.
 	Repair
 )
 
 func (p Priority) String() string {
-	return [...]string{"unpublished", "resident", "fill", "repair"}[min(int(p), 3)]
+	return [...]string{"unpublished", "resident", "fill", "publication-fill", "repair"}[min(int(p), 4)]
 }
 
 type priorityKey struct{}
@@ -134,22 +139,38 @@ func (b *Background) acquire(ctx context.Context, priority Priority, bytes int64
 	}
 }
 
-// TryAcquire takes room for bytes of work that is dropped rather than queued,
-// Fill or Repair, and reports whether there was any. Work that waits always
-// comes first, so there is none while any of it is waiting; a repair has only
-// half the budget, so fills keep the rest.
+// TryAcquire takes room for bytes of work that is not queued here, Fill,
+// PublicationFill or Repair, and reports whether there was any. Work that
+// waits always comes first, so there is none while any of it is waiting; a
+// publication's fill has only three quarters of the budget and a repair only
+// half, so fills from reads keep the rest.
 func (b *Background) TryAcquire(priority Priority, bytes int64) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	budget := b.effective()
-	if priority >= Repair {
-		budget = max(budget/2, 1)
-	}
-	if len(b.waiting) > 0 || b.held+bytes > budget {
+	if len(b.waiting) > 0 || b.held+bytes > shareOf(priority, b.effective()) {
 		return false
 	}
 	b.held += bytes
 	return true
+}
+
+// Admits reports whether bytes of work at priority could ever be taken by
+// TryAcquire: whether they fit the priority's share of the whole budget. A
+// sender that tries a keep again later drops one that never fits at once.
+func (b *Background) Admits(priority Priority, bytes int64) bool {
+	return bytes <= shareOf(priority, b.limit)
+}
+
+// shareOf is what work at priority, which is dropped rather than queued here,
+// may hold of budget.
+func shareOf(priority Priority, budget int64) int64 {
+	switch {
+	case priority >= Repair:
+		return max(budget/2, 1)
+	case priority == PublicationFill:
+		return max(budget-budget/4, 1)
+	}
+	return budget
 }
 
 // Release gives back what Acquire or TryAcquire took.

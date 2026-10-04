@@ -137,7 +137,9 @@ run did not profile the heap.
    publication's pace, and one worker sends one keep at a time, each waiting
    for its holder's write: 155 MB/s across five holders. The keeps of one
    window go to different holders, so they can go together if the order they
-   reach each holder in stays the order the fills were handed over in.
+   reach each holder in stays the order the fills were handed over in. Done:
+   [the keeps side by side](gce-fill-side-by-side-2026-10-04.md) commit the
+   guest in 38 s at 64 MiB.
 2. **Count a window's part, not its envelopes, against the queue, and give
    the host's process a memory limit.** Memory is a few times the queue's
    bytes, so the queue alone does not say what a host can afford.

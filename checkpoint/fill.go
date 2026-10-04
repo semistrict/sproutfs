@@ -40,14 +40,17 @@ import (
 // what it copies.
 //
 // A fault and a pull never wait on a fill. The filler holds the fills handed
-// to it in one queue, bounded in bytes, and does them one at a time: it asks
-// a read's fill right, writes this host's own stripes and sends each keep, and
-// takes the next once the keep before it is answered. Every write to this
-// host's own disk, its own fills' and its peers' keeps', goes through one
-// queue of writes drained by one worker. Every keep goes through a rate of
-// bytes per second and this host's background budget at the fill priority. A
-// read's fill that finds the queue full, the rate spent or the budget without
-// room is dropped, and its window is read from the store the next time.
+// to it in one queue, bounded in bytes. One worker decides them in the order
+// they were handed over, each fill's holders in rank order: it asks a read's
+// fill right, takes each keep's bytes of a rate of bytes per second and its
+// room in this host's background budget, and hands each holder's stripes to
+// the lane of the member that serves the holder's disk, or to the lane of
+// this host's own disks. The lanes carry their keeps side by side, each one
+// keep at a time, in the order they were decided (see fillsend.go). Every
+// write to this host's own disk, its own fills' and its peers' keeps', goes
+// through one queue of writes drained by one worker. A read's fill that finds
+// the queue full, the rate spent or the budget without room is dropped, and
+// its window is read from the store the next time.
 //
 // A publication's fills are paced rather than dropped. A suspend or a stop is
 // followed by a restore elsewhere, and a window it did not fill is read from
@@ -57,22 +60,26 @@ import (
 // until then; and a keep of a publication's that finds the rate spent, the
 // background budget full or its holder BUSY is tried again later. The
 // publication's parts are held under their upload slots until they are handed
-// over, so the publication slows to the pace its keeps go at. A read's fill
-// never waits behind a publication's: the last quarter of the queue is left to
-// reads, repairs and peers' keeps, a quarter of the rate's burst is left to
-// reads, and the worker takes a read's fill before any publication's still to
-// do, between one holder of a publication's fill and the next. No wait is
-// longer than a bound: a publication that has waited it out once waits no
-// more, and each of its fills that finds no room after is dropped as a read's
-// is.
+// over, so the publication slows to the pace its keeps go at. A window taken
+// into the queue holds a copy of its envelopes, not its part, so the queue's
+// bytes are what the fills hold. A read's fill never waits behind a
+// publication's: the last quarter of the queue is left to reads, repairs and
+// peers' keeps, a quarter of the rate's burst and of the background budget is
+// left to reads, the worker takes a read's fill before any publication's
+// still to do, between one holder of a publication's fill and the next, and
+// each lane carries a read's keep before the publication's behind the one on
+// the wire. No wait is longer than a bound: a publication that has waited it
+// out once waits no more, and each of its fills that finds no room after is
+// dropped as a read's is.
 //
-// One fill at a time is a decision, not a convenience. Fills on goroutines of
-// their own reach a peer's link, its connection and the background budget in
-// whatever order the Go scheduler runs them: which keep a dropped frame or a
+// The order is a decision, not a convenience. Keeps decided on goroutines of
+// their own would reach the rate, the background budget and a peer's link in
+// whatever order the Go scheduler ran them: which keep a dropped frame or a
 // partition takes, and which finds the budget full, would be the scheduler's
-// choice rather than the order the fills were handed over in. A keep is
-// background work under a rate, so its round trip costs a fill nothing it
-// needs.
+// choice rather than the order the fills were handed over in. So one worker
+// decides, and each holder's keeps go on its link one at a time in the order
+// decided; only holders' lanes, which share nothing a keep could find full,
+// run beside each other.
 //
 // A cold burst would fill one window many times: many hosts miss it at once,
 // each reads the store, and each would send its stripes. So a read's fill needs
@@ -100,6 +107,9 @@ const (
 	// lasts. It is longer than a dead peer takes to be marked down, after
 	// which the keeps to it are dropped at once.
 	DefaultFillWaitBound = 10 * time.Second
+	// DefaultFillKeepsInFlight is how many of its publications' keeps and
+	// writes a host has on their way at once.
+	DefaultFillKeepsInFlight = 16
 )
 
 // A keep of a publication's that a busy holder or a full background budget
@@ -285,18 +295,20 @@ type filler struct {
 	queueBytes    int64
 	rightInterval time.Duration
 	waitBound     time.Duration
+	keepsInFlight int
 	rate          tokenBucket
 
 	// down reports a holder the cache's reads have marked down, which is sent
 	// no fill. Nil marks none.
 	down func(rank.Identity) bool
 
-	// fills is the fills handed over, which one worker does one at a time:
-	// it asks the right, writes this host's stripes and sends the keeps of
-	// each before it takes the next. writes is the writes to this host's own
-	// disk, its fills' and its peers' keeps', which another worker does one at
-	// a time. The two are apart because a keep waits for its holder's writes,
-	// and a holder's writes must never wait for that holder's own keeps.
+	// fills is the fills handed over, which one worker decides one holder at
+	// a time: it asks the right, and hands each holder's stripes to the lane
+	// of the member that serves the holder's disk, or to the lane of this
+	// host's own disks. writes is the writes to this host's own disk, its
+	// fills' and its peers' keeps', which another worker does one at a time.
+	// The two are apart because a keep waits for its holder's writes, and a
+	// holder's writes must never wait for that holder's own keeps.
 	fills  *fillLanes
 	writes *lane
 
@@ -308,6 +320,13 @@ type filler struct {
 	// high-water mark, in the order they began to wait, which is the order
 	// room is given in.
 	waiting []*roomWaiter
+	// lanes is the holders' lanes that hold jobs, by the address of the member
+	// that serves their disks, and ownLane for this host's own disks. paced
+	// counts the publications' jobs on every lane, which keepsInFlight bounds,
+	// and pacedBytes what their keeps hold of the background budget.
+	lanes      map[platform.Address]*holderLane
+	paced      int
+	pacedBytes int64
 	// busy counts the work held and the requests in flight; idle is closed
 	// and replaced each time it falls to zero.
 	busy int
@@ -350,6 +369,7 @@ type fillSettings struct {
 	clock                      platform.Clock
 	queueBytes, bytesPerSecond int64
 	rightInterval, waitBound   time.Duration
+	keepsInFlight              int
 }
 
 // newFiller starts a cache's fills under ctx.
@@ -362,17 +382,17 @@ func newFiller(ctx context.Context, shared *cluster, settings fillSettings) *fil
 	}
 	f := &filler{cluster: shared, peers: settings.peers, clock: clock, waits: waits, ctx: ctx, cancel: cancel,
 		queueBytes: settings.queueBytes, rightInterval: settings.rightInterval, waitBound: settings.waitBound,
-		rate: newTokenBucket(clock, settings.bytesPerSecond), fills: &fillLanes{wake: make(chan struct{}, 1)},
-		writes: newLane(), idle: make(chan struct{}), writing: make(map[writingKey]bool),
-		granted: make(map[rank.Window]time.Time)}
+		keepsInFlight: settings.keepsInFlight, rate: newTokenBucket(clock, settings.bytesPerSecond),
+		fills: &fillLanes{wake: make(chan struct{}, 1)}, writes: newLane(), lanes: make(map[platform.Address]*holderLane),
+		idle: make(chan struct{}), writing: make(map[writingKey]bool), granted: make(map[rank.Window]time.Time)}
 	f.group.Go(func() { f.runFills(ctx) })
 	f.group.Go(func() { f.writes.run(ctx) })
 	return f
 }
 
-// close stops the fills: both workers, the right asked for and the keep in
-// flight, and the publications waiting for room. What it had not done is
-// dropped.
+// close stops the fills: both workers, the right asked for, the lanes and
+// their keeps in flight, and the publications waiting for room. What it had
+// not done is dropped.
 func (f *filler) close() {
 	f.mu.Lock()
 	f.closed = true
@@ -681,8 +701,8 @@ func (l *lane) run(ctx context.Context) {
 // prompt work goes first, in the order it was handed over: the fills of reads
 // and pulls, repairs and drops. The publications' fills go behind it, in the
 // order they were handed over, one holder at a time. A publication's fill
-// whose keep must wait for the rate, the background budget or a busy holder
-// leaves the worker to the prompt work until it is tried again.
+// whose next holder must wait, for the rate, the background budget or room
+// on its lane, leaves the worker to the prompt work until it is tried again.
 type fillLanes struct {
 	mu     sync.Mutex
 	prompt []func(context.Context)
@@ -694,24 +714,24 @@ type fillLanes struct {
 }
 
 // pacedFill is one window of a publication's on its way: its fill, the
-// publication's pace, and how far its placement has got.
+// publication's pace, and how far its placement has got. Only the worker of
+// fills reads and writes it.
 type pacedFill struct {
 	fill *windowFill
 	pace *fillPace
 	// placed is the fill split and placed, nil before its first step.
 	placed *placement
 	// resume is when it is tried again after a keep that must wait; zero
-	// goes on at once.
-	resume time.Time
-	// since is when the keep of its next holder began to wait, zero while it
-	// has not, and tried when it was last tried; backoff is how long it waits
-	// next for a busy holder or the budget; rated says that keep has taken its
-	// bytes of the rate; and keep is that keep, once built.
-	since   time.Time
-	tried   time.Time
-	backoff time.Duration
-	rated   bool
-	keep    *peer.Keep
+	// goes on at once. blocked says its next holder waits for room on its
+	// lane, or among the keeps in flight, which a job's end gives.
+	resume  time.Time
+	blocked bool
+	// wait is the wait of the keep of its next holder for the rate or the
+	// budget; rated says that keep has taken its bytes of the rate; and keep
+	// is that keep, once built.
+	wait  keepWait
+	rated bool
+	keep  *peer.Keep
 }
 
 // pushPrompt hands prompt work to the worker of fills. Once the worker has
@@ -753,7 +773,6 @@ func (f *filler) pushPaced(paced *pacedFill) {
 		l.mu.Unlock()
 		for !f.stepPaced(f.ctx, paced) {
 		}
-		f.release(paced.fill.bytes)
 		return
 	}
 	l.paced = append(l.paced, paced)
@@ -778,7 +797,7 @@ func (f *filler) runFills(ctx context.Context) {
 		if len(l.paced) > 0 {
 			head = l.paced[0]
 			wait = head.resume.Sub(f.waits.Now())
-			ready = wait <= 0 || ctx.Err() != nil
+			ready = !head.blocked && wait <= 0 || ctx.Err() != nil
 		}
 		var next func(context.Context)
 		switch {
@@ -800,16 +819,51 @@ func (f *filler) runFills(ctx context.Context) {
 				l.mu.Lock()
 				l.paced = l.paced[1:]
 				l.mu.Unlock()
-				f.release(head.fill.bytes)
 			}
 		default:
-			f.idleFills(ctx, head != nil, wait)
+			if head != nil && head.blocked && f.bug("fill-keeps-past-a-blocked-fill") && f.stepPast(ctx) {
+				continue
+			}
+			f.idleFills(ctx, head != nil && !head.blocked, wait)
+			// Whatever woke the worker may have been a job's end, which gives
+			// a blocked fill the room it waits for: it looks again.
+			l.mu.Lock()
+			for _, paced := range l.paced {
+				paced.blocked = false
+			}
+			l.mu.Unlock()
 		}
 	}
 }
 
-// idleFills waits for more work, for the first publication's fill to be
-// tried again when one is waiting, or for ctx to end.
+// stepPast is the bug that goes past a publication's fill whose next holder
+// waits for room on its lane, and decides the holders of the fills behind it,
+// so a holder can receive a later fill's keep before an earlier one's. It
+// reports whether it stepped a fill.
+func (f *filler) stepPast(ctx context.Context) bool {
+	l := f.fills
+	l.mu.Lock()
+	var next *pacedFill
+	for _, paced := range l.paced[1:] {
+		if !paced.blocked && !paced.resume.After(f.waits.Now()) {
+			next = paced
+			break
+		}
+	}
+	l.mu.Unlock()
+	if next == nil {
+		return false
+	}
+	if f.stepPaced(ctx, next) {
+		l.mu.Lock()
+		l.paced = slices.DeleteFunc(l.paced, func(paced *pacedFill) bool { return paced == next })
+		l.mu.Unlock()
+	}
+	return true
+}
+
+// idleFills waits for more work, or a job's end, for the first publication's
+// fill to be tried again when one is waiting for a time, or for ctx to end.
 func (f *filler) idleFills(ctx context.Context, waiting bool, wait time.Duration) {
 	var resume <-chan time.Time
 	if waiting {
@@ -825,31 +879,42 @@ func (f *filler) idleFills(ctx context.Context, waiting bool, wait time.Duration
 }
 
 // stepPaced does what it can of a publication's fill: it splits it on its
-// first step, then does one holder after another, letting prompt work go
-// first between them. It reports whether the fill is done; one that is not
-// waits for its resume, or for the prompt work.
+// first step, then decides one holder after another, letting prompt work go
+// first between them. It reports whether every holder of the fill is decided;
+// one that is not waits for its resume, for room on its next holder's lane,
+// or for the prompt work. The fill gives its room in the queue back once its
+// last holder's job has ended.
 func (f *filler) stepPaced(ctx context.Context, paced *pacedFill) bool {
 	if paced.placed == nil {
 		if paced.placed = f.split(ctx, WriteFillPublication, paced.fill); paced.placed == nil {
+			f.release(paced.fill.bytes)
 			return true
 		}
+		paced.placed.room = paced.fill.bytes
 	}
-	for !paced.placed.done() {
-		if wait := f.put(ctx, paced.placed, paced); wait > 0 {
+	p := paced.placed
+	for !p.decided() {
+		wait, blocked := f.decide(ctx, p, paced)
+		if blocked {
+			paced.blocked = true
+			return false
+		}
+		if wait > 0 {
 			paced.resume = f.waits.Now().Add(wait)
 			return false
 		}
 		paced.resume = time.Time{}
-		if !paced.placed.done() && ctx.Err() == nil && f.fills.promptWaiting() {
+		if !p.decided() && ctx.Err() == nil && f.fills.promptWaiting() {
 			return false
 		}
 	}
+	f.seal(p)
 	return true
 }
 
 // written does work on the queue of writes to this host's own disk, and
-// returns once it has: the worker of fills waits for its own writes there,
-// behind its peers' keeps.
+// returns once it has: the lane of this host's own disks waits for its writes
+// there, behind its peers' keeps.
 func (f *filler) written(work func(context.Context)) {
 	done := make(chan struct{})
 	f.writes.push(f.ctx, func(ctx context.Context) {
@@ -947,11 +1012,8 @@ func (f *filler) fill(kind WriteKind, envelopes []envelope) {
 			continue
 		}
 		// The right is asked for behind the read, never in front of it; the
-		// fill holds its room in the queue until it is done.
-		f.fills.pushPrompt(ctx, func(ctx context.Context) {
-			defer f.release(fill.bytes)
-			f.do(ctx, kind, fill)
-		})
+		// fill holds its room in the queue until its holders' jobs are done.
+		f.fills.pushPrompt(ctx, func(ctx context.Context) { f.do(ctx, kind, fill) })
 	}
 }
 
@@ -960,22 +1022,45 @@ func (f *filler) fill(kind WriteKind, envelopes []envelope) {
 // once every window is handed over or dropped: each waits under ctx for room
 // below the queue's high-water mark, as pace allows. A publication's fill
 // needs no right.
+//
+// A window taken into the queue is given bytes of its own. Its envelopes are
+// views of their part, and a window holding them would hold the whole part
+// until the window's last keep was answered: the queue would count a window
+// and the host hold the part, as many parts as the queue held windows of.
+// Copied, a window holds what the queue counts of it, and the part is let go
+// once its last window is handed over.
 func (f *filler) publish(ctx context.Context, pace *fillPace, envelopes []envelope) {
 	for _, fill := range f.windows(envelopes) {
 		if reason, ok := f.room(ctx, pace, fill.bytes); !ok {
 			f.drop(f.ctx, reason, len(fill.envelopes)*fill.m.Code().Width())
 			continue
 		}
+		if !f.bug("fill-windows-hold-their-parts") {
+			fill.own()
+		}
 		f.pushPaced(&pacedFill{fill: fill, pace: pace})
 	}
 }
 
+// own copies the fill's envelopes into one buffer of its own, of exactly the
+// fill's bytes, in their order.
+func (fill *windowFill) own() {
+	buffer := make([]byte, 0, fill.bytes)
+	for at := range fill.envelopes {
+		start := len(buffer)
+		buffer = append(buffer, fill.envelopes[at].data...)
+		fill.envelopes[at].data = buffer[start:]
+	}
+}
+
 // do is one fill, done by the worker of fills: the right a read's fill
-// needs, then the fill placed.
+// needs, then the fill placed. The fill holds room in the queue, which it
+// gives back once it is placed, or now when it is not.
 func (f *filler) do(ctx context.Context, kind WriteKind, fill *windowFill) {
 	// A fill under ended fills asks nothing, and place drops it.
 	if ctx.Err() == nil && kind == WriteFillRead && !f.bug("no-fill-right") && !f.right(ctx, fill) {
 		f.count(func(stats *FillStats) { stats.WithoutRight++ })
+		f.release(fill.bytes)
 		return
 	}
 	f.place(ctx, kind, fill)
@@ -992,10 +1077,7 @@ func (f *filler) rightBeside(kind WriteKind, fill *windowFill) {
 			f.release(fill.bytes)
 			return
 		}
-		f.fills.pushPrompt(f.ctx, func(ctx context.Context) {
-			defer f.release(fill.bytes)
-			f.place(ctx, kind, fill)
-		})
+		f.fills.pushPrompt(f.ctx, func(ctx context.Context) { f.place(ctx, kind, fill) })
 	}) {
 		f.release(fill.bytes)
 	}
@@ -1110,7 +1192,10 @@ func validWindow(window rank.Window, pages []uint32) bool {
 }
 
 // placement is one fill split under the membership it is placed by: each
-// holder's stripes, the holders in rank order, and the next of them to do.
+// holder's stripes, the holders in rank order, and the next of them to
+// decide. room is the bytes of the queue the fill holds, which it gives back
+// once it is sealed, every holder decided, and none of its jobs is pending;
+// the filler's lock guards those two.
 type placement struct {
 	kind   WriteKind
 	m      membership.Membership
@@ -1119,21 +1204,32 @@ type placement struct {
 	order  []rank.Cache
 	held   map[rank.Identity][]keyedStripe
 	next   int
+	room   int64
+	// pending counts the jobs of the placement on their way.
+	pending int
+	sealed  bool
 }
 
-// done reports whether every holder of the placement is done.
-func (p *placement) done() bool { return p.next == len(p.order) }
+// decided reports whether every holder of the placement is decided.
+func (p *placement) decided() bool { return p.next == len(p.order) }
 
 // place splits fill's envelopes under the membership held now and puts each
 // stripe on the disk its ranks hold it on: those of a disk this host keeps on
-// that disk, the rest as keeps to the members that serve theirs, one holder
-// after another in rank order. It is the worker of fills', and returns once its own
-// stripes are written and every keep is answered or dropped.
+// that disk, the rest as keeps to the members that serve theirs. It is the
+// worker of fills', and decides every holder at once, in rank order: the fill
+// of a read, a pull or a repair never waits for a lane. The fill holds its
+// room in the queue until its holders' jobs have ended.
 func (f *filler) place(ctx context.Context, kind WriteKind, fill *windowFill) {
 	p := f.split(ctx, kind, fill)
-	for p != nil && !p.done() {
-		f.put(ctx, p, nil)
+	if p == nil {
+		f.release(fill.bytes)
+		return
 	}
+	p.room = fill.bytes
+	for !p.decided() {
+		f.decide(ctx, p, nil)
+	}
+	f.seal(p)
 }
 
 // split splits fill's envelopes under the membership held now, by the holder
@@ -1183,33 +1279,10 @@ func (f *filler) split(ctx context.Context, kind WriteKind, fill *windowFill) *p
 			p.held[holder.Identity] = append(p.held[holder.Identity], keyedStripe{key: e.key, stripe: stripes[index]})
 		}
 	}
+	// The stripes hold the envelopes' bytes now, and the fill lets its
+	// envelopes go.
+	fill.envelopes = nil
 	return p
-}
-
-// put does the next holder of p: writes its stripes to a disk this host keeps
-// or sends them as one keep, and goes on to the holder after it. For a
-// publication's fill, paced, a keep that must wait leaves p at its holder and
-// reports how long until it is tried again.
-func (f *filler) put(ctx context.Context, p *placement, paced *pacedFill) time.Duration {
-	holder := p.order[p.next]
-	stripes := p.held[holder.Identity]
-	switch {
-	case ctx.Err() != nil:
-		f.drop(ctx, DropFailed, len(stripes))
-	case f.cluster.keeps(holder.Identity):
-		f.written(func(ctx context.Context) {
-			f.writeOwn(ctx, holder.Identity, p.kind, p.window, p.code, stripes)
-		})
-	default:
-		if wait := f.send(ctx, p, holder, stripes, paced); wait > 0 {
-			return wait
-		}
-	}
-	p.next++
-	if paced != nil {
-		f.waited(paced)
-	}
-	return 0
 }
 
 // writeOwn writes the stripes of a fill of window that a disk this host keeps
@@ -1286,156 +1359,22 @@ func (f *filler) write(ctx context.Context, disk *cacheDisk, kind WriteKind, str
 	return kept
 }
 
-// send hands one holder's stripes of a window to the rate, sends them as one
-// keep under the placement's membership and returns once it is answered. The
-// keep carries each stripe as the holder's disk stores it, header and
-// checksum included. A holder ahead of the membership answers stale, and the
-// keep is sent again under the newer generation, which the holder then checks
-// its ranks under.
-//
-// A keep of a publication's, paced, that finds the rate spent, this host's
-// background budget full or its holder BUSY is not dropped while the
-// publication waits: send reports how long until it is tried again, and the
-// worker does other work meanwhile. Each of them comes free in time: the rate
-// refills, the budget's bulk work ends and a holder's requests are answered.
-// A keep larger than the whole background budget never fits it, and is
-// dropped at once. A keep that waits is built once, and kept with paced.
-func (f *filler) send(ctx context.Context, p *placement, holder rank.Cache, stripes []keyedStripe,
-	paced *pacedFill) time.Duration {
-	var keep peer.Keep
-	if paced != nil && paced.keep != nil {
-		keep = *paced.keep
-	} else {
-		keep = keepFor(p, stripes)
-	}
-	size := int64(len(keep.Payload))
-	waits := paced != nil && paced.pace.waits()
-	if paced != nil {
-		paced.tried = f.waits.Now()
-	}
-	if paced == nil || !paced.rated {
-		if waits {
-			if wait := f.rate.after(size); wait > 0 {
-				// The rate is on the cache's clock, and a wait on the clock
-				// of the table of peers: it is tried again no sooner than a
-				// refusal would be, which costs it nothing, since the rate
-				// fills to a second of itself meanwhile.
-				paced.keep = &keep
-				return f.later(ctx, paced, DropRate, len(stripes), max(wait, fillRetryFirst))
-			}
-			paced.rated = true
-		} else if !f.rate.take(size) {
-			f.drop(ctx, DropRate, len(stripes))
-			return 0
-		}
-	}
-	if f.peers == nil {
-		f.drop(ctx, DropFailed, len(stripes))
-		return 0
-	}
-	if f.down != nil && f.down(holder.Identity) && !f.bug("cluster-fill-marked-down") {
-		// A host this cache's reads have marked down is sent no fill.
-		f.drop(ctx, DropDown, len(stripes))
-		return 0
-	}
-	if f.bug("fill-concurrently") {
-		// The bug sends the keep beside the fill, so the next fill's keeps
-		// race it to the holder's link.
-		if !f.goFill(func(ctx context.Context) { f.keepOnce(ctx, p.m, holder, keep, len(stripes), nil) }) {
-			f.drop(ctx, DropFailed, len(stripes))
-		}
-		return 0
-	}
-	if !waits {
-		paced = nil
-	} else {
-		paced.keep = &keep
-	}
-	return f.keepOnce(ctx, p.m, holder, keep, len(stripes), paced)
-}
-
 // keepFor is a keep of one holder's stripes of p's window, each as the
 // holder's disk stores it.
 func keepFor(p *placement, stripes []keyedStripe) peer.Keep {
-	keep := peer.Keep{Window: p.window, Code: p.code, Publication: p.kind == WriteFillPublication,
-		Repair: p.kind == WriteRepair}
+	size := int64(0)
 	for _, s := range stripes {
-		item := encodeItem(s.key, s.stripe)
+		size += itemHeaderBytes(s.key) + int64(len(s.stripe.Bytes))
+	}
+	keep := peer.Keep{Window: p.window, Code: p.code, Publication: p.kind == WriteFillPublication,
+		Repair: p.kind == WriteRepair, Items: make([]peer.StripeItem, 0, len(stripes)), Payload: make([]byte, 0, size)}
+	for _, s := range stripes {
+		start := len(keep.Payload)
+		keep.Payload = appendItem(keep.Payload, s.key, s.stripe)
 		keep.Items = append(keep.Items, peer.StripeItem{Page: uint32(s.key.Page - p.window.Page(0)),
-			Index: s.stripe.Index, Length: s.stripe.Length, Size: len(item)})
-		keep.Payload = append(keep.Payload, item...)
+			Index: s.stripe.Index, Length: s.stripe.Length, Size: len(keep.Payload) - start})
 	}
 	return keep
-}
-
-// keepOnce sends a keep of stripes to holder under m, and counts what became
-// of it. A keep of a publication that waits, paced, which a busy holder or a
-// full background budget refused is not counted: keepOnce reports how long
-// until it is tried again.
-func (f *filler) keepOnce(ctx context.Context, m membership.Membership, holder rank.Cache, keep peer.Keep,
-	stripes int, paced *pacedFill) time.Duration {
-	var last membership.Route
-	err := f.routed(ctx, m, holder.Identity, func(route membership.Route) error {
-		last = route
-		return f.peers.Peer(route.Address).Keep(ctx, route, keep)
-	})
-	if paced != nil {
-		switch {
-		case errors.Is(err, peer.ErrNoRoom) && int64(len(keep.Payload)) <= f.peers.Background().Status().Limit:
-			return f.later(ctx, paced, DropBudget, stripes, paced.retry())
-		case errors.Is(err, peer.ErrBusy):
-			return f.later(ctx, paced, DropBusy, stripes, paced.retry())
-		}
-	}
-	f.sent(ctx, err, stripes, len(keep.Payload))
-	if err == nil && sim.Buggify(ctx, buggifyFillSendTwice, 0.1) {
-		// The second is what a sender that lost the first's answer sends:
-		// its holder drops what it already holds, and the second answer
-		// counts for nothing.
-		_ = f.peers.Peer(last.Address).Keep(ctx, last, keep)
-	}
-	return 0
-}
-
-// later is a keep of a publication's that must wait, wait at most, before it
-// is tried again, and reports how long that is: no further than the bound
-// from when the keep began to wait. A keep that has waited the bound gives up
-// the publication's waits and is dropped for reason, and later reports zero.
-func (f *filler) later(ctx context.Context, paced *pacedFill, reason DropReason, stripes int,
-	wait time.Duration) time.Duration {
-	now := f.waits.Now()
-	if paced.since.IsZero() {
-		paced.since = now
-		f.count(func(stats *FillStats) { stats.Waits++ })
-		sim.Probe(ctx, ProbeFillPublicationWaited)
-	}
-	if f.bug("fill-publication-waits-forever") {
-		return wait
-	}
-	if left := f.waitBound - now.Sub(paced.since); left > 0 {
-		return min(wait, left)
-	}
-	f.giveUp(paced.pace)
-	f.drop(ctx, reason, stripes)
-	return 0
-}
-
-// waited ends the wait of the keep of paced's holder that is done, counting
-// how long it waited.
-func (f *filler) waited(paced *pacedFill) {
-	if !paced.since.IsZero() {
-		waited := paced.tried.Sub(paced.since)
-		f.count(func(stats *FillStats) { stats.Waited += waited })
-	}
-	paced.since, paced.tried, paced.backoff, paced.rated, paced.keep = time.Time{}, time.Time{}, 0, false, nil
-}
-
-// retry is how long a keep a busy holder or a full budget refused waits
-// before it is tried again: fillRetryFirst, and twice as long each time
-// after, up to fillRetryMost.
-func (paced *pacedFill) retry() time.Duration {
-	paced.backoff = min(max(2*paced.backoff, fillRetryFirst), fillRetryMost)
-	return paced.backoff
 }
 
 // sent counts what became of a keep: kept, or dropped for why.
@@ -1725,16 +1664,10 @@ func (f *filler) repair(m membership.Membership, window rank.Window, code rank.C
 		return
 	}
 	f.fills.pushPrompt(ctx, func(ctx context.Context) {
-		defer f.release(bytes)
-		if ctx.Err() != nil {
-			f.drop(ctx, DropFailed, len(stripes))
-			return
-		}
-		if f.cluster.keeps(holder.Identity) {
-			f.written(func(ctx context.Context) { f.writeOwn(ctx, holder.Identity, WriteRepair, window, code, stripes) })
-			return
-		}
-		f.send(ctx, &placement{kind: WriteRepair, m: m, window: window, code: code}, holder, stripes, nil)
+		p := &placement{kind: WriteRepair, m: m, window: window, code: code, order: []rank.Cache{holder},
+			held: map[rank.Identity][]keyedStripe{holder.Identity: stripes}, room: bytes}
+		f.decide(ctx, p, nil)
+		f.seal(p)
 	})
 }
 
