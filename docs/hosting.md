@@ -1140,7 +1140,9 @@ file and takes its identity. A host reports itself in `/status`, under
   the free-space floor, the reserve and the promises, under the used goal.
   The host reads it once, when it starts. It never follows the limiter's
   share, which moves as the disk fills, because every change of a weight
-  moves windows.
+  moves windows;
+- `generation`: the generation of the membership it holds, which its disks'
+  states are from.
 
 A host that keeps no cache disk, or gives it no space, reports no `member`,
 is no member, and never reads the membership. A host that serves shards is
@@ -1164,8 +1166,18 @@ reported it. The steps, in order:
 1. A member whose pod is gone, or is terminating, drains: it is draining,
    and its disks are releasing.
 2. A releasing disk is let go once nobody serves it: a host's own disk once
-   its member's pod is gone; a shard once its member's host is gone or no
-   longer reports it open, and the cloud has it attached to no machine.
+   its member's pod is gone, or once the pod reports the disk releasing in a
+   membership it holds at or after the generation that assigned the disk; a
+   shard once its member's host is gone or no longer reports it open, and the
+   cloud has it attached to no machine. The pod's report is what its member
+   would say if it wrote the membership itself: it has read the release and
+   serves the disk no more. A pod replaced on its node, as a rolling restart
+   replaces every host, comes back over the same disk. If the orchestrator saw
+   the old pod terminating, the member drained, and the new pod's report lets
+   the disk go; the member then leaves and joins again with it (steps 5, 6
+   and 8). Before 2026-10-04 only a pod that was gone let its disk go, and
+   such a pod's disk stayed releasing for good
+   ([the real application's restore](measurements/gce-real-app-restore-2026-10-04.md)).
 3. A released disk no pod reports, and that is not a shard, is removed. This
    is the leave, and it moves that disk's windows.
 4. A shard not listed is added, released. It takes its place in every

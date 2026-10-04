@@ -145,6 +145,28 @@ def main(root):
     out.append('\n### The scan, ZRANGE of 100 members at a time\n')
     out.append(table(header, phase_rows(cases, 'scan')))
 
+    out.append('\n### The chase\'s requests in each band of milliseconds, over every round\n')
+    bands = [(0, 0.5), (0.5, 1), (1, 2), (2, 4), (4, 8), (8, 16), (16, 32), (32, 64), (64, 128), (128, 256),
+             (256, 512), (512, None)]
+    rows = []
+    for name in CASES:
+        micros = [v for c in cases if c.meta['case'] == name for v in c.walk['chase']['micros']]
+        if micros:
+            rows.append([name] + [f'{sum(1 for v in micros if low * 1000 <= v and (high is None or v < high * 1000)):,}'
+                                  for low, high in bands])
+    out.append(table(['Case'] + [f'{low}–{high}' if high else f'{low}+' for low, high in bands], rows))
+
+    out.append('\n### The step of the chase by which 90 % of its time had passed\n')
+    rows = []
+    for c in sorted(cases, key=lambda c: (c.meta['case'], c.meta['round'])):
+        micros, passed = c.walk['chase']['micros'], 0
+        for step, value in enumerate(micros, 1):
+            passed += value
+            if passed >= 0.9 * sum(micros):
+                break
+        rows.append([c.meta['case'], str(c.meta['round']), f'{step:,}'])
+    out.append(table(['Case', 'round', 'step'], rows))
+
     out.append('\n### Each round\n')
     rows = []
     for c in sorted(cases, key=lambda c: (c.meta['case'], c.meta['round'])):
@@ -196,7 +218,10 @@ def main(root):
         read = [f"{c.delta_status(d, ('cache_read', key)):.0f}" for key in
                 ('requests', 'replaced', 'second_requests', 'refused_by_budget', 'store_hedges',
                  'store_hedges_won', 'timeouts')]
-        delay = c.status('after', d).get('cache_read', {}).get('delay', 0) / 1e6
+        # The reader keeps a delay for each size of read: each class that
+        # had reads, as its delay in milliseconds over its reads.
+        classes = c.status('after', d).get('cache_read', {}).get('classes') or []
+        delay = ', '.join(f"{k['delay'] / 1e6:.1f}/{k['reads']}" for k in classes if k.get('reads')) or '-'
         rows.append([c.meta['case'], str(c.meta['round']), f'{loads:.0f}',
                      f'{1000 * load_seconds / loads:.2f}' if loads else '-',
                      f'{1000 * histogram_percentile(buckets, 0.5):.2f}',
@@ -204,11 +229,14 @@ def main(root):
                      f"{c.delta_metric(d, 'sproutfs_pager_protect_traps_total{kind=\"ram\"}'):.0f}",
                      f"{c.delta_metric(d, 'sproutfs_pager_copy_on_writes_total{kind=\"ram\"}'):.0f}",
                      f"{c.delta_metric(d, 'sproutfs_pager_moved_pages_total{kind=\"ram\"}'):.0f}",
-                     *read, f'{delay:.1f}'])
+                     f"{c.delta_status(d, ('pager', 'ram', 'prefetched_pages')):.0f}",
+                     f"{c.delta_status(d, ('pager', 'ram', 'prefetch_waits')):.0f}",
+                     *read, delay])
     out.append(table(['Case', 'round', 'loads', 'mean load ms', 'load p50 ms', 'load p99 ms',
                       'stores into mapped pages', 'copies on write', 'pages moved',
+                      'pages prefetched', 'prefetch waits',
                       'stripe requests', 'replaced', 'second requests', 'refused', 'store hedges', 'hedges won',
-                      'timeouts', 'delay after, ms'], rows))
+                      'timeouts', 'delay after, ms/reads by size'], rows))
 
     out.append('\n### The suspend and its fills\n')
     rows = []
@@ -218,13 +246,22 @@ def main(root):
         dropped_before = c.status('loaded', s).get('cache_fill', {}).get('dropped', {}) or {}
         drops = {k: v - dropped_before.get(k, 0) for k, v in dropped.items() if v - dropped_before.get(k, 0)}
         kept = sum(c.delta_status(h, ('cache_fill', 'kept'), 'loaded', 'suspended') for h in c.hosts())
+        uploaded = c.delta_status(s, ('store', 'put', 'bytes'), 'loaded', 'suspended') / 1e6
+        # The source's processors over the suspend and its fills, which the
+        # snapshot after them closes.
+        busy = c.meta['suspend_seconds'] + c.meta['fills_seconds']
+        cpu = (c.cpu_seconds('suspended', s) - c.cpu_seconds('loaded', s)) / busy
         rows.append([c.meta['case'], str(c.meta['round']), f"{c.meta['suspend_seconds']:.1f}",
-                     f"{c.meta['fills_seconds']:.1f}",
-                     f"{c.delta_status(s, ('store', 'put', 'bytes'), 'loaded', 'suspended') / 1e6:.0f}",
+                     f"{c.meta['fills_seconds']:.1f}", f'{uploaded:.0f}',
+                     f"{uploaded / c.meta['suspend_seconds']:.1f}", f'{cpu:.2f}',
                      f"{c.delta_status(s, ('cache_fill', 'from_publications'), 'loaded', 'suspended'):.0f}",
-                     f'{kept:.0f}', ', '.join(f'{k} {v}' for k, v in sorted(drops.items())) or 'none'])
-    out.append(table(['Case', 'round', 'suspend s', 'fills settle s', 'uploaded MB', 'windows filled',
-                      'stripes kept', 'stripes dropped'], rows))
+                     f'{kept:.0f}', ', '.join(f'{k} {v}' for k, v in sorted(drops.items())) or 'none',
+                     f"{c.delta_status(s, ('cache_fill', 'publication_waits'), 'loaded', 'suspended'):.0f}",
+                     f"{c.delta_status(s, ('cache_fill', 'publication_waited_seconds'), 'loaded', 'suspended'):.1f}",
+                     f"{c.status('suspended', s).get('cache_fill', {}).get('queued_peak_bytes', 0) / (1 << 20):.0f}"])
+    out.append(table(['Case', 'round', 'suspend s', 'fills settle s', 'uploaded MB', 'uploaded MB/s',
+                      'source CPUs', 'windows filled', 'stripes kept', 'stripes dropped', 'publication waits',
+                      'waited s', 'queue peak MiB'], rows))
 
     out.append('\n### CPU over the restore and the walk, in processors\n')
     rows = []

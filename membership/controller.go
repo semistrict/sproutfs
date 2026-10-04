@@ -31,7 +31,12 @@ type Host struct {
 	Address platform.Address
 	// Disks is every disk the host reports attached, each with its identity,
 	// its volume and its weight: its own disk, or the shards it holds open.
+	// Each disk's State is its state in the host's copy of the membership,
+	// and zero where that copy does not list it.
 	Disks []Disk
+	// Held is the generation of the host's copy of the membership, which
+	// its disks' states are from.
+	Held uint64
 	// Machine is the machine the host runs on, which the cloud attaches its
 	// shards to; empty for a host no shard can be attached to.
 	Machine string
@@ -76,8 +81,10 @@ type Change func(Membership) (Membership, error)
 //  1. A member whose host is not wanted, or is leaving, is drained: it is
 //     draining, and its disks are releasing. Nothing moves.
 //  2. A releasing disk is let go once nobody serves it: a host's own disk
-//     once its host is gone; a shard once its member's host is gone or no
-//     longer holds it, and the cloud says it is attached to no machine.
+//     once its host is gone, or its host's copy shows this release, as the
+//     copy of a pod that came back over the disk does; a shard once its
+//     member's host is gone or no longer holds it, and the cloud says it is
+//     attached to no machine.
 //  3. A released disk no wanted host reports, and that is not a wanted
 //     shard, is removed. Its windows move to the disks ranked after it: this
 //     is the leave.
@@ -135,7 +142,12 @@ func Next(ctx context.Context, m Membership, want Want) (Change, bool) {
 		var gone bool
 		switch {
 		case !isShard:
-			gone = !wanted
+			// A host that read the release has stopped serving the disk, as
+			// its member would say if it wrote the membership itself. Without
+			// this, a pod replaced over its disk while its member drained
+			// would never serve it again: it is wanted, so never gone, and
+			// listed, so never joins.
+			gone = !wanted || host.readRelease(ctx, disk) && !sim.Bug(ctx, "membership-let-only-a-gone-hosts-disk")
 		default:
 			// A shard is let go once its member has closed it, or is gone,
 			// and the cloud has it on no machine: nobody can serve it.
@@ -275,6 +287,18 @@ func nextShardMove(m Membership, hosts map[rank.Identity]Host, shards map[rank.I
 		}
 	}
 	return nil, false
+}
+
+// readRelease reports whether the host's copy of the membership has disk, as
+// it is assigned now, releasing. A copy at or after the generation that
+// assigned the disk is of this assignment, in which releasing comes only
+// after serving; an older copy that has it releasing read the release of an
+// earlier one, and the host may serve the disk since.
+func (h Host) readRelease(ctx context.Context, disk Disk) bool {
+	if h.Held < disk.Assigned && !sim.Bug(ctx, "membership-let-on-an-earlier-release") {
+		return false
+	}
+	return slices.ContainsFunc(h.Disks, func(held Disk) bool { return held.ID == disk.ID && held.State == Releasing })
 }
 
 // sortedHosts is hosts in identity order, so two controllers given one want

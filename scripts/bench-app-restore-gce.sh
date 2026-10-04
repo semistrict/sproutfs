@@ -20,7 +20,9 @@
 #
 # SPROUTFS_GCE_BUCKET names the bucket and SPROUTFS_GCE_SERVICE_ACCOUNT the
 # account the nodes reach it as. SPROUTFS_APP_HOSTS (6), SPROUTFS_APP_MACHINE
-# (n2-highmem-4) and SPROUTFS_APP_GUEST_BYTES (8 GiB) shape the cluster; the
+# (n2-highmem-4), SPROUTFS_APP_PLATFORM (Intel Ice Lake, whose processors have
+# SHA instructions; the run of 2026-10-03 was on Intel Cascade Lake, which has
+# none) and SPROUTFS_APP_GUEST_BYTES (8 GiB) shape the cluster; the
 # APP_RESTORE_* settings of app-restore-run.sh shape the data and the rounds
 # and are passed through. A worktree whose Firecracker submodule is not checked
 # out names a clone of the fork at the pinned commit in
@@ -30,9 +32,11 @@
 set -euo pipefail
 hosts=${SPROUTFS_APP_HOSTS:-6}
 machine=${SPROUTFS_APP_MACHINE:-n2-highmem-4}
+platform=${SPROUTFS_APP_PLATFORM:-Intel Ice Lake}
 guest_bytes=${SPROUTFS_APP_GUEST_BYTES:-8589934592}
 if [[ ! $hosts =~ ^[0-9]+$ ]] || ((hosts < 2)); then echo "SPROUTFS_APP_HOSTS is at least 2" >&2; exit 2; fi
 [[ $machine =~ ^n2-(standard|highmem)-[0-9]+$ ]] || { echo "SPROUTFS_APP_MACHINE is an n2 machine type" >&2; exit 2; }
+[[ $platform =~ ^Intel\ [A-Za-z\ ]+$ ]] || { echo "SPROUTFS_APP_PLATFORM is an Intel CPU platform" >&2; exit 2; }
 [[ $guest_bytes =~ ^[0-9]+$ ]] || { echo "SPROUTFS_APP_GUEST_BYTES is a number" >&2; exit 2; }
 bucket=${SPROUTFS_GCE_BUCKET:-}
 account=${SPROUTFS_GCE_SERVICE_ACCOUNT:-}
@@ -65,7 +69,7 @@ create() {
     local token labels=purpose=app-restore-bench,lifecycle=temporary
     token=$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')
     local -a common=(--zone="$zone" --machine-type="$machine"
-        --min-cpu-platform='Intel Cascade Lake' --enable-nested-virtualization
+        --min-cpu-platform="$platform" --enable-nested-virtualization
         --image=ubuntu-2604-resolute-amd64-v20260907 --image-project=ubuntu-os-cloud
         --boot-disk-size=60GB --boot-disk-type=pd-balanced --boot-disk-auto-delete
         --local-ssd=interface=NVME
@@ -150,6 +154,13 @@ wait_ready() {
         if remote "$server" "$kube; test \$(kubectl get nodes --no-headers | grep -c ' Ready ') -eq $hosts" \
             >> "$results/startup.log" 2>&1; then
             remote "$server" "$kube; kubectl get nodes -o wide" | tee "$results/nodes.txt"
+            # Each node's processor, and whether it has SHA instructions,
+            # which the cost of checking a page depends on.
+            for node in "${nodes[@]}"; do
+                printf '%s: %s, sha_ni %s\n' "$node" \
+                    "$(remote "$node" "grep -m1 '^model name' /proc/cpuinfo | cut -d: -f2-" | xargs)" \
+                    "$(remote "$node" 'grep -qw sha_ni /proc/cpuinfo && echo yes || echo no')"
+            done | tee "$results/cpus.txt"
             return 0
         fi
         sleep 10
@@ -171,7 +182,7 @@ build() {
     {
         echo "revision $(git -C "$repo" rev-parse HEAD)"
         git -C "$repo" status --porcelain=v1 | sed 's/^/changed /'
-        echo "machine $machine, hosts $hosts, guest $guest_bytes bytes, objects gs://$bucket/$objects"
+        echo "machine $machine ($platform), hosts $hosts, guest $guest_bytes bytes, objects gs://$bucket/$objects"
     } > "$results/source.txt"
     "${cloud[@]}" compute scp --zone="$zone" "$staging/repo.tar.gz" \
         "$repo/scripts/lib/demo-image.sh" "$server:"
@@ -267,6 +278,11 @@ CONFIG
 
 run() {
     mkdir -p "$results"
+    # The rounds' files are unpacked over this directory, so the files of an
+    # earlier run there, even one that failed, would be summarised as this
+    # run's.
+    [[ ! -e $results/sproutfs-app-restore ]] ||
+        { echo "$results already holds a run's rounds; name another directory." >&2; return 1; }
     "${cloud[@]}" compute scp --zone="$zone" "$repo/scripts/lib/app-restore-run.sh" "$server:"
     # Every setting was checked above to be digits or case names and commas,
     # so each crosses the remote shell as one word.
@@ -277,13 +293,18 @@ run() {
     done
     # The rounds run for an hour or more, longer than one ssh session should
     # be trusted with, so they run on the node on their own and this polls.
+    # No setting at all leaves the list empty, which macOS's bash 3.2 takes
+    # for unbound.
     remote "$server" "rm -rf /tmp/sproutfs-app-restore /tmp/app-restore.log /tmp/app-restore.done
-        setsid bash -c 'env ${settings[*]} bash app-restore-run.sh > /tmp/app-restore.log 2>&1;
+        setsid bash -c 'env ${settings[*]:-} bash app-restore-run.sh > /tmp/app-restore.log 2>&1;
             echo \$? > /tmp/app-restore.done' < /dev/null > /dev/null 2>&1 &"
     local status=''
     while [[ -z $status ]]; do
         sleep 60
         status=$(remote "$server" 'cat /tmp/app-restore.done 2>/dev/null' 2>/dev/null || true)
+        # A node deleted under the run never answers again.
+        [[ -n $status ]] || existing | grep -qx "$server" ||
+            { echo "$server is gone; the rounds cannot end." >&2; return 1; }
         remote "$server" 'tail -3 /tmp/app-restore.log' 2>/dev/null | sed 's/^/  /' || true
     done
     remote "$server" 'cat /tmp/app-restore.log' > "$results/run.log" 2>&1 || true

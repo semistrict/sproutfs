@@ -197,6 +197,53 @@ func TestADependentChainOfFaultsWaitsForOnePageAHop(t *testing.T) {
 	}
 }
 
+// A pager that prefetches at random, as one of 2 MiB pages does, prefetches
+// the rest of every fault's run. A guest that goes on to touch every page at
+// random, as an application walking its heap does, then faults once a run: each
+// fault still waits for its own page alone, and the run's other pages are in
+// and mapped before the guest reaches them. Each first touch of a run here is
+// in a window none of the eight before it touched, nor the window after one of
+// them, so a pager that does not prefetch at random reads every page with a
+// fault of its own.
+func TestAPagerThatPrefetchesAtRandomFaultsOnceARun(t *testing.T) {
+	for _, write := range []bool{false, true} {
+		t.Run(fmt.Sprintf("write=%t", write), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				config := prefetchConfig()
+				config.ReadAheadPages, config.PrefetchAtRandom = 4, true
+				f := newConfiguredFixture(t, config)
+				b := f.slowBacking(64)
+				r, m := f.attach(b)
+				windows := []uint64{4, 0, 3, 7, 10, 15, 2, 6, 9, 5, 1, 14, 8, 13, 12, 11}
+				for _, window := range windows {
+					page := 4*window + window%4
+					started := time.Now()
+					if err := r.Fault(f.ctx, page, write); err != nil {
+						t.Fatal(err)
+					}
+					if took := time.Since(started); took != pageRead {
+						t.Fatalf("the fault on page %d took %v, want %v: its own page's read", page, took, pageRead)
+					}
+				}
+				if err := r.SettlePrefetches(f.ctx); err != nil {
+					t.Fatal(err)
+				}
+				for page := range uint64(64) {
+					requirePage(t, m, page)
+				}
+				s := hostStats(t, f)
+				if s.Faults != 16 || s.Loads != 32 || s.LoadedPages != 64 || s.Prefetches != 16 ||
+					s.PrefetchedPages != 48 || s.PrefetchMapped != 48 || s.PrefetchRandom != 0 || s.PrefetchWaits != 0 {
+					t.Fatalf("faults %d, loads %d of %d pages, prefetches %d of %d pages mapping %d, runs left unread %d, "+
+						"waits %d; want 16, 32 of 64, 16 of 48 mapping 48, 0, 0",
+						s.Faults, s.Loads, s.LoadedPages, s.Prefetches, s.PrefetchedPages, s.PrefetchMapped,
+						s.PrefetchRandom, s.PrefetchWaits)
+				}
+			})
+		})
+	}
+}
+
 // A guest reading its memory forwards still reads it in runs. Its first fault
 // in a run reads that page; its second finds the rest of the run in flight and
 // waits for that read rather than reading its page again, and once the run is

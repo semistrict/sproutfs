@@ -193,6 +193,55 @@ func TestAHostDrainsBeforeItLeaves(t *testing.T) {
 	})
 }
 
+// A host pod replaced on its node, as a rolling restart of the hosts replaces
+// every one, comes back over the same disk under the same identity. If the
+// orchestrator saw the old pod terminating, its member drained. The new pod
+// serves the disk again once its copy of the membership shows the release:
+// the disk is let go, the member leaves and joins again with it, and the disk
+// serves. Until its copy shows the release, nothing moves.
+//
+// On GCE on 2026-10-04 the restart of six hosts for a change of setting left
+// one host's disk releasing for good, and the bench's wait for every disk to
+// serve gave up after fifteen minutes.
+func TestAPodReplacedOverItsDiskServesItAgain(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := newMembershipFixture(t, map[string][]string{"host-0": {}, "host-1": {}, "host-2": {}})
+		f.withDisks(map[string]uint32{"host-0": 1, "host-1": 1, "host-2": 1})
+		f.settle(t)
+		setPod := func(terminating bool) {
+			f.pods.mu.Lock()
+			defer f.pods.mu.Unlock()
+			for at := range f.pods.pods {
+				if f.pods.pods[at].Name == "host-2" {
+					f.pods.pods[at].Terminating, f.pods.pods[at].Ready = terminating, !terminating
+				}
+			}
+		}
+		id := identityOf("host-2")
+		setPod(true)
+		drained, steps := f.settle(t)
+		if member, _ := drained.Member(id); steps != 1 || member.State != membership.Draining {
+			t.Fatalf("the terminating pod's member is %s after %d steps, want draining after one", member.State,
+				steps)
+		}
+		setPod(false)
+		if m, steps := f.settle(t); steps != 0 {
+			t.Fatalf("the new pod's copy has not read the release, and the membership took %d steps to "+
+				"generation %d", steps, m.Generation())
+		}
+		f.hosts["host-2"].member.Generation = drained.Generation()
+		f.hosts["host-2"].member.Disks[0].State = membership.Releasing.String()
+		back, steps := f.settle(t)
+		if member, _ := back.Member(id); steps != 4 || member.State != membership.Active || !back.Serves(id, id) {
+			t.Fatalf("the new pod's member is %s after %d steps, serving its disk %v; want active and serving "+
+				"after four", member.State, steps, back.Serves(id, id))
+		}
+		if len(back.Disks()) != 3 {
+			t.Fatalf("the membership holds %d disks once the pod is back, want 3", len(back.Disks()))
+		}
+	})
+}
+
 // A join, a leave and a change of weight are each one generation: no
 // generation moves windows of more than one disk.
 func TestEachStepMovesTheWindowsOfOneDiskAtMost(t *testing.T) {
