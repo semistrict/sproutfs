@@ -1455,15 +1455,18 @@ member serves gets nothing, and its stripes are dropped as `stale`.
 
 **A fault and a pull never wait on a fill.** A host holds the fills handed to
 it, and its peers' keeps, in one queue, `CacheConfig.FillQueueBytes` (64 MiB
-by default). One worker does the fills one at a time. It asks for a read's
-fill right, writes this host's own stripes and sends each keep, and it takes
-the next fill once the last keep is answered. Every write to this host's own
-disk, its own fills' and its peers' keeps', is done by another worker, one at
-a time. Keeps go out within a rate per host, `CacheConfig.FillBytesPerSecond`
-(128 MiB/s by default, with a burst of one second of it), and within the
-host's background budget at the fill priority. A fill of a read or a pull that
-finds the queue full, the rate spent or the budget without room is dropped.
-Its window is read from the store the next time.
+by default). One worker decides the fills, in the order they were handed
+over, and each fill's holders in rank order. It asks for a read's fill right.
+It takes each keep's bytes of a rate per host,
+`CacheConfig.FillBytesPerSecond` (128 MiB/s by default, with a burst of one
+second of it), and its room in the host's background budget. Then it hands
+the keep to the lane of the member that serves the holder's disk. This host's
+own stripes go to a lane of their own. The lanes carry their keeps side by
+side, as below. Every write to this host's
+own disk, its own fills' and its peers' keeps', is done by another worker,
+one at a time. A fill of a read or a pull that finds the queue full, the rate
+spent or the budget without room is dropped. Its window is read from the
+store the next time.
 
 **A publication goes at the pace of its fills.** A suspend or a stop is
 followed by a restore on another host. A window the publication did not fill
@@ -1475,14 +1478,21 @@ rather than drop:
 - A publication hands a window over only while the queue holds less than
   three quarters of its bound, its high-water mark. Until then it waits for
   room. Windows that wait get room in the order they began to wait.
+- A window taken into the queue gets a copy of its envelopes. Its envelopes
+  are views of its part, and a window that held them would hold the whole
+  part until its last keep was answered. So the queue's bytes are what the
+  fills hold.
 - A part keeps its upload slot until its windows are handed over. So a
   publication whose fills wait also waits for a slot for its next part. It
-  holds no more parts than the store has slots, besides what the queue holds.
+  holds no more parts than the store has slots, besides the queue.
 - A keep of a publication's that finds the rate spent waits for it, and
-  leaves a quarter of a second of the rate to reads. One that finds the
-  background budget full, or whose holder answers BUSY, is tried again after
-  10 ms, then twice as long each time, up to half a second. A keep larger
-  than the whole budget never fits it, and is dropped at once.
+  leaves a quarter of a second of the rate to reads. Its keeps have three
+  quarters of the background budget, and leave the last quarter to reads.
+  One that finds the budget held by the publications' own keeps waits until
+  one of them is answered. One that finds it full of other work, or whose
+  holder answers BUSY, is tried again after 10 ms, then twice as long each
+  time, up to half a second. A keep larger than its share of the whole budget
+  never fits it, and is dropped at once.
 - No wait lasts longer than `CacheConfig.FillWaitBound` (10 s by default). A
   publication that waited it out once waits no more. Each of its fills that
   finds no room after is dropped, as a read's is. A holder that is gone is
@@ -1490,25 +1500,50 @@ rather than drop:
   So it costs a publication the bound at most.
 
 On GCE an 8 GiB guest published from an Ice Lake host under 4+2 used to drop
-two thirds of its stripes at the default queue. Paced, it drops none, and
-takes 69 s instead of 33 s, the pace of the host's keeps
+two thirds of its stripes at the default queue. Paced and sent one keep at a
+time, it dropped none, and took 69 s instead of 33 s
 ([the measurement](measurements/gce-fill-backpressure-2026-10-04.md)).
+With its keeps side by side it drops none and commits in 38 s, and in 28 s
+with a 1 GiB queue, which costs 3.1 GiB of memory rather than 5.6
+([the measurement](measurements/gce-fill-side-by-side-2026-10-04.md)).
 
 **A read's fill never waits behind a publication's.** The last quarter of the
 queue is left to the fills of reads, repairs and peers' keeps, which never
 wait. The worker takes them before any of a publication's fills still to do,
-and also between one holder of a publication's fill and the next. So a read's
-fill waits for the keep on the wire at most. A publication's keep waiting to
-be tried again leaves the worker to them meanwhile.
+and also between one holder of a publication's fill and the next. Each lane
+carries a read's keep before the publication's keeps behind the one on the
+wire. So a read's fill waits for the keep on the wire at most. A
+publication's keep waiting to be tried again leaves the worker to them
+meanwhile.
 
-**One fill at a time.** Keeps sent beside each other reach a holder's link,
-its connection and the background budget in whatever order the Go scheduler
-runs them. So which keep a dropped frame or a partition takes, and which finds
-the budget full, would not follow from the order the fills were handed over
-in, and a simulated run would not reproduce. A keep is background work within a
-rate, so waiting for its answer costs a fill nothing it needs. The writes have
-a worker of their own because a keep waits for its holder's writes, and a
-holder's writes must never wait for that holder's own keeps.
+**Keeps side by side.** A window's keeps go to its holders side by side. The worker decides each
+holder in turn and hands its keep to the holder's lane. Each lane carries
+one keep at a time, in the order the keeps were decided. The lanes run beside
+each other. So a publication goes at the pace of one holder, not of all its
+holders one after another.
+
+The worker bounds a publication's keeps. A lane holds two at most: one on
+the wire and one behind it, which goes as soon as the first is answered. The
+host holds `CacheConfig.FillKeepsInFlight` at most (16 by default), on every
+lane together. When the next holder's lane is full, the worker waits for
+room there, and does a read's fills meanwhile. It does not go on to the next
+fill: that fill's keep could then reach a holder before the earlier fill's
+keep to it. A read's keeps never wait for a lane. The queue bounds them.
+
+The order is a decision, not a convenience. Keeps decided on goroutines of
+their own would reach the rate, the background budget and a holder's link in
+whatever order the Go scheduler ran them. So which keep a dropped frame or a
+partition takes, and which finds the budget full, would not follow from the
+order the fills were handed over in, and a simulated run would not
+reproduce. So one worker decides, in that order. A lane has one keep on the
+wire, because a member answers the requests of one connection beside each
+other: two keeps on the wire to one member would reach its queue of writes in
+whatever order its scheduler ran them. Lanes of different members share
+nothing a keep could find full. A keep that a stale answer sends again to
+another member goes from its first member's lane; that happens only while a
+disk moves. The writes have a worker of their own because a keep waits for
+its holder's writes, and a holder's writes must never wait for that holder's
+own keeps.
 
 **Fill rights.** A cold burst would fill one window many times: many hosts miss
 it at once, each reads the store, and each would send its stripes. So a fill

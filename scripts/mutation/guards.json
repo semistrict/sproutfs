@@ -607,7 +607,7 @@
     "id": "fill-reads-behind-publications",
     "package": "checkpoint",
     "run": "^TestAReadsFillGoesAheadOfAPublications$",
-    "purpose": "Take a publication's fills before a read's, so a read's fill waits behind them."
+    "purpose": "Take a publication's fills before a read's, on the worker of fills and on each holder's lane, so a read's fill waits behind them."
   },
   {
     "id": "keep-while-writing",
@@ -619,7 +619,7 @@
     "id": "fill-concurrently",
     "package": "checkpoint",
     "run": "^TestAHostSendsItsKeepsOneAtATime$",
-    "purpose": "Ask fill rights and send keeps on goroutines of their own, so the scheduler orders them on the link."
+    "purpose": "Ask fill rights on goroutines of their own, and send each keep a lane holds beside the one before it, so the scheduler orders them on the holder's link."
   },
   {
     "id": "cluster-read-by-index",
@@ -716,6 +716,24 @@
     "package": "checkpoint",
     "run": "^TestAPublicationHandsItsPartsOverInTheirOrder$",
     "purpose": "Hand each part of a publication to the fills as its PUT ends, so the scheduler orders a host's fills."
+  },
+  {
+    "id": "fill-keeps-one-at-a-time",
+    "package": "checkpoint",
+    "run": "^TestAPublicationsKeepsGoToItsHoldersSideBySide$",
+    "purpose": "Decide a fill's next holder only once the last one's keep is answered, so a host sends one keep at a time and a publication goes at a holder's pace times its holders."
+  },
+  {
+    "id": "fill-keeps-past-a-blocked-fill",
+    "package": "checkpoint",
+    "run": "^TestEachHolderKeepsAPublicationsWindowsInTheirOrder$",
+    "purpose": "Decide the holders of a later publication's fill while an earlier one waits for room on a holder's lane, so a holder receives a later window's keep before an earlier one's."
+  },
+  {
+    "id": "fill-windows-hold-their-parts",
+    "package": "checkpoint",
+    "run": "^TestAPublicationsQueuedWindowsHoldWhatTheQueueCounts$",
+    "purpose": "Queue a publication's window as a view of its part, so the queue counts the window and the host holds the whole part."
   },
   {
     "id": "hot-tier-fill-before-durable",

@@ -98,6 +98,11 @@ type CacheConfig struct {
 	// FillRightInterval is how long a window's fill right, once this cache
 	// gave it out, is not given again. Default DefaultFillRightInterval.
 	FillRightInterval time.Duration
+	// FillKeepsInFlight bounds the publications' keeps and writes this host
+	// has on their way at once, to all its peers and its own disks together.
+	// Each holder has at most two of them, one on the wire and one behind it.
+	// Default DefaultFillKeepsInFlight.
+	FillKeepsInFlight int
 	// ClusterHedgeFloor is the least a read of the cluster waits for k
 	// stripes of a window before it asks the rest of the window's ranks.
 	// Default DefaultClusterHedgeFloor.
@@ -308,12 +313,13 @@ func NewCache(ctx context.Context, resources *resource.Budget, config CacheConfi
 	config.FillBytesPerSecond = cmp.Or(config.FillBytesPerSecond, DefaultFillBytesPerSecond)
 	config.FillRightInterval = cmp.Or(config.FillRightInterval, DefaultFillRightInterval)
 	config.FillWaitBound = cmp.Or(config.FillWaitBound, DefaultFillWaitBound)
+	config.FillKeepsInFlight = cmp.Or(config.FillKeepsInFlight, DefaultFillKeepsInFlight)
 	config.ClusterHedgeFloor = cmp.Or(config.ClusterHedgeFloor, DefaultClusterHedgeFloor)
 	config.ClusterBound = cmp.Or(config.ClusterBound, DefaultClusterBound)
 	config.ClusterStripeTimeout = cmp.Or(config.ClusterStripeTimeout, DefaultClusterStripeTimeout)
 	config.HeadCheckEvery = cmp.Or(config.HeadCheckEvery, DefaultHeadCheckEvery)
 	if config.FillQueueBytes < 0 || config.FillBytesPerSecond < 0 || config.FillRightInterval < 0 ||
-		config.FillWaitBound < 0 || config.ClusterHedgeFloor < 0 || config.ClusterBound < 0 ||
+		config.FillWaitBound < 0 || config.FillKeepsInFlight < 0 || config.ClusterHedgeFloor < 0 || config.ClusterBound < 0 ||
 		config.ClusterStripeTimeout <= 0 {
 		return nil, ErrInvalidConfig
 	}
@@ -349,7 +355,8 @@ func NewCache(ctx context.Context, resources *resource.Budget, config CacheConfi
 	if cache.disk != nil || config.Shards {
 		cache.filler = newFiller(ctx, shared, fillSettings{peers: config.Peers, clock: config.Clock,
 			queueBytes: config.FillQueueBytes, bytesPerSecond: config.FillBytesPerSecond,
-			rightInterval: config.FillRightInterval, waitBound: config.FillWaitBound})
+			rightInterval: config.FillRightInterval, waitBound: config.FillWaitBound,
+			keepsInFlight: config.FillKeepsInFlight})
 		cache.reader = newClusterReader(ctx, shared, cache.filler, config.Peers, config.Clock, clusterSettings{
 			hedgeFloor: config.ClusterHedgeFloor, bound: config.ClusterBound, stripeTimeout: config.ClusterStripeTimeout,
 			probeFirst: DefaultProbeFirst, probeMax: DefaultProbeMax, headEvery: config.HeadCheckEvery})
