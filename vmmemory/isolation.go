@@ -405,6 +405,18 @@ func (r *MemoryRegion) reach(ctx context.Context, pg *resident, key pageKey) (*r
 	return r.move(ctx, pg, key)
 }
 
+// mapsLocked reports whether this memory region's process may map a page of
+// f as it is, with no copy: any page of a shared arena, and in an isolated one
+// a page of its own file, its tenant's shared file, the public file or a fork
+// point's file it was given. Caller holds h.mu.
+func (r *MemoryRegion) mapsLocked(f *arenaFile) bool {
+	if !r.host.isolated() || f == r.private || f == r.shared || f == r.public {
+		return true
+	}
+	_, given := r.forks[f]
+	return given
+}
+
 // giveFork hands this memory region's process a fork point's file, once,
 // before anything is mapped from it.
 func (r *MemoryRegion) giveFork(ctx context.Context, f *arenaFile) error {

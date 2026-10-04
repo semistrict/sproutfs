@@ -151,6 +151,10 @@ type ReadStats struct {
 	// Delay and Bound are the reader's delay before a second request and its
 	// bound before a read of the store, now.
 	Delay, Bound time.Duration
+	// Prefetches counts the reads of a window a prefetch made, which ask no
+	// second request, never read the store as a hedge, and leave the delay
+	// alone.
+	Prefetches uint64
 }
 
 // The probes reads of the cluster mark.
@@ -734,6 +738,10 @@ func (w *windowRead) run(ctx context.Context) {
 	}()
 	r := w.r
 	began := r.clock.Now()
+	// A prefetch is background work: nothing waits on it, so it asks no
+	// second request after the delay, and the delay, an estimate of what a
+	// fault's read takes, is not drawn from it. See prefetch.go.
+	prefetch := Prefetching(ctx)
 	own := w.owned && w.readOwn(ctx)
 	w.join(ctx)
 	if w.complete() {
@@ -744,7 +752,9 @@ func (w *windowRead) run(ctx context.Context) {
 		w.repair(ctx)
 		return
 	}
-	if !w.earlier {
+	if prefetch {
+		r.count(func(stats *ReadStats) { stats.Prefetches++ })
+	} else if !w.earlier {
 		// One read of a window earns once, whatever codes it tries.
 		r.earn()
 	}
@@ -773,7 +783,7 @@ func (w *windowRead) run(ctx context.Context) {
 		w.ask(ctx, cache)
 	}
 	var delay <-chan time.Time
-	if len(w.spares) > 0 && !r.bug("cluster-no-second-request") {
+	if len(w.spares) > 0 && !prefetch && !r.bug("cluster-no-second-request") {
 		timer := r.clock.NewTimer(r.hedge.delay())
 		defer timer.Stop()
 		delay = timer.C()
@@ -821,7 +831,7 @@ func (w *windowRead) run(ctx context.Context) {
 			return
 		}
 	}
-	if w.complete() {
+	if w.complete() && !prefetch {
 		r.hedge.done(r.clock.Since(began), waited)
 	}
 	if w.complete() && w.pending > 0 && !w.earlier && w.mayRepair() {

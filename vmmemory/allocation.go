@@ -431,6 +431,20 @@ func (h *Host) allocate(ctx context.Context, r *MemoryRegion, f *arenaFile, plac
 				continue
 			}
 		}
+		// The slots of a prefetch still reading come next: nothing waits on
+		// its pages, and a page a guest maps is one it is using. The
+		// prefetches are cancelled, and their slots come back as their reads
+		// end. See prefetch.go.
+		if !preferEviction && !sim.Bug(ctx, "pager-prefetch-ignores-pressure") && h.cancelPrefetchesLocked(ctx) {
+			changed := h.changed
+			h.mu.Unlock()
+			select {
+			case <-ctx.Done():
+				return fileSlot{}, context.Cause(ctx)
+			case <-changed:
+			}
+			continue
+		}
 		var candidates []*resident
 		busy := false
 		share := h.cfg.ResidentPages / max(len(h.memoryRegions), 1)

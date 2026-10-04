@@ -2,9 +2,12 @@ package vmmemory_test
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"slices"
+	"sync"
 	"testing"
 	"testing/synctest"
 
@@ -85,18 +88,27 @@ func TestReadAheadLoadsTheWindowContiguouslyAndNeverEvicts(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 8, LogicalPages: 32, DirtyPages: 8, ReadAheadPages: 8})
 		r, m, b := f.memoryRegion(8)
+		var mu sync.Mutex
 		var loads [][2]int
 		b.onLoad = func(offset uint64, length int) {
+			mu.Lock()
+			defer mu.Unlock()
 			loads = append(loads, [2]int{int(offset) / pageSize, length / pageSize})
 		}
 		access(t, r, m, 5, false)
-		// One fault loads its whole window with one read into consecutive
-		// slots and installs it with one mapping command.
-		if len(loads) != 1 || loads[0] != [2]int{0, 8} {
+		// The prefetch's reads run beside the fault's.
+		slices.SortFunc(loads, func(a, b [2]int) int { return cmp.Compare(a[0], b[0]) })
+		// One fault loads its own page and maps it with one command; its
+		// prefetch loads the rest of the window behind it, into the
+		// consecutive slots the fault reserved around its page. This backing
+		// cannot leave a page out of a read, so the prefetch reads the pages
+		// before the faulting one and the pages after it apart, rather than
+		// read that page twice, and maps them with a command each.
+		if len(loads) != 3 || loads[0] != [2]int{0, 5} || loads[1] != [2]int{5, 1} || loads[2] != [2]int{6, 2} {
 			t.Fatalf("read-ahead loads = %v", loads)
 		}
-		if len(m.pages) != 8 || m.maps != 1 {
-			t.Fatalf("mapped %d pages with %d commands; want 8 pages in 1 command", len(m.pages), m.maps)
+		if len(m.pages) != 8 || m.maps != 3 {
+			t.Fatalf("mapped %d pages with %d commands; want 8 pages in 3 commands", len(m.pages), m.maps)
 		}
 		for page := uint64(1); page < 8; page++ {
 			if m.pages[page].place != m.pages[page-1].place.next() {

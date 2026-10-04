@@ -141,8 +141,16 @@ func (a *arena) addresses() int {
 	return count
 }
 
-// page is the bytes one place holds, nil for a hole.
+// page is the bytes one place holds, nil for a hole. The caller holds a.mu,
+// or knows nothing else runs.
 func (a *arena) page(at place) []byte { return a.files[at.file].slots[at.slot] }
+
+// pageUnder is page under a.mu, for a caller a prefetch may run beside.
+func (a *arena) pageUnder(at place) []byte {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.page(at)
+}
 
 // fixture is this file, which is what a file a test wraps is too.
 func (f *arenaFile) fixture() *arenaFile { return f }
@@ -318,6 +326,15 @@ type mapping struct {
 
 func newMapping(a *arena) *mapping {
 	return &mapping{arena: a, pages: make(map[uint64]mapped), files: make(map[int]*arenaFile)}
+}
+
+// mappedPage is what the mapping maps at page, read under the arena's lock: a
+// prefetch maps pages from a goroutine of its own.
+func (m *mapping) mappedPage(page uint64) (mapped, bool) {
+	m.arena.mu.Lock()
+	defer m.arena.mu.Unlock()
+	p, ok := m.pages[page]
+	return p, ok
 }
 
 // GiveFile holds the pager to who may read a file: a file given writable is
@@ -892,21 +909,26 @@ func access(t *testing.T, r *vmmemory.MemoryRegion, m *mapping, page uint64, wri
 }
 
 // accessUnder is access with its fault made under ctx, which may carry the
-// runtime whose guards the fault's path consults.
+// runtime whose guards the fault's path consults. The guest it models reads
+// on only once the rest of the fault's run is in: it waits for the prefetch
+// the fault started. The tests of prefetch itself fault without waiting.
 func accessUnder(ctx context.Context, t *testing.T, r *vmmemory.MemoryRegion, m *mapping, page uint64,
 	write bool) []byte {
 	t.Helper()
-	p, ok := m.pages[page]
+	p, ok := m.mappedPage(page)
 	if !ok || (write && !p.writable) {
 		if err := r.Fault(ctx, page, write); err != nil {
 			t.Fatal(err)
 		}
-		p = m.pages[page]
+		if err := r.SettlePrefetches(ctx); err != nil {
+			t.Fatal(err)
+		}
+		p, _ = m.mappedPage(page)
 	}
 	if p.slot == -1 {
 		return make([]byte, m.arena.pageSize)
 	}
-	return m.arena.page(p.place)
+	return m.arena.pageUnder(p.place)
 }
 
 func TestSharingCOWReclaimAndDurability(t *testing.T) {

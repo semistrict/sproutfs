@@ -3,6 +3,8 @@ package vmmemory
 import (
 	"context"
 	"errors"
+
+	"github.com/semistrict/sproutfs/platform/sim"
 )
 
 // Fault orders operations only within this memory region's read-ahead window. Shared
@@ -362,13 +364,18 @@ func (r *MemoryRegion) readInWindow(ctx context.Context, index uint64) (pg *resi
 	if id, named := plan.identity(index); !named || id.zero() || plan.own(index) {
 		return nil, false, nil
 	}
+	if pf := plan.inFlight(index); pf != nil {
+		// A prefetch is reading this page already; the store plans again once
+		// it has landed. The plan holds nothing yet.
+		return nil, true, r.awaitPrefetch(ctx, pf)
+	}
 	if err := plan.takeFaulting(ctx, index); err != nil {
 		return nil, false, err
 	}
 	if err := plan.takeRest(ctx, index, false); err != nil {
 		return nil, false, err
 	}
-	if err := plan.loadReserved(ctx); err != nil {
+	if err := plan.loadFaulting(ctx, index); err != nil {
 		return nil, false, err
 	}
 	if pg = plan.pages[index-start]; pg == nil {
@@ -838,6 +845,11 @@ func (r *MemoryRegion) loadOnce(ctx context.Context, index uint64, spill *int) (
 		return false, err
 	}
 	defer plan.unlock()
+	if pf := plan.inFlight(index); pf != nil {
+		// A prefetch is reading this page already; the fault plans again once
+		// it has landed. The plan holds nothing yet.
+		return false, r.awaitPrefetch(ctx, pf)
+	}
 	if plan.unpublished(index) && *spill < 0 {
 		// The extents say another host still holds this page, so the load takes
 		// it as this memory region's dirty state. The reservation for it is taken by
@@ -853,10 +865,34 @@ func (r *MemoryRegion) loadOnce(ctx context.Context, index uint64, spill *int) (
 	if err := plan.takeRest(ctx, index, true); err != nil {
 		return false, err
 	}
-	if err := plan.loadReserved(ctx); err != nil {
+	if err := plan.loadFaulting(ctx, index); err != nil {
 		return false, err
 	}
 	return plan.install(ctx)
+}
+
+// loadFaulting reads the faulting page, and hands the rest of its window to a
+// prefetch, which reads it beside this read and behind the fault: the fault
+// installs its page and wakes the guest without waiting for the run. See
+// prefetch.go.
+func (p *windowPlan) loadFaulting(ctx context.Context, index uint64) error {
+	if pf := p.splitPrefetch(ctx, index); pf != nil {
+		pf.begin(ctx)
+		if sim.Bug(ctx, "pager-fault-waits-for-its-prefetch") {
+			// The bug reads the page only once the rest of its run is in.
+			if err := p.memoryRegion.withoutMemoryRegion(ctx, func() error {
+				select {
+				case <-pf.done:
+					return nil
+				case <-ctx.Done():
+					return context.Cause(ctx)
+				}
+			}); err != nil {
+				return err
+			}
+		}
+	}
+	return p.loadReserved(ctx)
 }
 
 // takeFaulting takes the faulting page into the plan before any other: bound

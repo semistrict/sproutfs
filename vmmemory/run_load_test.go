@@ -259,11 +259,13 @@ func residentWindow(t *testing.T, f *fixture, published *publishedVolume) (*vmme
 	return r, m, fork, resident
 }
 
-// A fault brings its whole window in one read, and the pages the memory region already
-// holds — the ones its populate mapped because a sibling had made them resident
-// — do not cut that read into pieces. What is left of the run is one ranged
-// read per part its pages lie in, so a window published by three checkpoints
-// costs three reads however scattered through it the pages the memory region holds are.
+// A fault reads its own page, and its prefetch brings the rest of its window in
+// with one read behind it; the pages the memory region already holds — the ones
+// its populate mapped because a sibling had made them resident — do not cut
+// that read into pieces. What is left of the run is one ranged read per part
+// its pages lie in, so a window published by three checkpoints costs the
+// faulting page's read and three more however scattered through it the pages
+// the memory region holds are. No page is read twice.
 func TestAFaultOverResidentPagesIsOneLoadAndOneReadPerCheckpoint(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		published := newPublishedVolume(t, runCheckpoints)
@@ -281,12 +283,12 @@ func TestAFaultOverResidentPagesIsOneLoadAndOneReadPerCheckpoint(t *testing.T) {
 
 		loads := fork.recorded()
 		reads, bytes := published.reads.count()
-		if len(loads) != 1 || loads[0] != [2]uint64{0, runWindow} {
-			t.Fatalf("one fault over %d pages of which %d were already held made %d loads (%v) and %d object reads of %d bytes, want one load of the whole window",
+		if len(loads) != 2 || loads[0] != [2]uint64{0, 1} || loads[1] != [2]uint64{1, runWindow - 1} {
+			t.Fatalf("one fault over %d pages of which %d were already held made %d loads (%v) and %d object reads of %d bytes, want the faulting page's and one of the rest of the window",
 				runWindow, len(resident), len(loads), summarise(loads), reads, bytes)
 		}
-		if got := after.Loads - before.Loads; got != 1 {
-			t.Fatalf("the fault counted %d loads, want one", got)
+		if got := after.Loads - before.Loads; got != 2 {
+			t.Fatalf("the fault counted %d loads, want two", got)
 		}
 		if got, want := after.LoadedPages-before.LoadedPages, uint64(runWindow-len(resident)); got != want {
 			t.Fatalf("the fault loaded %d pages, want the %d the window did not already hold", got, want)
@@ -294,16 +296,17 @@ func TestAFaultOverResidentPagesIsOneLoadAndOneReadPerCheckpoint(t *testing.T) {
 		if len(m.pages) != runWindow {
 			t.Fatalf("the fault left %d of the window's %d pages mapped", len(m.pages), runWindow)
 		}
-		if want := windowSegmentReads + runCheckpoints; reads != want {
-			t.Fatalf("the fault made %d object reads of %d bytes, want %d: one per checkpoint that published the run",
+		if want := windowSegmentReads + 1 + runCheckpoints; reads != want {
+			t.Fatalf("the fault made %d object reads of %d bytes, want %d: the faulting page's, and one per checkpoint that published the rest of the run",
 				reads, bytes, want)
 		}
 	})
 }
 
 // A store into a page this memory region holds nothing for brings its window in
-// exactly as a read fault does — one load, one object read per checkpoint that
-// published the run — and then copies one page. On x86-64 that is how a fork
+// exactly as a read fault does — its own page's load, then one load of the
+// rest behind it with one object read per checkpoint that published the run —
+// and copies one page. On x86-64 that is how a fork
 // faults at all: KVM finishes a fault that had to wait for the pager from a
 // worker that asks for the page writable, so a guest merely reading what it
 // inherited reaches the pager as a store, and a store that read one page at a
@@ -331,16 +334,16 @@ func TestAStoreIntoAColdPageBringsItsWholeWindowIn(t *testing.T) {
 
 		loads := fork.recorded()
 		reads, bytes := published.reads.count()
-		if len(loads) != 1 || loads[0] != [2]uint64{0, runWindow} {
-			t.Fatalf("a store into a cold page of a %d-page window made %d loads (%v) and %d object reads of %d bytes, want one load of the whole window",
+		if len(loads) != 2 || loads[0] != [2]uint64{0, 1} || loads[1] != [2]uint64{1, runWindow - 1} {
+			t.Fatalf("a store into a cold page of a %d-page window made %d loads (%v) and %d object reads of %d bytes, want the faulting page's and one of the rest of the window",
 				runWindow, len(loads), summarise(loads), reads, bytes)
 		}
-		if want := windowSegmentReads + runCheckpoints; reads != want {
-			t.Fatalf("the store made %d object reads of %d bytes, want %d: one per checkpoint that published the run",
+		if want := windowSegmentReads + 1 + runCheckpoints; reads != want {
+			t.Fatalf("the store made %d object reads of %d bytes, want %d: the faulting page's, and one per checkpoint that published the rest of the run",
 				reads, bytes, want)
 		}
-		if got := after.Loads - before.Loads; got != 1 {
-			t.Fatalf("the store counted %d loads, want one", got)
+		if got := after.Loads - before.Loads; got != 2 {
+			t.Fatalf("the store counted %d loads, want two", got)
 		}
 		if got, want := after.LoadedPages-before.LoadedPages, uint64(runWindow-len(resident)); got != want {
 			t.Fatalf("the store loaded %d pages, want the %d the window did not already hold", got, want)

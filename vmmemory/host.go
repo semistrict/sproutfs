@@ -66,6 +66,16 @@ type Host struct {
 	spill        platform.File
 	clean        map[pageKey]*resident
 	cleanVersion uint64
+	// inflight is the prefetch reading each page identity, and prefetches
+	// every prefetch whose pages have not landed yet, prefetching of them.
+	// prefetchRunning counts the prefetches whose goroutines have not ended,
+	// mapping their pages included, and prefetchNumber every prefetch ever
+	// split off. All are guarded by mu. See prefetch.go.
+	inflight        map[pageKey]*prefetch
+	prefetches      map[*prefetch]struct{}
+	prefetching     int
+	prefetchRunning int
+	prefetchNumber  uint64
 	// memory regions is every attached memory region, which is what the dirty budget's
 	// pressure is measured and acted on across: the budget is the host's, so
 	// the checkpoint that relieves it need not be the waiting memory region's.
@@ -116,6 +126,7 @@ type Host struct {
 	faultLatency, faultQueueLatency latency.Histogram
 	mappingLatency, resolveLatency  latency.Histogram
 	loadLatency, revokeLatency      latency.Histogram
+	prefetchLatency                 latency.Histogram
 	protectLatency, sealLatency     latency.Histogram
 	sealWalkLatency                 latency.Histogram
 	// probe is the pager's audit of what it hands a guest, and is nothing at
@@ -184,6 +195,12 @@ func New(ctx context.Context, resources *resource.Budget, cfg Config, arena Aren
 	if cfg.SettleWorkers == 0 {
 		cfg.SettleWorkers = 1
 	}
+	if cfg.PrefetchRuns == 0 {
+		cfg.PrefetchRuns = cfg.ConcurrentIO
+	}
+	if cfg.PrefetchRuns < 1 || cfg.PrefetchRuns > 1024 {
+		return nil, ErrConfig
+	}
 	if cfg.SettleWorkers < 1 || cfg.SettleWorkers > 1024 {
 		return nil, ErrConfig
 	}
@@ -210,6 +227,7 @@ func New(ctx context.Context, resources *resource.Budget, cfg Config, arena Aren
 		extents:     make(map[extentKey]*extent),
 		extentPages: extentPages,
 		clean:       make(map[pageKey]*resident), changed: make(chan struct{}), revoked: make(chan struct{}),
+		inflight: make(map[pageKey]*prefetch), prefetches: make(map[*prefetch]struct{}),
 		lru: pageList{links: recentLinks}, idle: pageList{links: idleLinks},
 		memoryRegions: make(map[*MemoryRegion]struct{}), highWater: highWater(cfg.DirtyPages),
 		io: make(chan struct{}, cfg.ConcurrentIO), writeback: make(chan struct{}, 1)}

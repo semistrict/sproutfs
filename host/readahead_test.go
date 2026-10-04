@@ -136,19 +136,24 @@ func coldRun(t *testing.T) (*countedObjects, *hostPagers, *testpager.Mapping, *v
 	return counted, pagers, mapping, memoryRegion, want
 }
 
-// One cold read-ahead run of 512 RAM pages costs two object-store requests: the
-// page table segment that locates them, and the one extent their members lie in.
-func TestAColdReadAheadRunOfRAMPagesIsTwoRequests(t *testing.T) {
+// One cold read-ahead run of 512 RAM pages costs three object-store requests:
+// the page table segment that locates them, the faulting page's member, which
+// the fault reads alone, and the one extent the rest of the run's members lie
+// in, which its prefetch reads behind it.
+func TestAColdReadAheadRunOfRAMPagesIsThreeRequests(t *testing.T) {
 	counted, _, mapping, memoryRegion, want := coldRun(t)
 	if err := memoryRegion.Fault(t.Context(), 0, false); err != nil {
 		t.Fatal(err)
 	}
-	if gets := counted.count(); gets != 2 {
-		t.Fatalf("a cold read-ahead run of %d RAM pages cost %d requests, want the segment and the one extent",
+	if err := memoryRegion.SettlePrefetches(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if gets := counted.count(); gets != 3 {
+		t.Fatalf("a cold read-ahead run of %d RAM pages cost %d requests, want the segment, the faulting page and the one extent of the rest",
 			readAheadPages, gets)
 	}
-	// The whole run is resident and holds what was published: one fault, one
-	// run, and the bytes of every page of it.
+	// The whole run is resident and holds what was published: one fault, its
+	// page and its prefetch, and the bytes of every page of it.
 	for page := range uint64(readAheadPages) {
 		got, mapped := mapping.Read(page)
 		if !mapped {
@@ -161,7 +166,7 @@ func TestAColdReadAheadRunOfRAMPagesIsTwoRequests(t *testing.T) {
 	}
 }
 
-// A cold store costs the same two requests, because a store is how a fork
+// A cold store costs the same three requests, because a store is how a fork
 // faults. On x86-64 KVM finishes a fault that had to wait for the pager from a
 // worker that asks for the page writable whatever the guest's access was, so a
 // guest merely reading what it inherited reaches the pager as a store: on a GCE
@@ -180,16 +185,19 @@ func TestAColdStoreBringsInTheRunAndCopiesOnePage(t *testing.T) {
 	if err := memoryRegion.Fault(t.Context(), 0, true); err != nil {
 		t.Fatal(err)
 	}
+	if err := memoryRegion.SettlePrefetches(t.Context()); err != nil {
+		t.Fatal(err)
+	}
 	after, err := ram.Stats(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if gets := counted.count(); gets != 2 {
-		t.Fatalf("a cold store into a %d-page run cost %d requests, want the segment and the one extent",
+	if gets := counted.count(); gets != 3 {
+		t.Fatalf("a cold store into a %d-page run cost %d requests, want the segment, the faulting page and the one extent of the rest",
 			readAheadPages, gets)
 	}
-	if got := after.Loads - before.Loads; got != 1 {
-		t.Fatalf("the store made %d loads, want one of the whole run", got)
+	if got := after.Loads - before.Loads; got != 2 {
+		t.Fatalf("the store made %d loads, want its page's and its prefetch's of the rest of the run", got)
 	}
 	if got := after.LoadedPages - before.LoadedPages; got != readAheadPages {
 		t.Fatalf("the store loaded %d pages, want the %d the run holds", got, readAheadPages)

@@ -7,10 +7,12 @@ import (
 )
 
 // The fault histogram decomposes the fault counter, so a record citing both can
-// be checked against itself. One read of an eight-page memory region loads and maps the
-// whole read-ahead run with one backing read and one mapping command; each of
-// the eight stores that follow maps a private page over the page it copied from
-// and resolves it, revoking nothing.
+// be checked against itself. One read of an eight-page memory region loads and
+// maps its page with one backing read and one mapping command, and the rest of
+// the read-ahead run is a prefetch's one read and one mapping command behind
+// it; each of the eight stores that follow maps a private page over the page it
+// copied from and resolves it, revoking nothing. A load is a read a fault waits
+// on, and the prefetch's is timed apart.
 func TestFaultHistogramDecomposesFaultCount(t *testing.T) {
 	f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 16, LogicalPages: 32, DirtyPages: 16, ReadAheadPages: 8})
 	r, m, _ := f.memoryRegion(8)
@@ -31,10 +33,11 @@ func TestFaultHistogramDecomposesFaultCount(t *testing.T) {
 		want  uint64
 	}{
 		{"fault", stats.Fault, stats.Faults},
-		{"mapping", stats.Mapping, 9},
-		{"resolve", stats.Resolve, 9},
+		{"mapping", stats.Mapping, 10},
+		{"resolve", stats.Resolve, 10},
 		{"revoke", stats.Revoke, 0},
 		{"load", stats.Load, 1},
+		{"prefetch", stats.Prefetch, 1},
 	} {
 		var summed uint64
 		for _, count := range item.value.Buckets {
