@@ -34,8 +34,9 @@ export KUBECONFIG=${KUBECONFIG:-/etc/rancher/k3s/k3s.yaml}
 namespace=sproutfs
 out=${APP_RESTORE_OUT:-/tmp/sproutfs-app-restore}
 rounds=${APP_RESTORE_ROUNDS:-3}
-keys=${APP_RESTORE_KEYS:-25000000}
-members=${APP_RESTORE_MEMBERS:-8000000}
+# The data of the reports: a heap of about 4 GiB in an 8 GiB guest.
+keys=${APP_RESTORE_KEYS:-24000000}
+members=${APP_RESTORE_MEMBERS:-10000000}
 value=${APP_RESTORE_VALUE:-100}
 steps=${APP_RESTORE_STEPS:-20000}
 scan=${APP_RESTORE_SCAN:-4000000}
