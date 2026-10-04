@@ -102,9 +102,14 @@ func TestMetricsExposeThePageCachesDisk(t *testing.T) {
 // first, so without it the reads a fault made are not all accounted for.
 func TestMetricsExposeThePageCachesMemory(t *testing.T) {
 	body := hostapi.Metrics(hostapi.Status{CacheMemory: hostapi.CacheMemory{Entries: 40, Hits: 1200, Misses: 300,
-		Coalesced: 25, Evictions: 9}})
+		Coalesced: 25, Evictions: 9, Tables: 3, TableBytes: 983040, TableHits: 51000, TableLoads: 4, TableKept: 2}})
 	for _, want := range []string{
 		"sproutfs_cache_memory_entries 40",
+		"sproutfs_cache_memory_page_tables 3",
+		"sproutfs_cache_memory_page_table_bytes 983040",
+		`sproutfs_cache_memory_page_table_lookups_total{outcome="hit"} 51000`,
+		`sproutfs_cache_memory_page_table_lookups_total{outcome="load"} 4`,
+		`sproutfs_cache_memory_page_table_lookups_total{outcome="kept"} 2`,
 		`sproutfs_cache_memory_reads_total{outcome="hit"} 1200`,
 		`sproutfs_cache_memory_reads_total{outcome="miss"} 300`,
 		`sproutfs_cache_memory_reads_total{outcome="coalesced"} 25`,

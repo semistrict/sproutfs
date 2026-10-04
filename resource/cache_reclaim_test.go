@@ -78,3 +78,25 @@ func TestFailedCacheEvictionRetainsCharge(t *testing.T) {
 		t.Fatalf("refused admission changed ownership: %d", got)
 	}
 }
+
+// A reservation larger than the whole allotment is refused without asking a
+// cache to give anything back: nothing it gave back would make room, and a
+// cache read whose entry can never be kept would empty the cache every time.
+func TestAReservationLargerThanTheAllotmentEvictsNothing(t *testing.T) {
+	b := budget(t, 100)
+	cached, err := b.TryAcquireCache(t.Context(), 60)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cached.Close()
+	defer b.RegisterCache(func(context.Context, int64) (bool, error) {
+		t.Fatal("a reservation past the allotment asked the cache to give something back")
+		return false, nil
+	})()
+	if _, err := b.TryAcquire(t.Context(), 101); !errors.Is(err, resource.ErrCapacity) {
+		t.Fatalf("a reservation of 101 bytes of 100 returned %v, want %v", err, resource.ErrCapacity)
+	}
+	if used := b.Stats().Used; used != 60 {
+		t.Fatalf("the budget holds %d bytes, want the cache's 60", used)
+	}
+}

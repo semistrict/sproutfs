@@ -139,7 +139,7 @@ func (s *Store) CheckIndex(ctx context.Context, index *Index) ([]platform.Object
 			if unreadable[table.segments[number].at.ref] {
 				continue
 			}
-			held, err := index.segmentAt(ctx, name, number)
+			held, release, err := index.table(ctx, name, number)
 			if err != nil {
 				violations = append(violations, IndexViolation{Key: key,
 					Err: fmt.Errorf("segment %d of %s, which checkpoint %s addresses, does not read: %w",
@@ -151,7 +151,7 @@ func (s *Store) CheckIndex(ctx context.Context, index *Index) ([]platform.Object
 					Err: fmt.Errorf("segment %d of %s reads %v, the root records %v: %w",
 						number, name, reads, table.segments[number].reads, ErrCorrupt)})
 			}
-			for _, relative := range slices.Sorted(maps.Keys(held.pages)) {
+			for relative := range held.all {
 				page := table.geometry.SegmentBase(number) + uint64(relative)
 				if _, span := table.geometry.PageSpan(table.size, page); span == 0 {
 					violations = append(violations, IndexViolation{Key: key,
@@ -159,6 +159,7 @@ func (s *Store) CheckIndex(ctx context.Context, index *Index) ([]platform.Object
 							number, name, page, table.size, ErrCorrupt)})
 				}
 			}
+			release()
 		}
 	}
 	return keys, violations

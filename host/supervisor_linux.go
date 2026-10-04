@@ -427,8 +427,11 @@ func (s *supervisor) Status(ctx context.Context) (hostapi.Status, error) {
 		Disk:  diskReport(s.disk.Status()),
 	}
 	report.Member, report.Membership = memberReport(status.Member, status.Membership)
+	tables := status.Cache.Tables
 	report.CacheMemory = hostapi.CacheMemory{Entries: status.Cache.Entries, Hits: status.Cache.Hits,
-		Misses: status.Cache.Misses, Coalesced: status.Cache.CoalescedLoads, Evictions: status.Cache.Evictions}
+		Misses: status.Cache.Misses, Coalesced: status.Cache.CoalescedLoads, Evictions: status.Cache.Evictions,
+		Tables: tables.Entries, TableBytes: tables.Bytes, TableHits: tables.Hits, TableLoads: tables.Loads,
+		TableKept: tables.Kept}
 	report.CacheDisk = cacheDiskReport(s.cacheFile, status.Cache.Disk)
 	report.CacheShards = cacheShardsReport(status.Cache.Shards)
 	member := !status.Member.ID.IsZero()

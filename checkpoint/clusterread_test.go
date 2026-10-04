@@ -615,10 +615,12 @@ func TestAPrefetchsReadOfTheClusterNeverHedges(t *testing.T) {
 			return class.Reads != 0 || class.Delay != 50*time.Millisecond || class.Bound != 200*time.Millisecond
 		}
 		if read.StoreHedges != 0 || read.StoreHedgesRefused != 0 || read.SecondRequests != 0 || read.Refused != 0 ||
-			gets.Load() != 0 || read.Prefetches != 12 || len(read.Classes) != 7 ||
-			slices.ContainsFunc(read.Classes, moved) || stats.PrefetchLoads != 12 {
+			gets.Load() != 0 || read.Prefetches != 22 || len(read.Classes) != 7 ||
+			slices.ContainsFunc(read.Classes, moved) || stats.PrefetchLoads != 22 {
+			// The memory tier keeps nothing here, not even the segment's
+			// table, so each of the 11 reads reads the segment and its page.
 			t.Fatalf("a prefetch read the store %d times, its cache %+v; want no hedge, no second request, "+
-				"12 window reads and loads of prefetches, and every class's delay at its floor, drawn from no read",
+				"22 window reads and loads of prefetches, and every class's delay at its floor, drawn from no read",
 				gets.Load(), stats)
 		}
 	})

@@ -141,9 +141,10 @@ type Cache struct {
 	active        int
 	changed       chan struct{}
 	generation    uint64
-	hits          uint64
-	misses        uint64
-	coalesced     uint64
+	// pages is what reads of pages did, and tables what lookups of segments'
+	// page tables did and what the cache holds of them.
+	pages  cacheReads
+	tables TableStats
 	// prefetchLoads counts the loads prefetches started.
 	prefetchLoads uint64
 	evictions     uint64
@@ -176,16 +177,22 @@ func segmentCacheKey(volume string, number uint64, ref control.Ref) cacheKey {
 
 const cacheEntryCharge = int64(512)
 
+// cacheEntry is one key's copy: a page's decoded member, or a segment's page
+// table, decoded once (pageTable).
 type cacheEntry struct {
 	key      cacheKey
-	data     []byte // Immutable, borrowed only while readers holds a pin.
+	data     []byte     // Immutable, borrowed only while readers holds a pin.
+	table    *pageTable // Immutable, and held the same way.
 	readers  int
 	retained bool
 	lease    *resource.Lease // Nil for an unretained transient read.
 }
 
+// held reports whether the entry holds anything worth keeping.
+func (entry *cacheEntry) held() bool { return len(entry.data) > 0 || entry.table != nil }
+
 func (entry *cacheEntry) dispose() {
-	entry.data = nil
+	entry.data, entry.table = nil, nil
 	if entry.lease != nil {
 		entry.lease.Close()
 	}
@@ -237,13 +244,18 @@ type CacheStats struct {
 	// and PrefetchLoads how many prefetches have started.
 	ActivePrefetches int
 	PrefetchLoads    uint64
-	// Hits, Misses and CoalescedLoads count reads served from a retained
-	// object, reads that started a fetch, and reads that joined one.
+	// Hits, Misses and CoalescedLoads count reads of pages served from a
+	// retained page, reads that started a fetch, and reads that joined one.
+	// Lookups of page tables are counted in Tables.
 	Hits           uint64
 	Misses         uint64
 	CoalescedLoads uint64
-	// Evictions counts entries dropped by local or shared pressure and clearing.
+	// Evictions counts entries dropped by local or shared pressure and
+	// clearing, page tables among them.
 	Evictions uint64
+	// Tables is what the cache holds of segments' page tables, which
+	// ResidentBytes and Entries count too, and what looking them up did.
+	Tables TableStats
 	// Disk is the disk tier's, zero where the host keeps nothing on its own
 	// disk, Shards each shard's it serves now, Fill what its fills of the
 	// cluster did, and Read what its reads of the cluster did.
@@ -251,6 +263,24 @@ type CacheStats struct {
 	Shards []DiskStats
 	Fill   FillStats
 	Read   ReadStats
+}
+
+// cacheReads is what reads of one kind of entry did: served from a retained
+// entry, started a fetch, or joined one.
+type cacheReads struct{ hits, misses, coalesced uint64 }
+
+// TableStats is what a cache's memory tier holds of segments' page tables,
+// each decoded once for every index that reads it (pageTable), and what
+// looking them up did.
+type TableStats struct {
+	// Entries and Bytes are the tables it holds now and what they are
+	// charged.
+	Entries int
+	Bytes   int64
+	// Hits counts lookups a held table served, Loads the lookups that fetched
+	// the segment and decoded it, Coalesced the lookups that joined a load in
+	// flight, and Kept the tables a publication left as it wrote them.
+	Hits, Loads, Coalesced, Kept uint64
 }
 
 // NewCache registers the cache with the host resource owner. Close it when
@@ -338,8 +368,8 @@ func (c *Cache) Stats() CacheStats {
 	defer c.mu.Unlock()
 	return CacheStats{ResidentBytes: c.used, Entries: len(c.entries), ActiveLoads: c.active,
 		PeakLoads: c.peak, ActivePrefetches: c.prefetches, PrefetchLoads: c.prefetchLoads,
-		Hits: c.hits, Misses: c.misses, CoalescedLoads: c.coalesced, Evictions: c.evictions,
-		Disk: disk, Shards: shards, Fill: fill, Read: read}
+		Hits: c.pages.hits, Misses: c.pages.misses, CoalescedLoads: c.pages.coalesced, Evictions: c.evictions,
+		Tables: c.tables, Disk: disk, Shards: shards, Fill: fill, Read: read}
 }
 
 // FollowMembership has the cache's disks keep and read stripes by the
@@ -589,7 +619,11 @@ func (c *Cache) admit(ctx context.Context, keys []cacheKey, fetch fetcher) cache
 	found := cacheAdmission{entries: make([]*cacheEntry, len(keys)), flights: make([]*cacheFlight, len(keys))}
 	for at, key := range keys {
 		if element := c.entries[key]; element != nil {
-			c.hits++
+			if key.segment {
+				c.tables.Hits++
+			} else {
+				c.pages.hits++
+			}
 			c.lru.MoveToFront(element)
 			entry := element.Value.(*cacheEntry)
 			entry.readers++
@@ -599,7 +633,11 @@ func (c *Cache) admit(ctx context.Context, keys []cacheKey, fetch fetcher) cache
 		if flight := c.flights[key]; flight != nil {
 			flight.waiters++
 			flight.load.waiters++
-			c.coalesced++
+			if key.segment {
+				c.tables.Coalesced++
+			} else {
+				c.pages.coalesced++
+			}
 			found.flights[at] = flight
 		}
 	}
@@ -617,7 +655,11 @@ func (c *Cache) admit(ctx context.Context, keys []cacheKey, fetch fetcher) cache
 		load.keys = append(load.keys, keys[at])
 		load.flights = append(load.flights, flight)
 		found.flights[at] = flight
-		c.misses++
+		if keys[at].segment {
+			c.tables.Loads++
+		} else {
+			c.pages.misses++
+		}
 	}
 	c.active++
 	c.peak = max(c.peak, c.active)
@@ -633,17 +675,71 @@ func (c *Cache) admit(ctx context.Context, keys []cacheKey, fetch fetcher) cache
 // returns the object's bytes, and its envelope where the store served it.
 func (c *Cache) get(ctx context.Context, key cacheKey,
 	load func(context.Context) ([]byte, []envelope, error)) ([]byte, func(), error) {
-	data, release, err := c.getAll(ctx, []cacheKey{key}, func(ctx context.Context, _ []int) (fetched, error) {
+	entries, release, err := c.getEntries(ctx, []cacheKey{key}, single(load))
+	if err != nil {
+		return nil, nil, err
+	}
+	return entries[0].data, release, nil
+}
+
+// table reads one segment's page table under its key, fetching the segment
+// and decoding it where the cache does not hold it decoded. load returns the
+// segment's bytes, and its envelope where the store served it. Every reader
+// of a segment shares the one decode, as readers of a page share its fetch.
+func (c *Cache) table(ctx context.Context, key cacheKey,
+	load func(context.Context) ([]byte, []envelope, error)) (*pageTable, func(), error) {
+	if !key.segment {
+		return nil, nil, fmt.Errorf("%w: %v is not a segment", ErrInvalidConfig, key)
+	}
+	entries, release, err := c.getEntries(ctx, []cacheKey{key}, single(load))
+	if err != nil {
+		return nil, nil, err
+	}
+	return entries[0].table, release, nil
+}
+
+// keepTable retains a segment's page table that this host has without a load:
+// one a publication just wrote, which the readers of the index it published
+// look pages up in next. It is charged and evicted like any other entry. A
+// key the cache holds or is loading already is left as it is, since a segment
+// is the same table under its identity however it got here, and a table
+// there is no room for is not kept.
+func (c *Cache) keepTable(ctx context.Context, key cacheKey, table *pageTable) {
+	lease, err := c.resources.TryAcquire(ctx, table.charge()+cacheEntryCharge)
+	if err != nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed || c.entries[key] != nil || c.flights[key] != nil {
+		lease.Close()
+		return
+	}
+	c.retainLocked(&cacheEntry{key: key, table: table, lease: lease})
+	c.tables.Kept++
+}
+
+// retainLocked keeps an entry, most recently used, charged at its lease.
+// Caller holds mu.
+func (c *Cache) retainLocked(entry *cacheEntry) {
+	entry.retained = true
+	c.entries[entry.key] = c.lru.PushFront(entry)
+	c.used += entry.lease.Bytes()
+	if entry.table != nil {
+		c.tables.Entries++
+		c.tables.Bytes += entry.lease.Bytes()
+	}
+}
+
+// single is a fetcher of one key, whose bytes the cache copies.
+func single(load func(context.Context) ([]byte, []envelope, error)) fetcher {
+	return func(ctx context.Context, _ []int) (fetched, error) {
 		found, served, err := load(ctx)
 		if err != nil {
 			return fetched{}, err
 		}
 		return fetched{data: [][]byte{found}, served: served}, nil
-	})
-	if err != nil {
-		return nil, nil, err
 	}
-	return data[0], release, nil
 }
 
 // getAll reads several objects at once, fetching the ones the cache does not
@@ -655,6 +751,20 @@ func (c *Cache) get(ctx context.Context, key cacheKey,
 // The returned bytes are pinned until the one release is called, and nothing is
 // pinned at all when it reports an error.
 func (c *Cache) getAll(ctx context.Context, keys []cacheKey, fetch fetcher) ([][]byte, func(), error) {
+	entries, release, err := c.getEntries(ctx, keys, fetch)
+	if err != nil {
+		return nil, nil, err
+	}
+	data := make([][]byte, len(entries))
+	for at, entry := range entries {
+		data[at] = entry.data
+	}
+	return data, release, nil
+}
+
+// getEntries is getAll's entries, pinned until the one release is called: a
+// page's holds its bytes and a segment's its page table.
+func (c *Cache) getEntries(ctx context.Context, keys []cacheKey, fetch fetcher) ([]*cacheEntry, func(), error) {
 	for {
 		if err := context.Cause(ctx); err != nil {
 			return nil, nil, err
@@ -675,15 +785,15 @@ func (c *Cache) getAll(ctx context.Context, keys []cacheKey, fetch fetcher) ([][
 	}
 }
 
-// collect waits for the flights an admission left and reports the bytes of
+// collect waits for the flights an admission left and reports the entry of
 // every key with them. A failure releases everything this call pinned and
 // leaves every flight it has not taken yet, so a read that fails holds nothing.
-func (c *Cache) collect(ctx context.Context, keys []cacheKey, next cacheAdmission) ([][]byte, func(), error) {
-	data := make([][]byte, len(keys))
+func (c *Cache) collect(ctx context.Context, keys []cacheKey, next cacheAdmission) ([]*cacheEntry, func(), error) {
+	entries := make([]*cacheEntry, len(keys))
 	pinned := make([]*cacheEntry, 0, len(keys))
 	for at, entry := range next.entries {
 		if entry != nil {
-			data[at], pinned = entry.data, append(pinned, entry)
+			entries[at], pinned = entry, append(pinned, entry)
 		}
 	}
 	release := func() {
@@ -693,7 +803,7 @@ func (c *Cache) collect(ctx context.Context, keys []cacheKey, next cacheAdmissio
 			c.releaseLocked(entry)
 		}
 	}
-	fail := func(from int, err error) ([][]byte, func(), error) {
+	fail := func(from int, err error) ([]*cacheEntry, func(), error) {
 		for at := from; at < len(keys); at++ {
 			if flight := next.flights[at]; flight != nil {
 				c.leave(keys[at], flight)
@@ -721,12 +831,12 @@ func (c *Cache) collect(ctx context.Context, keys []cacheKey, next cacheAdmissio
 			if flight.err != nil {
 				return fail(at+1, flight.err)
 			}
-			data[at], pinned = flight.entry.data, append(pinned, flight.entry)
+			entries[at], pinned = flight.entry, append(pinned, flight.entry)
 		case <-ctx.Done():
 			return fail(at, context.Cause(ctx))
 		}
 	}
-	return data, sync.OnceFunc(release), nil
+	return entries, sync.OnceFunc(release), nil
 }
 
 func (c *Cache) leave(key cacheKey, flight *cacheFlight) {
@@ -764,26 +874,39 @@ func (c *Cache) run(ctx context.Context, load *cacheLoad, wanted []int, fetch fe
 		if err != nil {
 			break
 		}
-		// Try to reserve the entry's bytes, reclaiming unused cache first. If guest
+		// What is kept of a segment is its page table, decoded here once for
+		// every reader waiting on the load and every one after it; of a page,
+		// its bytes.
+		entry := &cacheEntry{key: load.keys[at]}
+		charge := int64(len(got.data[at]))
+		if entry.key.segment {
+			if entry.table, err = decodeTable(ctx, got.data[at]); err != nil {
+				break
+			}
+			charge = entry.table.charge()
+		}
+		// Try to reserve the entry, reclaiming unused cache first. If guest
 		// pages or pinned readers occupy the allotment, serve this read through
 		// transient I/O headroom and do not retain it. Cache capacity must not
 		// prevent a required read.
-		var lease *resource.Lease
-		lease, err = c.resources.TryAcquire(ctx, int64(len(got.data[at]))+cacheEntryCharge)
+		entry.lease, err = c.resources.TryAcquire(ctx, charge+cacheEntryCharge)
 		if errors.Is(err, resource.ErrCapacity) {
-			err = context.Cause(ctx)
+			entry.lease, err = nil, context.Cause(ctx)
 		}
 		if err != nil {
 			break
 		}
-		// The entry keeps the bytes a fetch owns as they are, and a copy of
-		// any others, made with no zeroing first. Either way it holds no more
-		// of their buffer than they are.
-		kept := got.data[at]
-		if !got.owns(at) {
-			kept = bytes.Clone(kept)
+		if !entry.key.segment {
+			// A page's entry keeps the bytes a fetch owns as they are, and a
+			// copy of any others, made with no zeroing first. Either way it
+			// holds no more of their buffer than they are.
+			kept := got.data[at]
+			if !got.owns(at) {
+				kept = bytes.Clone(kept)
+			}
+			entry.data = slices.Clip(kept)
 		}
-		entries[at] = &cacheEntry{key: load.keys[at], data: slices.Clip(kept), lease: lease}
+		entries[at] = entry
 	}
 	if err != nil {
 		// A load fails whole: the keys it had already copied are given back
@@ -823,11 +946,8 @@ func (c *Cache) finish(load *cacheLoad, entries []*cacheEntry, err error) {
 		}
 		if entry != nil {
 			entry.readers = flight.waiters
-			if entry.lease != nil && flight.waiters > 0 && flight.generation == c.generation && !c.closed && len(entry.data) > 0 {
-				charge := entry.lease.Bytes()
-				entry.retained = true
-				c.entries[key] = c.lru.PushFront(entry)
-				c.used += charge
+			if entry.lease != nil && flight.waiters > 0 && flight.generation == c.generation && !c.closed && entry.held() {
+				c.retainLocked(entry)
 			}
 			if entry.readers == 0 {
 				entry.dispose()
@@ -866,6 +986,10 @@ func (c *Cache) drop(element *list.Element) {
 	delete(c.entries, entry.key)
 	c.lru.Remove(element)
 	c.used -= entry.lease.Bytes()
+	if entry.table != nil {
+		c.tables.Entries--
+		c.tables.Bytes -= entry.lease.Bytes()
+	}
 	c.evictions++
 	entry.retained = false
 	if entry.readers == 0 {
