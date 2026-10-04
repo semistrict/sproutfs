@@ -151,16 +151,21 @@ type pulls struct {
 
 	mu      sync.Mutex
 	running map[*Pull]struct{}
+	// started numbers the pulls, which name their tasks by it.
+	started int
 }
 
 func newPulls() *pulls {
 	return &pulls{slots: make(chan struct{}, pullConcurrency), running: make(map[*Pull]struct{})}
 }
 
-func (s *pulls) add(p *Pull) {
+// add counts p among the pulls running and reports its number.
+func (s *pulls) add(p *Pull) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.running[p] = struct{}{}
+	s.started++
+	return s.started
 }
 
 func (s *pulls) remove(p *Pull) {
@@ -217,8 +222,10 @@ func (s *Store) Pull(ctx context.Context, index *Index) (*Pull, error) {
 	running, cancel := context.WithCancelCause(reads)
 	p := &Pull{store: s, disk: s.cache.disk, index: index, bytes: bytes, base: base, cancel: cancel,
 		done: make(chan struct{})}
-	s.cache.pulls.add(p)
-	go p.run(running)
+	number := s.cache.pulls.add(p)
+	// A pull is a task of its own, so a controlled run orders it beside the
+	// faults it runs behind.
+	go p.run(sim.WithTask(running, fmt.Sprintf("pull-%d", number)))
 	return p, nil
 }
 
@@ -564,7 +571,7 @@ func (p *Pull) fetch(ctx context.Context, work func(context.Context) error) erro
 		return err
 	}
 	defer cache.pulls.release()
-	if sim.Buggify(p.base, buggifyPullPressure, 0.02) {
+	if sim.Buggify(p.base, buggifyPullPressure, 0.1) {
 		cache.pulls.press(errMemoryPressure)
 	}
 	if p.bug("pull-takes-a-fault-slot") {
