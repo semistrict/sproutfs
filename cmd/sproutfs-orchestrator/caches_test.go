@@ -55,7 +55,7 @@ func listed(t *testing.T, ctx context.Context, d *deployment) (rank.Code, []stri
 
 // GET /caches is every host's cache as it reported it in /status, with the
 // deployment's code. A host that keeps no cache is not in it. With no code
-// configured, three caches get the table's 2+1.
+// configured, three caches get the default 4+2, round the three.
 func TestTheListOfCachesNamesEveryHostsCache(t *testing.T) {
 	d := newDeployment(t, map[string][]string{"host-0": {}, "host-1": {}, "host-2": {}, "host-3": {}})
 	d.withCaches(map[string]uint32{"host-0": 2, "host-1": 1, "host-2": 4})
@@ -72,8 +72,8 @@ func TestTheListOfCachesNamesEveryHostsCache(t *testing.T) {
 		}
 		return 1
 	})
-	if caches.K != 2 || caches.M != 1 || !slices.Equal(caches.Caches, want) {
-		t.Fatalf("GET /caches served %+v, want 2+1 over %+v", caches, want)
+	if caches.K != 4 || caches.M != 2 || len(caches.Earlier) != 0 || !slices.Equal(caches.Caches, want) {
+		t.Fatalf("GET /caches served %+v, want 4+2 over %+v", caches, want)
 	}
 	hosts, err := d.orchestrator.Hosts(t.Context())
 	if err != nil {
@@ -88,21 +88,31 @@ func TestTheListOfCachesNamesEveryHostsCache(t *testing.T) {
 }
 
 // A code the deployment configures is the list's, whatever the size of the
-// cluster.
+// cluster, and so are the codes it replaced, newest first.
 func TestAConfiguredCodeIsTheLists(t *testing.T) {
 	d := newDeployment(t, map[string][]string{"host-0": {}, "host-1": {}})
 	d.withCaches(map[string]uint32{"host-0": 1, "host-1": 1})
-	d.orchestrator.code = rank.Code{K: 4, M: 2}
-	code, addresses := listed(t, t.Context(), d)
-	if code != (rank.Code{K: 4, M: 2}) || len(addresses) != 2 {
-		t.Fatalf("the list holds %v under %s, want two caches under 4+2", addresses, code)
+	d.orchestrator.code = rank.Code{K: 1, M: 1}
+	d.orchestrator.earlier = []rank.Code{{K: 2, M: 1}, {K: 4, M: 2}}
+	caches, err := d.orchestrator.Caches(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, err := caches.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []rank.Code{{K: 1, M: 1}, {K: 2, M: 1}, {K: 4, M: 2}}
+	if !slices.Equal(list.Codes(), want) || list.Len() != 2 {
+		t.Fatalf("the list holds %d caches under %v, want two under 1+1, then 2+1 and 4+2", list.Len(), list.Codes())
 	}
 }
 
-// A drain takes a six-host cluster to five for a while. The code stays 4+2,
-// because a code that followed the list would make every stripe in the
-// cluster a miss, and its stripes go round the five hosts left.
-func TestADrainDoesNotChangeTheCode(t *testing.T) {
+// The code never follows the hosts. A six-host cluster that sets no code runs
+// 4+2, and drained down to two hosts it still does, because a code that
+// followed the list would leave every stripe in the cluster to the store. Its
+// stripes go round the hosts left.
+func TestTheCodeNeverFollowsTheHosts(t *testing.T) {
 	ctx := simulated(t)
 	names := []string{"host-0", "host-1", "host-2", "host-3", "host-4", "host-5"}
 	running := map[string][]string{}
@@ -116,15 +126,18 @@ func TestADrainDoesNotChangeTheCode(t *testing.T) {
 	if code, addresses := listed(t, ctx, d); code != (rank.Code{K: 4, M: 2}) || len(addresses) != 6 {
 		t.Fatalf("six hosts are listed as %v under %s, want six caches under 4+2", addresses, code)
 	}
-	if _, err := d.orchestrator.Kill(ctx, "host-5"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := d.orchestrator.survey(ctx); err != nil {
-		t.Fatal(err)
-	}
-	code, addresses := listed(t, ctx, d)
-	if code != (rank.Code{K: 4, M: 2}) || slices.Contains(addresses, d.hosts["host-5"].page) || len(addresses) != 5 {
-		t.Fatalf("after host-5 left the list holds %v under %s, want the other five under 4+2", addresses, code)
+	for left := 5; left >= 2; left-- {
+		gone := names[left]
+		if _, err := d.orchestrator.Kill(ctx, gone); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := d.orchestrator.survey(ctx); err != nil {
+			t.Fatal(err)
+		}
+		code, addresses := listed(t, ctx, d)
+		if code != (rank.Code{K: 4, M: 2}) || slices.Contains(addresses, d.hosts[gone].page) || len(addresses) != left {
+			t.Fatalf("after %s left the list holds %v under %s, want the other %d under 4+2", gone, addresses, code, left)
+		}
 	}
 }
 
@@ -152,8 +165,8 @@ func TestAQuietHostStaysInTheListOfCaches(t *testing.T) {
 	code, addresses := listed(t, ctx, d)
 	want := []string{d.hosts["host-0"].page, d.hosts["host-1"].page, d.hosts["host-2"].page}
 	slices.Sort(want)
-	if code != (rank.Code{K: 2, M: 1}) || !slices.Equal(addresses, want) {
-		t.Fatalf("with host-1 quiet the list holds %v under %s, want all three under 2+1", addresses, code)
+	if code != (rank.Code{K: 4, M: 2}) || !slices.Equal(addresses, want) {
+		t.Fatalf("with host-1 quiet the list holds %v under %s, want all three under 4+2", addresses, code)
 	}
 }
 
@@ -181,9 +194,9 @@ func TestTheListFollowsWhatEachHostReports(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The code stays the one three caches got.
-	if caches.K != 2 || caches.M != 1 || !slices.Equal(caches.Caches, []host.Cache{*renewed}) {
-		t.Fatalf("the list is %+v, want host-0's new cache alone under 2+1", caches)
+	// The code stays the deployment's.
+	if caches.K != 4 || caches.M != 2 || !slices.Equal(caches.Caches, []host.Cache{*renewed}) {
+		t.Fatalf("the list is %+v, want host-0's new cache alone under 4+2", caches)
 	}
 }
 
@@ -209,24 +222,42 @@ func TestTheListHoldsEachCacheOnce(t *testing.T) {
 	}
 }
 
-// The deployment names its code as k+m, and a code no host can store under
-// is refused at start.
+// The deployment names its code as k+m, and the codes it replaced as a list
+// of them, newest first. A code no host can store under is refused at start,
+// and so is an earlier code that is not one, or that is the code itself. With
+// no code set, the code is the default, 4+2.
 func TestTheCodeIsConfigured(t *testing.T) {
-	environment := map[string]string{"SPROUTFS_BUCKET": "bucket", "SPROUTFS_CACHE_CODE": "6+2"}
+	environment := map[string]string{"SPROUTFS_BUCKET": "bucket", "SPROUTFS_CACHE_CODE": "6+2",
+		"SPROUTFS_CACHE_EARLIER_CODES": "4+2, 2+1"}
 	lookup := func(name string) string { return environment[name] }
 	config, err := loadConfig(lookup)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.CacheCode != (rank.Code{K: 6, M: 2}) {
-		t.Fatalf("the code is %s, want 6+2", config.CacheCode)
+	if config.CacheCode != (rank.Code{K: 6, M: 2}) ||
+		!slices.Equal(config.CacheEarlierCodes, []rank.Code{{K: 4, M: 2}, {K: 2, M: 1}}) {
+		t.Fatalf("the code is %s after %v, want 6+2 after 4+2 and 2+1", config.CacheCode, config.CacheEarlierCodes)
 	}
-	environment["SPROUTFS_CACHE_CODE"] = "0+2"
+	for name, value := range map[string]string{
+		"SPROUTFS_CACHE_CODE":          "0+2",
+		"SPROUTFS_CACHE_EARLIER_CODES": "6+2",
+	} {
+		before := environment[name]
+		environment[name] = value
+		if _, err := loadConfig(lookup); err == nil {
+			t.Fatalf("%s=%s was accepted", name, value)
+		}
+		environment[name] = before
+	}
+	environment["SPROUTFS_CACHE_EARLIER_CODES"] = "4+2,two"
 	if _, err := loadConfig(lookup); err == nil {
-		t.Fatal("a code of no data stripes was accepted")
+		t.Fatal("an earlier code that is not one was accepted")
 	}
 	delete(environment, "SPROUTFS_CACHE_CODE")
-	if config, err := loadConfig(lookup); err != nil || config.CacheCode != (rank.Code{}) {
-		t.Fatalf("with no code configured the configuration is %s, %v", config.CacheCode, err)
+	delete(environment, "SPROUTFS_CACHE_EARLIER_CODES")
+	if config, err := loadConfig(lookup); err != nil || config.CacheCode != rank.DefaultCode ||
+		len(config.CacheEarlierCodes) != 0 {
+		t.Fatalf("with no code configured the configuration is %s after %v, %v", config.CacheCode,
+			config.CacheEarlierCodes, err)
 	}
 }

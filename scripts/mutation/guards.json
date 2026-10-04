@@ -324,10 +324,10 @@
     "purpose": "Close a pulled VM's pull when its machine ends, so the checkpoint a stop publishes after that keeps nothing on the disk."
   },
   {
-    "id": "orchestrator-code-follows-the-list",
+    "id": "orchestrator-code-follows-the-hosts",
     "package": "cmd/sproutfs-orchestrator",
-    "run": "^TestADrainDoesNotChangeTheCode$",
-    "purpose": "Take the code from the caches listed now, so a drain changes it and every stripe becomes a miss."
+    "run": "^TestTheCodeNeverFollowsTheHosts$",
+    "purpose": "Take the code from the number of caches listed now, so a drain changes it and every stripe becomes a miss."
   },
   {
     "id": "orchestrator-drop-quiet-cache",
@@ -352,6 +352,24 @@
     "package": "checkpoint",
     "run": "^TestDiskReadsNoStripeOfAnotherCode$",
     "purpose": "Look a stripe up in the disk's index under any code, so a page kept under another code is read and refused instead of missed."
+  },
+  {
+    "id": "diskcache-current-code-only",
+    "package": "checkpoint",
+    "run": "^TestDiskReadsAPageUnderTheCodeItWasKeptUnder$",
+    "purpose": "Read the disk under the list's code alone, so a page kept under the code the deployment used before is a miss."
+  },
+  {
+    "id": "cluster-current-code-only",
+    "package": "checkpoint",
+    "run": "^TestAChangedCodeReadsEveryEarlierWindowWithNoStoreRead$",
+    "purpose": "Read the cluster under the list's code alone, so a deliberate change of the code sends every earlier window to the store."
+  },
+  {
+    "id": "cluster-no-refill",
+    "package": "checkpoint",
+    "run": "^TestFillsAfterACodeChangeAreUnderTheNewCode$",
+    "purpose": "Leave a window read under an earlier code under it, so it is never filled under the deployment's code and every read of it asks the new code's ranks first for nothing."
   },
   {
     "id": "diskcache-one-stripe-a-page",

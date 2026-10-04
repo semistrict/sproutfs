@@ -26,7 +26,7 @@ var readProbes = []string{
 	checkpoint.ProbeClusterStoreHedgeRefused, checkpoint.ProbeClusterWrongStripe, checkpoint.ProbeClusterDrop,
 	checkpoint.ProbeClusterRepair, checkpoint.ProbeClusterTimeout, checkpoint.ProbeClusterMarkedDown,
 	checkpoint.ProbeClusterCapped, checkpoint.ProbeClusterCleared, checkpoint.ProbeClusterHeadCheck,
-	checkpoint.ProbeClusterHeadMissing,
+	checkpoint.ProbeClusterHeadMissing, checkpoint.ProbeClusterEarlierCode,
 }
 
 // readCampaignSeeds are the seeds the read campaign runs, which between them
@@ -52,10 +52,11 @@ type readCampaign struct {
 // the seed's scheduler and the sites on. Each round publishes from any host
 // and has many hosts read the same pages at once, while the seed stalls a
 // host's links, refuses them, slows them, loses a host and starts it again,
-// shifts the ranks with a list that lacks a cache, or deletes a checkpoint's
-// parts behind the caches. Every read returns what was published, or fails
-// only for a part that is gone. At rest, every stripe a host holds is of a
-// window some list ranked it for.
+// shifts the ranks with a list that lacks a cache, changes the deployment's
+// code once and names the old one as earlier, or deletes a checkpoint's parts
+// behind the caches. Every read returns what was published, or fails only
+// for a part that is gone. At rest, every stripe a host holds is of a window
+// some list ranked it for under that stripe's code.
 func runReadCampaign(t *testing.T, seed uint64) *sim.Runtime {
 	draw := sim.New(sim.Config{Seed: seed}).Random("read-campaign")
 	hosts := 2 + draw.Intn("hosts", 6)
@@ -108,6 +109,21 @@ func (r *readCampaign) run(t *testing.T, draw sim.Random) {
 				}
 				r.published[vm], r.models[vm] = index, m
 				c.settle(t)
+			}
+		}
+		// A deliberate change of the code, once a checkpoint is out under the
+		// first, leaves it to be read under the code it was stored under.
+		if round >= 2 && len(full.Earlier()) == 0 && draw.Chance(id+"/code", 0.4) {
+			after := rank.CodeFor(1 + draw.Intn(id+"/code-for", 6))
+			if after != full.Code() {
+				changed, err := rank.NewList(after, full.Caches(), full.Code())
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				t.Logf("%s: the code changes from %s to %s", id, full.Code(), after)
+				full = changed
+				r.lists = append(r.lists, full)
 			}
 		}
 		// A list without a cache shifts the ranks of the windows it held.
@@ -222,9 +238,14 @@ func (r *readCampaign) burst(t *testing.T, draw sim.Random, id string) {
 
 // check holds the cluster at rest to what reads may leave: every stripe on a
 // host, repairs among them, of a window some list the cluster held ranks it
-// for.
+// for, under a code that list was of.
 func (r *readCampaign) check(t *testing.T) {
-	code := r.lists[0].Code()
+	var codes []rank.Code
+	for _, list := range r.lists {
+		if !slices.Contains(codes, list.Code()) {
+			codes = append(codes, list.Code())
+		}
+	}
 	for vm, index := range r.published {
 		ref := index.Ref()
 		windows := []rank.Window{segmentWindow(ref)}
@@ -233,18 +254,22 @@ func (r *readCampaign) check(t *testing.T) {
 		}
 		for _, window := range windows {
 			for _, h := range r.c.hosts {
-				if held := h.cache.HeldIndices(window, 0, code); len(held) > 0 && !r.everRanked(window, h) {
-					t.Errorf("%s holds stripes %v of %+v of %s, which no list ranks it for", h.name, held, window, vm)
+				for _, code := range codes {
+					if held := h.cache.HeldIndices(window, 0, code); len(held) > 0 && !r.everRanked(window, code, h) {
+						t.Errorf("%s holds stripes %v of %s of %+v of %s, which no list of that code ranks it for",
+							h.name, held, code, window, vm)
+					}
 				}
 			}
 		}
 	}
 }
 
-// everRanked reports whether some list the cluster held ranks h for window.
-func (r *readCampaign) everRanked(window rank.Window, h *fillHost) bool {
+// everRanked reports whether some list the cluster held under code ranks h
+// for window.
+func (r *readCampaign) everRanked(window rank.Window, code rank.Code, h *fillHost) bool {
 	for _, list := range r.lists {
-		if slices.ContainsFunc(list.Ranks(window), func(cache rank.Cache) bool {
+		if list.Code() == code && slices.ContainsFunc(list.Ranks(window), func(cache rank.Cache) bool {
 			return cache.Identity == h.cache.Identity()
 		}) {
 			return true

@@ -44,21 +44,19 @@ func (o *orchestrator) noteCaches(ctx context.Context, hosts []liveHost) {
 			delete(o.caches, name)
 		}
 	}
-	o.mostCaches = max(o.mostCaches, len(o.caches))
 }
 
 // Caches is the list of caches: the cache of every host pod the Kubernetes API
-// lists, as that host last reported it, and the deployment's code. A code that
-// is not configured is the table's for the most caches this orchestrator has
-// listed since it started, so a drain, which takes the list below that for a
-// while, does not change it: every stripe in the cluster would become a miss.
+// lists, as that host last reported it, and the deployment's code with the
+// codes it replaced. The code is the deployment's setting and never follows
+// the caches listed: a drain, a join or a restart of this process that
+// changed it would leave every stripe stored under the old one to the store.
 func (o *orchestrator) Caches(ctx context.Context) (host.Caches, error) {
 	if _, err := o.recent(ctx); err != nil {
 		return host.Caches{}, err
 	}
 	o.cacheMu.Lock()
 	reported := maps.Clone(o.caches)
-	most := o.mostCaches
 	o.cacheMu.Unlock()
 	caches := make([]rank.Cache, 0, len(reported))
 	owners := make(map[rank.Identity]string, len(reported))
@@ -83,13 +81,10 @@ func (o *orchestrator) Caches(ctx context.Context) (host.Caches, error) {
 		caches = append(caches, cache)
 	}
 	code := o.code
-	if code == (rank.Code{}) {
-		code = rank.CodeFor(most)
-		if sim.Bug(ctx, "orchestrator-code-follows-the-list") {
-			code = rank.CodeFor(len(caches))
-		}
+	if sim.Bug(ctx, "orchestrator-code-follows-the-hosts") {
+		code = rank.CodeFor(len(caches))
 	}
-	list, err := rank.NewList(code, caches)
+	list, err := rank.NewList(code, caches, o.earlier...)
 	if err != nil {
 		return host.Caches{}, err
 	}

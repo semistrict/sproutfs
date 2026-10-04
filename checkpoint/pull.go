@@ -273,7 +273,7 @@ func (p *Pull) segment(ctx context.Context, volume string, number uint64, entry 
 // segmentBytes is one segment, decoded: from the disk's copy where it holds
 // one, and from the store's otherwise, which this pull then copies.
 func (p *Pull) segmentBytes(ctx context.Context, key diskKey, at segmentAddress) ([]byte, error) {
-	if data, found := p.disk.decoded(ctx, key, p.store.codecs, maximumSegmentSize, accept); found {
+	if data, _, found := p.disk.decoded(ctx, key, p.store.codecs, maximumSegmentSize, accept); found {
 		p.pulled.Add(int64(at.length))
 		return data, nil
 	}

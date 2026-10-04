@@ -1250,7 +1250,7 @@ caller:
 | `checkpoint/disk-torn-header` | Tears the page cache disk's header as the disk opens |
 | `checkpoint/disk-torn-table-on-open` | Tears a disk region's table as the disk opens and reads it back |
 | `checkpoint/disk-wrong-stripe` | Hands a read a stripe whose checksum holds and whose bytes are wrong, as a peer that answers with a wrong stripe does |
-| `checkpoint/disk-code-changed` | Reads under another code of the table than the list's, as after the deployment's code changed |
+| `checkpoint/disk-code-changed` | Reads under a code of the table the list does not name, as after the deployment changed its code and dropped the old one from its earlier codes |
 | `checkpoint/disk-short-list` | Places a window by the list less every other cache, a list shorter than the code is wide |
 | `checkpoint/fill-queue-full` | Has the queue of writes to the host's disk report itself full, so the fill is dropped |
 | `checkpoint/fill-lose-right` | Loses the answer that carried a fill right, so rank 1 gave it and nobody fills |
@@ -1824,6 +1824,8 @@ SPROUTFS_SIM_BUG=diskcache-restart-skips-scan \
   go test ./checkpoint -run '^TestDiskScansARegionWhoseTableIsTorn$' -count=1
 SPROUTFS_SIM_BUG=diskcache-mix-codes \
   go test ./checkpoint -run '^TestDiskReadsNoStripeOfAnotherCode$' -count=1
+SPROUTFS_SIM_BUG=diskcache-current-code-only \
+  go test ./checkpoint -run '^TestDiskReadsAPageUnderTheCodeItWasKeptUnder$' -count=1
 SPROUTFS_SIM_BUG=diskcache-one-stripe-a-page \
   go test ./checkpoint -run '^TestDiskHoldsEveryIndexOfAPageRoundAShortList$' -count=1
 SPROUTFS_SIM_BUG=diskcache-stripes-not-round \
@@ -1855,16 +1857,17 @@ their cost.
 simulated filesystem from outside once the pager has started, and the guest's
 next spill then fails for want of space.
 
-The fifteen `diskcache-` guards break the page cache's disk. Each is killed by a
+The sixteen `diskcache-` guards break the page cache's disk. Each is killed by a
 test of the one property it breaks. `diskcache-table-before-sync` is killed
 twice. The close's operations are checked in order, and a power loss around
 the table write leaves a table naming items the device did not keep. The three
 `diskcache-restart-` guards break the disk's open after a restart: one indexes
 the region that was open, which has no table; one keeps a file of another
 deployment; and one gives back a region whose table is torn without scanning
-it. The four guards of the disk's stripes look a stripe up under any code,
-find a page's first item whatever index was asked for, put stripe i on rank
-i alone so a short list drops indices, and keep a stripe found wrong.
+it. The five guards of the disk's stripes look a stripe up under any code,
+read under the list's code alone so a page kept under the earlier code is a
+miss, find a page's first item whatever index was asked for, put stripe i on
+rank i alone so a short list drops indices, and keep a stripe found wrong.
 `diskcache-share-ignored` places every window by the list of caches whatever
 share the cluster cache is on for, so a host whose list holds others keeps a
 pulled checkpoint as stripes it cannot rebuild alone. The two
@@ -2085,7 +2088,7 @@ guard a later part's window is. The fill campaign
 (`TestFillsSurviveTheirFaultsAndReachTheirProbes`) kills `keep-unranked` and
 `no-fill-right` too.
 
-Thirteen guards break the reads of the cluster:
+Fifteen guards break the reads of the cluster:
 
 ```sh
 SPROUTFS_SIM_BUG=cluster-read-by-index \
@@ -2114,6 +2117,10 @@ SPROUTFS_SIM_BUG=cluster-repair-held-index \
   go test ./checkpoint -run '^TestRepairAfterAJoinSendsTheIndexNoRankHolds$' -count=1
 SPROUTFS_SIM_BUG=cluster-head-never \
   go test ./checkpoint -run '^TestASampledHitChecksItsPartStillExists$' -count=1
+SPROUTFS_SIM_BUG=cluster-current-code-only \
+  go test ./checkpoint -run '^TestAChangedCodeReadsEveryEarlierWindowWithNoStoreRead$' -count=1
+SPROUTFS_SIM_BUG=cluster-no-refill \
+  go test ./checkpoint -run '^TestFillsAfterACodeChangeAreUnderTheNewCode$' -count=1
 ```
 
 The first takes from each rank only the index the list puts on it, which a
@@ -2127,8 +2134,11 @@ four break the marks: a miss counted as a timeout, a mark past a fifth of the
 list, a probe every second rather than from ten seconds on, and fills sent to
 a host marked down. The next offers a rank the index the list puts on it
 whether or not another rank holds it: after a join, the new cache is sent an
-index a holder below it still holds. The last never checks a sampled hit's
-part.
+index a holder below it still holds. The next never checks a sampled hit's
+part. The last two break a change of the code: a read that tries only the
+list's code, so after a change every earlier window is read from the store,
+and a window read under the earlier code that is never filled under the new
+one.
 
 Five guards break the hot tier:
 
@@ -2165,8 +2175,8 @@ SPROUTFS_SIM_BUG=rank-keep-first-list \
   go test ./rank -run '^TestAHostReadsTheListAtOnceAndThenOnItsTimer$' -count=1
 SPROUTFS_SIM_BUG=host-weight-from-share \
   go test ./host -run '^TestACachesWeightIsItsDiskNotItsShare$' -count=1
-SPROUTFS_SIM_BUG=orchestrator-code-follows-the-list \
-  go test ./cmd/sproutfs-orchestrator -run '^TestADrainDoesNotChangeTheCode$' -count=1
+SPROUTFS_SIM_BUG=orchestrator-code-follows-the-hosts \
+  go test ./cmd/sproutfs-orchestrator -run '^TestTheCodeNeverFollowsTheHosts$' -count=1
 SPROUTFS_SIM_BUG=orchestrator-drop-quiet-cache \
   go test ./cmd/sproutfs-orchestrator -run '^TestAQuietHostStaysInTheListOfCaches$' -count=1
 ```
@@ -2174,8 +2184,8 @@ SPROUTFS_SIM_BUG=orchestrator-drop-quiet-cache \
 The first sends a host back to being alone when a read fails, and the second
 keeps the first list a host read. The third weighs a cache by the limiter's
 share, which other writers move. The last two are the orchestrator's: a code
-taken from the caches listed now, which a drain changes, and a quiet host
-dropped from the list. Ranking takes no context, so no guard reaches it, and
+taken from the table for the number of caches listed now, which a drain
+changes, and a quiet host dropped from the list. Ranking takes no context, so no guard reaches it, and
 Gremlins mutates it instead.
 
 `TestAdversarialStarters` runs a fake VMM, not Firecracker, but it runs only on
@@ -2281,15 +2291,21 @@ than a minute or two.
 retried, a VM deleted and its name created again, windows striped over the
 ranks each host's own list gives, fills, fill rights, repair, reads of every
 rank, hosts marked down, hosts that crash, leave and join, peers that answer
-with a wrong stripe, damaged headers, and eviction of any stripe. Its
-invariants are `NoWrongBytes`, `StripesRanked` and `SurvivesLosses`. Rank 1
-gives a fill right once an interval and only while it holds nothing of the
-window, and a filler is held to its own list as a cache taking a keep is, as
-`checkpoint`'s fills do. Its
-configurations run four hosts with a 2+1 code, two with 1+1, and three with
-2+2 so that stripes go round the hosts. Its mutants put back a read without
-the key check, a stripe used without its checksum, a part filled before its
-PUT succeeded, a keep taken by a cache its own list does not rank, and B5.
+with a wrong stripe, damaged headers, eviction of any stripe, and a deliberate
+change of the code. Every stripe names its code. A read tries the host's code
+and then each earlier one, and fills a window it rebuilt under an earlier
+code under its own. Its invariants are `NoWrongBytes`, `StripesRanked` and
+`SurvivesLosses`; the last holds for every code the deployment has used, so a
+change of the code leaves every earlier window readable. Rank 1 gives a fill
+right once an interval and only while it holds nothing of the window under
+its code, and a filler is held to its own list and code as a cache taking a
+keep is, as `checkpoint`'s fills do. Its configurations run four hosts with a
+2+1 code, two with 1+1, three with 2+2 so that stripes go round the hosts,
+and three whose code changes from 2+1 to 1+1 (`MCChange`) and from 1+1 to
+2+1 (`MCWiden`). Its mutants put back a read without the key check, a stripe
+used without its checksum, a part filled before its PUT succeeded, a keep
+taken by a cache its own list does not rank, B5, and a read that tries only
+its own code, which fails `SurvivesLosses` once the code changes.
 `epoch-collision.cfg` is wired as a mutant too: a name created again that
 draws its old epoch must fail `NoWrongBytes`, which shows the model reaches
 the risk the plan accepts.
@@ -2544,6 +2560,36 @@ skip of a host the table has marked down, which fails at once if asked; the
 check that the reader is among a window's ranks, which only changes the asks
 of a reader holding stripes from an old placement; the spread of a probe's
 attempt count; and a repair's count of what is lacking when one index is.
+
+Reading each window under the code it was stored under (TASK-85) was mutated
+with the reads and the disk's stripes together:
+
+```sh
+python3 scripts/mutate-gremlins.py --package checkpoint --suite full \
+  --file clusterread.go --file diskstripes.go \
+  --run '^(TestAChangedCode|TestFillsAfterACodeChange|TestRepairAfterACodeChange|TestADroppedEarlierCode|TestDisk|TestAPageInTheCluster|TestAPageSurvives|TestAHotPage|TestAStalledOrSlow|TestAWrongStripe|TestTheStoreIsRead|TestSecondRequests|TestStoreReadsPast|TestThreeTimeouts|TestAReaderMarks|TestAMissIs|TestARefused|TestRepair|TestAReaderRebuilds|TestASampledHit|TestClusterReadsSurvive|TestAFaultIsNotSlowed|TestAColdBurst|TestAStoreReadFills|TestRankOneGives|TestACacheReports|TestTheHedgerFollows|TestProbesWait|TestAHostIsMarkedDown|TestOneRefused|TestPull|TestAPull|TestOnTwoHosts|TestALost|TestANewer|TestADiskKeys)' \
+  --gremlins /path/to/gremlins --output /tmp/code-change-mutations
+python3 scripts/mutate-gremlins.py --package rank --suite full --file rank.go \
+  --gremlins /path/to/gremlins --output /tmp/rank-mutations
+python3 scripts/mutate-gremlins.py --package cmd/sproutfs-orchestrator --suite full --integration \
+  --file caches.go --file main.go \
+  --run '^(TestTheListOfCaches|TestAConfiguredCode|TestTheCodeNever|TestAQuietHostStays|TestTheListFollows|TestTheListHolds|TestTheCodeIs)' \
+  --gremlins /path/to/gremlins --output /tmp/orchestrator-code-mutations
+```
+
+On 2026-10-03 the first first killed 164 of 217 mutants, with 35 alive, 15
+not covered and 3 timed out. Four of the survivors were in the new code: a
+read that counted its own hits only under an earlier code, and a probe of the
+disk's earlier code on every read. Tests of both brought it to 165 killed and
+34 alive. The two left in the new code are the condition of the
+`cluster-current-code-only` guard, which is off in a test that asserts
+behaviour; the rest are the survivors the reads' campaign above names. The
+`case` lines of the disk's read under each code are reported not covered,
+and the timeouts are the Buggify site's search for a code the list does not
+name, which a mutant makes endless. The second killed every mutant of the
+earlier codes, and left alive two of the ranking's own and not covered eight
+of `CodeFor` and `compare`. The third killed all 17 it covered; the 21 not
+covered are the port parsing and `run`, which these tests do not reach.
 
 The hot tier is mutated the same way, and the tiers its reads run against
 with the whole package:

@@ -16,6 +16,7 @@ status and the tests that show it.
 - [A hot page spreads its load](a-hot-page-spreads-its-load.md)
 - [A slow host does not slow reads](a-slow-host-does-not-slow-reads.md)
 - [Two hosts are enough](two-hosts-are-enough.md)
+- [A change of the code keeps the cache](a-code-change-keeps-the-cache.md)
 - [Serving a peer copies nothing into memory](serving-a-peer-copies-nothing.md)
 - [One membership](one-membership.md)
 - [One disk limiter](one-disk-limiter.md)

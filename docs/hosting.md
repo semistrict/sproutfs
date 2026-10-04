@@ -999,31 +999,22 @@ longer lists leaves the list. Two pods that report one identity are a copied
 disk, and the list holds it once, as the first pod by name reported it.
 `GET /hosts` shows each pod's cache.
 
-`GET /caches` serves the list: `k`, `m`, and the caches in identity order. The
-code is the orchestrator's `SPROUTFS_CACHE_CODE`, written as `4+2`. Unset, it is
-the code for the most caches the orchestrator has listed since it started:
-
-| Caches | Code |
-| --- | --- |
-| 1 | 1+0 |
-| 2 | 1+1 |
-| 3 | 2+1 |
-| 4 or 5 | 2+2 |
-| 6 or more | 4+2 |
-
-So a drain does not change the code. A code that followed the list would make
-every stripe in the cluster a miss. An orchestrator that restarts while hosts
-are drained can choose a smaller code, which costs a refill from the store. A
-deployment sets the code for the size it usually runs at.
+`GET /caches` serves the list: `k`, `m`, the codes the deployment used before
+(`earlier`, newest first, each written as `4+2`), and the caches in identity
+order. The code is the orchestrator's `SPROUTFS_CACHE_CODE`, written as `4+2`,
+and 4+2 when it is unset. The earlier codes are its
+`SPROUTFS_CACHE_EARLIER_CODES`, a comma-separated list of at most three. The
+code never follows the number of hosts or caches: a drain, a join or a restart
+of the orchestrator leaves it as it is. See [the code](#the-code).
 
 **Each host's copy.** A host reads the list as it starts, and then every ten
 seconds on its own clock. It keeps the last list it read. A read that fails
 leaves the list as it was, so an orchestrator that is down changes nothing.
 Until a read succeeds, a host holds its own cache alone, under the code 1+0.
-`/status` reports the list it holds under `caches`: `k`, `m`, the caches, when
-the last read that succeeded finished (`read`), the reads, the failures, and
-why the last read failed (`error`). The host logs when its reads start failing
-and when they recover. Two hosts that hold different lists disagree only about
+`/status` reports the list it holds under `caches`: `k`, `m`, the earlier
+codes, the caches, when the last read that succeeded finished (`read`), the
+reads, the failures, and why the last read failed (`error`). The host logs
+when its reads start failing and when they recover. Two hosts that hold different lists disagree only about
 whom to ask, and the worst a stale list costs is a miss.
 
 **Ranks.** The package `rank` places windows. A window is the pages of one
@@ -1050,7 +1041,11 @@ copies, with no second mechanism for replication.
 
 The code is a deployment setting, the orchestrator's `SPROUTFS_CACHE_CODE`
 ([the list of caches](#the-list-of-caches)), and every host reads it with the
-list. An operator sets it for the size the cluster usually runs at:
+list. It never follows the number of hosts. A code that changed when a host
+was drained, joined or lost would leave every stripe in the cluster to the
+store at once. A deployment that sets no code runs 4+2. An operator sets the
+code for the size the cluster usually runs at, not the size it may briefly
+fall to:
 
 | Hosts | Code | Extra disk | Survives |
 | --- | --- | --- | --- |
@@ -1059,6 +1054,31 @@ list. An operator sets it for the size the cluster usually runs at:
 | 3 | 2+1 | 50 % | one host lost or slow |
 | 4 or 5 | 2+2 | 100 % | two hosts lost or slow |
 | 6 or more | 4+2 | 50 % | two hosts lost or slow |
+
+4+2 on fewer than six hosts takes the stripes round them. On five or three,
+any one host can still be lost, with nothing to spare on three. On two, losing
+either host loses every window, so a small deployment sets its code from the
+table.
+
+**Changing the code.** An operator who changes the code on purpose writes the
+old code first in `SPROUTFS_CACHE_EARLIER_CODES`, for example
+`SPROUTFS_CACHE_CODE=2+1` and `SPROUTFS_CACHE_EARLIER_CODES=4+2`. Every stripe
+names its code, and every window is read and rebuilt under the code it was
+stored under. A read tries the list's code first, then each earlier code,
+newest first. Under an earlier code it asks the window's ranks under that
+code: the caches rank a window in one order whatever the code, so these are
+the first ranks of the widest code. No envelope is rebuilt from stripes of two
+codes. A window rebuilt under an earlier code is filled under the new code,
+as a read of the store fills it ([filling the cluster](#filling-the-cluster)),
+and its stripes under the earlier code age out. Fills and repairs are only
+ever under the list's own code. So a change of the code costs no read of the
+store for a window the cluster held. Each earlier code costs a read one more
+round of requests when the codes before it found nothing. Once `earlier_hits`
+in `cache_read` stops growing, the old code can leave
+`SPROUTFS_CACHE_EARLIER_CODES`. A stripe of a code the list does not name is a
+miss. The earlier codes live in the deployment's settings, beside the code,
+so no process has to remember them and a restarted orchestrator serves the
+same list.
 
 **The share it is on for.** The cluster cache is rolled out a share of
 windows at a time: `SPROUTFS_CACHE_CLUSTER_PERCENT`, 0 to 100, and 0 when
@@ -1085,15 +1105,15 @@ its envelope's length ([the page cache's disk](volumes.md#the-page-caches-disk))
 **What a read of the disk takes.** A read of a window outside the share asks
 the disk for the envelope whole, under 1+0. A read inside the share asks it
 for every index of the list's code it holds, and then the window's other
-ranks ([reading from the cluster](#reading-from-the-cluster)). Either way it
-checks each item's key, index, code and checksum, and rebuilds the envelope
-from the first k that pass. It then checks the envelope's SHA-256 as a
-read of the store does. If that fails with more than k stripes in hand, it
-rebuilds from other sets of k, at most 64 of them, and the stripes that do not
-match the envelope that passed are named wrong and forgotten. With exactly k,
-which one is wrong cannot be told, and all are forgotten. A stripe of another
-code is a miss and never part of an envelope, so a deployment that changes
-its code refills from the store and reads no wrong bytes.
+ranks ([reading from the cluster](#reading-from-the-cluster)), and then the
+same under each earlier code. Either way it checks each item's key, index,
+code and checksum, and rebuilds the envelope from the first k of one code
+that pass. It then checks the envelope's SHA-256 as a read of the store does.
+If that fails with more than k stripes in hand, it rebuilds from other sets of
+k, at most 64 of them, and the stripes that do not match the envelope that
+passed are named wrong and forgotten. With exactly k, which one is wrong cannot
+be told, and all are forgotten. A stripe of a code the list does not name is a
+miss and never part of an envelope, so it reads no wrong bytes.
 
 Under 1+1 every host holds each window whole, so it reads its windows from
 its own disk with no request. Under 2+1 and wider a host holds fewer than k
@@ -1110,7 +1130,9 @@ things fill:
 
 - **A read of the store.** The run the store served is split under the list's
   code, and each stripe goes to the cache that holds it. The fill starts once
-  the read's callers have their pages, never before.
+  the read's callers have their pages, never before. A window a read of the
+  cluster rebuilt under an earlier code is filled the same way, so it moves
+  to the list's code ([changing the code](#the-code)).
 - **A publication.** Each part is filled once its PUT has succeeded, and the
   segments once the index object's has. So no cache holds the bytes of a part
   the store refused. The parts are handed over in their own order: a part
@@ -1191,7 +1213,9 @@ Inside the share the cluster cache is turned on for, a page is read in this
 order:
 
 1. this host's memory tier, then the pager's arena, as before;
-2. the cluster: this host's own stripes of the window, then its peers';
+2. the cluster: this host's own stripes of the window, then its peers', under
+   the list's code and then under each earlier code
+   ([changing the code](#the-code));
 3. the object store.
 
 **Its own stripes first.** A read takes every stripe of the window this host's
@@ -1298,9 +1322,9 @@ is about 40 % of a 10 Gb/s NIC until the deployment's machine type is
 measured.
 
 **A host's view.** `/status` reports under `cache_read` the envelopes read
-from the cluster and missed, those this host's own stripes rebuilt alone, the
-requests, the holders replaced, the second requests and those the budget
-refused, the reads of the store past the bound by outcome, the wrong stripes
+from the cluster and missed, those this host's own stripes rebuilt alone,
+those rebuilt under an earlier code (`earlier_hits`), the requests, the
+holders replaced, the second requests and those the budget refused, the reads of the store past the bound by outcome, the wrong stripes
 and the drops sent, the repairs, the timeouts, the marks made, refused for the
 fifth and cleared, the hosts down now, the HEAD checks and what they found
 missing, the delay and the bound now, and what the peer server served of the

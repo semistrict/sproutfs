@@ -56,9 +56,12 @@ type config struct {
 	// survey and the bucket every time this process starts.
 	TablePath string
 	// CacheCode is the deployment's code for the hosts' disk caches, set for
-	// the size the cluster usually runs at. Zero takes the table's code for the
-	// most caches this orchestrator has listed since it started.
-	CacheCode rank.Code
+	// the size the cluster usually runs at, and rank.DefaultCode when it is
+	// not set. It never follows the number of hosts. CacheEarlierCodes is the
+	// codes it replaced, newest first, which hosts still read windows under
+	// until they age out.
+	CacheCode         rank.Code
+	CacheEarlierCodes []rank.Code
 }
 
 func loadConfig(lookup func(string) string) (config, error) {
@@ -93,10 +96,24 @@ func loadConfig(lookup func(string) string) (config, error) {
 		HostAPIPort:  port("SPROUTFS_HOST_API_PORT", 8080),
 		HostPagePort: port("SPROUTFS_HOST_PAGE_SERVER_PORT", 8081),
 		TablePath:    text("SPROUTFS_TABLE_PATH", "/var/lib/sproutfs/orchestrator.db"),
+		CacheCode:    rank.DefaultCode,
 	}
 	if code := text("SPROUTFS_CACHE_CODE", ""); code != "" {
 		if c.CacheCode, err = rank.ParseCode(code); err != nil {
 			errs = append(errs, fmt.Errorf("SPROUTFS_CACHE_CODE: %w", err))
+		}
+	}
+	if codes := text("SPROUTFS_CACHE_EARLIER_CODES", ""); codes != "" {
+		for _, written := range strings.Split(codes, ",") {
+			code, err := rank.ParseCode(written)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("SPROUTFS_CACHE_EARLIER_CODES: %w", err))
+				continue
+			}
+			c.CacheEarlierCodes = append(c.CacheEarlierCodes, code)
+		}
+		if _, err := rank.NewList(c.CacheCode, nil, c.CacheEarlierCodes...); err != nil {
+			errs = append(errs, fmt.Errorf("SPROUTFS_CACHE_EARLIER_CODES: %w", err))
 		}
 	}
 	if len(errs) > 0 {
@@ -158,7 +175,7 @@ func run() error {
 		pods: pods, records: &bucketRecords{objects: objects, control: records},
 		dial: dialHost(hosts, config.HostAPIPort, token), identify: newIdentity,
 		apiPort: config.HostAPIPort, pagePort: config.HostPagePort, table: catalog,
-		audit: auditing(objects), code: config.CacheCode,
+		audit: auditing(objects), code: config.CacheCode, earlier: config.CacheEarlierCodes,
 	}
 	// The table is rebuilt from the deployment itself before anything is
 	// served — a file left by a previous process describes a cluster that has

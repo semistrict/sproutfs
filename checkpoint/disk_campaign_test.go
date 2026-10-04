@@ -114,7 +114,9 @@ func (w diskWorkload) run(t *testing.T, ctx context.Context, f *diskFixture) dis
 				key := keyOf(writers[which], uint64(written-back))
 				outcome := readAndCheck(t, ctx, f, key, model[key], "")
 				if outcome == diskHit {
-					f.disk.served(key)
+					// The campaign's disk follows no list: it keeps each
+					// envelope whole.
+					f.disk.served(key, wholeCode)
 				}
 				mu.Lock()
 				result.outcomes[outcome]++

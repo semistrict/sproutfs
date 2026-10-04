@@ -486,6 +486,7 @@ func readDelta(before, after checkpoint.ReadStats) checkpoint.ReadStats {
 	delta := after
 	delta.Hits -= before.Hits
 	delta.OwnHits -= before.OwnHits
+	delta.EarlierHits -= before.EarlierHits
 	delta.Misses -= before.Misses
 	delta.Requests -= before.Requests
 	delta.Replaced -= before.Replaced

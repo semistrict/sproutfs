@@ -685,12 +685,15 @@ type CacheMemory struct {
 // window's ranks for theirs, asks the rest after a delay within a budget, and
 // past a bound reads the store too within a token bucket.
 type CacheRead struct {
-	// Hits counts the envelopes rebuilt from the cluster, and OwnHits those
-	// this host's own stripes rebuilt alone. Misses counts the envelopes the
+	// Hits counts the envelopes rebuilt from the cluster, OwnHits those this
+	// host's own stripes rebuilt alone, and EarlierHits those rebuilt from
+	// stripes of a code the deployment used before its own: once they stop
+	// growing, that code can leave the list. Misses counts the envelopes the
 	// cluster could not rebuild, which the store served.
-	Hits    uint64 `json:"hits"`
-	OwnHits uint64 `json:"own_hits"`
-	Misses  uint64 `json:"misses"`
+	Hits        uint64 `json:"hits"`
+	OwnHits     uint64 `json:"own_hits"`
+	EarlierHits uint64 `json:"earlier_hits"`
+	Misses      uint64 `json:"misses"`
 	// Requests counts the stripe requests sent; Replaced the holders replaced
 	// at once for answering with nothing, BUSY or an error; SecondRequests
 	// the reads that asked the rest of the ranks after the delay; and
@@ -824,12 +827,15 @@ type Cache struct {
 }
 
 // Caches is the list of caches: the deployment's code, k data stripes and m
-// parity stripes, and every cache in identity order. The orchestrator serves
-// it at GET /caches.
+// parity stripes, the codes it used before, and every cache in identity
+// order. The orchestrator serves it at GET /caches.
 type Caches struct {
-	K      int     `json:"k"`
-	M      int     `json:"m"`
-	Caches []Cache `json:"caches"`
+	K int `json:"k"`
+	M int `json:"m"`
+	// Earlier is the codes the deployment used before, newest first, each
+	// written as 4+2. A window stored under one is still read under it.
+	Earlier []string `json:"earlier,omitempty"`
+	Caches  []Cache  `json:"caches"`
 }
 
 // CacheList is the list of caches a host holds and ranks windows by, and how
@@ -866,7 +872,11 @@ func CachesOf(list rank.List) Caches {
 	for _, cache := range list.Caches() {
 		caches = append(caches, CacheOf(cache))
 	}
-	return Caches{K: list.Code().K, M: list.Code().M, Caches: caches}
+	var earlier []string
+	for _, code := range list.Earlier() {
+		earlier = append(earlier, code.String())
+	}
+	return Caches{K: list.Code().K, M: list.Code().M, Earlier: earlier, Caches: caches}
 }
 
 // List reads a list of caches off the wire, refusing one no host could rank
@@ -880,7 +890,15 @@ func (c Caches) List() (rank.List, error) {
 		}
 		caches = append(caches, read)
 	}
-	return rank.NewList(rank.Code{K: c.K, M: c.M}, caches)
+	earlier := make([]rank.Code, 0, len(c.Earlier))
+	for _, text := range c.Earlier {
+		code, err := rank.ParseCode(text)
+		if err != nil {
+			return rank.List{}, err
+		}
+		earlier = append(earlier, code)
+	}
+	return rank.NewList(rank.Code{K: c.K, M: c.M}, caches, earlier...)
 }
 
 // Disk is what the host's disk limiter chose at its last reading of the disk,

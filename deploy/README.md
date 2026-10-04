@@ -471,7 +471,8 @@ read-only at `/usr/share/sproutfs/guest`.
 | `SPROUTFS_HOST_API_PORT` | literal | `8080` | port it calls on a host pod |
 | `SPROUTFS_HOST_PAGE_SERVER_PORT` | literal | `8081` | port it names when it tells one host to migrate to another |
 | `SPROUTFS_TABLE_PATH` | literal | `/var/lib/sproutfs/orchestrator.db` | the SQLite file holding the VM table, on a `hostPath` under `/opt/sproutfs-demo/orchestrator` so that a restarted pod does not forget a migration that was in flight. It is rebuilt from a survey at startup. Losing it costs only what it alone keeps: a VM's RAM after a cold start resized it, and the pull mark of a VM nothing runs. The orchestrator Deployment uses `strategy: Recreate` and one replica: one process writes this file |
-| `SPROUTFS_CACHE_CODE` | unset | | the code of the hosts' disk caches, `k+m` such as `4+2`, set for the size the cluster usually runs at. Unset, the code for the most caches the orchestrator has listed since it started |
+| `SPROUTFS_CACHE_CODE` | unset | `4+2` | the code of the hosts' disk caches, `k+m` such as `4+2`, set for the size the cluster usually runs at. It never follows the number of hosts |
+| `SPROUTFS_CACHE_EARLIER_CODES` | unset | | the codes the deployment used before `SPROUTFS_CACHE_CODE`, newest first and comma-separated, at most three. Hosts still read a window stored under one until it ages out. See [the code](../docs/hosting.md#the-code) |
 | `SPROUTFS_GCS_ENDPOINT` | unset | | a GCS emulator to use instead of the ambient Google credentials |
 | `SPROUTFS_OBJECT_STORE` | unset | `gcs` | the object store provider, `gcs` or `s3` |
 | `SPROUTFS_S3_ENDPOINT` | unset | | an S3-compatible server to use instead of S3 |

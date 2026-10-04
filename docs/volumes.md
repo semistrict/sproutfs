@@ -813,7 +813,8 @@ its length, the length of the envelope it is a stripe of, and a CRC32C of the
 header and the bytes. A host alone keeps every envelope whole, as stripe 0 of
 the code 1+0. A host that follows a list of caches keeps the stripes of each
 envelope the list ranks its cache for, under the list's code, and a read
-rebuilds the envelope from any k of them it holds (see
+rebuilds the envelope from any k of them of one code it holds: the list's
+code, or one the deployment used before it (see
 [the code](hosting.md#the-code)). `checkpoint/diskformat.go` describes the
 format, which is version 2. Version 1 held whole envelopes with no envelope
 length, and a file of it is emptied.
