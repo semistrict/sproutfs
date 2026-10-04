@@ -165,7 +165,7 @@ func runNode(ctx context.Context, args []string) error {
 // of an attached disk, as a shard keeps it, or a file in a directory.
 func openCacheFile(ctx context.Context, dir, device string) (platform.File, error) {
 	if device != "" {
-		return adapters.NewGCEDevices().Open(ctx, device)
+		return adapters.NewGCEDevices("").Open(ctx, device)
 	}
 	disk, err := adapters.NewDisk(dir)
 	if err != nil {

@@ -1,0 +1,94 @@
+# The cache's shards: a fixed set of six, one claim each, under 4+2. The
+# number changes only when the cache is resized on purpose, because windows
+# are ranked over the shards; compute scaling moves the shards between hosts
+# and never a window. The orchestrator finds them by the component label. No
+# pod mounts them. deploy/README.md, "Shards", gives the sizing.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: sproutfs-shard-0
+  namespace: sproutfs
+  labels:
+    app.kubernetes.io/component: sproutfs-shard
+    app.kubernetes.io/part-of: sproutfs
+spec:
+  storageClassName: sproutfs-shard
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 256Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: sproutfs-shard-1
+  namespace: sproutfs
+  labels:
+    app.kubernetes.io/component: sproutfs-shard
+    app.kubernetes.io/part-of: sproutfs
+spec:
+  storageClassName: sproutfs-shard
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 256Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: sproutfs-shard-2
+  namespace: sproutfs
+  labels:
+    app.kubernetes.io/component: sproutfs-shard
+    app.kubernetes.io/part-of: sproutfs
+spec:
+  storageClassName: sproutfs-shard
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 256Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: sproutfs-shard-3
+  namespace: sproutfs
+  labels:
+    app.kubernetes.io/component: sproutfs-shard
+    app.kubernetes.io/part-of: sproutfs
+spec:
+  storageClassName: sproutfs-shard
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 256Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: sproutfs-shard-4
+  namespace: sproutfs
+  labels:
+    app.kubernetes.io/component: sproutfs-shard
+    app.kubernetes.io/part-of: sproutfs
+spec:
+  storageClassName: sproutfs-shard
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 256Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: sproutfs-shard-5
+  namespace: sproutfs
+  labels:
+    app.kubernetes.io/component: sproutfs-shard
+    app.kubernetes.io/part-of: sproutfs
+spec:
+  storageClassName: sproutfs-shard
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 256Gi

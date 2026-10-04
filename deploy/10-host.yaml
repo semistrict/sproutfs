@@ -114,6 +114,24 @@ spec:
             # host checks: one disk limiter measures one filesystem.
             - name: SPROUTFS_CACHE_DIR
               value: /var/cache/sproutfs
+            # Or the cache is on shards: network disks the orchestrator
+            # attaches to this node as the membership assigns them, which the
+            # host opens through the node's /dev. The ConfigMap's shards key,
+            # gce, turns it on, and SPROUTFS_CACHE_DIR is then unused;
+            # without the key the host keeps its cache in the directory above.
+            # deploy/README.md, "Shards".
+            - name: SPROUTFS_SHARDS
+              valueFrom:
+                configMapKeyRef:
+                  name: sproutfs-demo
+                  key: shards
+                  optional: true
+            - name: SPROUTFS_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: SPROUTFS_SHARD_DEVICE_DIR
+              value: /host/dev/disk/by-id
             # The pager's page store and the RAM allotment it takes its pages
             # from. The share below gives RAM three quarters of it — 3.75 GiB
             # — and PMEM the rest, 1.25 GiB, both 2 MiB pages out of the pod's
@@ -313,6 +331,11 @@ spec:
             - name: guest
               mountPath: /usr/share/sproutfs/guest
               readOnly: true
+            # The node's /dev, where a shard attached after the pod started
+            # appears: a container's own /dev holds only the devices there
+            # were when it started.
+            - name: node-dev
+              mountPath: /host/dev
       volumes:
         - name: kvm
           hostPath:
@@ -350,6 +373,10 @@ spec:
           hostPath:
             path: /opt/sproutfs-demo/guest
             type: DirectoryOrCreate
+        - name: node-dev
+          hostPath:
+            path: /dev
+            type: Directory
 ---
 # What a voluntary disruption may take at once. Draining a host migrates its VMs
 # to the other one, so an eviction that took both pods together — a node drain, a

@@ -137,7 +137,8 @@ func run() error {
 		}
 	}
 	if config.Shards == "gce" {
-		supervisor.Shards = host.ShardsConfig{Devices: adapters.NewGCEDevices(), Machine: config.Machine}
+		supervisor.Shards = host.ShardsConfig{Devices: adapters.NewGCEDevices(config.ShardDevices),
+			Machine: config.Machine}
 	}
 	supervisor.Deployment = checkpoint.CacheDeployment{Store: config.Store.Provider, Bucket: config.Store.Bucket,
 		Prefix: config.Store.Prefix}

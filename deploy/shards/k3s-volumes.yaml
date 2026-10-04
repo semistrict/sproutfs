@@ -1,0 +1,125 @@
+# The shards' volumes on a k3s cluster that runs no Compute Engine CSI
+# driver: each binds one claim of 10-claims.yaml to a Hyperdisk Balanced disk
+# made by hand in the hosts' zone, for example
+#
+#   gcloud compute disks create sproutfs-shard-0 --zone=us-east4-a \
+#     --type=hyperdisk-balanced --size=256GB --provisioned-iops=6000 \
+#     --provisioned-throughput=500
+#
+# PROJECT and ZONE are placeholders to replace before applying. The
+# orchestrator reads only the volume handle, the disk's name in Compute
+# Engine's API, and attaches the disk itself; nothing asks the driver this
+# names for anything.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: sproutfs-shard-0
+  labels:
+    app.kubernetes.io/part-of: sproutfs
+spec:
+  storageClassName: sproutfs-shard
+  capacity:
+    storage: 256Gi
+  accessModes: ["ReadWriteOnce"]
+  persistentVolumeReclaimPolicy: Retain
+  claimRef:
+    namespace: sproutfs
+    name: sproutfs-shard-0
+  csi:
+    driver: pd.csi.storage.gke.io
+    volumeHandle: projects/PROJECT/zones/ZONE/disks/sproutfs-shard-0
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: sproutfs-shard-1
+  labels:
+    app.kubernetes.io/part-of: sproutfs
+spec:
+  storageClassName: sproutfs-shard
+  capacity:
+    storage: 256Gi
+  accessModes: ["ReadWriteOnce"]
+  persistentVolumeReclaimPolicy: Retain
+  claimRef:
+    namespace: sproutfs
+    name: sproutfs-shard-1
+  csi:
+    driver: pd.csi.storage.gke.io
+    volumeHandle: projects/PROJECT/zones/ZONE/disks/sproutfs-shard-1
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: sproutfs-shard-2
+  labels:
+    app.kubernetes.io/part-of: sproutfs
+spec:
+  storageClassName: sproutfs-shard
+  capacity:
+    storage: 256Gi
+  accessModes: ["ReadWriteOnce"]
+  persistentVolumeReclaimPolicy: Retain
+  claimRef:
+    namespace: sproutfs
+    name: sproutfs-shard-2
+  csi:
+    driver: pd.csi.storage.gke.io
+    volumeHandle: projects/PROJECT/zones/ZONE/disks/sproutfs-shard-2
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: sproutfs-shard-3
+  labels:
+    app.kubernetes.io/part-of: sproutfs
+spec:
+  storageClassName: sproutfs-shard
+  capacity:
+    storage: 256Gi
+  accessModes: ["ReadWriteOnce"]
+  persistentVolumeReclaimPolicy: Retain
+  claimRef:
+    namespace: sproutfs
+    name: sproutfs-shard-3
+  csi:
+    driver: pd.csi.storage.gke.io
+    volumeHandle: projects/PROJECT/zones/ZONE/disks/sproutfs-shard-3
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: sproutfs-shard-4
+  labels:
+    app.kubernetes.io/part-of: sproutfs
+spec:
+  storageClassName: sproutfs-shard
+  capacity:
+    storage: 256Gi
+  accessModes: ["ReadWriteOnce"]
+  persistentVolumeReclaimPolicy: Retain
+  claimRef:
+    namespace: sproutfs
+    name: sproutfs-shard-4
+  csi:
+    driver: pd.csi.storage.gke.io
+    volumeHandle: projects/PROJECT/zones/ZONE/disks/sproutfs-shard-4
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: sproutfs-shard-5
+  labels:
+    app.kubernetes.io/part-of: sproutfs
+spec:
+  storageClassName: sproutfs-shard
+  capacity:
+    storage: 256Gi
+  accessModes: ["ReadWriteOnce"]
+  persistentVolumeReclaimPolicy: Retain
+  claimRef:
+    namespace: sproutfs
+    name: sproutfs-shard-5
+  csi:
+    driver: pd.csi.storage.gke.io
+    volumeHandle: projects/PROJECT/zones/ZONE/disks/sproutfs-shard-5

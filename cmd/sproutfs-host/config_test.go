@@ -171,8 +171,8 @@ func TestConfigReadsThePageCacheDirectory(t *testing.T) {
 	}
 }
 
-// A host serves shards on gce, given the node it runs on, and never beside a
-// cache directory of its own.
+// A host serves shards on gce, given the node it runs on, from the disks named
+// in an absolute directory.
 func TestConfigReadsTheShards(t *testing.T) {
 	values := minimal()
 	values["SPROUTFS_SHARDS"], values["SPROUTFS_NODE_NAME"] = "gce", "gke-pool-1-abcd"
@@ -190,9 +190,8 @@ func TestConfigReadsTheShards(t *testing.T) {
 		{map[string]string{"SPROUTFS_SHARDS": "aws", "SPROUTFS_NODE_NAME": "n"}, `SPROUTFS_SHARDS is "aws", want gce or nothing`},
 		{map[string]string{"SPROUTFS_SHARDS": "gce"},
 			"SPROUTFS_SHARDS needs SPROUTFS_NODE_NAME, the node the host runs on, which its shards are attached to"},
-		{map[string]string{"SPROUTFS_SHARDS": "gce", "SPROUTFS_NODE_NAME": "n", "SPROUTFS_CACHE_DIR": "/var/cache"},
-			"SPROUTFS_SHARDS and SPROUTFS_CACHE_DIR are both set: a host serves shards or keeps a cache disk of its " +
-				"own, not both"},
+		{map[string]string{"SPROUTFS_SHARDS": "gce", "SPROUTFS_NODE_NAME": "n", "SPROUTFS_SHARD_DEVICE_DIR": "dev"},
+			`SPROUTFS_SHARD_DEVICE_DIR is "dev", want an absolute directory`},
 	} {
 		values := minimal()
 		for name, value := range tc.set {

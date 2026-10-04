@@ -91,10 +91,14 @@ func NewGCENetworkDisks(ctx context.Context, project, zone, endpoint string) (pl
 }
 
 // NewGCEDevices opens the Compute Engine disks attached to this instance, at
-// /dev/disk/by-id/google-<name>, each for this process alone. Only Linux has
-// them.
-func NewGCEDevices() platform.Devices {
-	return real.NewDevices("/dev/disk/by-id", "google-", real.GCEDeviceName)
+// google-<name> in dir, the kernel's /dev/disk/by-id where dir is empty, each
+// for this process alone. A container that sees the node's /dev mounted
+// elsewhere names that mount's disk/by-id. Only Linux has them.
+func NewGCEDevices(dir string) platform.Devices {
+	if dir == "" {
+		dir = "/dev/disk/by-id"
+	}
+	return real.NewDevices(dir, "google-", real.GCEDeviceName)
 }
 
 // noClose is a closer with nothing to release.
