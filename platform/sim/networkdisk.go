@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"sync"
 	"time"
 
@@ -238,6 +240,27 @@ func (n *NetworkDisks) Detach(ctx context.Context, volume, machine string) error
 		return err
 	}
 	n.trace("detach", volume, "ok")
+	return nil
+}
+
+// Crash is machine crashing: every disk attached to it stays attached, every
+// handle a process of it held fails, and what those processes wrote and had
+// not synced is lost or garbled, as a power cut leaves it.
+func (n *NetworkDisks) Crash(ctx context.Context, machine string) error {
+	n.mu.Lock()
+	var crashed []*networkDisk
+	for _, volume := range slices.Sorted(maps.Keys(n.disks)) {
+		if disk := n.disks[volume]; disk.machine == machine {
+			crashed = append(crashed, disk)
+		}
+	}
+	n.mu.Unlock()
+	for _, disk := range crashed {
+		if err := disk.backing.PowerLoss(ctx); err != nil {
+			return err
+		}
+		n.trace("crash", disk.name, "ok")
+	}
 	return nil
 }
 

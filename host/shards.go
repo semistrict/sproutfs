@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/semistrict/sproutfs/checkpoint"
+	"github.com/semistrict/sproutfs/internal/ctxsync"
 	"github.com/semistrict/sproutfs/membership"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/platform/sim"
@@ -103,6 +104,11 @@ type shardServer struct {
 	cancel context.CancelFunc
 	done   chan struct{}
 
+	// passing admits one pass at a time: the loop's, and one a caller asks
+	// for. A pass waits on the store and the device, so the wait for it is
+	// one a simulation's clock can pass.
+	passing *ctxsync.Mutex
+
 	mu   sync.Mutex
 	open map[rank.Identity]*openShard
 }
@@ -114,7 +120,7 @@ func newShardServer(ctx context.Context, config ShardsConfig, self rank.Identity
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	s := &shardServer{config: config, self: self, view: view, cache: cache, clock: clock, region: region, ctx: ctx,
-		cancel: cancel, done: make(chan struct{}), open: make(map[rank.Identity]*openShard)}
+		cancel: cancel, done: make(chan struct{}), passing: ctxsync.NewMutex(), open: make(map[rank.Identity]*openShard)}
 	go s.loop()
 	return s
 }
@@ -162,6 +168,10 @@ func (s *shardServer) assigned(m membership.Membership) map[rank.Identity]member
 // here under the generation it was opened under, or whose lease or device
 // failed, and opens every shard it assigns here that the cloud has attached.
 func (s *shardServer) pass(ctx context.Context) {
+	if err := s.passing.Lock(ctx); err != nil {
+		return
+	}
+	defer s.passing.Unlock()
 	wanted := s.assigned(s.view.Current())
 	s.mu.Lock()
 	open := maps.Clone(s.open)

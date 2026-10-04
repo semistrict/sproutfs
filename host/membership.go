@@ -76,6 +76,17 @@ func (h *Host) RefreshMembership(ctx context.Context) error {
 	return err
 }
 
+// SettleShards opens and closes the shards the membership this host holds
+// calls for now, and returns once it has: what a test, or a simulated
+// deployment that steps its controller by hand, does after the host read a
+// new generation or the cloud attached a shard. A host that serves no shard
+// does nothing.
+func (h *Host) SettleShards(ctx context.Context) {
+	if h.shards != nil {
+		h.shards.pass(ctx)
+	}
+}
+
 // SettleFills returns once every fill of the cluster's cache this host's
 // cache was handed has been written or dropped, and every keep and fill right
 // it asked a peer for has been answered, and every fill of its hot tier has

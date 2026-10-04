@@ -53,9 +53,9 @@ func (c *ShardControl) Describe(ctx context.Context, m Membership) []Shard {
 
 // Pass takes one step of the membership towards want, with the shards as the
 // cloud has them now, and carries out what the membership it leaves calls
-// for. It reports that membership, whether it changed it, and what failed:
-// the step, or the calls of the cloud, every one of which is made again by
-// the next pass if it is still called for.
+// for. It reports that membership, whether it changed it or asked anything of
+// the cloud, and what failed: the step, or the calls of the cloud, every one
+// of which is made again by the next pass if it is still called for.
 func (c *ShardControl) Pass(ctx context.Context, want Want) (Membership, bool, error) {
 	current, err := c.Store.Read(ctx)
 	if err != nil {
@@ -67,7 +67,9 @@ func (c *ShardControl) Pass(ctx context.Context, want Want) (Membership, bool, e
 		return next, changed, err
 	}
 	var failed []error
-	for _, action := range Carry(ctx, next, want) {
+	actions := Carry(ctx, next, want)
+	changed = changed || len(actions) > 0
+	for _, action := range actions {
 		if action.Attach {
 			err = c.Disks.Attach(ctx, action.Volume, action.Machine)
 		} else {

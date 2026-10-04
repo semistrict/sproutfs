@@ -400,6 +400,23 @@ Crash(h) ==
     /\ UNCHANGED <<vmVars, members, code, list, lcode, disk, reads, faults, flagVars>>
     /\ Track
 
+\* A shard moves to another member: with the fault "move", the caches are
+\* shards, network disks the membership moves between hosts as compute
+\* scales. A shard moving is served by nobody until it serves again, and it
+\* comes back with every stripe on its disk, in its place in every window's
+\* ranks. The moves are not counted: compute scales without bound, and no
+\* move takes a stripe. The mutant loses the disk's stripes with the move,
+\* as a cache on the host's own disk loses them when the host goes.
+Move(h) ==
+    /\ "move" \in Faults
+    /\ up[h] /\ h \in members
+    /\ up' = [up EXCEPT ![h] = FALSE]
+    /\ marked' = [marked EXCEPT ![h] = {}]
+    /\ rights' = [rights EXCEPT ![h] = {}]
+    /\ disk' = IF "move-empties-disk" \in Bugs THEN [disk EXCEPT ![h] = {}] ELSE disk
+    /\ UNCHANGED <<vmVars, members, code, list, lcode, countVars, flagVars>>
+    /\ Track
+
 Recover(h) ==
     /\ ~up[h] /\ h \in members
     /\ up' = [up EXCEPT ![h] = TRUE]
@@ -466,7 +483,7 @@ Next ==
     \/ \E s \in Spans, b \in Values : Put(s, b)
     \/ Commit \/ PubFill \/ Delete \/ Create \/ ChangeCode
     \/ \E h \in Hosts, x \in Idents : Read(h, x)
-    \/ \E h \in Hosts : Evict(h) \/ Damage(h) \/ Crash(h) \/ Recover(h)
+    \/ \E h \in Hosts : Evict(h) \/ Damage(h) \/ Crash(h) \/ Move(h) \/ Recover(h)
     \/ \E h \in Hosts : Leave(h) \/ Join(h) \/ Refresh(h) \/ Interval(h)
     \/ \E h, p \in Hosts : Probe(h, p)
 
@@ -494,4 +511,13 @@ SurvivesLosses ==
         IN (whole[x][j] /\ taken[x][j] <= MOf(j) /\ up[h] /\ list[h] = members /\ lcode[h] = code
                /\ marked[h] = {})
                => \E t \in Tries(h) : Cardinality(Indices(sees(t))) >= KOf(t)
+\* Shards keep their stripes as they move: in a run where nothing evicts or
+\* damages a stripe and no cache leaves, a window all of whose stripes under
+\* a code were readable at once has every one readable again whenever every
+\* shard serves, however many times the shards moved. Compute scaling moves
+\* shards and never a stripe.
+MovesKeepStripes ==
+    \A x \in Idents, j \in 1..code :
+        (whole[x][j] /\ \A p \in members : up[p])
+            => Indices(Readable(members, up, disk, x, j)) = Idx(j)
 =============================================================================
