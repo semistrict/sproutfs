@@ -49,10 +49,11 @@ type watch struct {
 	waiting bool
 	under   bound
 	since   time.Time
-	// timer is the pending timer, and armed counts the timers armed, so a
-	// timer stopped too late to keep it from running knows it is not the
-	// pending one.
+	// timer is the pending timer and due when it fires, and armed counts
+	// the timers armed, so a timer stopped too late to keep it from running
+	// knows it is not the pending one.
 	timer platform.Stopper
+	due   time.Time
 	armed uint64
 	// fired says the attempt was cancelled, under which bound; stopped says
 	// the attempt ended and nothing more is to be cancelled.
@@ -76,15 +77,27 @@ func (w *watch) wait(under bound) {
 		return
 	}
 	w.waiting, w.under, w.since = true, under, w.clock.Now()
-	if w.timer == nil {
-		w.arm(w.limit(under))
+	w.deadline()
+}
+
+// deadline has the timer fire by the moment the wait, measured from now,
+// outlives its bound: a timer due later is armed again, and one due sooner
+// checks then and arms itself again for what is left. Caller holds the lock
+// and has just set since.
+func (w *watch) deadline() {
+	limit := w.limit(w.under)
+	if w.timer != nil && !w.since.Add(limit).Before(w.due) {
+		return
 	}
+	w.disarm()
+	w.arm(limit)
 }
 
 // arm sets the timer to check the wait after d. Caller holds the lock.
 func (w *watch) arm(d time.Duration) {
 	w.armed++
 	armed := w.armed
+	w.due = w.clock.Now().Add(d)
 	w.timer = w.clock.AfterFunc(d, func() { w.check(armed) })
 }
 
@@ -97,6 +110,7 @@ func (w *watch) progress(under bound) {
 		return
 	}
 	w.under, w.since = under, w.clock.Now()
+	w.deadline()
 }
 
 // idle ends a wait: the caller holds what the store gave it.

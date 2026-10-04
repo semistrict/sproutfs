@@ -3018,6 +3018,29 @@ holds. The second command killed 22 of 24. The two alive are bounds moved
 from the store unchanged: a read of exactly the largest extent, and an object
 of size zero.
 
+The bounds on the object store are mutated with their whole package:
+
+```sh
+python3 scripts/mutate-gremlins.py --package platform/bounded --suite full \
+  --gremlins /path/to/gremlins --output /tmp/bounded-mutations
+```
+
+On 2026-10-04 it first killed 41 of 61 mutants, with 8 alive, 12 not covered
+and 3 timed out. A test of what two survivors changed brought it to 44
+killed. One made the bound a timeout names its stall bound or its first-byte
+bound alike, which two equal defaults hide; its test, with a stall bound
+shorter than the first-byte bound, found a real fault: an upload that moved
+from waiting for the first byte to the stall bound kept the first-byte
+timer, so it was cancelled at the longer bound. The watch now arms again for
+the sooner deadline. The other kept reading after a stalled reply handed over
+bytes with its error, over the bytes just read. The 5 alive change nothing a
+run can see: a log line's attempt number and condition, a timer generation
+counted down rather than up, a progress of zero bytes, and a read of zero
+bytes returned rather than repeated. The 3 timeouts are the first-byte
+default never applied and the watch's re-arm condition, which make every
+attempt time out at once, so the retries never end. The 12 not covered are
+the two default constants and `case` lines the tests run.
+
 For test-only changes, select the production package whose behavior
 the tests exercise. `--package` includes subdirectories. Review the surviving
 diffs and the audited outcomes. Prioritize changes to data integrity, fencing,
