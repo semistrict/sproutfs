@@ -22,12 +22,15 @@ import (
 // from.
 type cacheStore struct {
 	platform.ObjectStore
-	gets      atomic.Int64
-	canceled  atomic.Int64
-	block     atomic.Bool
-	entered   chan struct{}
-	release   chan struct{}
-	suspended string
+	gets     atomic.Int64
+	canceled atomic.Int64
+	block    atomic.Bool
+	// prefetches has block hold only the reads a prefetch makes, such as a
+	// pull's.
+	prefetches atomic.Bool
+	entered    chan struct{}
+	release    chan struct{}
+	suspended  string
 	// getting, when set, is told of every read's key as it begins.
 	getting atomic.Pointer[func(key string)]
 }
@@ -37,7 +40,7 @@ func (s *cacheStore) Get(ctx context.Context, request platform.GetRequest) (plat
 	if getting := s.getting.Load(); getting != nil {
 		(*getting)(request.Key.String())
 	}
-	if strings.Contains(request.Key.String(), s.suspended) {
+	if strings.Contains(request.Key.String(), s.suspended) && (!s.prefetches.Load() || checkpoint.Prefetching(ctx)) {
 		if s.block.Load() {
 			s.entered <- struct{}{}
 			select {

@@ -1712,6 +1712,22 @@ stripe a host holds, repairs among them, must be of a window some list ranked
 it for. Every read site must fire and every read probe be reached across the
 seeds (about 4 s).
 
+[Pulls](hosting.md#pulling-a-vms-memory) mark seven more: a page a presence
+check found held and one it found lacking, a presence answer lost, a
+presence check asked again under a newer generation, a page or segment a
+pull found held, a range or segment it read from the store, and a pull
+stopped under pressure. Their sites lose a presence answer and press the
+host's pulls before a fetch. `TestPullsSurviveTheirFaultsAndReachTheirProbes`
+in `checkpoint` drives them. Each of its eight seeds draws a cluster of two to
+seven hosts and a code of the table, on the read campaign's network, with
+every completion released by the scheduler and the sites on. Each of five
+rounds publishes a checkpoint the cluster holds, from a host, or one it
+lacks, from the publisher; drops some of its stripes; moves the membership
+with only some hosts told; and has hosts pull while others fault and some
+disks shrink under their pulls. Every pull must end complete or stopped
+under pressure, every page must read as published on every host, and no host
+may hold a window whole or a stripe no list ranked it for (about 3 s).
+
 A [hot tier](hosting.md#reading-through-a-hot-tier) marks sixteen more: a
 hit, a miss, a read failed by error, past the bound and by corrupt bytes, the
 hot tier marked down and a read that skipped it, a fill sent, one that found
@@ -2628,6 +2644,47 @@ reader once did: after 512 reads of 4 KiB, four reads of 2 MiB each pass the
 bound the small reads set and read the store too. The last keeps a page
 rebuilt under 1+1 as a view of its peer's reply buffer, which the pool hands
 the next reply: once the replies are written over, the page has changed.
+
+Nine guards break a pull as a prefetch
+([pulling a VM's memory](hosting.md#pulling-a-vms-memory)):
+
+```sh
+SPROUTFS_SIM_BUG=pull-reads-the-store-first \
+  go test ./checkpoint -run '^TestAPullOfACheckpointTheClusterHoldsReadsNothingFromTheStore$' -count=1
+SPROUTFS_SIM_BUG=pull-count-any-stripe \
+  go test ./checkpoint -run '^TestAPullOfACheckpointTheClusterPartlyHoldsReadsOnlyWhatItLacks$' -count=1
+SPROUTFS_SIM_BUG=presence-ignore-stale-answer \
+  go test ./checkpoint -run '^TestAPullBehindTheMembershipAsksAgainUnderTheNewerOne$' -count=1
+SPROUTFS_SIM_BUG=pull-hedges-to-the-store \
+  go test ./checkpoint -run '^TestAPullsReadsOfTheClusterAreBulkWorkThatNeverHedges$' -count=1
+SPROUTFS_SIM_BUG=pull-reads-as-a-fault \
+  go test ./checkpoint -run '^TestAPullsReadsOfTheClusterAreBulkWorkThatNeverHedges$' -count=1
+SPROUTFS_SIM_BUG=cluster-prefetch-in-stripe-class \
+  go test ./checkpoint -run '^TestAPullsReadsOfTheClusterAreBulkWorkThatNeverHedges$' -count=1
+SPROUTFS_SIM_BUG=pull-takes-a-fault-slot \
+  go test ./checkpoint -run '^TestAFaultDuringAPullIsNeverSlowedByIt$' -count=1
+SPROUTFS_SIM_BUG=pull-ignores-pressure \
+  go test ./checkpoint -run '^TestPressureCancelsAPullsReads$' -count=1
+SPROUTFS_SIM_BUG=peer-presence-in-fault-class \
+  go test ./peer -run '^TestAPresenceCheckGoesOverTheClassItsContextNames$' -count=1
+```
+
+The first reads every page from the store, as a pull did before it asked the
+cluster: a pull of a checkpoint the cluster holds then reads it all again.
+The second counts a page held when any rank holds any stripe of it: a page
+left with three stripes of 4+2 is never pulled, and stays short. The third
+counts a rank that answers stale as holding nothing: a puller one generation
+behind reads from the store the pages whose fourth stripe only that rank
+holds. The fourth lets a pull's read of a segment through the cluster read
+the store past its bound, and behind slow links the pull reads the index
+object again. The fifth leaves a pull's reads unmarked: they ask second
+requests and go over the fault and stripe connections. The sixth sends a
+prefetch's stripe requests over the stripe class, as they went before: they
+run under the reader's own context, which names no class. The seventh runs a
+pull's reads in a slot of the loads faults wait on: with one slot, a fault
+waits for the pull's read of the store. The eighth leaves a pull reading
+under memory or disk pressure. The last sends every presence check over the
+fault class.
 
 Five guards break the hot tier:
 

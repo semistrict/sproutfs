@@ -101,3 +101,7 @@ func (c *Cache) QueuedWindows() (counted, held int64) {
 	}
 	return counted, held
 }
+
+// PullSites are the fault-injection sites of pulls and of the presence checks
+// they ask, which the pull campaign must fire.
+var PullSites = []string{buggifyPresenceLost, buggifyPullPressure}

@@ -33,6 +33,9 @@ type Budget struct {
 	used       int64
 	queue      []*waiter
 	changed    chan struct{}
+	// pressed is closed, and replaced, each time the allotment is short of
+	// memory past what its caches can give back.
+	pressed chan struct{}
 }
 
 type waiter struct {
@@ -45,7 +48,7 @@ func New(limit int64) (*Budget, error) {
 	if limit < 0 {
 		return nil, ErrInvalid
 	}
-	return &Budget{limit: limit, changed: make(chan struct{})}, nil
+	return &Budget{limit: limit, changed: make(chan struct{}), pressed: make(chan struct{})}, nil
 }
 
 // Stats is an atomic view of reservations, not a heap measurement.
@@ -69,6 +72,30 @@ func (b *Budget) Changed() <-chan struct{} {
 }
 
 func (b *Budget) fitsLocked(amount int64) bool { return amount <= b.limit-b.used }
+
+// Pressure returns a channel that closes the next time the allotment is short
+// of memory past what its caches can give back: a reservation refused once
+// every cache gave back what it could, or one that has to wait for room. A
+// full cache is not pressure, since it gives its entries back. Background work
+// nothing waits on, such as a pull, watches it and stops, so the memory goes
+// to work something does wait on.
+func (b *Budget) Pressure() <-chan struct{} {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.pressed
+}
+
+// press tells every watcher of Pressure that the allotment is short.
+func (b *Budget) press() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.pressLocked()
+}
+
+func (b *Budget) pressLocked() {
+	close(b.pressed)
+	b.pressed = make(chan struct{})
+}
 
 // Lease owns a reservation. Its owner may grow it before allocation, return
 // part after reclamation, and close it once. Closing repeatedly is safe.
@@ -94,6 +121,9 @@ func (b *Budget) TryAcquire(ctx context.Context, amount int64) (*Lease, error) {
 		lease, err = b.tryAcquire(ctx, amount)
 		return err
 	})
+	if errors.Is(err, ErrCapacity) {
+		b.press()
+	}
 	return lease, err
 }
 
@@ -138,6 +168,7 @@ func (b *Budget) Acquire(ctx context.Context, amount int64) (*Lease, error) {
 	}
 	wait := &waiter{amount: amount, granted: make(chan struct{})}
 	b.queue = append(b.queue, wait)
+	b.pressLocked()
 	b.mu.Unlock()
 	// Close the race between the first reclaim attempt and queue insertion:
 	// cache bytes released by a reader or filled in that gap must not strand
@@ -203,7 +234,11 @@ func (l *Lease) Bytes() int64 {
 
 // TryGrow reserves additional bytes before the owner grows its allocation.
 func (l *Lease) TryGrow(ctx context.Context, extra int64) error {
-	return l.budget.withCacheReclaim(ctx, extra, func() error { return l.tryGrow(ctx, extra) })
+	err := l.budget.withCacheReclaim(ctx, extra, func() error { return l.tryGrow(ctx, extra) })
+	if errors.Is(err, ErrCapacity) {
+		l.budget.press()
+	}
+	return err
 }
 
 func (l *Lease) tryGrow(ctx context.Context, extra int64) error {

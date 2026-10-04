@@ -290,6 +290,30 @@ func (d *cacheDisk) heldPages(window rank.Window, pages []uint32, code rank.Code
 	return held
 }
 
+// present is the stripes of window the disk holds under code: for each index
+// of the code, in index order, the pages of the window, among pages, it holds
+// that index of; pages nil asks of every page.
+func (d *cacheDisk) present(window rank.Window, pages []uint32, code rank.Code) peer.Present {
+	if pages == nil {
+		pages = make([]uint32, max(window.Pages, 1))
+		for at := range pages {
+			pages[at] = uint32(at)
+		}
+	}
+	held := make(peer.Present, code.Width())
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for _, page := range pages {
+		key := windowKey(window, page)
+		for index := range held {
+			if _, found := d.index.lookup(key, indexOf(code, index), false, false); found {
+				held[index] = append(held[index], page)
+			}
+		}
+	}
+	return held
+}
+
 // holdsAnyOf reports whether the disk holds a stripe of any of pages of
 // window under code; pages nil asks of every page.
 func (d *cacheDisk) holdsAnyOf(window rank.Window, pages []uint32, code rank.Code) bool {

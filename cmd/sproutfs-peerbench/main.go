@@ -191,8 +191,12 @@ func (c *benchCache) Keep(context.Context, membership.Membership, rank.Identity,
 
 func (c *benchCache) Drop(context.Context, rank.Identity, peer.Drop) error { return nil }
 
-func (c *benchCache) Presence(_ context.Context, _ rank.Identity, presence peer.Presence) ([][]uint32, error) {
-	return make([][]uint32, len(presence.Windows)), nil
+func (c *benchCache) Presence(_ context.Context, _ rank.Identity, presence peer.Presence) ([]peer.Present, error) {
+	held := make([]peer.Present, len(presence.Windows))
+	for at := range held {
+		held[at] = make(peer.Present, presence.Code.Width())
+	}
+	return held, nil
 }
 
 func runClient(ctx context.Context, args []string) error {

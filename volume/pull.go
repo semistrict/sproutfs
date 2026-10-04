@@ -12,9 +12,10 @@ import (
 // parent held that no checkpoint has.
 func (vm *VM) Rooted() <-chan struct{} { return vm.rooted }
 
-// Pull begins copying every page of the checkpoint this VM's volumes sit on
-// onto the host's disk: the checkpoint its control record selects, or for a
-// fork whose root has not published yet, the one it inherits from its parent.
+// Pull begins fetching every page of the checkpoint this VM's volumes sit on,
+// into the cluster's disk cache inside its share and onto the host's disk
+// outside it: the checkpoint its control record selects, or for a fork whose
+// root has not published yet, the one it inherits from its parent.
 // A caller that wants a fork's own root pulled waits for Rooted first. The pages
 // written since that checkpoint are not in it: they are this host's already, in
 // the overlay or in a pager. Every checkpoint this VM publishes from then on

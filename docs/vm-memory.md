@@ -1047,23 +1047,33 @@ fewer than k stripes of which exist
 does nothing different for any of this. A fault waits for the cluster's read
 of its page as it waits for the store's, and the cluster's read reads the store
 as well once it has waited past its bound. The prefetch of the rest of its run
-reads the cluster as background work, and never reads the store as a hedge. A page rebuilt from stripes is checked by
-its envelope's SHA-256, as a page from the store is.
+reads the cluster as background work, and never reads the store as a hedge.
+Its stripe requests go over the bulk class. Until 2026-10-04 they went over
+the stripe class faults use. A read's requests run under the reader's own
+context, not the read's, and that context named no class. A test of pulls
+found it (`TestAPullsReadsOfTheClusterAreBulkWorkThatNeverHedges`). A page rebuilt from stripes is checked by its envelope's
+SHA-256, as a page from the store is.
 
 ### A pulled VM's faults
 
-A VM can be marked to [pull its whole memory](hosting.md#pulling-a-vms-memory)
-onto its host's disk. The pager does nothing different for it. A fault asks
-the volume for its window as always, and the volume reads a run through the
-page cache. A run's pages that the cache holds in memory come from there, the
-ones on its disk come from there, and only the rest are requests of the store
+A VM can be marked to [pull its whole memory](hosting.md#pulling-a-vms-memory).
+Inside the share the cluster cache is on for, the pull makes sure the cluster
+holds every window; outside it, it copies the pages onto its host's disk. The
+pager does nothing different for it. A fault asks the volume for its window as
+always, and the volume reads a run through the page cache. A run's pages that
+the cache holds in memory come from there, the ones on the hosts' disks come
+from there, and only the rest are requests of the store
 ([the page cache's disk](volumes.md#the-page-caches-disk)). So once a pull is
-complete, a cold fault costs a local read and a decode instead of a round trip,
-while the disk holds the page.
+complete, a cold fault costs a read of the disks and a decode instead of a
+round trip to the store, while the disks hold the page.
+
+A pull never slows a fault. Its reads are marked as a prefetch, as the
+prefetch of a fault's run is, it makes no request while a load of the page
+cache is in flight, and it takes none of the cache's load slots.
 
 This is also what an eviction costs such a VM. The pager drops a clean page
 rather than spilling it: its volume holds its bytes. For a pulled VM those bytes
-are on the local disk, so the refault reads them there. The spill file is not
+are on the hosts' disks, so the refault reads them there. The spill file is not
 the copy. It holds only private pages, and it bounds the dirty pages the pager
 admits, not what a VM may read.
 

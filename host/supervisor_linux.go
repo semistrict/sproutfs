@@ -758,7 +758,8 @@ func (s *supervisor) record(m *machine) hostapi.VM {
 		Checkpoint: status.Checkpoint.Sequence, Epoch: status.Epoch, DirtyBytes: status.DirtyBytes,
 		RootPending: status.Root}
 	if pulled, marked := s.host.Pulled(m.vm.ID()); marked {
-		record.Pull = &hostapi.Pull{Bytes: pulled.Bytes, Pulled: pulled.Pulled, Done: pulled.Done}
+		record.Pull = &hostapi.Pull{Bytes: pulled.Bytes, Pulled: pulled.Pulled, Held: pulled.Held,
+			Fetched: pulled.Fetched, Done: pulled.Done}
 		if pulled.Err != nil {
 			record.Pull.Error = pulled.Err.Error()
 		}

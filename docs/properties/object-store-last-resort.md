@@ -26,3 +26,14 @@ the regional bucket no GET on the second read, and
 `TestAVMOpenedOnAnotherHostReadsItsCheckpointFromTheHotTier` opens a VM on a
 second host with three hits and no miss. The hot tier is itself an object
 store, so "last resort" then means the regional bucket, not every bucket.
+
+**A pull, 2026-10-04.** Holds for pulls inside the share; it did not before.
+A pull used to read every page of its checkpoint from the store and hand it
+to the fills, whatever the cluster held. Now it asks each window's ranks what
+they hold and reads the store only for a page fewer than k distinct indices
+of which exist. `TestAPullOfACheckpointTheClusterHoldsReadsNothingFromTheStore`
+pulls a checkpoint the cluster holds with no request but the open of its
+index, under 1+1, 2+2 and 4+2, and
+`TestAPullOfACheckpointTheClusterPartlyHoldsReadsOnlyWhatItLacks` reads only
+the two ranges of pages the cluster lacks. A pull never reads the store as a
+hedge (`TestAPullsReadsOfTheClusterAreBulkWorkThatNeverHedges`).

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"testing/synctest"
 
@@ -486,5 +487,34 @@ func TestAPullCopiesEverySegment(t *testing.T) {
 	f.readAll(t)
 	if gets := f.objects.gets.Load(); gets != 0 {
 		t.Fatalf("reading both segments' pages made %d requests of the store, want none", gets)
+	}
+}
+
+// A pull whose read of the store fails stops short with that failure, not
+// with pressure. Here every part of the checkpoint is gone: the pull reads the
+// segment, and its read of the pages finds no part.
+func TestAPullThatCannotReadTheStoreStopsShortWithTheFailure(t *testing.T) {
+	f := newPullFixture(t, 64<<20)
+	err := platform.ListAll(t.Context(), f.runtime.ObjectStore(), platform.ObjectPrefix{},
+		func(object platform.ObjectMetadata) error {
+			if !strings.Contains(object.Key.String(), "/part/") {
+				return nil
+			}
+			return f.runtime.ObjectStore().Delete(t.Context(), platform.DeleteRequest{Key: object.Key})
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pull, err := f.store.Pull(f.ctx(t), f.index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pull.Close()
+	err = pull.Wait(t.Context())
+	stats := pull.Stats()
+	if !errors.Is(err, platform.ErrNotFound) || errors.Is(err, checkpoint.ErrPressure) || !stats.Done ||
+		!errors.Is(stats.Err, platform.ErrNotFound) || stats.Fetched != stats.Pulled || stats.Pulled == stats.Bytes {
+		t.Fatalf("a pull of a checkpoint whose parts are gone ended with %v at %+v, want the missing part after the segment alone", err,
+			stats)
 	}
 }

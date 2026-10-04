@@ -136,11 +136,13 @@ type Cache struct {
 	// filler what fills the cluster, and reader what reads it, nil for a
 	// cache that keeps no disk and serves no shard. shard is how a shard's
 	// disk is laid out.
-	disk       *cacheDisk
-	cluster    *cluster
-	shard      diskSettings
-	filler     *filler
-	reader     *clusterReader
+	disk    *cacheDisk
+	cluster *cluster
+	shard   diskSettings
+	filler  *filler
+	reader  *clusterReader
+	// pulls is the pulls the cache runs, which pressure cancels.
+	pulls      *pulls
 	unregister func()
 	closed     bool
 	limit      int
@@ -338,7 +340,7 @@ func NewCache(ctx context.Context, resources *resource.Budget, config CacheConfi
 		threshold: config.DiskSecondChanceReads, deployment: config.Deployment, entropy: config.Entropy,
 		cluster: shared}
 	cache := &Cache{resources: resources, limit: config.MaxConcurrentLoads, prefetchLimit: config.MaxConcurrentPrefetches,
-		cluster: shared, shard: settings,
+		cluster: shared, shard: settings, pulls: newPulls(),
 		entries: make(map[cacheKey]*list.Element), flights: make(map[cacheKey]*cacheFlight), changed: make(chan struct{})}
 	budget := config.Budget
 	if budget == nil && config.DiskBytes > 0 {
@@ -524,11 +526,48 @@ func (c *Cache) fills() bool { return c != nil && c.filler != nil && c.cluster.p
 // fallen: the disk gives regions back, oldest first and with no second chance,
 // until it holds no more than its share less one region. It does nothing for a
 // cache that keeps no disk.
+//
+// The disk is short of room, so every pull's reads in flight are cancelled
+// first and each pull stops short with ErrPressure: a pull would fill the disk
+// again as it gives regions back.
 func (c *Cache) FitDisk(ctx context.Context) error {
 	if c.disk == nil {
 		return nil
 	}
+	c.pulls.press(errDiskPressure)
 	return c.disk.fit(ctx)
+}
+
+// holdLoadSlot takes one of the slots of the loads something waits on, as a
+// fault's load does, until the release it returns is called. Only the guard
+// pull-takes-a-fault-slot takes one outside a load.
+func (c *Cache) holdLoadSlot(ctx context.Context) (func(), error) {
+	for {
+		c.mu.Lock()
+		if c.closed {
+			c.mu.Unlock()
+			return nil, resource.ErrClosed
+		}
+		if c.active-c.prefetches < c.limit {
+			c.active++
+			c.peak = max(c.peak, c.active)
+			c.mu.Unlock()
+			return sync.OnceFunc(func() {
+				c.mu.Lock()
+				defer c.mu.Unlock()
+				c.active--
+				close(c.changed)
+				c.changed = make(chan struct{})
+			}), nil
+		}
+		changed := c.changed
+		c.mu.Unlock()
+		select {
+		case <-changed:
+		case <-ctx.Done():
+			return nil, context.Cause(ctx)
+		}
+	}
 }
 
 // quiet returns once no load of the cache's own is in flight: no fault, and no

@@ -141,19 +141,20 @@ func (c *memoryCache) Drop(_ context.Context, _ rank.Identity, drop peer.Drop) e
 	return nil
 }
 
-func (c *memoryCache) Presence(_ context.Context, _ rank.Identity, presence peer.Presence) ([][]uint32, error) {
+func (c *memoryCache) Presence(_ context.Context, _ rank.Identity, presence peer.Presence) ([]peer.Present, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	held := make([][]uint32, len(presence.Windows))
-	for key := range c.stripes {
-		for i, window := range presence.Windows {
-			if key.window == window && !slices.Contains(held[i], key.page) {
-				held[i] = append(held[i], key.page)
+	held := make([]peer.Present, len(presence.Windows))
+	for i, window := range presence.Windows {
+		held[i] = make(peer.Present, presence.Code.Width())
+		for key := range c.stripes {
+			if key.window == window && key.index < len(held[i]) {
+				held[i][key.index] = append(held[i][key.index], key.page)
 			}
 		}
-	}
-	for i := range held {
-		slices.Sort(held[i])
+		for index := range held[i] {
+			slices.Sort(held[i][index])
+		}
 	}
 	return held, nil
 }
@@ -416,7 +417,7 @@ func TestAKeepOverTheBackgroundBudgetIsDropped(t *testing.T) {
 }
 
 // A drop reaches the cache with the stripe it names, and a presence check says
-// which pages of each window the cache holds a stripe of.
+// which pages of each window the cache holds each index of.
 func TestDropAndPresenceReachTheCache(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		cache := newMemoryCache(1)
@@ -437,8 +438,9 @@ func TestDropAndPresenceReachTheCache(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(held) != 2 || !slices.Equal(held[0], []uint32{4}) || len(held[1]) != 0 {
-			t.Fatalf("presence %v, want page 4 of the first window and nothing of the second", held)
+		want := []peer.Present{{{4}, {4}}, {nil, nil}}
+		if !slices.EqualFunc(held, want, func(a, b peer.Present) bool { return slices.EqualFunc(a, b, slices.Equal) }) {
+			t.Fatalf("presence %v, want both indices of page 4 of the first window and nothing of the second", held)
 		}
 	})
 }

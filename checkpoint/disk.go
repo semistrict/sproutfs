@@ -72,11 +72,6 @@ const (
 // region given back is punched out whole.
 const diskBlock = 4 << 10
 
-// pullConcurrency is how many fetches every pull on a host has in flight
-// together. A pull is background work: it takes few of the store's requests,
-// and none of the page cache's load slots, so a fault never queues behind it.
-const pullConcurrency = 2
-
 // WriteKind says what a write to the disk is for. A budget that must drop
 // writes drops the lowest kind first.
 type WriteKind int
@@ -187,10 +182,8 @@ type cacheDisk struct {
 	// the file has ever opened, which a region past them raises first.
 	lease  *Lease
 	leased int64
-	// slots is the fetches every pull on this host has in flight together,
-	// and writer the one writer the log has at a time. Both are channels, so
-	// a goroutine waiting on either is durably blocked.
-	slots  chan struct{}
+	// writer is the one writer the log has at a time. It is a channel, so a
+	// goroutine waiting on it is durably blocked.
 	writer chan struct{}
 
 	mu sync.Mutex
@@ -253,7 +246,7 @@ func openCacheDisk(ctx context.Context, file platform.File, budget DiskBudget, s
 	d := &cacheDisk{file: file, budget: budget, regionBytes: settings.regionBytes, indexLimit: settings.indexLimit,
 		threshold: settings.threshold, deployment: settings.deployment, entropy: platform.EntropyOr(settings.entropy),
 		cluster: shared, identity: settings.identity, lease: settings.lease,
-		slots: make(chan struct{}, pullConcurrency), writer: make(chan struct{}, 1), index: newDiskIndex()}
+		writer: make(chan struct{}, 1), index: newDiskIndex()}
 	if err := d.readBack(ctx); err != nil {
 		return nil, err
 	}
@@ -874,18 +867,6 @@ func (d *cacheDisk) forgetAll() {
 	defer d.mu.Unlock()
 	d.index.clear()
 }
-
-// acquire takes one of the fetch slots every pull on this host shares.
-func (d *cacheDisk) acquire(ctx context.Context) error {
-	select {
-	case d.slots <- struct{}{}:
-		return nil
-	case <-ctx.Done():
-		return context.Cause(ctx)
-	}
-}
-
-func (d *cacheDisk) releaseSlot() { <-d.slots }
 
 // DiskStats is what the page cache's disk holds and has served.
 type DiskStats struct {
