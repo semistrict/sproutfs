@@ -3,11 +3,11 @@ id: TASK-83
 title: >-
   Make membership one object in the object store, changed only by
   compare-and-set
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-03 17:54'
-updated_date: '2026-10-04 00:34'
+updated_date: '2026-10-04 00:43'
 labels:
   - cluster
   - correctness
@@ -64,4 +64,12 @@ Owner, 2026-10-03: membership must include the assignment of remote disks to mem
 Built (2026-10-03, worktree branch): package membership holds the object (protobuf at <prefix>membership: generation, code and earlier codes, writer nonce, members {id, address, joining/active/draining}, disks {id, volume, weight, member, attaching/serving/releasing/released, assigned generation}); Store.Update is the only writer (read, build, write IfMatch/IfNoneMatch, lost reply reconciled by nonce, Step refuses illegal next generations); View is each process's copy (catch up when a request names a newer generation, 30 s timer, never goes back). Ranks are over disks; a disk is routed only while served. peer: every cache request names generation and disk, replies name generation and assignment generation; holder behind catches up, holder on another generation answers STALE, holder not serving answers NOT_ME. checkpoint: reads retry a window under a newer generation; keeps, drops and fill rights resend under it. Host identity = cache file identity; /status reports member and membership. Orchestrator steps the membership with membership.Next every 5 s; GET /caches, rank.Follower and the host's list reader removed. Merged TASK-85: the code and earlier codes are membership fields written in one step before any join. spec/membership with 4 mutants. Guards: membership-write-unconditional, membership-assign-without-release, membership-serve-stale-generation, membership-serve-stale-assignment, membership-ignore-stale-answer, orchestrator-drop-quiet-member.
 
 Validation 2026-10-03: just check exit 0 (go test ./..., specs incl. spec/membership MCMembership 1.2M states 4 s, deep/Seven 6.8M states 24 s, 4 mutants caught). Guard sweep of scripts/mutation/guards.json (107 non-Linux guards): 102 killed; migration-corrupt-fallback, migration-skip-resume, migration-give-up-first-receive, pager-forget-spill and pager-give-back-changed-copy also survive their plain invocation on main, so not this change. Gremlins: membership 113 killed / 5 lived (justified in docs/testing.md); peer cache.go 55/5 (survivors in untouched code); orchestrator membership.go 5/0. Fingerprint tests stable over three runs each. Decisions: the spec is spec/membership (one module per directory), not inside spec/diskcache; weight sits on the disk, not the member; member identity = its local disk's identity; hosts do not write the membership yet (the orchestrator serves an attached disk); exact generation equality between sender and holder.
+
+Merged into main as dfaf131f; just check on main passed. Criterion 7 is met by the new spec/membership (check-spec.sh takes one module per directory) rather than spec/diskcache.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Membership is one protobuf object in the object store (generation, codes, members, disk assignments), changed only by compare-and-set steps validated by membership.Step; every routing request names its generation, and holders behind read the object while holders ahead answer stale. Replaces the list of caches, GET /caches and the follower. Verified by TestConcurrentWritersNeverLoseAnUpdateOrGoBack (4 writers, 16 seeds, lost replies and outages), peer and checkpoint staleness tests, TestTwoOrchestratorsMoveOneMembership, six guards, Gremlins, and spec/membership (OneMembership, NoRegress, OneServer with their mutants). Attaching disks is TASK-86.
+<!-- SECTION:FINAL_SUMMARY:END -->
