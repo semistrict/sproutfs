@@ -222,10 +222,21 @@ func TestADependentChainOf4KiBFaultsPaysOnePageReadAHop(t *testing.T) {
 var errWindowUnlocated = errors.New("the window could not be located")
 
 // windowFailing is a backing that locates a page alone and fails to locate
-// anything longer, while fail is set.
+// anything longer, while fail is set, and fails every read while unreadable
+// is.
 type windowFailing struct {
 	*slowBacking
-	fail bool
+	fail, unreadable bool
+}
+
+// errUnreadable is what windowFailing answers a read with.
+var errUnreadable = errors.New("the page could not be read")
+
+func (b *windowFailing) LoadPages(ctx context.Context, offset uint64, dst []byte, wanted []bool) error {
+	if b.unreadable {
+		return errUnreadable
+	}
+	return b.slowBacking.LoadPages(ctx, offset, dst, wanted)
 }
 
 func (b *windowFailing) Locate(ctx context.Context, offset, length uint64) ([]control.Extent, error) {
@@ -253,7 +264,22 @@ func TestAFaultThatCannotLocateItsWindowGivesBackEverySlot(t *testing.T) {
 			t.Fatalf("the failed fault left %d pages held, %d loads and %d prefetches, want none",
 				s.ResidentPages, s.Loads, s.Prefetches)
 		}
-		b.fail = false
+		// A fault whose own page's read fails fails with it, and holds nothing
+		// after either.
+		b.fail, b.unreadable = false, true
+		if err := r.Fault(f.ctx, 3, false); !errors.Is(err, errUnreadable) {
+			t.Fatalf("the fault returned %v, want %v", err, errUnreadable)
+		}
+		if err := r.SettlePrefetches(f.ctx); err != nil {
+			t.Fatal(err)
+		}
+		if s := hostStats(t, f); s.ResidentPages != 0 || s.Loads != 0 {
+			t.Fatalf("the fault whose read failed left %d pages held and %d loads, want none", s.ResidentPages, s.Loads)
+		}
+		if _, mapped := m.mappedPage(3); mapped {
+			t.Fatal("the fault whose read failed mapped its page")
+		}
+		b.unreadable = false
 		if err := r.Fault(f.ctx, 3, false); err != nil {
 			t.Fatal(err)
 		}
@@ -263,9 +289,9 @@ func TestAFaultThatCannotLocateItsWindowGivesBackEverySlot(t *testing.T) {
 		for page := range uint64(8) {
 			requirePage(t, m, page)
 		}
-		if s := hostStats(t, f); s.ResidentPages != 8 || s.Loads != 2 || s.Prefetches != 1 {
-			t.Fatalf("the fault after left %d pages held, %d loads and %d prefetches, want 8, 2 and 1",
-				s.ResidentPages, s.Loads, s.Prefetches)
+		if s := hostStats(t, f); s.ResidentPages != 8 || s.Loads != 2 || s.Prefetches != 2 {
+			t.Fatalf("the fault after left %d pages held, %d loads and %d prefetches, want 8, 2 and 2, "+
+				"the failed fault's among them", s.ResidentPages, s.Loads, s.Prefetches)
 		}
 	})
 }

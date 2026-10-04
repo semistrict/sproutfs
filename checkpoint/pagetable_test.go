@@ -5,6 +5,7 @@ import (
 	"maps"
 	"slices"
 	"testing"
+	"unsafe"
 
 	checkpointv1 "github.com/semistrict/sproutfs/checkpoint/internal/gen/sproutfs/checkpoint/v1"
 	"github.com/semistrict/sproutfs/control"
@@ -267,4 +268,122 @@ func BenchmarkDecodeAWholeSegmentOf4KiBPages(b *testing.B) {
 			}
 		}
 	})
+}
+
+// wirePage is one Page message on the wire, its fields in order, each a field
+// number and a value.
+func wirePage(fields ...[2]uint64) []byte {
+	var message []byte
+	for _, field := range fields {
+		message = protowire.AppendVarint(protowire.AppendTag(message, protowire.Number(field[0]),
+			protowire.VarintType), field[1])
+	}
+	return protowire.AppendBytes(protowire.AppendTag(nil, segmentPagesField, protowire.BytesType), message)
+}
+
+// wireRef is one Ref message on the wire, in a segment's field number.
+func wireRef(number protowire.Number, vm string, sequence uint64) []byte {
+	message := protowire.AppendString(protowire.AppendTag(nil, refVMField, protowire.BytesType), vm)
+	message = protowire.AppendVarint(protowire.AppendTag(message, refSequenceField, protowire.VarintType), sequence)
+	return protowire.AppendBytes(protowire.AppendTag(nil, number, protowire.BytesType), message)
+}
+
+// A segment that names what it does not list, locates a page twice or past
+// any segment, or names a member that cannot be in a part, is refused, by the
+// page table as by the generated message; so is one with a field Segment does
+// not have, or a field number past the largest a message may have. One
+// member just inside a part, and an unknown field inside a page or a ref, is
+// taken by both.
+func TestAPageTableRefusesWhatTheProtobufDecoderRefused(t *testing.T) {
+	index, _ := tableIndex()
+	first, second := wireRef(segmentCheckpointsField, "table", 2), wireRef(segmentCheckpointsField, "table", 3)
+	origin := wireRef(segmentOriginsField, "parent", 9)
+	page := func(relative, checkpoint, part, offset, length, origin uint64) []byte {
+		return wirePage([2]uint64{pageNumberField, relative}, [2]uint64{pageCheckpointField, checkpoint},
+			[2]uint64{pagePartField, part}, [2]uint64{pageOffsetField, offset}, [2]uint64{pageLengthField, length},
+			[2]uint64{pageOriginField, origin})
+	}
+	segment := func(parts ...[]byte) []byte { return slices.Concat(parts...) }
+	// Field 99 of a page, which Page does not have, after its number and
+	// length.
+	unknownInPage := wirePage([2]uint64{pageNumberField, 4}, [2]uint64{pageLengthField, 1}, [2]uint64{99, 1})
+	for _, c := range []struct {
+		name    string
+		data    []byte
+		refused bool
+	}{
+		{"a page in each checkpoint, one moved", segment(page(0, 0, 1, 0, 4096, 0), page(1, 1, 2, 4096, 4096, 1),
+			first, second, origin), false},
+		{"a member ending at a part's end", segment(page(0, 0, 0, maximumPartSize-10, 10, 0), first), false},
+		{"a member a byte past a part's end", segment(page(0, 0, 0, maximumPartSize-10, 11, 0), first), true},
+		{"a member past a part", segment(page(0, 0, 0, maximumPartSize+1, 1, 0), first), true},
+		{"a member of no bytes", segment(page(0, 0, 0, 0, 0, 0), first), true},
+		{"a checkpoint past the list", segment(page(0, 2, 0, 0, 1, 0), first, second), true},
+		{"the last checkpoint a varint holds", segment(page(0, 1<<32-1, 0, 0, 1, 0), first), true},
+		{"an origin past the list", segment(page(0, 0, 0, 0, 1, 2), first, origin), true},
+		{"a part past any count", segment(page(0, 0, 1<<32-1, 0, 1, 0), first), true},
+		{"a page located twice", segment(page(3, 0, 0, 0, 1, 0), page(3, 0, 0, 8, 1, 0), first), true},
+		{"a page past the largest segment", segment(page(segmentPages4KiB, 0, 0, 0, 1, 0), first), true},
+		{"the last page of a segment", segment(page(segmentPages4KiB-1, 0, 0, 0, 1, 0), first), false},
+		{"a field Segment does not have", segment(first, protowire.AppendVarint(
+			protowire.AppendTag(nil, 9, protowire.VarintType), 1)), true},
+		{"a field number past the largest", segment(first, protowire.AppendVarint(
+			protowire.AppendVarint(nil, uint64(protowire.MaxValidNumber+1)<<3), 1)), true},
+		{"an unknown field in a page", segment(unknownInPage, first), false},
+		{"a ref of no checkpoint", segment(page(0, 0, 0, 0, 1, 0), wireRef(segmentCheckpointsField, "table", 0)), true},
+	} {
+		want, wantErr := protobufSegment(index, "ram", c.data)
+		got, gotErr := parsePageTable(c.data)
+		if gotErr == nil {
+			gotErr = index.checkTable("ram", got)
+		}
+		if (wantErr != nil) != c.refused || (gotErr != nil) != c.refused {
+			t.Fatalf("%s: the protobuf decoder says %v and the page table %v, want refused %t",
+				c.name, wantErr, gotErr, c.refused)
+		}
+		if !c.refused && !sameAs(got, want) {
+			t.Fatalf("%s: the page table locates %+v, the protobuf decoder %+v", c.name, got.mutable().pages,
+				want.pages)
+		}
+	}
+}
+
+// A table is charged what it holds: twenty bytes an entry up to its last
+// page, four a checkpoint it lists for the parts it names, a Ref and its name
+// for each checkpoint and origin, and the table itself. A whole segment of
+// 4 KiB pages is 320 KiB of entries. One whose pages have holes in it holds no
+// more entries than its last page needs, however its entries grew.
+func TestAPageTableIsChargedWhatItHolds(t *testing.T) {
+	ref := control.Ref{VM: "table", Sequence: 2}
+	for _, c := range []struct {
+		name  string
+		pages []uint32
+		last  int
+	}{
+		{"a whole segment", nil, segmentPages4KiB},
+		{"pages with holes", []uint32{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 150}, 151},
+	} {
+		held := newSegment()
+		pages := c.pages
+		if pages == nil {
+			for page := range uint32(segmentPages4KiB) {
+				pages = append(pages, page)
+			}
+		}
+		for _, page := range pages {
+			held.pages[page] = location{ref: ref, origin: ref, offset: uint64(page) * 8, length: 8}
+		}
+		data, err := encodeSegment(held)
+		if err != nil {
+			t.Fatal(err)
+		}
+		table, err := parsePageTable(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := tableOverhead + int64(c.last)*20 + 4 + int64(unsafe.Sizeof(control.Ref{})) + int64(len(ref.VM))
+		if got := table.charge(); got != want || table.pages != len(pages) {
+			t.Fatalf("%s: a table of %d pages is charged %d bytes, want %d", c.name, table.pages, got, want)
+		}
+	}
 }

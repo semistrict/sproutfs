@@ -305,6 +305,14 @@ func TestAFaultOverResidentPagesIsOneLoadAndOneReadPerCheckpoint(t *testing.T) {
 			t.Fatalf("the fault made %d object reads of %d bytes, want %d: the faulting page's, and one per checkpoint that published the rest of the run",
 				reads, bytes, want)
 		}
+		// The fault took a run of slots for the whole window before it knew
+		// which pages were held; the held pages' slots went back.
+		if err := r.SettlePrefetches(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if held := hostStats(t, f).ResidentPages; held != runWindow {
+			t.Fatalf("the pager holds %d pages, want the window's %d and no slot more", held, runWindow)
+		}
 	})
 }
 
