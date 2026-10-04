@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-03 22:22'
-updated_date: '2026-10-03 23:40'
+updated_date: '2026-10-04 00:14'
 labels:
   - cluster
   - performance
@@ -28,9 +28,9 @@ Today, with no SPROUTFS_CACHE_CODE set, the orchestrator picks the table's code 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The code is a deployment setting that never follows the number of hosts or shards; with none set the deployment uses one fixed default documented in docs/hosting.md
-- [ ] #2 A stripe is read and rebuilt by the code it was stored under; a test changes the code and reads every earlier window without a store read
-- [ ] #3 Tests follow repo practice: synctest over platform/sim, sim.Bug guards in scripts/mutation/guards.json, Gremlins on the new code; spec/diskcache models a code change, every TLC run within a couple of minutes
+- [x] #1 The code is a deployment setting that never follows the number of hosts or shards; with none set the deployment uses one fixed default documented in docs/hosting.md
+- [x] #2 A stripe is read and rebuilt by the code it was stored under; a test changes the code and reads every earlier window without a store read
+- [x] #3 Tests follow repo practice: synctest over platform/sim, sim.Bug guards in scripts/mutation/guards.json, Gremlins on the new code; spec/diskcache models a code change, every TLC run within a couple of minutes
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -58,4 +58,11 @@ Design decisions (2026-10-03):
 - A read tries the list's code, then each earlier code, each a separate windowRead with ranks from list.Under(code) (rendezvous order does not depend on the code). Join takes one code only.
 - Repair only under the list's code. A window rebuilt under an earlier code is refilled under the current code as a read of the store is (needs the fill right), instead of being repaired under the old code. So holders never take keeps of an earlier code, ranked() is unchanged, and hot windows migrate to the new code while cold ones age out.
 - New counter earlier_hits in cache_read and sproutfs_cache_read_earlier_hits_total: tells the operator when an earlier code can be dropped.
+
+Validation (2026-10-03):
+- Tests (synctest over platform/sim): TestAChangedCodeReadsEveryEarlierWindowWithNoStoreRead (6 hosts 4+2->2+1, with and without a host lost; 3 hosts 2+1->4+2): every host reads every earlier window with only the index opens from the store. TestFillsAfterACodeChangeAreUnderTheNewCode, TestRepairAfterACodeChangeStaysUnderTheNewCode, TestADroppedEarlierCodeIsAMiss, TestDiskReadsAPageUnderTheCodeItWasKeptUnder, TestTheCodeNeverFollowsTheHosts, TestTheCodeIsConfigured, rank TestAListNamesTheCodesItUsedBefore. Read campaign now changes the code once per seed and reaches checkpoint/cluster-earlier-code.
+- Guards, each shown failing its test: orchestrator-code-follows-the-hosts (renamed from orchestrator-code-follows-the-list), cluster-current-code-only, cluster-no-refill, diskcache-current-code-only.
+- Gremlins: checkpoint clusterread.go+diskstripes.go 164 killed/35 lived/15 not covered/3 timed out before, 165/34/15/3 after (new-code survivors left: the guard condition only). rank.go 41/2/8, no survivor in new code. Orchestrator caches.go+main.go 17 killed, 0 lived, 21 not covered (port parsing, run).
+- spec/diskcache: MCChange 4s, MCWiden 4s, mutant current-code-only caught by SurvivesLosses; deep/Change 91s; single-code configs unchanged in state count (MCCluster 91345).
+- TestSeededTopologyFingerprintIsStable passes; just check exit 0.
 <!-- SECTION:NOTES:END -->

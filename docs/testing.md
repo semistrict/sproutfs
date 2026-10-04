@@ -2561,6 +2561,36 @@ check that the reader is among a window's ranks, which only changes the asks
 of a reader holding stripes from an old placement; the spread of a probe's
 attempt count; and a repair's count of what is lacking when one index is.
 
+Reading each window under the code it was stored under (TASK-85) was mutated
+with the reads and the disk's stripes together:
+
+```sh
+python3 scripts/mutate-gremlins.py --package checkpoint --suite full \
+  --file clusterread.go --file diskstripes.go \
+  --run '^(TestAChangedCode|TestFillsAfterACodeChange|TestRepairAfterACodeChange|TestADroppedEarlierCode|TestDisk|TestAPageInTheCluster|TestAPageSurvives|TestAHotPage|TestAStalledOrSlow|TestAWrongStripe|TestTheStoreIsRead|TestSecondRequests|TestStoreReadsPast|TestThreeTimeouts|TestAReaderMarks|TestAMissIs|TestARefused|TestRepair|TestAReaderRebuilds|TestASampledHit|TestClusterReadsSurvive|TestAFaultIsNotSlowed|TestAColdBurst|TestAStoreReadFills|TestRankOneGives|TestACacheReports|TestTheHedgerFollows|TestProbesWait|TestAHostIsMarkedDown|TestOneRefused|TestPull|TestAPull|TestOnTwoHosts|TestALost|TestANewer|TestADiskKeys)' \
+  --gremlins /path/to/gremlins --output /tmp/code-change-mutations
+python3 scripts/mutate-gremlins.py --package rank --suite full --file rank.go \
+  --gremlins /path/to/gremlins --output /tmp/rank-mutations
+python3 scripts/mutate-gremlins.py --package cmd/sproutfs-orchestrator --suite full --integration \
+  --file caches.go --file main.go \
+  --run '^(TestTheListOfCaches|TestAConfiguredCode|TestTheCodeNever|TestAQuietHostStays|TestTheListFollows|TestTheListHolds|TestTheCodeIs)' \
+  --gremlins /path/to/gremlins --output /tmp/orchestrator-code-mutations
+```
+
+On 2026-10-03 the first first killed 164 of 217 mutants, with 35 alive, 15
+not covered and 3 timed out. Four of the survivors were in the new code: a
+read that counted its own hits only under an earlier code, and a probe of the
+disk's earlier code on every read. Tests of both brought it to 165 killed and
+34 alive. The two left in the new code are the condition of the
+`cluster-current-code-only` guard, which is off in a test that asserts
+behaviour; the rest are the survivors the reads' campaign above names. The
+`case` lines of the disk's read under each code are reported not covered,
+and the timeouts are the Buggify site's search for a code the list does not
+name, which a mutant makes endless. The second killed every mutant of the
+earlier codes, and left alive two of the ranking's own and not covered eight
+of `CodeFor` and `compare`. The third killed all 17 it covered; the 21 not
+covered are the port parsing and `run`, which these tests do not reach.
+
 The hot tier is mutated the same way, and the tiers its reads run against
 with the whole package:
 
