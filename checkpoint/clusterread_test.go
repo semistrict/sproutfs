@@ -1,6 +1,7 @@
 package checkpoint_test
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"slices"
@@ -554,6 +555,56 @@ func TestStoreReadsPastTheBoundStayWithinTheirBucket(t *testing.T) {
 			gets.Load() != int64(hedges) || stats.Bound != 200*time.Millisecond {
 			t.Fatalf("past the bound the reader read the store %d times (%+v), want %d with %d refused and a bound of four delays",
 				gets.Load(), stats, hedges, refused)
+		}
+	})
+}
+
+// A prefetch's reads of the cluster are background work. With every peer of
+// a 4+2 reader slow, so every read waits past its delay and its bound, a
+// prefetch asks no second request, reads the store as a hedge never, and
+// leaves the delay where it was: nothing waits on it, and the delay is an
+// estimate of what a fault's read takes. Its pages read back right, and its
+// load took a prefetch slot of the page cache.
+func TestAPrefetchsReadOfTheClusterNeverHedges(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		c := newFillCluster(t, fillConfig{hosts: 6, code: rank.Code{K: 4, M: 2}, share: 100, runtime: latencyRuntime,
+			cache: func(_ int, cache *checkpoint.CacheConfig) {
+				cache.ClusterHedgeFloor = 50 * time.Millisecond
+				cache.ClusterBound = 10 * time.Millisecond
+				cache.ClusterStripeTimeout = time.Hour
+			}})
+		var pages []uint64
+		for page := range uint64(11) {
+			pages = append(pages, page)
+		}
+		ref, m := c.filled(t, 1, "vm", pages)
+		reader := c.hosts[0]
+		for _, h := range c.hosts[1:] {
+			c.runtime.Network().SetLink(platform.Address(reader.name), h.address, simLink(time.Second))
+			c.runtime.Network().SetLink(h.address, platform.Address(reader.name), simLink(time.Second))
+		}
+		gets := reader.partGets()
+		ctx := checkpoint.WithPrefetch(c.ctx(t))
+		index, err := reader.store.Open(c.ctx(t), ref)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, page := range pages {
+			got := make([]byte, checkpoint.PageSize2MiB)
+			if err := reader.store.Read(ctx, index, "root", page*checkpoint.PageSize2MiB, got); err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(got, m.contents["root"][page*checkpoint.PageSize2MiB:(page+1)*checkpoint.PageSize2MiB]) {
+				t.Fatalf("page %d differs from the model", page)
+			}
+		}
+		stats := reader.cache.Stats()
+		read := stats.Read
+		if read.StoreHedges != 0 || read.StoreHedgesRefused != 0 || read.SecondRequests != 0 || read.Refused != 0 ||
+			gets.Load() != 0 || read.Prefetches != 12 || read.Delay != 50*time.Millisecond ||
+			read.Bound != 200*time.Millisecond || stats.PrefetchLoads != 12 {
+			t.Fatalf("a prefetch read the store %d times, its cache %+v; want no hedge, no second request, "+
+				"12 window reads and loads of prefetches, and the delay at its floor", gets.Load(), stats)
 		}
 	})
 }

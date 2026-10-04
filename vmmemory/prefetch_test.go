@@ -258,8 +258,14 @@ func TestAFaultNeverWaitsForAPrefetchOfOtherPages(t *testing.T) {
 			}
 			requirePage(t, m, access.page)
 		}
-		if err := r.SettlePrefetches(f.ctx); err != nil {
+		// The host's settle waits for every prefetch of every memory region,
+		// each held until the hour is up.
+		began := time.Now()
+		if err := f.h.SettlePrefetches(f.ctx); err != nil {
 			t.Fatal(err)
+		}
+		if waited := time.Since(began); waited != time.Hour-4*pageRead+readCost+7*pageCost {
+			t.Fatalf("the host settled its prefetches in %v, want the hold and then a run's read", waited)
 		}
 		for page := range uint64(32) {
 			requirePage(t, m, page)
