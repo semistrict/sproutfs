@@ -17,42 +17,43 @@ import (
 	"github.com/semistrict/sproutfs/resource"
 )
 
-// The delay before a second request stays at its floor until the reader has
-// heard 32 reads, and is then the 95th percentile of its last 256, never less
+// The delay of a size class stays at its floor until the reader has heard 32
+// reads of the class, and is then the 95th percentile of its last 256, never less
 // than the floor. The budget starts with five requests, a read within the
 // delay earns a twentieth of one up to five, and a read that waited earns
 // nothing.
 func TestTheHedgerFollowsItsReadsWithinItsBudget(t *testing.T) {
-	h := hedger{floor: time.Millisecond, wait: time.Millisecond, budget: hedgeMax * hedgeEarn}
+	const class = 5
+	h := newHedger(time.Millisecond)
 	for range hedgeEvery - 1 {
-		h.done(10*time.Millisecond, false)
+		h.done(class, 10*time.Millisecond, false)
 	}
-	if delay := h.delay(); delay != time.Millisecond {
+	if delay := h.delay(class); delay != time.Millisecond {
 		t.Fatalf("after %d reads the delay is %v, want the floor", hedgeEvery-1, delay)
 	}
-	h.done(10*time.Millisecond, false)
-	if delay := h.delay(); delay != 10*time.Millisecond {
+	h.done(class, 10*time.Millisecond, false)
+	if delay := h.delay(class); delay != 10*time.Millisecond {
 		t.Fatalf("after %d reads of 10ms the delay is %v, want 10ms", hedgeEvery, delay)
 	}
 	// The last 256 reads take 1 to 256 ms; their 95th percentile is the
 	// 244th smallest.
 	for at := range hedgeWindow {
-		h.done(time.Duration(at+1)*time.Millisecond, false)
+		h.done(class, time.Duration(at+1)*time.Millisecond, false)
 	}
-	if delay := h.delay(); delay != 244*time.Millisecond {
+	if delay := h.delay(class); delay != 244*time.Millisecond {
 		t.Fatalf("over reads of 1 to 256ms the delay is %v, want the 95th percentile, 244ms", delay)
 	}
 	for range hedgeEvery {
-		h.done(time.Microsecond, false)
+		h.done(class, time.Microsecond, false)
 	}
-	if delay := h.delay(); delay != 244*time.Millisecond {
+	if delay := h.delay(class); delay != 244*time.Millisecond {
 		t.Fatalf("after 32 reads of 1µs the delay is %v, want the 95th percentile of the last 256, 244ms", delay)
 	}
-	low := hedger{floor: time.Millisecond, wait: time.Millisecond}
+	low := newHedger(time.Millisecond)
 	for range hedgeEvery {
-		low.done(time.Microsecond, false)
+		low.done(class, time.Microsecond, false)
 	}
-	if delay := low.delay(); delay != time.Millisecond {
+	if delay := low.delay(class); delay != time.Millisecond {
 		t.Fatalf("over reads of 1µs the delay is %v, want the floor", delay)
 	}
 	for at := range hedgeMax {
@@ -64,15 +65,86 @@ func TestTheHedgerFollowsItsReadsWithinItsBudget(t *testing.T) {
 		t.Fatal("an empty budget gave a second request")
 	}
 	for range hedgeEarn - 1 {
-		h.done(time.Millisecond, false)
+		h.done(class, time.Millisecond, false)
 	}
-	h.done(time.Millisecond, true)
+	h.done(class, time.Millisecond, true)
 	if h.take() {
 		t.Fatal("nineteen reads within the delay and one that waited earned a second request")
 	}
-	h.done(time.Millisecond, false)
+	h.done(class, time.Millisecond, false)
 	if !h.take() || h.take() {
 		t.Fatal("twenty reads within the delay did not earn exactly one second request")
+	}
+}
+
+// A read's size class is the bytes it asks for: up to 4 KiB, then each four
+// times the last, up to 16 MiB and past it. A 4 KiB page, a segment, a 2 MiB
+// page and a run of four of them are each of a class of their own.
+func TestAReadIsOfTheClassOfTheBytesItAsksFor(t *testing.T) {
+	for _, c := range []struct {
+		bytes int64
+		class int
+	}{{0, 0}, {1, 0}, {4 << 10, 0}, {4<<10 + 1, 1}, {16 << 10, 1}, {64 << 10, 2}, {256 << 10, 3},
+		{maximumSegmentSize, 4}, {PageSize2MiB, 5}, {4 << 20, 5}, {4 * PageSize2MiB, 6}, {16 << 20, 6},
+		{1 << 30, 6}} {
+		if class := readClass(c.bytes); class != c.class {
+			t.Fatalf("a read of %d bytes is of class %d, want %d", c.bytes, class, c.class)
+		}
+	}
+	for class, bytes := range []int64{4 << 10, 16 << 10, 64 << 10, 256 << 10, 1 << 20, 4 << 20, 16 << 20} {
+		if got := readClassBytes(class); got != bytes {
+			t.Fatalf("class %d holds reads of up to %d bytes, want %d", class, got, bytes)
+		}
+	}
+}
+
+// Each class's delay is drawn from its own reads alone, and the budget is the
+// reader's: 256 reads of 4 KiB at 1 ms leave the delay of 2 MiB reads at the
+// 20 ms their own reads took, and a second request the small reads earned is
+// spent on a large one. A class with fewer than 32 reads of its own takes the
+// delay of the nearest class that has them, the larger first, and with none,
+// the floor.
+func TestEachSizeClassKeepsItsOwnDelay(t *testing.T) {
+	small, large := readClass(4<<10), readClass(PageSize2MiB)
+	h := newHedger(500 * time.Microsecond)
+	if delay := h.delay(large); delay != 500*time.Microsecond {
+		t.Fatalf("with no class learned the delay of a 2 MiB read is %v, want the floor", delay)
+	}
+	for range hedgeEvery {
+		h.done(large, 20*time.Millisecond, false)
+	}
+	for h.take() {
+	}
+	for range hedgeWindow {
+		h.done(small, time.Millisecond, false)
+	}
+	if delay := h.delay(large); delay != 20*time.Millisecond {
+		t.Fatalf("after 256 reads of 4 KiB the delay of a 2 MiB read is %v, want its own 20ms", delay)
+	}
+	if reads, delay := h.state(small); reads != hedgeWindow || delay != time.Millisecond {
+		t.Fatalf("after 256 reads of 4 KiB at 1ms their class holds %d reads and a delay of %v, want 256 and 1ms",
+			reads, delay)
+	}
+	for _, c := range []struct {
+		bytes int64
+		delay time.Duration
+	}{{16 << 10, time.Millisecond}, {64 << 10, time.Millisecond}, {256 << 10, 20 * time.Millisecond},
+		{maximumSegmentSize, 20 * time.Millisecond}, {4 * PageSize2MiB, 20 * time.Millisecond}} {
+		if reads, delay := h.state(readClass(c.bytes)); reads != 0 || delay != c.delay {
+			t.Fatalf("a class of %d bytes no read was of holds %d reads and a delay of %v, want none and %v",
+				c.bytes, reads, delay, c.delay)
+		}
+	}
+	tie := newHedger(500 * time.Microsecond)
+	for range hedgeEvery {
+		tie.done(readClass(4<<10), time.Millisecond, false)
+		tie.done(readClass(maximumSegmentSize), 7*time.Millisecond, false)
+	}
+	if delay := tie.delay(readClass(64 << 10)); delay != 7*time.Millisecond {
+		t.Fatalf("a class two from a learned class either way has a delay of %v, want the larger's 7ms", delay)
+	}
+	if !h.take() {
+		t.Fatal("the budget small reads earned refused a large read's second request")
 	}
 }
 

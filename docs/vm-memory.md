@@ -683,6 +683,37 @@ chain took 31 ms a hop prefetching behind every fault and 29 ms after, against
 one prefetch, its first hop's; the in-tree bug `pager-prefetch-every-fault`
 fails it.
 
+### Planning a fault
+
+A fault plans its own page first (`vmmemory/faultfirst.go`). It locates its
+page alone and takes it: bound to a resident page under its identity, or a
+slot to read it into. It starts the page's read on a task of its own. Only
+then does it locate the rest of its window, bind the window's resident pages
+to map beside its own, and, where it prefetches, reserve the slots of the
+pages the prefetch reads. The read is under way while it plans, so the
+window's planning costs the fault nothing while it takes less than the read.
+A fault at random reserves nothing for its neighbours. A fault that
+prefetches takes its own slot out of a run of free slots for the whole window,
+at its page's place in the run, so the prefetched pages land beside it and the
+window is one run of slots. The slots of the pages the window turns out not to
+need go back once it is located, and a fault that fails before then gives the
+whole run back. A store into a page the guest never touched asks whether that
+page is a hole before it locates the window for its write-ahead run. A
+post-copy stream's fault plans its whole window first, because it reads the
+window with its page.
+
+Until 2026-10-04 a fault located and planned its whole window before it read
+anything. At 4 KiB that is 2,048 pages, and the lookup decoded the window's
+page-table segment for each index that read it. On GCE a dependent 4 KiB fault
+from the cluster took 3.07 ms against 0.67 ms for its page's read, and 1.05 ms
+after; from the store, 29.1 ms against 25.7 ms after
+([measurement](measurements/gce-fault-planning-2026-10-04.md)). What is left
+is the window's planning beside the read, about 0.75 ms a fault at 4 KiB.
+`TestADependentChainOf4KiBFaultsPaysOnePageReadAHop` runs a 4 KiB pager over a
+real checkpoint store and holds every hop to one read and its own page's
+planning, with the segment decoded once; the in-tree bugs
+`pager-plan-the-window-first` and `checkpoint-decode-every-lookup` fail it.
+
 Before the memory region is exposed, attach populates the pages whose identity is
 already resident in the same pager. It loads nothing. The Rust session serves
 mapping commands after the descriptor exchange, and only then reports the memory region

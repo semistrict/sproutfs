@@ -364,11 +364,24 @@ func diskMetrics(out *strings.Builder, disk Disk) {
 }
 
 // cacheMemoryMetrics writes what the page cache's memory tier holds and what
-// it served, in pages and segments.
+// it served, in pages and page tables.
 func cacheMemoryMetrics(out *strings.Builder, memory CacheMemory) {
-	fmt.Fprintf(out, "# HELP sproutfs_cache_memory_entries The pages and segments the page cache holds in memory.\n"+
+	fmt.Fprintf(out, "# HELP sproutfs_cache_memory_entries The pages and page tables the page cache holds in memory.\n"+
 		"# TYPE sproutfs_cache_memory_entries gauge\nsproutfs_cache_memory_entries %d\n", memory.Entries)
-	fmt.Fprintf(out, "# HELP sproutfs_cache_memory_reads_total Reads of the page cache's memory, by outcome: "+
+	fmt.Fprintf(out, "# HELP sproutfs_cache_memory_page_tables The segments' page tables the page cache holds "+
+		"decoded in memory.\n# TYPE sproutfs_cache_memory_page_tables gauge\nsproutfs_cache_memory_page_tables %d\n",
+		memory.Tables)
+	fmt.Fprintf(out, "# HELP sproutfs_cache_memory_page_table_bytes What the page tables the page cache holds "+
+		"are charged.\n# TYPE sproutfs_cache_memory_page_table_bytes gauge\nsproutfs_cache_memory_page_table_bytes %d\n",
+		memory.TableBytes)
+	fmt.Fprintf(out, "# HELP sproutfs_cache_memory_page_table_lookups_total Lookups of segments' page tables, by "+
+		"outcome: answered by a held table, a fetch and decode of the segment, or a table a publication kept.\n"+
+		"# TYPE sproutfs_cache_memory_page_table_lookups_total counter\n"+
+		"sproutfs_cache_memory_page_table_lookups_total{outcome=\"hit\"} %d\n"+
+		"sproutfs_cache_memory_page_table_lookups_total{outcome=\"load\"} %d\n"+
+		"sproutfs_cache_memory_page_table_lookups_total{outcome=\"kept\"} %d\n",
+		memory.TableHits, memory.TableLoads, memory.TableKept)
+	fmt.Fprintf(out, "# HELP sproutfs_cache_memory_reads_total Reads of pages from the page cache's memory, by outcome: "+
 		"served from it, fetched from the disk, the cluster or the store, or joined to a fetch in flight.\n"+
 		"# TYPE sproutfs_cache_memory_reads_total counter\n"+
 		"sproutfs_cache_memory_reads_total{outcome=\"hit\"} %d\n"+
@@ -614,10 +627,23 @@ func cacheReadMetrics(out *strings.Builder, read *CacheRead) {
 		"Sampled hits whose part was checked with a HEAD.", did.HeadChecks)
 	write("sproutfs_cache_read_head_missing_total", "counter",
 		"Sampled hits whose part the store no longer had.", did.HeadMissing)
-	write("sproutfs_cache_read_delay_seconds", "gauge",
-		"The delay before a read asks the rest of a window's ranks.", did.Delay.Seconds())
-	write("sproutfs_cache_read_bound_seconds", "gauge",
-		"The bound before a read of the cluster reads the store too.", did.Bound.Seconds())
+	// Each size class of read is a series of its own, labelled by the most
+	// bytes a read of it asks for.
+	classes := func(name, kind, help string, value func(CacheReadClass) any) {
+		fmt.Fprintf(out, "# HELP %s %s\n# TYPE %s %s\n", name, help, name, kind)
+		for _, class := range did.Classes {
+			fmt.Fprintf(out, "%s{up_to_bytes=\"%d\"} %v\n", name, class.UpToBytes, value(class))
+		}
+	}
+	classes("sproutfs_cache_read_delay_seconds", "gauge",
+		"The delay before a read of a size class asks the rest of a window's ranks.",
+		func(class CacheReadClass) any { return class.Delay.Seconds() })
+	classes("sproutfs_cache_read_bound_seconds", "gauge",
+		"The bound before a read of a size class reads the store too.",
+		func(class CacheReadClass) any { return class.Bound.Seconds() })
+	classes("sproutfs_cache_read_class_reads_total", "counter",
+		"Reads of a size class that had their stripes, which its delay is drawn from.",
+		func(class CacheReadClass) any { return class.Reads })
 	write("sproutfs_cache_serve_reads_total", "counter",
 		"Reads of this host's stripes its peer server answered with them.", did.Served)
 	write("sproutfs_cache_serve_stripes_total", "counter", "Stripes this host served its peers.", did.ServedStripes)

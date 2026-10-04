@@ -3,9 +3,11 @@ package vmmemory
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sort"
 
 	"github.com/semistrict/sproutfs/control"
+	"github.com/semistrict/sproutfs/platform/sim"
 )
 
 // windowPlan collects the pages of one page that a fault or Populate installs
@@ -20,9 +22,19 @@ type windowPlan struct {
 	// private copy the store is about to make, and a binding that took the
 	// shared page first would be a second owner of that page's memory for as
 	// long as the copy takes and would cost the store a revocation to undo.
-	store   uint64
-	extents []control.Extent
-	pages   []*resident // locked, indexed by page-start
+	store uint64
+	// extents locate the window's pages once located says the window is
+	// located. Until then only page is, by pageExtents: a fault locates its
+	// own page first, so that its read starts before the rest of its window
+	// is planned (faultfirst.go). page is end in a plan located whole.
+	extents     []control.Extent
+	located     bool
+	page        uint64
+	pageExtents []control.Extent
+	// provisional is the run of free slots a fault that prefetches took
+	// around its own page before the window was located.
+	provisional provisionalRun
+	pages       []*resident // locked, indexed by page-start
 	// file is the file this window's loads by identity go in, except a public
 	// page's (see fileOf), and reserved the slot each page's load has, of that
 	// file, of the public file or of this memory region's own, or slot -1.
@@ -59,9 +71,51 @@ func (i *installedRuns) add(other installedRuns) {
 	i.pages += other.pages
 }
 
+// plan is a plan of the window [start, end) located whole, for the faulting
+// page fault, or end for none.
 func (r *MemoryRegion) plan(ctx context.Context, start, end, fault uint64) (*windowPlan, error) {
+	extents, err := r.locate(ctx, start, end)
+	if err != nil {
+		return nil, err
+	}
+	p := r.newPlan(start, end, fault)
+	p.extents, p.located = extents, true
+	return p, nil
+}
+
+// planPage is a plan of the window [start, end) that has located page alone,
+// for the faulting page fault, or end for none. locateWindow locates the rest.
+func (r *MemoryRegion) planPage(ctx context.Context, start, end, fault, page uint64) (*windowPlan, error) {
+	extents, err := r.locate(ctx, page, page+1)
+	if err != nil {
+		return nil, err
+	}
+	p := r.newPlan(start, end, fault)
+	p.page, p.pageExtents = page, extents
+	return p, nil
+}
+
+func (r *MemoryRegion) newPlan(start, end, fault uint64) *windowPlan {
+	none := -1
+	p := &windowPlan{memoryRegion: r, start: start, end: end, fault: fault, store: end, page: end,
+		pages: make([]*resident, end-start), file: r.sharedFile(), reserved: make([]fileSlot, end-start),
+		fresh: make([]bool, end-start), zeros: make([]bool, end-start), private: make([]bool, end-start),
+		locked: make(map[*resident]bool), spill: &none}
+	for i := range p.reserved {
+		p.reserved[i] = fileSlot{slot: -1}
+	}
+	return p
+}
+
+// locate reports the identities of the pages [first, last), each of which
+// this memory region may read. It is the planning a simulation prices
+// (WorkPlan): a page at a time.
+func (r *MemoryRegion) locate(ctx context.Context, first, last uint64) ([]control.Extent, error) {
+	if err := sim.Work(ctx, WorkPlan, int(last-first)); err != nil {
+		return nil, err
+	}
 	ps := r.host.pageSize
-	extents, err := r.backing.Locate(ctx, start*ps, (end-start)*ps)
+	extents, err := r.backing.Locate(ctx, first*ps, (last-first)*ps)
 	if err != nil {
 		return nil, err
 	}
@@ -70,12 +124,34 @@ func (r *MemoryRegion) plan(ctx context.Context, start, end, fault uint64) (*win
 			return nil, err
 		}
 	}
-	none := -1
-	p := &windowPlan{memoryRegion: r, start: start, end: end, fault: fault, store: end, extents: extents, pages: make([]*resident, end-start), file: r.sharedFile(), reserved: make([]fileSlot, end-start), fresh: make([]bool, end-start), zeros: make([]bool, end-start), private: make([]bool, end-start), locked: make(map[*resident]bool), spill: &none}
-	for i := range p.reserved {
-		p.reserved[i] = fileSlot{slot: -1}
+	return extents, nil
+}
+
+// locateWindow locates the whole window of a plan that has located only its
+// faulting page. The page keeps the identity it was planned under.
+func (p *windowPlan) locateWindow(ctx context.Context) error {
+	if p.located {
+		return nil
 	}
-	return p, nil
+	extents, err := p.memoryRegion.locate(ctx, p.start, p.end)
+	if err != nil {
+		return err
+	}
+	p.extents, p.located = extents, true
+	return nil
+}
+
+// extentsOf is the extents a page's identity is read from: its own where the
+// plan located it alone, and the window's otherwise, which must be located.
+func (p *windowPlan) extentsOf(page uint64) []control.Extent {
+	if page == p.page {
+		return p.pageExtents
+	}
+	if !p.located {
+		panic(fmt.Sprintf("vmmemory: a plan asked about page %d of a window it has located only page %d of",
+			page, p.page))
+	}
+	return p.extents
 }
 
 func (p *windowPlan) unlock() {
@@ -89,6 +165,12 @@ func (p *windowPlan) unlock() {
 			p.reserved[i] = fileSlot{slot: -1}
 		}
 	}
+	// A fault that failed before it located its window holds the rest of
+	// the run it took for it, which has never held anything either.
+	for _, at := range p.provisional.slots {
+		h.putFree(at)
+	}
+	p.provisional = provisionalRun{}
 	pages := make([]*resident, 0, len(p.locked))
 	for pg := range p.locked {
 		pages = append(pages, pg)
@@ -125,11 +207,12 @@ func (p *windowPlan) eligible(page uint64) bool {
 // whole of what names it: a page is published whole or not at all.
 func (p *windowPlan) identity(page uint64) (pageKey, bool) {
 	offset := page * p.memoryRegion.host.pageSize
-	first := sort.Search(len(p.extents), func(i int) bool { return p.extents[i].Offset+p.extents[i].Length > offset })
-	if first >= len(p.extents) {
+	extents := p.extentsOf(page)
+	first := sort.Search(len(extents), func(i int) bool { return extents[i].Offset+extents[i].Length > offset })
+	if first >= len(extents) {
 		return pageKey{}, false
 	}
-	e := p.extents[first]
+	e := extents[first]
 	if e.Identity.Zero {
 		return pageKey{id: control.Identity{Zero: true}}, true
 	}
@@ -152,11 +235,12 @@ func (p *windowPlan) unpublished(page uint64) bool {
 		return false
 	}
 	offset := page * p.memoryRegion.host.pageSize
-	first := sort.Search(len(p.extents), func(i int) bool { return p.extents[i].Offset+p.extents[i].Length > offset })
-	if first >= len(p.extents) {
+	extents := p.extentsOf(page)
+	first := sort.Search(len(extents), func(i int) bool { return extents[i].Offset+extents[i].Length > offset })
+	if first >= len(extents) {
 		return false
 	}
-	e := p.extents[first]
+	e := extents[first]
 	return !e.Identity.Zero && e.Identity.Ref.IsZero()
 }
 
@@ -336,15 +420,15 @@ func (p *windowPlan) reserveAround(index uint64) {
 	}
 }
 
-// reserveRuns takes free slots, without evicting, for the eligible pages that
-// still need loading. Runs of consecutive pages prefer consecutive slots so a
-// later mapping installs them as one range. Idle pages are given up first to
-// make those slots free, which is not an eviction: nothing maps them. When free
+// reserveRuns takes free slots, without evicting, for the pages wanted says
+// to read. Runs of consecutive pages prefer consecutive slots so a later
+// mapping installs them as one range. Idle pages are given up first to make
+// those slots free, which is not an eviction: nothing maps them. When free
 // slots cannot cover the window even so, the pages after the faulting one come
 // first: access tends to continue forward.
-func (p *windowPlan) reserveRuns(ctx context.Context, from uint64) error {
+func (p *windowPlan) reserveRuns(ctx context.Context, from uint64, wanted func(uint64) bool) error {
 	for _, file := range p.files() {
-		if err := p.reserveRunsIn(ctx, from, file); err != nil {
+		if err := p.reserveRunsIn(ctx, from, file, wanted); err != nil {
 			return err
 		}
 	}
@@ -352,9 +436,9 @@ func (p *windowPlan) reserveRuns(ctx context.Context, from uint64) error {
 }
 
 // reserveRunsIn is reserveRuns for the pages whose loads go in one file.
-func (p *windowPlan) reserveRunsIn(ctx context.Context, from uint64, file *arenaFile) error {
+func (p *windowPlan) reserveRunsIn(ctx context.Context, from uint64, file *arenaFile, wanted func(uint64) bool) error {
 	h := p.memoryRegion.host
-	needs := func(page uint64) bool { return p.needsLoad(page) && p.fileOf(page) == file }
+	needs := func(page uint64) bool { return wanted(page) && p.fileOf(page) == file }
 	needed := 0
 	for page := p.start; page < p.end; page++ {
 		if needs(page) {
@@ -403,7 +487,6 @@ func (p *windowPlan) reserveRunsIn(ctx context.Context, from uint64, file *arena
 // one run of a volume, and what a run costs is the volume's to decide.
 func (p *windowPlan) loadReserved(ctx context.Context) error {
 	h := p.memoryRegion.host
-	ps := h.pageSize
 	first, last := p.end, p.start
 	loading := uint64(0)
 	for page := p.start; page < p.end; page++ {
@@ -426,6 +509,24 @@ func (p *windowPlan) loadReserved(ctx context.Context) error {
 	unpublished, err := p.memoryRegion.loadRun(ctx, first, wanted, data)
 	if err != nil {
 		return err
+	}
+	return p.publishRead(ctx, first, wanted, data, unpublished)
+}
+
+// publishRead publishes what one backing read brought in: the pages of
+// [first, first+len(wanted)) that wanted marks, from data, which covers the
+// run whole, as residents under their stored identities, or as this memory
+// region's own dirty state where unpublished says the backing served them
+// from another host.
+func (p *windowPlan) publishRead(ctx context.Context, first uint64, wanted []bool, data []byte, unpublished []bool) error {
+	h := p.memoryRegion.host
+	ps := h.pageSize
+	last := first + uint64(len(wanted))
+	loading := uint64(0)
+	for _, want := range wanted {
+		if want {
+			loading++
+		}
 	}
 	h.mu.Lock()
 	h.stats.Loads++

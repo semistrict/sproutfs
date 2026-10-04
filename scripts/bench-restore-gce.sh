@@ -25,14 +25,16 @@
 # default) and SPROUTFS_RESTORE_SMALL_PAGES the 4 KiB guest's (1048576, 4 GiB).
 # SPROUTFS_RESTORE_CASES and SPROUTFS_RESTORE_SOURCES choose the cases and
 # sources (the drive's defaults when unset); SPROUTFS_RESTORE_PLATFORM is the
-# hosts' least processor (Intel Cascade Lake by default).
+# hosts' least processor (Intel Cascade Lake by default). SPROUTFS_RESTORE_TABLES
+# is when a read loads its volume's page tables: lazy (the default), as the
+# first lookup of each segment needs it, or eager, all of them once the
+# checkpoint is open and before the reads. SPROUTFS_RESTORE_BINARY runs a
+# bench built elsewhere, for linux/amd64, instead of building this tree's:
+# an earlier build, to read before and after a change on the same hosts.
 # SPROUTFS_RESTORE_PUBLISHES, when set, has the drive publish the guest of each
 # page size the cases name that many times, each as a VM of its own, and read
 # nothing: what each publication took and what its fills dropped
 # (docs/measurements/gce-fill-backpressure-2026-10-04.md).
-# SPROUTFS_RESTORE_BINARY names a sproutfs-restorebench built for linux/amd64
-# to run instead of one built from this tree, so two revisions run on the
-# same hosts.
 #
 # `all` always deletes the hosts. `create`, `run` and `delete` expose the same
 # steps. Each host also deletes itself after three hours.
@@ -51,17 +53,19 @@ platform=${SPROUTFS_RESTORE_PLATFORM:-Intel Cascade Lake}
 # The drive's cases and sources, as its flags take them.
 drive_flags=""
 for setting in cases:SPROUTFS_RESTORE_CASES sources:SPROUTFS_RESTORE_SOURCES profile:SPROUTFS_RESTORE_PROFILE \
-    publishes:SPROUTFS_RESTORE_PUBLISHES; do
+    tables:SPROUTFS_RESTORE_TABLES publishes:SPROUTFS_RESTORE_PUBLISHES; do
     name=${setting#*:}
     value=${!name:-}
     [[ $value =~ ^[A-Za-z0-9/,-]*$ ]] || { echo "$name is a comma-separated list of cases or sources" >&2; exit 2; }
     if [[ -n $value ]]; then drive_flags+=" -${setting%%:*} $value"; fi
 done
-# The publisher holds the fills of the whole guest it publishes until they
-# are sent, so a host that publishes faster than its keeps go needs a queue as
-# large as what it is behind by: SPROUTFS_RESTORE_FILL_QUEUE_BYTES, 4 GiB by
-# default.
-fill_queue=${SPROUTFS_RESTORE_FILL_QUEUE_BYTES:-4294967296}
+# A publication's fills wait for room in the queue, so the publisher goes at
+# the pace of its keeps and a larger queue only costs it memory: at 4 GiB a
+# publisher of an 8 GiB guest on a 16 GB host was killed for it
+# (docs/measurements/gce-fill-backpressure-2026-10-04.md).
+# SPROUTFS_RESTORE_FILL_QUEUE_BYTES is the queue, 64 MiB by default, a host's
+# own default.
+fill_queue=${SPROUTFS_RESTORE_FILL_QUEUE_BYTES:-67108864}
 [[ $fill_queue =~ ^[0-9]+$ ]] || { echo "SPROUTFS_RESTORE_FILL_QUEUE_BYTES is a number" >&2; exit 2; }
 bucket=${SPROUTFS_GCE_BUCKET:-}
 account=${SPROUTFS_GCE_SERVICE_ACCOUNT:-}
@@ -165,18 +169,14 @@ run() {
     done
     staging=$(mktemp -d "${TMPDIR:-/tmp}/sproutfs-restore.XXXXXX")
     if [[ -n ${SPROUTFS_RESTORE_BINARY:-} ]]; then
-        cp "$SPROUTFS_RESTORE_BINARY" "$staging/sproutfs-restorebench"
+        cp -- "$SPROUTFS_RESTORE_BINARY" "$staging/sproutfs-restorebench"
     else
         (cd "$repo" && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o "$staging/sproutfs-restorebench" ./cmd/sproutfs-restorebench)
     fi
     {
-        if [[ -n ${SPROUTFS_RESTORE_BINARY:-} ]]; then
-            echo "binary $SPROUTFS_RESTORE_BINARY"
-        else
-            echo "revision $(git -C "$repo" rev-parse HEAD)"
-            git -C "$repo" status --porcelain=v1 -- cmd/sproutfs-restorebench checkpoint peer rank stripe vmmemory |
-                sed 's/^/changed /'
-        fi
+        if [[ -n ${SPROUTFS_RESTORE_BINARY:-} ]]; then echo "binary $SPROUTFS_RESTORE_BINARY, built elsewhere"; fi
+        echo "revision $(git -C "$repo" rev-parse HEAD)"
+        git -C "$repo" status --porcelain=v1 -- cmd/sproutfs-restorebench checkpoint peer rank stripe vmmemory | sed 's/^/changed /'
         (cd "$staging" && shasum -a 256 sproutfs-restorebench)
         echo "machine $machine ($platform), pages $pages and $small_pages, rounds $rounds,$drive_flags," \
             "objects gs://$bucket/$run_objects"

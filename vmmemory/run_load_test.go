@@ -210,10 +210,15 @@ func (b *publishedBacking) reset() {
 	b.loads = nil
 }
 
+// recorded is every load in the order of its first page. A fault's read of its
+// own page and its prefetch's read of the rest run side by side, so the order
+// they reached the backing in is the Go scheduler's.
 func (b *publishedBacking) recorded() [][2]uint64 {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return slices.Clone(b.loads)
+	loads := slices.Clone(b.loads)
+	slices.SortFunc(loads, func(x, y [2]uint64) int { return int(x[0]) - int(y[0]) })
+	return loads
 }
 
 // newRunPager is the pager these measure a window against: a 4 KiB page, a
@@ -299,6 +304,14 @@ func TestAFaultOverResidentPagesIsOneLoadAndOneReadPerCheckpoint(t *testing.T) {
 		if want := windowSegmentReads + 1 + runCheckpoints; reads != want {
 			t.Fatalf("the fault made %d object reads of %d bytes, want %d: the faulting page's, and one per checkpoint that published the rest of the run",
 				reads, bytes, want)
+		}
+		// The fault took a run of slots for the whole window before it knew
+		// which pages were held; the held pages' slots went back.
+		if err := r.SettlePrefetches(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if held := hostStats(t, f).ResidentPages; held != runWindow {
+			t.Fatalf("the pager holds %d pages, want the window's %d and no slot more", held, runWindow)
 		}
 	})
 }

@@ -221,16 +221,19 @@ func (p *Pull) segment(ctx context.Context, volume string, number uint64, entry 
 	if err != nil {
 		return err
 	}
-	located, err := p.index.decodeSegment(volume, data)
+	located, err := decodeTable(ctx, data)
 	if err != nil {
+		return err
+	}
+	if err := p.index.checkTable(volume, located); err != nil {
 		return err
 	}
 	geometry := p.index.volumes[volume].geometry
 	first := number * geometry.SegmentPages
 	var run []pageRead
 	var keys []diskKey
-	for _, relative := range slices.Sorted(maps.Keys(located.pages)) {
-		at, number := located.pages[relative], first+uint64(relative)
+	for relative, at := range located.all {
+		number := first + uint64(relative)
 		page := pageDiskKey(identityOf(volume, number, at), geometry)
 		if p.disk.has(ctx, page) {
 			p.pulled.Add(int64(at.length))

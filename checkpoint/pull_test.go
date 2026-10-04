@@ -99,6 +99,10 @@ func newPullFixtureWith(t *testing.T, diskBytes int64, volumePages uint64, pages
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The publication left the table of the segment it wrote in the cache's
+	// memory. The fixture reads as a host that did not publish it, which
+	// holds none of it.
+	cache.Clear()
 	index, err := store.Open(t.Context(), published.Ref())
 	if err != nil {
 		t.Fatal(err)
@@ -150,7 +154,8 @@ func TestAPulledCheckpointIsReadWithoutTheStore(t *testing.T) {
 		t.Fatalf("reading a pulled checkpoint twice made %d requests of the store, want none", gets)
 	}
 	// The first pass read the segment and four pages from the disk, and the
-	// second the four pages again: the index keeps the segment it decoded.
+	// second the four pages again: the memory tier keeps the segment's table,
+	// which fits in it where no page does.
 	if disk := f.cache.Stats().Disk; disk.Hits != 9 || disk.Lost != 0 || disk.Entries != cachedPages+1 {
 		t.Fatalf("the disk served %+v, want nine hits of five entries", disk)
 	}
@@ -363,9 +368,10 @@ func TestANewerCheckpointSupersedesThePulledCopy(t *testing.T) {
 	}
 	f.objects.gets.Store(0)
 	readCachedPage(t, f.store, newer, next, 1)
-	// The newer checkpoint's segment and its page 1 come from the store.
-	if gets := f.objects.gets.Load(); gets != 2 {
-		t.Fatalf("reading the newer checkpoint's page made %d requests, want its segment and its page", gets)
+	// The newer checkpoint's page 1 comes from the store. Its segment does
+	// not: the publication left the table it wrote in the cache's memory.
+	if gets := f.objects.gets.Load(); gets != 1 {
+		t.Fatalf("reading the newer checkpoint's page made %d requests, want its page alone", gets)
 	}
 	f.objects.gets.Store(0)
 	for _, page := range []uint64{0, 2, 3} {

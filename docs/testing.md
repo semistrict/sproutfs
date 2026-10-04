@@ -426,7 +426,11 @@ stays bounded by the part size and the encoders instead of by the dirty set.
 
 A publication's pace is stated in simulated time. `sim.Config.Compute` prices
 an encode (`blob.WorkEncode`) in bytes a second, spent while it holds its
-encoder, and `sim.Work` counts the encodes and the most at once.
+encoder, and `sim.Work` counts the encodes and the most at once. The same
+prices a fault's planning (`vmmemory.WorkPlan`, a unit a page located) and the
+decoding of a segment's page table (`checkpoint.WorkPageTable`, by the
+segment's bytes), which is how a test sees a fault plan its own page first and
+counts the decodes of a segment.
 `TestAPublicationEncodesAsManyPagesAtOnceAsItHasEncoders` publishes 64 pages of
 10 ms each through four encoders: four encode at once, and the last part lands
 exactly 160 ms and one part's PUT after the commit began, not 640 ms.
@@ -485,6 +489,35 @@ one processor and in none on more. The backing now checks its own end once a
 request returns and refuses a reply that came after it. Both tests run three
 times on one processor and once on all of them. The guard
 `migration-take-a-reply-after-close` takes the reply again and fails them.
+
+A fork child's claim of its hold had the same shape, and no test reached it.
+`TestClosingAForkChildEndsTheClaimInFlight` closes a received child while its
+claim is on the wire, then lets the parent's host answer that it marked the
+hold claimed. Before the fix the claim took that answer and reported the hold
+claimed for a child its host had just given up: 66 runs of 75 failed on one
+processor and 6 of 25 on fifteen. The listing of what the source holds was
+not made under the backing's life at all, so a close never ended it, and
+`TestClosingAPostCopyEndsTheListingInFlight` failed in every run on any
+number of processors. The stream is stopped before the backings close, so a
+receive never reached that case, but the backing said every request it makes
+ends with it. Every request a peer backing makes, a page request, a claim or
+a listing, now comes back through one function, `request`, which refuses a
+reply once the backing has ended. Each kind has a guard of its own that takes
+the reply anyway: `migration-take-a-reply-after-close`,
+`migration-take-a-claim-after-close` and
+`migration-take-a-listing-after-close`. Each fails its own test. Both tests
+run three times on one processor and once on all of them.
+
+The same sweep of `vmmigrate` and `peer` found no other request that can take
+a reply sent after its owner closed. A receive's stream is cancelled at once,
+and `Received.Close` waits for it to stop before it returns. A table of peers
+fails every connection and then waits for each connection's reader, and a
+reader takes a request out of its connection's table under the same lock that
+the failure empties it under. So a request gets either the close or a reply
+read before it. A request whose caller cancels can still take a reply that is
+ready when it next looks, because a `select` with both ready picks either.
+That is the caller's own cancellation, not an owner's close, and the callers
+in `vmmigrate` look at their own end once the request returns.
 
 Both the writer and the reader bound a part's table at 1 MiB. One test takes a
 checkpoint of 4,000 pages of a volume with the longest allowed name. Its entries
@@ -2075,6 +2108,10 @@ SPROUTFS_SIM_BUG=pager-prefetch-ignores-pressure \
   go test ./vmmemory -run '^TestAnAllocationCancelsAPrefetchRatherThanEvict$' -count=1
 SPROUTFS_SIM_BUG=pager-prefetch-every-fault \
   go test ./vmmemory -run '^TestADependentChainOfFaultsWaitsForOnePageAHop$' -count=1
+SPROUTFS_SIM_BUG=pager-plan-the-window-first \
+  go test ./vmmemory -run '^TestADependentChainOf4KiBFaultsPaysOnePageReadAHop$' -count=1
+SPROUTFS_SIM_BUG=checkpoint-decode-every-lookup \
+  go test ./checkpoint -run '^TestASegmentIsDecodedOncePerCheckpointWhileCached$' -count=1
 SPROUTFS_SIM_BUG=spill-sparse \
   go test ./vmmemory -run '^TestASpillSucceedsOnADiskFilledFromOutside$' -count=1
 SPROUTFS_SIM_BUG=diskcache-skip-key-check \
@@ -2201,7 +2238,18 @@ guest reading forwards reads pages twice. `pager-prefetch-ignores-pressure`
 evicts a page the guest maps while a prefetch holds free slots, and its test
 counts the eviction. `pager-prefetch-every-fault` prefetches the run of a
 fault that follows none of its memory region's recent faults, and a chain at
-random then prefetches on every hop instead of on its first. `migration-give-up-first-receive` gives a handoff up
+random then prefetches on every hop instead of on its first.
+`pager-plan-the-window-first` plans a fault's whole window before its own
+page's read starts. Its test,
+`TestADependentChainOf4KiBFaultsPaysOnePageReadAHop`, runs a 4 KiB pager over
+a real checkpoint store whose reads take a millisecond, with planning priced
+at a microsecond a page (`vmmemory.WorkPlan`): a hop then takes the read and
+512 µs of window instead of the read and 1 µs of page.
+`checkpoint-decode-every-lookup` fetches and decodes a segment's page table
+for every lookup instead of taking the one the page cache keeps, and
+`TestASegmentIsDecodedOncePerCheckpointWhileCached`, which prices a decode by
+its bytes (`checkpoint.WorkPageTable`), counts a decode for every lookup
+instead of one for each segment. `migration-give-up-first-receive` gives a handoff up
 after its first failed receive. In one retry scenario the destination cannot
 reach the store for ten seconds, so the handover must retry it; in the other
 the destination refuses until the source's hold is over, and the handoff must
@@ -2419,10 +2467,11 @@ publication's fills, below. The fill campaign
 
 A publication's fills wait for room rather than drop
 ([filling the cluster](hosting.md#filling-the-cluster)), and the tests of that
-pace state it in simulated time. Each runs two hosts under 1+1. The second
-host is the holder, and its disk takes a millisecond over each write, or a
-second and a millisecond for a slow one. The first publishes pages of noise,
-a part each:
+pace state it in simulated time. Each runs two hosts under 1+1, but for the
+read's, which runs three under 1+2. The other hosts are holders, and a
+holder's disk takes a millisecond over each write, or a second and a
+millisecond for a slow one. The first host publishes pages of noise, a part
+each:
 
 - `TestAPublicationGoesAtThePaceOfItsSlowestHolder` publishes eight parts
   through a queue with room for two windows. Behind the slow holder the
@@ -2435,11 +2484,13 @@ a part each:
   publication holds at most four parts its fills have not finished with: two
   in the queue and two under the slots. With the guard it holds all twelve.
 - `TestAReadsFillGoesAheadOfAPublications` reads a page from the store two
-  and a half seconds into a publication of twelve parts. The page's window is
-  on its ranks less than one keep of the slow holder later than when nothing
-  else is filled, while the publication still has ten of its thirteen windows
-  to send. `fill-reads-behind-publications` takes the publication's fills
-  first, and the read's window lands more than ten seconds later.
+  and a half seconds into a publication of twelve parts, each window of which
+  is two keeps to slow holders. The page's window is on its ranks less than
+  one keep later than when nothing else is filled, while the publication has
+  begun two of its thirteen windows: the read's fills go ahead even of the
+  second keep of the window under way. `fill-reads-behind-publications` takes
+  the publication's fills first, and the read's window lands more than twenty
+  seconds later.
 - `TestADeadHolderCostsAPublicationTheBoundAtMost` cuts the link to the
   holder, under a bound of a second. The first keep waits out the dial's
   three seconds, and the commit takes exactly the bound longer than with the
@@ -2459,7 +2510,7 @@ sequence number, and so the drawn latency, that a later frame on its link
 would have taken. A run behind a slow holder would then differ from one
 behind a quick one by more than the holder's writes.
 
-Fifteen guards break the reads of the cluster:
+Seventeen guards break the reads of the cluster:
 
 ```sh
 SPROUTFS_SIM_BUG=cluster-read-by-index \
@@ -2492,6 +2543,10 @@ SPROUTFS_SIM_BUG=cluster-current-code-only \
   go test ./checkpoint -run '^TestAChangedCodeReadsEveryEarlierWindowWithNoStoreRead$' -count=1
 SPROUTFS_SIM_BUG=cluster-no-refill \
   go test ./checkpoint -run '^TestFillsAfterACodeChangeAreUnderTheNewCode$' -count=1
+SPROUTFS_SIM_BUG=cluster-one-delay-for-every-size \
+  go test ./checkpoint -run '^TestALargeReadAfterManySmallFastReadsIsNotHedgedToTheStore$' -count=1
+SPROUTFS_SIM_BUG=cluster-envelope-shares-reply \
+  go test ./checkpoint -run '^TestAPageReadFromAPeerOutlivesItsReplysBuffer$' -count=1
 ```
 
 The first takes from each rank only the index the list puts on it, which a
@@ -2506,10 +2561,14 @@ list, a probe every second rather than from ten seconds on, and fills sent to
 a host marked down. The next offers a rank the index the list puts on it
 whether or not another rank holds it: after a join, the new cache is sent an
 index a holder below it still holds. The next never checks a sampled hit's
-part. The last two break a change of the code: a read that tries only the
+part. The next two break a change of the code: a read that tries only the
 list's code, so after a change every earlier window is read from the store,
 and a window read under the earlier code that is never filled under the new
-one.
+one. The next keeps one delay and one bound for reads of every size, as the
+reader once did: after 512 reads of 4 KiB, four reads of 2 MiB each pass the
+bound the small reads set and read the store too. The last keeps a page
+rebuilt under 1+1 as a view of its peer's reply buffer, which the pool hands
+the next reply: once the replies are written over, the page has changed.
 
 Five guards break the hot tier:
 
@@ -2964,6 +3023,26 @@ which is tried again at once. The rest are in code the run's tests do not
 drive: a sender's retries under a newer generation, keeps that do not hold
 together, repairs and drops. Gremlins reports the worker's own lines
 uncovered, though every test of a fill runs them on its goroutine.
+
+The reads of the cluster are mutated the same way, with the tests of their
+copies and their hedge:
+
+```sh
+python3 scripts/mutate-gremlins.py --package checkpoint --suite full \
+  --file clusterread.go --file cache.go --file run.go \
+  --run '^(TestTheHedger|TestAReadIsOfTheClass|TestEachSizeClass|TestALargeRead|TestAReadOfThePage|TestAPageReadFromAPeer|TestTheCacheKeeps|TestAPageFills|TestStoreReadsPast|TestAPrefetchs|TestSecondRequests|TestAStalledOrSlow|TestAWrongStripe|TestAPageInTheCluster|TestCache)' \
+  --gremlins /path/to/gremlins --output /tmp/cluster-read-mutations
+```
+
+On 2026-10-04, of the mutants on the lines that cut a read's copies and gave
+the hedge a delay per size of read, 39 died and 3 lived. Two were the length
+checks before `sharesReply` compares a stripe's first byte with the
+envelope's; `TestAnEmptyStripeBesideAWholeOneIsWrong` now kills both, as a
+read under 1+1 would panic on an empty stripe without them. The third
+negates `err == nil` before a load's count of pages is checked, which none of
+these tests makes fail. The run as a whole killed 237 with 86 alive and 62
+not covered, nearly all in code these tests do not aim at. The same run of
+`stripe.go` killed 69 with 4 alive, none of them in the rebuild.
 
 The membership is mutated the same way, with the peer server's side of its
 protocol. The orchestrator is a package below `cmd`, which Gremlins names

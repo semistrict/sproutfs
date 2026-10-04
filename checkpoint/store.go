@@ -533,9 +533,9 @@ func (s *Store) ReadPages(ctx context.Context, index *Index, volume string, offs
 }
 
 // resolveRun reports where the bytes of every page of a range live, filling the
-// pages that have no member with zeroes as it goes. One segment is held across
-// the pages it locates, so a run costs one lookup of each segment it crosses
-// rather than one per page. A page wanted does not mark is skipped whole: its
+// pages that have no member with zeroes as it goes. One segment's table is held
+// across the pages it locates, so a run costs one lookup of each segment it
+// crosses rather than one per page. A page wanted does not mark is skipped whole: its
 // bytes are the caller's and its segment is never looked up. first is the page
 // wanted is indexed from, which is the first page of the whole read and not of
 // this run.
@@ -545,8 +545,8 @@ func (s *Store) resolveRun(ctx context.Context, index *Index, volume string, off
 	geometry := table.geometry
 	end := offset + uint64(len(dst))
 	var run []pageRead
-	var held *segment
-	var current uint64
+	tables := tableCursor{index: index, volume: volume}
+	defer tables.close()
 	for cursor := offset; cursor < end; {
 		number := geometry.PageOf(cursor)
 		start, span := geometry.PageSpan(table.size, number)
@@ -555,15 +555,12 @@ func (s *Store) resolveRun(ctx context.Context, index *Index, volume string, off
 			cursor = limit
 			continue
 		}
-		if held == nil || current != geometry.SegmentOf(number) {
-			loaded, err := index.segmentAt(ctx, volume, geometry.SegmentOf(number))
-			if err != nil {
-				return nil, err
-			}
-			held, current = loaded, geometry.SegmentOf(number)
+		at, found, err := tables.at(ctx, geometry, number)
+		if err != nil {
+			return nil, err
 		}
 		target := dst[cursor-offset : limit-offset]
-		if at, found := held.pages[geometry.OffsetIn(number)]; found {
+		if found {
 			run = append(run, pageRead{number: number, at: at, within: cursor - start, dst: target})
 		} else {
 			clear(target)
@@ -573,15 +570,32 @@ func (s *Store) resolveRun(ctx context.Context, index *Index, volume string, off
 	return run, nil
 }
 
-// loadSegment fetches one segment's encoded page table out of the index object
-// of the checkpoint that wrote it, through the shared cache when one is
-// configured. It is keyed by the segment's identity — that checkpoint, this
-// volume and this number — so two roots addressing the same segment share one
-// copy however each of them found it. The caller decodes the bytes it borrows
-// and releases them.
-func (s *Store) loadSegment(ctx context.Context, volume string, number uint64, at segmentAddress) ([]byte, func(), error) {
-	key := segmentCacheKey(volume, number, at.ref)
-	fetch := func(ctx context.Context) ([]byte, []envelope, error) {
+// table reads one segment's page table out of the index object of the
+// checkpoint that wrote it, through the store's cache, which keeps it decoded
+// in its memory tier. It is keyed by the segment's identity — that checkpoint,
+// this volume and this number — so two roots addressing the same segment share
+// one table however each of them found it, and a segment is decoded once while
+// the cache keeps it. The caller releases the table when it is done with it.
+func (s *Store) table(ctx context.Context, volume string, number uint64, at segmentAddress) (*pageTable, func(), error) {
+	return s.cache.table(ctx, segmentCacheKey(volume, number, at.ref), s.fetchSegment(volume, number, at))
+}
+
+// readTable reads one segment's page table and decodes it, keeping nothing:
+// what a store with no cache does, and a pull, which copies every segment of
+// a checkpoint once.
+func (s *Store) readTable(ctx context.Context, volume string, number uint64, at segmentAddress) (*pageTable, error) {
+	data, _, err := s.fetchSegment(volume, number, at)(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return decodeTable(ctx, data)
+}
+
+// fetchSegment is what fetches one segment's bytes: from the cluster, or the
+// host's own disk, and otherwise the store, whose envelope it returns for the
+// cache to fill the cluster with.
+func (s *Store) fetchSegment(volume string, number uint64, at segmentAddress) func(context.Context) ([]byte, []envelope, error) {
+	return func(ctx context.Context) ([]byte, []envelope, error) {
 		disk := segmentDiskKey(volume, number, at.ref)
 		object := func() (platform.ObjectKey, error) { return s.indexKey(at.ref) }
 		if s.readsCluster(disk) {
@@ -604,11 +618,6 @@ func (s *Store) loadSegment(ctx context.Context, volume string, number uint64, a
 		}
 		return data, []envelope{{key: disk, data: encoded}}, nil
 	}
-	if s.cache == nil {
-		data, _, err := fetch(ctx)
-		return data, func() {}, err
-	}
-	return s.cache.get(ctx, key, fetch)
 }
 
 // anySegment accepts every decoded segment: what a segment says is checked when

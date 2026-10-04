@@ -426,6 +426,9 @@ func TestASecondReadOfARunThroughTheCacheCostsNoRequests(t *testing.T) {
 		t.Cleanup(cache.Close)
 		f := newConfiguredRunFixture(t, Config{Cache: cache})
 		f.publish(t, 0xdd, pagesOf(0, runPages, nil))
+		// The publication left the table of the segment it wrote in the cache;
+		// a host that did not publish the checkpoint holds none of it.
+		cache.Clear()
 		if reads, read := f.read(t, 0, PageSize2MiB); reads != segmentReads+1 {
 			t.Fatalf("the first read of the run cost %d reads of %d bytes, want %d",
 				reads, read, segmentReads+1)
@@ -447,9 +450,10 @@ func TestASecondReadOfARunThroughTheCacheCostsNoRequests(t *testing.T) {
 		if reads := f.counter.reads(); len(reads) != 0 {
 			t.Fatalf("a second read of the run cost %v, want nothing at all", reads)
 		}
-		if stats := cache.Stats(); stats.Hits != runPages+segmentReads {
-			t.Fatalf("the cache reports %+v, want a hit for each of the %d pages and the segment",
-				stats, runPages)
+		if stats := cache.Stats(); stats.Hits != runPages || stats.Tables.Hits != segmentReads ||
+			stats.Tables.Loads != segmentReads {
+			t.Fatalf("the cache reports %+v, want a hit for each of the %d pages and the segment's table, "+
+				"which the first read loaded", stats, runPages)
 		}
 	})
 }

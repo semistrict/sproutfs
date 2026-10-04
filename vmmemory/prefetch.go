@@ -156,17 +156,11 @@ func streaming(ctx context.Context) bool {
 // out of the plan, which is left to read the faulting page alone. The pages
 // that can land as clean shared pages become a prefetch, which the caller
 // starts; every other reservation goes back, and its page is left to its own
-// fault. It returns nil where nothing is prefetched.
-//
-// A stream's fault keeps its whole run, and so does every fault under the
-// in-tree bug that puts the run back in front of the faulting page.
+// fault. It returns nil where nothing is prefetched. A fault that does not
+// prefetch reserved nothing for the rest of its window (planRest).
 func (p *windowPlan) splitPrefetch(ctx context.Context, index uint64) *prefetch {
-	if streaming(ctx) || sim.Bug(ctx, "pager-read-the-run-first") {
-		return nil
-	}
 	r := p.memoryRegion
 	h := r.host
-	sequential := r.followsRecent(p.start)
 	var pages []prefetchPage
 	var back []fileSlot
 	for page := p.start; page < p.end; page++ {
@@ -195,18 +189,6 @@ func (p *windowPlan) splitPrefetch(ctx context.Context, index uint64) *prefetch 
 		h.signal()
 		h.mu.Unlock()
 	}()
-	if len(pages) > 0 && !sequential && !sim.Bug(ctx, "pager-prefetch-every-fault") {
-		// A fault that follows none of its memory region's recent faults is
-		// read alone: its neighbours are worth reading only to a guest that
-		// reads forwards, and a prefetch nothing uses takes processors from
-		// the faults that follow.
-		h.stats.PrefetchRandom++
-		sim.Probe(ctx, ProbePrefetchRandom)
-		for _, page := range pages {
-			back = append(back, page.at)
-		}
-		return nil
-	}
 	if len(pages) > 0 && (refused || h.prefetching >= h.cfg.PrefetchRuns) {
 		h.stats.PrefetchRefused++
 		sim.Probe(ctx, ProbePrefetchRefused)

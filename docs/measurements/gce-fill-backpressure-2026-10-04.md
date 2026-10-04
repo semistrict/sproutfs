@@ -114,10 +114,8 @@ run did not profile the heap.
 - **The fill queue stays at 64 MiB.** With paced fills it drops nothing and
   is as fast as a larger one. The bench's default of 4 GiB was there only to
   keep the old fills from dropping, and it now kills the publisher of an
-  8 GiB guest on a 16 GB host. `scripts/bench-restore-gce.sh` still defaults
-  to it, so that runs of the restore bench stay comparable with the reports
-  before this one; a run on a 16 GB host should set
-  `SPROUTFS_RESTORE_FILL_QUEUE_BYTES` lower.
+  8 GiB guest on a 16 GB host. `scripts/bench-restore-gce.sh` now defaults to
+  64 MiB as well; the reports before this one ran with 4 GiB.
 - **The bound stays at 10 s.** No wait came near it. A wait of a healthy
   publication lasted about 16 ms, one window's keeps.
 

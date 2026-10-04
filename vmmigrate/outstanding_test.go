@@ -54,7 +54,7 @@ func (c droppingConn) Send(ctx context.Context, frame platform.Frame) error {
 func TestAReleaseWaitsForAReplyItsDestinationHasAlreadyActedOn(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		s := newServed(t, nil, 4)
-		held := s.heldSourceHolding(t, "source-pages-delivered", true, nil)
+		held := s.heldSourceHolding(t, "source-pages-delivered", peertest.IsPageReply, true, nil)
 		source := s.source
 
 		backing := s.unpublishedBacking(t, source, "ram0", []vmmigrate.PageRun{{First: 0, Count: 4}})
@@ -105,7 +105,7 @@ func TestAReleaseWaitsForAReplyItsDestinationHasAlreadyActedOn(t *testing.T) {
 func TestAReleaseWaitingOnAReplyThatNeverLeavesStillRefuses(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		s := newServed(t, nil, 4)
-		held := s.heldSourceHolding(t, "source-pages-held-dropping", false,
+		held := s.heldSourceHolding(t, "source-pages-held-dropping", peertest.IsPageReply, false,
 			errors.New("the reply never left the source"))
 		source := s.source
 

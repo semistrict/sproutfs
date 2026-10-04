@@ -177,7 +177,7 @@ func TestCompactionMeasuresLivenessFromTheRootAlone(t *testing.T) {
 			t.Fatalf("the last checkpoint still reads the parts it emptied: %v", third.Checkpoints())
 		}
 		// One segment changed, so one segment was opened.
-		if got := len(third.loaded); got != 1 {
+		if got := len(third.memo); got != 1 {
 			t.Fatalf("a checkpoint that changed one of %d segments opened %d of them",
 				segments, got)
 		}

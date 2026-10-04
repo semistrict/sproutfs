@@ -16,11 +16,15 @@ import (
 	"github.com/semistrict/sproutfs/vmmigrate"
 )
 
-// heldListener hands out connections whose page replies wait for release, so a test
-// can have a request on the wire and no answer to it at a moment of its
-// choosing. sending reports the first reply reaching that point.
+// heldListener hands out connections whose replies of one kind wait for
+// release, so a test can have a request on the wire and no answer to it at a
+// moment of its choosing. sending reports the first such reply reaching that
+// point.
 type heldListener struct {
 	platform.Listener
+	// holds names the replies that wait: a page request's, unless a test
+	// holds another kind.
+	holds   func(platform.Frame) bool
 	sending chan struct{}
 	release chan struct{}
 	once    sync.Once
@@ -34,8 +38,8 @@ type heldListener struct {
 	err error
 }
 
-func newHeldListener(listener platform.Listener) *heldListener {
-	return &heldListener{Listener: listener,
+func newHeldListener(listener platform.Listener, holds func(platform.Frame) bool) *heldListener {
+	return &heldListener{Listener: listener, holds: holds,
 		sending: make(chan struct{}), release: make(chan struct{})}
 }
 
@@ -53,7 +57,7 @@ type heldConn struct {
 }
 
 func (c heldConn) Send(ctx context.Context, frame platform.Frame) error {
-	if !peertest.IsPageReply(frame) {
+	if !c.listener.holds(frame) {
 		return c.Conn.Send(ctx, frame)
 	}
 	c.listener.once.Do(func() { close(c.listener.sending) })
@@ -77,25 +81,37 @@ func (c heldConn) Send(ctx context.Context, frame platform.Frame) error {
 	return c.Conn.Send(ctx, frame)
 }
 
-// heldSource is a peer server serving this VM whose every reply waits for the
-// listener to be released.
+// heldSource is a peer server serving this VM whose every page reply waits for
+// the listener to be released.
 func (s *served) heldSource(t *testing.T, address platform.Address) *heldListener {
 	t.Helper()
-	return s.heldSourceHolding(t, address, false, nil)
+	return s.heldSourceHolding(t, address, peertest.IsPageReply, false, nil)
 }
 
-// heldSourceHolding is heldSource with what the hold does to the reply it is
-// holding: deliver says the reply reaches the destination before the send that
-// carried it returns, and sendErr is what that send finally reports.
-func (s *served) heldSourceHolding(t *testing.T, address platform.Address,
+// heldSourceHolding is heldSource holding the replies holds names, with what
+// the hold does to the reply it is holding: deliver says the reply reaches the
+// destination before the send that carried it returns, and sendErr is what
+// that send finally reports.
+func (s *served) heldSourceHolding(t *testing.T, address platform.Address, holds func(platform.Frame) bool,
 	deliver bool, sendErr error) *heldListener {
 	t.Helper()
-	listener, err := s.migration.cluster.runtime.Network().Listen(address)
+	source, held := s.migration.cluster.heldServer(t, address, holds)
+	held.deliver, held.err = deliver, sendErr
+	source.Serve("vm-2", vmmigrate.MemoryRegionPages(s.machine.MemoryRegions()))
+	s.source = source
+	return held
+}
+
+// heldServer is a peer server at address, serving nothing yet, whose replies
+// that holds names wait for the listener to be released.
+func (c *cluster) heldServer(t *testing.T, address platform.Address,
+	holds func(platform.Frame) bool) (*peer.Server, *heldListener) {
+	t.Helper()
+	listener, err := c.runtime.Network().Listen(address)
 	if err != nil {
 		t.Fatal(err)
 	}
-	held := newHeldListener(listener)
-	held.deliver, held.err = deliver, sendErr
+	held := newHeldListener(listener, holds)
 	source, err := peer.NewServer(t.Context(), peer.ServerConfig{PageSize: pageSize,
 		MaxPagesPerRequest: 8, Budgets: budgets(32 << 20), Address: address, Listener: held})
 	if err != nil {
@@ -106,9 +122,7 @@ func (s *served) heldSourceHolding(t *testing.T, address platform.Address,
 		held.let()
 		_ = source.Close()
 	})
-	source.Serve("vm-2", vmmigrate.MemoryRegionPages(s.machine.MemoryRegions()))
-	s.source = source
-	return held
+	return source, held
 }
 
 func (l *heldListener) let() {
@@ -198,6 +212,65 @@ func TestClosingAPostCopyStillRefusesAPageOnlyTheSourceHad(t *testing.T) {
 	})
 }
 
+// TestClosingAForkChildEndsTheClaimInFlight is the same close reaching a fork
+// child's claim of its hold. A receive closed while that claim is on the wire
+// has given the child up: its host discards it. The claim must end with the
+// close rather than report the hold claimed, even though the parent's host
+// marked it claimed and says so after the close. A claim that took that answer
+// would tell the host to run a child whose receive it has just closed.
+func TestClosingAForkChildEndsTheClaimInFlight(t *testing.T) {
+	onOneProcessorAndAll(t, func(t *testing.T) {
+		m := newMigration(t)
+		parent, held := m.cluster.heldServer(t, "parent-claims-held", peertest.IsClaimReply)
+		_, handoff := m.forkedFrom(t, "vm-2", parent)
+		received, _ := m.receive(t, handoff)
+		if err := received.Done(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+
+		claimed := make(chan error, 1)
+		go func() { claimed <- received.Claim(m.ctx(t)) }()
+		<-held.sending
+		// The parent's host has marked the hold claimed and is about to say
+		// so. This is the moment a host that gave the child up closes it.
+		received.Close()
+		held.let()
+		if err := <-claimed; !errors.Is(err, vmmigrate.ErrClosed) {
+			t.Fatalf("a claim the close interrupted reported %v, want ErrClosed", err)
+		}
+		if !parent.Discard("vm-2") {
+			t.Fatal("the parent's host never marked the hold claimed, so no answer came after the close")
+		}
+	})
+}
+
+// TestClosingAPostCopyEndsTheListingInFlight is the same close reaching the
+// listing of what the source holds, which the stream asks for once the pages
+// no checkpoint has are here. A listing is made under the backing's life like
+// every other request, so the close ends it, and the answer the source sends
+// after the close is not taken.
+func TestClosingAPostCopyEndsTheListingInFlight(t *testing.T) {
+	onOneProcessorAndAll(t, func(t *testing.T) {
+		s := newServed(t, nil, 4)
+		held := s.heldSourceHolding(t, "source-listing-held", peertest.IsListingReply, false, nil)
+		backing := s.backing(t, s.source, "ram0")
+
+		listed := make(chan error, 1)
+		go func() {
+			_, err := backing.Resident(s.ctx(t))
+			listed <- err
+		}()
+		<-held.sending
+		if err := backing.Close(); err != nil {
+			t.Fatal(err)
+		}
+		held.let()
+		if err := <-listed; !errors.Is(err, vmmigrate.ErrClosed) {
+			t.Fatalf("a listing the close interrupted reported %v, want ErrClosed", err)
+		}
+	})
+}
+
 // onOneProcessorAndAll runs test three times on one processor and then on as
 // many as the test binary has. A close ends a request in flight from a
 // goroutine of its own, and on one processor the Go scheduler runs the
@@ -216,8 +289,11 @@ func onOneProcessorAndAll(t *testing.T, test func(t *testing.T)) {
 	}
 }
 
-// ctx is the test's context carrying the served VM's runtime, so the in-tree
-// bug guards a negative test enables reach the backing's reads.
-func (s *served) ctx(t *testing.T) context.Context {
-	return sim.WithRuntime(t.Context(), s.migration.cluster.runtime)
+// ctx is the test's context carrying the cluster's runtime, so the in-tree bug
+// guards a negative test enables reach the backings' requests.
+func (m *migration) ctx(t *testing.T) context.Context {
+	return sim.WithRuntime(t.Context(), m.cluster.runtime)
 }
+
+// ctx is the served VM's migration's context: see migration.ctx.
+func (s *served) ctx(t *testing.T) context.Context { return s.migration.ctx(t) }

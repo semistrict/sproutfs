@@ -624,7 +624,7 @@ type Status struct {
 	// how it read it.
 	Membership Membership `json:"membership"`
 	// CacheMemory is the page cache's memory tier: the decoded pages and
-	// segments it keeps, and what it served of them. It is the first place a
+	// page tables it keeps, and what it served of them. It is the first place a
 	// read of a page that no arena holds looks, before this host's disk, the
 	// cluster and the store.
 	CacheMemory CacheMemory `json:"cache_memory"`
@@ -692,19 +692,30 @@ type HotTier struct {
 	QueueBytes  int64 `json:"queue_bytes"`
 }
 
-// CacheMemory is the page cache's memory tier, counted in pages and segments.
+// CacheMemory is the page cache's memory tier, counted in pages and in the
+// page tables of segments, each decoded once for every index that reads it.
 // Resources reports the bytes it holds and its cap.
 type CacheMemory struct {
-	// Entries is the pages and segments it holds now.
+	// Entries is the pages and page tables it holds now.
 	Entries int `json:"entries"`
-	// Hits counts the reads it served from what it holds; Misses the reads
-	// that started a fetch from the tiers below it, the disk, the cluster or
-	// the store; and Coalesced the reads that joined a fetch another read had
-	// started. Evictions counts the entries it gave up.
+	// Hits counts the reads of pages it served from what it holds; Misses
+	// the reads that started a fetch from the tiers below it, the disk, the
+	// cluster or the store; and Coalesced the reads that joined a fetch
+	// another read had started. Evictions counts the entries it gave up,
+	// page tables among them.
 	Hits      uint64 `json:"hits"`
 	Misses    uint64 `json:"misses"`
 	Coalesced uint64 `json:"coalesced"`
 	Evictions uint64 `json:"evictions"`
+	// Tables and TableBytes are the page tables it holds now and what they
+	// are charged. TableHits counts the lookups a held table answered,
+	// TableLoads the lookups that fetched a segment and decoded it, and
+	// TableKept the tables a publication left as it wrote them.
+	Tables     int    `json:"tables"`
+	TableBytes int64  `json:"table_bytes"`
+	TableHits  uint64 `json:"table_hits"`
+	TableLoads uint64 `json:"table_loads"`
+	TableKept  uint64 `json:"table_kept"`
 }
 
 // CacheRead is what one host's reads of the cluster's disk cache did, in
@@ -754,10 +765,10 @@ type CacheRead struct {
 	// HeadMissing those whose part the store no longer had.
 	HeadChecks  uint64 `json:"head_checks"`
 	HeadMissing uint64 `json:"head_missing"`
-	// Delay and Bound are the reader's delay before a second request and its
-	// bound before a read of the store, now.
-	Delay time.Duration `json:"delay"`
-	Bound time.Duration `json:"bound"`
+	// Classes is the reader's delay before a second request and its bound
+	// before a read of the store, now, for each size class of read, smallest
+	// first.
+	Classes []CacheReadClass `json:"classes"`
 	// Served is the reads of this host's stripes its peer server answered,
 	// ServedStripes and ServedBytes what they carried, and ServeBusy the reads
 	// it answered BUSY because its serving bandwidth was spent.
@@ -765,6 +776,18 @@ type CacheRead struct {
 	ServedStripes int64 `json:"served_stripes"`
 	ServedBytes   int64 `json:"served_bytes"`
 	ServeBusy     int64 `json:"serve_busy"`
+}
+
+// CacheReadClass is a host's delay and bound for one size class of read of
+// the cluster: reads that ask for at most UpToBytes, or, in the last class,
+// for more too.
+type CacheReadClass struct {
+	UpToBytes int64 `json:"up_to_bytes"`
+	// Reads counts the reads of the class that had their stripes, which its
+	// delay is drawn from.
+	Reads uint64        `json:"reads"`
+	Delay time.Duration `json:"delay"`
+	Bound time.Duration `json:"bound"`
 }
 
 // CacheFill is what one host's fills of the cluster's disk cache did, in
