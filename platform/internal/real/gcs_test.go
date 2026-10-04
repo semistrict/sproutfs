@@ -59,6 +59,12 @@ func (g *generationDeletes) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // conditional delete above, through the client a deployment opens for an
 // emulator endpoint.
 func newConditionalFakeGCS(t *testing.T) platform.ObjectStore {
+	return newConditionalFakeGCSBehind(t, nil)
+}
+
+// newConditionalFakeGCSBehind is newConditionalFakeGCS with front, where it
+// is not nil, in front of the emulator.
+func newConditionalFakeGCSBehind(t *testing.T, front func(http.Handler) http.Handler) platform.ObjectStore {
 	t.Helper()
 	server, err := fakestorage.NewServerWithOptions(fakestorage.Options{NoListener: true})
 	if err != nil {
@@ -66,7 +72,11 @@ func newConditionalFakeGCS(t *testing.T) platform.ObjectStore {
 	}
 	t.Cleanup(server.Stop)
 	server.CreateBucketWithOpts(fakestorage.CreateBucketOpts{Name: gcsTestBucket})
-	listener := httptest.NewServer(&generationDeletes{next: server.HTTPHandler()})
+	var handler http.Handler = &generationDeletes{next: server.HTTPHandler()}
+	if front != nil {
+		handler = front(handler)
+	}
+	listener := httptest.NewServer(handler)
 	t.Cleanup(listener.Close)
 	client, err := real.NewGCSClient(t.Context(), listener.URL)
 	if err != nil {
