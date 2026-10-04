@@ -18,6 +18,16 @@ const (
 
 var bufferClasses [largestBuffer - smallestBuffer + 1]sync.Pool
 
+// poisonReleased fills a buffer with released as it goes back to the pool. This
+// package's tests set it, so that bytes used after their buffer is released
+// are wrong every time, not only when the pool next hands that buffer to a
+// reader: a pool keeps a buffer per processor and drops it at a collection, so
+// whether the next reply lands in the same buffer is the runtime's choice.
+var poisonReleased bool
+
+// released is what a poisoned buffer is filled with.
+const released = 0xa5
+
 // payloadBuffer is one pooled buffer, sliced to the length it was asked for.
 type payloadBuffer struct {
 	bytes []byte
@@ -43,6 +53,11 @@ func takeBuffer(size int) *payloadBuffer {
 func (b *payloadBuffer) release() {
 	if b == nil || b.class < 0 {
 		return
+	}
+	if poisonReleased {
+		for i := range b.bytes {
+			b.bytes[i] = released
+		}
 	}
 	b.bytes = b.bytes[:0]
 	bufferClasses[b.class-smallestBuffer].Put(b)
