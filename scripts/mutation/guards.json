@@ -466,6 +466,12 @@
     "purpose": "Send bulk reads without the host's background budget, so a fault's reply waits behind all the stream's bytes."
   },
   {
+    "id": "peer-woken-requests-go-on-together",
+    "package": "peer",
+    "run": "^TestARequestWokenFromAWaitForRoomIsAdmittedAgain$",
+    "purpose": "Let requests woken from a wait for room go on to the wire without being admitted again, so the Go scheduler orders the requests one dial or release wakes together."
+  },
+  {
     "id": "peer-answer-for-another-cache",
     "package": "peer",
     "run": "^TestAReusedAddressAnswersNotMe$",

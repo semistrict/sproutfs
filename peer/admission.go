@@ -17,6 +17,14 @@ import "context"
 // reproduced. Pooling makes it unavoidable rather than incidental: an open
 // connection is taken without dialing, so the request reaches the wire with no
 // adapter operation between the cancellation and the send.
+//
+// A request that has to wait for room — its class's budget at the peer, a
+// slot on a connection, a dial another request began, or the host's background
+// budget — is offered to the admitter again each time it is woken. One room
+// given back wakes every request waiting for it, beside the request whose dial
+// or reply gave it back, and with no point between the wake and the wire the
+// Go runtime would choose which of them takes which connection and goes first
+// on it.
 type Admitter func(ctx context.Context, memoryRegion string) error
 
 type admissionKey struct{}
@@ -30,6 +38,16 @@ func WithAdmission(ctx context.Context, admit Admitter) context.Context {
 		panic("nil peer admitter")
 	}
 	return context.WithValue(ctx, admissionKey{}, admit)
+}
+
+// readmit offers a request woken from a wait for room to the admitter again,
+// as it was before it first looked for room. A request made under no admission
+// name is never admitted, and is not here either.
+func (p *Peer) readmit(ctx context.Context, memoryRegion string) error {
+	if memoryRegion == "" || p.table.bug("peer-woken-requests-go-on-together") {
+		return nil
+	}
+	return admit(ctx, memoryRegion)
 }
 
 // admit runs the context's admitter, where a controlled run installed one.
