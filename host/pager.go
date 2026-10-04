@@ -185,16 +185,19 @@ func pagerBounds(config SupervisorConfig, pageSize uint64, arenaBytes int64, log
 		writeAhead = 1
 	}
 	return vmmemory.Config{
-		PageSize:        pageSize,
-		ResidentPages:   resident,
-		ArenaOffsets:    arenaOffsets(pageSize, resident, logical),
-		Arena:           config.Arena,
-		LogicalPages:    logical,
-		DirtyPages:      dirty,
-		ConcurrentIO:    concurrentIO(resident, readAhead),
-		ReadAheadPages:  readAhead,
-		WriteAheadPages: writeAhead,
-		SettleWorkers:   min(max(runtime.NumCPU(), 1), maximumSettleWorkers),
+		PageSize:       pageSize,
+		ResidentPages:  resident,
+		ArenaOffsets:   arenaOffsets(pageSize, resident, logical),
+		Arena:          config.Arena,
+		LogicalPages:   logical,
+		DirtyPages:     dirty,
+		ConcurrentIO:   concurrentIO(resident, readAhead),
+		ReadAheadPages: readAhead,
+		// A fault at random prefetches its run too where the run is a few
+		// large pages.
+		PrefetchAtRandom: vmmemory.PrefetchesAtRandom(pageSize),
+		WriteAheadPages:  writeAhead,
+		SettleWorkers:    min(max(runtime.NumCPU(), 1), maximumSettleWorkers),
 		// The pager is what holds a guest back past the window, so it carries
 		// the same bound the host reports and schedules its retries by.
 		LossWindow: lossWindow,

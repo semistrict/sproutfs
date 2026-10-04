@@ -59,7 +59,7 @@ func newPagerReader(ctx context.Context, disk platform.Disk, store *checkpoint.S
 	arena := &memoryArena{pageSize: int(pageSize)}
 	host, err := vmmemory.New(ctx, budget, vmmemory.Config{PageSize: pageSize, ResidentPages: resident,
 		LogicalPages: int(pages), DirtyPages: readAhead, ReadAheadPages: readAhead, Arena: vmmemory.ArenaShared,
-		ConcurrentIO: 16}, arena, spill)
+		PrefetchAtRandom: vmmemory.PrefetchesAtRandom(pageSize), ConcurrentIO: 16}, arena, spill)
 	if err != nil {
 		return nil, errorsJoinClose(err, spill)
 	}

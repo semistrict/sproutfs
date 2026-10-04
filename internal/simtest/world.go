@@ -964,7 +964,8 @@ func (w *World) newPager(ctx context.Context, h *hostState) (*pager, func(), err
 			ResidentPages: k.ResidentPages, ArenaOffsets: kind.offsets,
 			LogicalPages: k.LogicalPages, DirtyPages: kind.dirty,
 			ReadAheadPages: k.ReadAheadPages, WriteAheadPages: k.WriteAheadPages,
-			ConcurrentIO: k.ConcurrentIO, LossWindow: kind.window, Ephemeral: kind.ephemeral,
+			PrefetchAtRandom: vmmemory.PrefetchesAtRandom(kind.pageSize),
+			ConcurrentIO:     k.ConcurrentIO, LossWindow: kind.window, Ephemeral: kind.ephemeral,
 			// The window is measured on this host's own clock, which the
 			// simulation moves itself: a pager reading the wall clock would
 			// measure a bound written in checkpoint intervals against a

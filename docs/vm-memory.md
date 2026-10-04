@@ -318,6 +318,7 @@ amount of memory in each pager:
 | --- | --- | --- |
 | `ReadAheadPages` | 8 MiB of this pager's pages — four at 2 MiB, 2,048 at 4 KiB | a boot, a restore and a working set all walk memory forwards, so one fault serves what would otherwise take four. The faulting page is read first and the rest of the run is prefetched behind it, so a fault that does not walk forwards waits for its page alone. The run lands in consecutive arena slots |
 | `PrefetchRuns` | `ConcurrentIO` | each prefetch holds one read-ahead buffer and the free slots it took, so the bound on them is the same as on the reads faults make |
+| `PrefetchAtRandom` | on at 2 MiB, off at 4 KiB | a prefetch costs processors a page, and at 2 MiB a run is three pages to prefetch and a guest few enough pages that one reading at random touches most of its runs ([reading at random](#reading-at-random)) |
 | `WriteAheadPages` | the same 8 MiB of this pager's pages — four at 2 MiB, 2,048 at 4 KiB — or one page where that pager's dirty budget holds fewer than 64 such runs | write-ahead serves only fresh zeros. No other memory region shares a hole, so making a store's neighbours private loses no sharing at any page size. The benefit is one fault where a guest writing fresh memory forwards would otherwise take many: 80 % of the pages a 16 GiB guest's boot makes private are two contiguous runs written in order. Every page of the run holds a dirty reservation until the next checkpoint, so a pager whose budget cannot hold 64 runs uses one page |
 | `ConcurrentIO` | four per processor, held between 16 and 256, and never more read-ahead runs than that pager's arena has room for | each permit can hold one read-ahead or spill buffer. So the value sets both the parallelism a node can use and a bound on the buffers it costs |
 | `SettleWorkers` | the node's processors, capped at 64 | a settle compares resident pages and takes no I/O permit, so it is limited by processors. The upload waits for the settle |
@@ -568,7 +569,7 @@ mapping command, and its access is resolved: the guest runs again as soon as
 that one page is in. The rest of the run is a **prefetch**: one backing read
 on a goroutine of its own, started beside the fault's read, that the fault
 never waits for (`vmmemory/prefetch.go`). A fault at random serves its page
-alone ([reading at random](#reading-at-random)). Read-ahead uses only free
+alone, except in a pager of 2 MiB pages ([reading at random](#reading-at-random)). Read-ahead uses only free
 slots and never evicts. Only the faulting page may cause an eviction. Eviction can later revoke a
 mapping and require a refault. The read-ahead run is set per host, and every
 memory region of a host uses it.
@@ -697,6 +698,24 @@ chain took 31 ms a hop prefetching behind every fault and 29 ms after, against
 `TestADependentChainOfFaultsWaitsForOnePageAHop` holds a chain at random to
 one prefetch, its first hop's; the in-tree bug `pager-prefetch-every-fault`
 fails it.
+
+**A pager of 2 MiB pages prefetches at random too**
+(`Config.PrefetchAtRandom`, which the host sets from
+`vmmemory.PrefetchesAtRandom` for a page of 2 MiB or more). Whether a
+prefetch at random pays is whether the guest goes on to touch the rest of the
+run, which no fault can tell. The cost tips it. At 2 MiB a run is four pages,
+three to prefetch, and a guest is few enough pages that one reading at random
+soon touches most of its runs. A real application restored on GCE on
+2026-10-04 showed it: Valkey with a 4 GiB heap, whose 20,000 dependent GETs
+fault in about 2,800 of its guest's 4,096 pages, each run's pages at
+different times. Reading each fault's page alone, its GETs took 22.5 s from
+the cluster and 99.8 s from the store, against 22.4 s and 55.6 s the day
+before with each run read before its page; prefetching behind every fault,
+11.7 s and 32.5 s ([measurement](measurements/gce-real-app-restore-2026-10-04.md)).
+The chain of 2 MiB faults above pays for it: 10.4 ms a hop from the cluster
+against 7.1 ms. `TestAPagerThatPrefetchesAtRandomFaultsOnceARun` holds a guest
+touching every page at random to one fault a run; the in-tree bug
+`pager-read-alone-at-random` fails it.
 
 ### Planning a fault
 

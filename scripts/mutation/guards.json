@@ -144,6 +144,12 @@
     "purpose": "Prefetch the rest of every fault's run, whether or not the fault follows a recent fault of its memory region. A chain of faults at random then prefetches on every hop."
   },
   {
+    "id": "pager-read-alone-at-random",
+    "package": "vmmemory",
+    "run": "^TestAPagerThatPrefetchesAtRandomFaultsOnceARun$",
+    "purpose": "Read a fault at random's page alone even in a pager that prefetches at random, as every pager did from 2026-10-04 until the real application's restore. A guest of 2 MiB pages touching its heap at random then faults once a page instead of once a run."
+  },
+  {
     "id": "pager-plan-the-window-first",
     "package": "vmmemory",
     "run": "^TestAForwardChainOf4KiBFaultsPlansItsWindowInOneLookup$",

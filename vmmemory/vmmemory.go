@@ -449,6 +449,11 @@ type Config struct {
 	// free. Past it a fault reads its own page and nothing else. Zero selects
 	// ConcurrentIO.
 	PrefetchRuns int
+	// PrefetchAtRandom has a fault that follows none of its memory region's
+	// recent faults prefetch the rest of its run too, as one that follows a
+	// recent fault does; without it such a fault reads its page alone.
+	// PrefetchesAtRandom says which pagers should (see prefetch.go).
+	PrefetchAtRandom bool
 	// WriteAheadPages bounds the run of pages one store into fresh zeros, a
 	// zero-mapped page or a hole the guest never touched, makes private
 	// at once: the faulting page, the fresh zero pages after it and, where its

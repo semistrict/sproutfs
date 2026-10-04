@@ -44,6 +44,22 @@ func TestBothPagersGetRunsOfTheSameSizeInTheirOwnPages(t *testing.T) {
 	}
 }
 
+// A pager of 2 MiB pages prefetches behind a fault at random too, because its
+// run is three pages to prefetch and a guest of such pages touches most of its
+// runs; one of 4 KiB pages reads such a fault's page alone, because its run is
+// 2,047 pages to check and decode.
+func TestOnlyAPagerOfLargePagesPrefetchesAtRandom(t *testing.T) {
+	config := deploymentConfig()
+	if !pagerConfig(config, vmmemory.Ram).PrefetchAtRandom || !pagerConfig(config, vmmemory.Pmem).PrefetchAtRandom {
+		t.Fatal("a pager of 2 MiB pages reads a fault at random's page alone")
+	}
+	config.RAMPageSize, config.PMEMPageSize = 4<<10, 4<<10
+	config.LogicalPages, config.DirtyPages = KindPages{RAM: 1 << 22, PMEM: 1 << 22}, KindPages{RAM: 1 << 21, PMEM: 1 << 20}
+	if pagerConfig(config, vmmemory.Ram).PrefetchAtRandom || pagerConfig(config, vmmemory.Pmem).PrefetchAtRandom {
+		t.Fatal("a pager of 4 KiB pages prefetches behind a fault at random")
+	}
+}
+
 // An offset is an address and a page is memory. RAM places a private page at
 // the offset it has within its range, so every 2 MiB range a memory region may write
 // into owns 512 consecutive offsets of which only the stored pages hold memory:

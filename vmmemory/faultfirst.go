@@ -12,12 +12,14 @@ import (
 // anything (planFault), and plans only what that way reads:
 //
 //   - A fault at random, one that follows none of its memory region's recent
-//     faults (followsRecent), reads its page alone (readAlone). Its plan is
+//     faults (followsRecent), in a pager that does not prefetch at random
+//     (Config.PrefetchAtRandom), reads its page alone (readAlone). Its plan is
 //     its page: it locates that page, takes it — bound to a resident page
 //     under its identity, or a slot to read it into — and reads it. It plans
 //     nothing of the rest of its window, which it neither reads nor maps.
-//   - A fault that follows a recent one reads its page first and prefetches
-//     the rest of its window behind it (readFirst). It locates its page
+//   - A fault that follows a recent one, and any fault in a pager that
+//     prefetches at random, reads its page first and prefetches the rest of
+//     its window behind it (readFirst). It locates its page
 //     alone, takes it, and starts its read on a task of its own. Only then
 //     does it locate the rest of its window, in one lookup, and plan it: the
 //     resident pages it maps beside its own, and the slots of the pages the
@@ -76,7 +78,7 @@ func (r *MemoryRegion) planFault(ctx context.Context, index, fault uint64) (*win
 	case runFirst(ctx):
 		how = readRun
 		p, err = r.plan(ctx, start, end, fault)
-	case r.followsRecent(start) || sim.Bug(ctx, "pager-prefetch-every-fault"):
+	case r.prefetches(ctx, start):
 		how = readFirst
 		p, err = r.planPage(ctx, start, end, fault, index)
 	case sim.Bug(ctx, "pager-plan-the-window-at-random"):
