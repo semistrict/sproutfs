@@ -1,15 +1,17 @@
 ---
-id: TASK-89
+id: TASK-91
 title: Start a fork's child without writing to the object store before it runs
 status: To Do
 assignee: []
-created_date: '2026-10-04 21:52'
+created_date: '2026-10-04 22:05'
 labels:
   - performance
   - fork
 dependencies: []
+references:
+  - docs/measurements/gce-start-latency-2026-10-04.md
 priority: medium
-ordinal: 96000
+ordinal: 97000
 ---
 
 ## Description

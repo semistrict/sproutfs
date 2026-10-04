@@ -229,7 +229,7 @@ publishes, so writing its record behind the child does not change what a host
 loss costs it. The confirm is the harder part: it is what stops a fenced host
 from handing out pages ([migration](../migration.md#a-fork-is-a-handoff-from-a-parent-that-keeps-running)). It could run beside the
 VMM's start rather than before it, and a child would be discarded if it fails.
-This is worth doing, so the backlog has TASK-89 for it. The populate is the
+This is worth doing, so the backlog has TASK-91 for it. The populate is the
 larger cost, 170 to 190 ms, and is the first thing to cut.
 
 ## Also seen
@@ -255,7 +255,7 @@ larger cost, 170 to 190 ms, and is the first thing to cut.
    Populating RAM and the root at once, or the root only on its first fault,
    would take most of it off the path. TASK-27 and TASK-28 cover the
    populate and the restore's phases.
-2. **A store-free fork** (TASK-89), for a quarter of a fork.
+2. **A store-free fork** (TASK-91), for a quarter of a fork.
 3. **Keep a control record from changing more than about once a second**, or
    expect seconds of tail when it does.
 
