@@ -2376,6 +2376,136 @@ makes a running guest durable. Guest PMEM stores, guest RAM stores, live
 registers and local scratch spill are all volatile until a checkpoint includes
 them. Losing the host rewinds the VM to its last checkpoint.
 
+## A new generation and the right clock
+
+Every child of one fork point resumes from the same guest memory. Its kernel's
+random pool, every seed its programs drew and everything they derived from
+them are the same in every child. A restore of a checkpoint repeats them too.
+Each restore therefore gives the guest a new generation ID, and the guest's
+kernel reseeds its random pool from it. A restore also tells the guest how long
+its state was stopped, through its clock.
+
+### The devices a VM gets
+
+Firecracker gives every VM two devices for this, on both architectures, and
+nothing turns them off (`builder.rs`, `attach_vmgenid_device` and
+`attach_vmclock_device`):
+
+- **VMGenID.** A 128-bit random generation ID in a 16-byte buffer of guest
+  memory, with an interrupt. On x86_64 it is the ACPI device `VMGENCTR` in the
+  DSDT. On aarch64 it is the device tree node `microsoft,vmgenid`.
+- **VMClock.** A page of guest memory with a disruption marker and a VM
+  generation counter, with an interrupt. On x86_64 it is the ACPI device
+  `AMZNC10C`, and on aarch64 the node `amazon,vmclock`. Firecracker fills in
+  no clock data, so it says only that a restore happened.
+
+Every restore is a snapshot load: a fork's child, an open of a VM from its
+checkpoint, a VM created from a template or a kept checkpoint, and a
+migration's destination (`vmmachine.loadRequest`). On each load Firecracker
+draws a new generation ID from the host's random source, writes it into the
+guest's memory and raises the interrupt (`devices/acpi/vmgenid.rs`,
+`device_manager/persist.rs`). It also adds one to VMClock's disruption marker
+and generation counter (`devices/acpi/vmclock.rs`). Both writes are stores of
+the VMM into guest RAM, which copy on write like any other (see
+[writers that bypass the page tables](#writers-that-bypass-the-page-tables)).
+
+A migration takes a new generation too, although it continues one guest. A
+handoff's state can run twice. A receive that is tried again after a
+destination ran the guest runs it again elsewhere, and an abandoned migration
+resumes its source after its destination may have run. Two lives of one state
+with one generation draw the same random bytes. A spurious new generation
+costs the guest one reseed.
+
+### What the guest kernel must have
+
+- The VMGenID driver built in: `CONFIG_VMGENID=y`. A module would load too late
+  for a guest whose init loads none. On a new generation the driver reseeds the
+  kernel's random pool (`add_vmfork_randomness`), logs `crng reseeded due to
+  virtual machine fork` and sends a `NEW_VMGENID=1` uevent.
+- On x86_64, ACPI: the boot arguments must not carry `acpi=off` or `acpi=ht`.
+  On aarch64 the driver reads the device tree, which Linux supports from 6.10.
+- Optionally the VMClock driver, `CONFIG_PTP_1588_CLOCK_VMCLOCK`, which serves
+  the VMClock page as `/dev/vmclock0`.
+
+The pinned guest kernel, Firecracker's CI build of Linux 6.18.44, has all of
+them built in on both architectures
+(`third_party/firecracker/resources/guest_configs/microvm-kernel-ci-*-6.18.config`).
+
+A host refuses to start (`vmmachine.CheckGuest`, `ErrGuestDevices`) when its
+kernel has no VMGenID driver built in, or when its boot arguments hide the
+device on x86_64. The check looks for the name the driver matches the device
+by, which a kernel with the driver built in holds in its image. Firecracker
+loads only uncompressed kernels, so the name is there in plain bytes. A host
+also refuses a VMM of another API revision; revision 2 is the one that pairs
+the guest's clock with the wall clock (below).
+
+### The reseed and its window
+
+The interrupt is raised before the vCPUs resume, so the guest takes it first.
+On x86_64 the kernel then runs the ACPI interpreter and the driver on its
+worker threads, and the driver reseeds the pool. On aarch64 the driver reseeds
+in the interrupt handler itself. So on x86_64 there is a window: a read of
+`/dev/urandom` or `getrandom()` that runs before those workers returns bytes
+of the pool the state was captured with, and two restores of one state that
+both read in it draw the same bytes. The Firecracker tests ask each guest as
+soon as it runs, over its console, and measure when the reseed is seen
+([measurement](measurements/gce-generation-2026-10-04.md)). All 18 of a fork's
+children had reseeded by their first answer. Two of nine guests restored from a
+checkpoint had not: their first answer came before the reseed, and their next,
+20 ms later, after it. Every reseed was seen within 381 ms of the guest's
+release, most of it the guest faulting its memory back.
+
+### What a guest's programs must do themselves
+
+The kernel reseeds only its own pool. A program that calls `getrandom()` or
+reads `/dev/urandom` each time it needs bytes is safe once the reseed has run.
+A program that drew bytes before the fork point and keeps them is not:
+
+- a userspace random generator seeded once, such as a language runtime's seeded
+  PRNG or a library's own DRBG;
+- keys, nonces, counters and session tickets made ahead of time;
+- UUIDs and node IDs derived from a stored seed.
+
+Such a program must draw again on a new generation. It can wait for the
+`NEW_VMGENID=1` uevent, which the driver sends after it has reseeded. Or it can
+read VMClock's generation counter in `/dev/vmclock0`, which the VMM changes
+before the guest resumes, so it is right from the first instruction. A program
+that sees the counter change before the uevent arrives is inside the window
+above and must wait for the uevent before it draws. Nothing on the host can do
+this for it.
+
+### The clock
+
+On x86_64 the guest's clocks move on across a restore by the host's wall time
+since the state was captured. The host asks for this on every load
+(`clock_realtime`). The fork pairs the guest's kvmclock with the host's wall
+clock when it saves the state. KVM does this itself only on a host whose own
+clocksource is the TSC, and a nested host on kvm-clock would otherwise get no
+pairing. On load the fork moves kvmclock on through KVM, and moves the guest's
+TSC on by the same time at the guest's TSC frequency. A Linux guest prefers the
+TSC as its clocksource where the TSC is invariant, and then reads its time from
+the TSC alone. So from its first instruction a restored guest's wall clock is
+as far from the host's as it was when its state was captured. Its monotonic
+clock jumps forward by the stop as well, as it does when a VM is descheduled
+for that long. The restore tells the guest's watchdogs to expect the jump
+(`KVM_KVMCLOCK_CTRL`).
+
+So a restore adds no error of its own beyond the microseconds between two reads
+of the host's clock. Across hosts it adds the hosts' disagreement, which NTP
+keeps well under a millisecond. The error a guest has is the one it booted with
+and has drifted to since. On the qualification host a guest booted 25 to 46 ms
+behind the host, and every restore kept that offset to within the console's
+round trip ([measurement](measurements/gce-generation-2026-10-04.md)). Before
+the TSC was moved on too, the guest kept its TSC clocksource where the state
+stopped it, and a fork's children were half a second to a second behind their
+parent. A guest that needs a better clock, or one that runs for days, runs a
+time daemon over the KVM PTP clock (`CONFIG_PTP_1588_CLOCK_KVM`, `/dev/ptp0`).
+
+On aarch64 Firecracker cannot move the clock on, and a restored guest's clock
+resumes where its state stopped it. vmmachine logs a warning at each restore
+there. The guest must set its own wall clock, for example from the host over
+its agent.
+
 ## Live migration
 
 The pager has two jobs in [live migration](migration.md): serving pages to the
