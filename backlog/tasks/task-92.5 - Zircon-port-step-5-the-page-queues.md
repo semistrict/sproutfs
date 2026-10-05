@@ -1,9 +1,11 @@
 ---
 id: TASK-92.5
 title: 'Zircon port step 5: the page queues'
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-05 05:09'
+updated_date: '2026-10-05 07:32'
 labels:
   - pager
   - zircon-port
@@ -30,3 +32,13 @@ Step 5 of the plan. Zircon orders reclaim with page queues (zircon/kernel/vm/pag
 - [ ] #3 The host recency list, idle list and cold-copy pins are the reclaim, don't-need and zero-fork queues; vmmemory/pagelist.go is deleted
 - [ ] #4 Every test in vmmemory, host, vmmigrate and internal/simtest passes unchanged in both arena modes, including the idle-page and cold-copy tests
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Port vm/page_queues.cc and vm/include/vm/page_queues.h into vmmemory/internal/zirconvm/page_queues.go: queues, generations, MarkAccessed, ProcessLruQueue, PeekIsolate, the isolate and zero-fork queues, counts. Not ported, each commented: the MRU and LRU threads and the timeout (owner decision 4: aging driven by faults only), the accessed-bit scan, loaned pages, LRU actions, the debug compressor, kernel counters, Dump.
+2. Port the 10 cases of page_queues_unittest.cc into page_queues_test.go, in synctest bubbles at both page sizes.
+3. Replace in place: resident gets the queue node; Host.lru becomes the reclaim and isolate queues (aged one generation per fault, so the order is fault order as before), Host.idle becomes the don't-need queue, the pins of cold copies move the page they pin into the zero-fork queue, outside reclaim, taken last. Delete vmmemory/pagelist.go and the links.
+4. Run the whole suite in both arena modes, check-guards, just check.
+5. Benchmarks old vs new (10 alternating runs), Gremlins on page_queues.go, tests for meaningful survivors.
+<!-- SECTION:PLAN:END -->
