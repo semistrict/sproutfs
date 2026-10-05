@@ -67,28 +67,41 @@ func (b *locatedBacking) Locate(ctx context.Context, offset, length uint64) ([]c
 type benchPager struct {
 	host   *vmmemory.Host
 	region *vmmemory.MemoryRegion
-	spill  platform.File
+	// mapping is what the region's guest maps, where a store writes.
+	mapping *mapping
+	spill   platform.File
 }
 
 func newBenchPager(b *testing.B, ctx context.Context, runtime *sim.Runtime, backing vmmemory.Backing,
 	number int) *benchPager {
+	b.Helper()
+	return newConfiguredBenchPager(b, ctx, runtime, backing, number, vmmemory.Config{
+		ResidentPages: benchPages, LogicalPages: benchPages, DirtyPages: benchWindow, ReadAheadPages: benchWindow,
+		PrefetchRuns: 1})
+}
+
+// newConfiguredBenchPager is a benchmark's 4 KiB pager as cfg shapes it, in the
+// suite's core.
+func newConfiguredBenchPager(b *testing.B, ctx context.Context, runtime *sim.Runtime, backing vmmemory.Backing,
+	number int, cfg vmmemory.Config) *benchPager {
 	b.Helper()
 	spill, err := runtime.NewDisk(fmt.Sprintf("pager-%d", number), sim.DiskConfig{}).Open(ctx, "spill",
 		platform.OpenOptions{Create: true})
 	if err != nil {
 		b.Fatal(err)
 	}
-	host, err := vmmemory.New(ctx, testresource.New(), vmmemory.Config{PageSize: checkpoint.PageSize4KiB,
-		ResidentPages: benchPages, LogicalPages: benchPages, DirtyPages: benchWindow, ReadAheadPages: benchWindow,
-		PrefetchRuns: 1, Core: suiteCore}, newArena(checkpoint.PageSize4KiB), spill)
+	cfg.PageSize, cfg.Core = checkpoint.PageSize4KiB, suiteCore
+	a := newArena(checkpoint.PageSize4KiB)
+	host, err := vmmemory.New(ctx, testresource.New(), cfg, a, spill)
 	if err != nil {
 		b.Fatal(err)
 	}
-	region, err := host.Attach(ctx, ram(backing), newMapping(newArena(checkpoint.PageSize4KiB)))
+	m := newMapping(a)
+	region, err := host.Attach(ctx, ram(backing), m)
 	if err != nil {
 		b.Fatal(err)
 	}
-	return &benchPager{host: host, region: region, spill: spill}
+	return &benchPager{host: host, region: region, mapping: m, spill: spill}
 }
 
 // close detaches the memory region, which cancels the prefetch held reading,

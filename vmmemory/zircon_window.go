@@ -54,10 +54,14 @@ type zplan struct {
 }
 
 func (z *zirconRegion) newPlan(start, end, fault uint64) *zplan {
+	// The plan's four marks of each page are one allocation: a fault at
+	// random pays for each one it makes.
+	n := end - start
+	marks := make([]bool, 4*n)
 	p := &zplan{z: z, start: start, end: end, fault: fault, store: end,
-		pages: make([]*zirconvm.VmPage, end-start), reserved: make([]fileSlot, end-start),
-		fresh: make([]bool, end-start), zeros: make([]bool, end-start), writable: make([]bool, end-start),
-		private: make([]bool, end-start)}
+		pages: make([]*zirconvm.VmPage, n), reserved: make([]fileSlot, n),
+		fresh: marks[:n:n], zeros: marks[n : 2*n : 2*n], writable: marks[2*n : 3*n : 3*n],
+		private: marks[3*n:]}
 	for i := range p.reserved {
 		p.reserved[i] = fileSlot{slot: -1}
 	}
@@ -385,8 +389,8 @@ func (p *zplan) takeRootRun(first, last uint64, eligible []bool) (taken, elsewhe
 	h := z.region.host
 	key, _ := p.identity(first)
 	root := z.host.root(rootOf(key))
-	taken = make([]bool, last-first)
-	elsewhere = make([]bool, last-first)
+	marks := make([]bool, 2*(last-first))
+	taken, elsewhere = marks[:last-first:last-first], marks[last-first:]
 	hits := uint64(0)
 	lock := root.pages.Lock()
 	lock.Lock()

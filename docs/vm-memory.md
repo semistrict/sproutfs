@@ -103,13 +103,31 @@ pages around a store as the current core's do. The page a store copied from
 stays bound to its binding until the store's one mapping command replaces the
 guest's mapping of it, so no idle drop takes it before then. A page the region
 read with no identity is its own already, and a store dirties it in place.
-The reservation stays the pager's, in the binding beside the layer, until the
-spill moves into this core with eviction.
+The reservation stays the pager's, in the binding beside the layer.
 
-Eviction of a page a region maps, seals and everything a checkpoint does, cold
-copies, serving a migration and a peer backing come to this core with step 12.
-Until then it refuses them, and an allocation it could only meet by evicting a
-mapped page fails with `ErrCapacity`.
+A seal write-protects the region's Dirty runs and starts writeback on each of
+them (`zircon_checkpoint.go`). The layer's pages become AwaitingClean, and
+each binding's checkpoint copy is a detached binding that holds the page and
+its reservation, as the current core's checkpoint copy does. A store into a
+page the checkpoint holds splits it: the pager fills its own copy and the
+layer takes it in the page's place (`SplitAwaitingClean`), so the checkpoint
+keeps the bytes it took. The settle ends writeback: a page whose bytes the
+checkpoint published leaves the layer and goes into the root of its new
+identity, and a guest still on it maps it there. An abandoned checkpoint
+gives its pages back to the layer Dirty. Dirty pages age in the page queues
+with the clean ones, as they do where the pager spills them.
+
+Eviction takes the oldest page of the queues (`zircon_evict.go`). It revokes
+every mapping of the page, in every region that maps it, spills a dirty page
+to its reservation and takes the page out of its object, which is then free.
+A page shared at a fork point is an alias of the same frame, so the
+revocation covers each region that forked from it. Cold copies and the
+give-back are the current core's (`zircon_cold.go`), over the frame a binding
+maps. Isolation moves a page whose frame a region may no longer reach, and a
+fork file's page is copied on its first store only (`zircon_isolation.go`).
+Serving a migration reads a region's resident pages and its unpublished ones
+(`zircon_serve.go`), and a page a peer backing reports the source's own
+enters the layer Dirty under a dirty reservation (`zircon_peer.go`).
 
 The histograms of the fault path are in `internal/latency`, outside `vmmemory`.
 None of these packages uses any pager state: no host lock, no memory region and
