@@ -3,8 +3,9 @@ package vmmemory
 import (
 	"context"
 	"errors"
-	"sort"
 	"time"
+
+	"github.com/semistrict/sproutfs/vmmemory/internal/zirconvm"
 )
 
 // ErrHandedOff reports a memory region whose volume belongs to another host now. Its
@@ -239,7 +240,7 @@ func (r *MemoryRegion) Stats(ctx context.Context) (MemoryRegionStats, error) {
 // A page two of one memory region's own pages both map is not shared in this sense:
 // what the count is for is memory this host holds once and more than one guest
 // memory region reads. Caller holds the host lock, which is what the alias set is
-// protected by; eachBinding holds it for the whole of a binding block.
+// protected by; eachBinding holds it for the whole of a batch.
 func (h *Host) sharedElsewhere(pg *resident, r *MemoryRegion) bool {
 	for alias := range pg.aliases.all() {
 		if alias.memoryRegion != r {
@@ -250,33 +251,49 @@ func (h *Host) sharedElsewhere(pg *resident, r *MemoryRegion) bool {
 }
 
 // eachBinding visits every page that has per-page state, in ascending order,
-// with the binding map and the host lock held. Both are taken per binding block
-// rather than for the whole scan, so a large memory region does not hold up the page
-// transitions that need them — a reclaim reading which reservation a page names
-// among them. Caller holds the memory region lock, which is what keeps the blocks
-// themselves in existence across the scan.
+// with the binding map and the host lock held. Both are taken per batch of
+// eachBindingBatch bindings rather than for the whole scan, so a large memory
+// region does not hold up the page transitions that need them — a reclaim
+// reading which reservation a page names among them. Caller holds the memory
+// region lock, which is what keeps the bindings themselves in existence across
+// the scan.
 func (r *MemoryRegion) eachBinding(visit func(*binding)) {
 	h := r.host
-	r.bindingsMu.Lock()
-	keys := make([]uint64, 0, len(r.blocks))
-	for key := range r.blocks {
-		keys = append(keys, key)
-	}
-	r.bindingsMu.Unlock()
-	sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
-	for _, key := range keys {
+	for from, more := uint64(0), true; more; {
 		// The host lock first: a store applying the rules reads bindings while
 		// it holds the host lock, so taking the two the other way round waits
 		// on that store while it waits on this.
 		h.mu.Lock()
 		r.bindingsMu.Lock()
-		block := r.blocks[key]
-		for i := range block {
-			if b := &block[i]; b.index < uint64(r.pageCount) {
-				visit(b)
-			}
-		}
+		from, more = r.eachBindingLocked(from, visit)
 		r.bindingsMu.Unlock()
 		h.mu.Unlock()
 	}
+}
+
+// eachBindingBatch is how many bindings eachBinding visits under one hold of
+// its locks.
+const eachBindingBatch = 256
+
+// eachBindingLocked visits up to eachBindingBatch bindings from page from on,
+// and reports the page to go on from and whether any is left. Caller holds
+// the host lock and then bindingsMu.
+func (r *MemoryRegion) eachBindingLocked(from uint64, visit func(*binding)) (next uint64, more bool) {
+	visited := 0
+	if err := r.pages.ForEveryPageInRange(func(slot *zirconvm.PageOrMarker[binding], _ uint64) error {
+		if !slot.IsPage() {
+			return nil
+		}
+		b := slot.Page()
+		if visited == eachBindingBatch {
+			next, more = b.index, true
+			return zirconvm.ErrStop
+		}
+		visit(b)
+		visited++
+		return nil
+	}, r.offset(from), r.offset(uint64(r.pageCount))); err != nil {
+		panic("vmmemory: walking the page list: " + err.Error())
+	}
+	return next, more
 }

@@ -16,15 +16,11 @@ import (
 	"github.com/semistrict/sproutfs/vmmigrate"
 )
 
-// heldListener hands out connections whose replies of one kind wait for
-// release, so a test can have a request on the wire and no answer to it at a
-// moment of its choosing. sending reports the first such reply reaching that
-// point.
+// heldListener hands out connections whose page replies wait for release, so a
+// test can have a request on the wire and no answer to it at a moment of its
+// choosing. sending reports the first page reply reaching that point.
 type heldListener struct {
 	platform.Listener
-	// holds names the replies that wait: a page request's, unless a test
-	// holds another kind.
-	holds   func(platform.Frame) bool
 	sending chan struct{}
 	release chan struct{}
 	once    sync.Once
@@ -38,8 +34,8 @@ type heldListener struct {
 	err error
 }
 
-func newHeldListener(listener platform.Listener, holds func(platform.Frame) bool) *heldListener {
-	return &heldListener{Listener: listener, holds: holds,
+func newHeldListener(listener platform.Listener) *heldListener {
+	return &heldListener{Listener: listener,
 		sending: make(chan struct{}), release: make(chan struct{})}
 }
 
@@ -57,7 +53,7 @@ type heldConn struct {
 }
 
 func (c heldConn) Send(ctx context.Context, frame platform.Frame) error {
-	if !c.listener.holds(frame) {
+	if !peertest.IsPageReply(frame) {
 		return c.Conn.Send(ctx, frame)
 	}
 	c.listener.once.Do(func() { close(c.listener.sending) })
@@ -85,33 +81,21 @@ func (c heldConn) Send(ctx context.Context, frame platform.Frame) error {
 // the listener to be released.
 func (s *served) heldSource(t *testing.T, address platform.Address) *heldListener {
 	t.Helper()
-	return s.heldSourceHolding(t, address, peertest.IsPageReply, false, nil)
+	return s.heldSourceHolding(t, address, false, nil)
 }
 
-// heldSourceHolding is heldSource holding the replies holds names, with what
-// the hold does to the reply it is holding: deliver says the reply reaches the
-// destination before the send that carried it returns, and sendErr is what
-// that send finally reports.
-func (s *served) heldSourceHolding(t *testing.T, address platform.Address, holds func(platform.Frame) bool,
+// heldSourceHolding is heldSource with what the hold does to the reply it is
+// holding: deliver says the reply reaches the destination before the send that
+// carried it returns, and sendErr is what that send finally reports.
+func (s *served) heldSourceHolding(t *testing.T, address platform.Address,
 	deliver bool, sendErr error) *heldListener {
 	t.Helper()
-	source, held := s.migration.cluster.heldServer(t, address, holds)
-	held.deliver, held.err = deliver, sendErr
-	source.Serve("vm-2", vmmigrate.MemoryRegionPages(s.machine.MemoryRegions()))
-	s.source = source
-	return held
-}
-
-// heldServer is a peer server at address, serving nothing yet, whose replies
-// that holds names wait for the listener to be released.
-func (c *cluster) heldServer(t *testing.T, address platform.Address,
-	holds func(platform.Frame) bool) (*peer.Server, *heldListener) {
-	t.Helper()
-	listener, err := c.runtime.Network().Listen(address)
+	listener, err := s.migration.cluster.runtime.Network().Listen(address)
 	if err != nil {
 		t.Fatal(err)
 	}
-	held := newHeldListener(listener, holds)
+	held := newHeldListener(listener)
+	held.deliver, held.err = deliver, sendErr
 	source, err := peer.NewServer(t.Context(), peer.ServerConfig{PageSize: pageSize,
 		MaxPagesPerRequest: 8, Budgets: budgets(32 << 20), Address: address, Listener: held})
 	if err != nil {
@@ -122,7 +106,9 @@ func (c *cluster) heldServer(t *testing.T, address platform.Address,
 		held.let()
 		_ = source.Close()
 	})
-	return source, held
+	source.Serve("vm-2", vmmigrate.MemoryRegionPages(s.machine.MemoryRegions()))
+	s.source = source
+	return held
 }
 
 func (l *heldListener) let() {
@@ -213,62 +199,102 @@ func TestClosingAPostCopyStillRefusesAPageOnlyTheSourceHad(t *testing.T) {
 }
 
 // TestClosingAForkChildEndsTheClaimInFlight is the same close reaching a fork
-// child's claim of its hold. A receive closed while that claim is on the wire
+// child's claim of its hold. A receive closed while that claim is in flight
 // has given the child up: its host discards it. The claim must end with the
 // close rather than report the hold claimed, even though the parent's host
-// marked it claimed and says so after the close. A claim that took that answer
+// marked it claimed and its answer is back. A claim that took that answer
 // would tell the host to run a child whose receive it has just closed.
 func TestClosingAForkChildEndsTheClaimInFlight(t *testing.T) {
-	onOneProcessorAndAll(t, func(t *testing.T) {
-		m := newMigration(t)
-		parent, held := m.cluster.heldServer(t, "parent-claims-held", peertest.IsClaimReply)
-		_, handoff := m.forkedFrom(t, "vm-2", parent)
-		received, _ := m.receive(t, handoff)
-		if err := received.Done(t.Context()); err != nil {
-			t.Fatal(err)
-		}
+	m := newMigration(t)
+	_, handoff := m.forked(t, "vm-2")
+	received, _ := m.receive(t, handoff)
+	if err := received.Done(t.Context()); err != nil {
+		t.Fatal(err)
+	}
 
-		claimed := make(chan error, 1)
-		go func() { claimed <- received.Claim(m.ctx(t)) }()
-		<-held.sending
-		// The parent's host has marked the hold claimed and is about to say
-		// so. This is the moment a host that gave the child up closes it.
-		received.Close()
-		held.let()
-		if err := <-claimed; !errors.Is(err, vmmigrate.ErrClosed) {
-			t.Fatalf("a claim the close interrupted reported %v, want ErrClosed", err)
-		}
-		if !parent.Discard("vm-2") {
-			t.Fatal("the parent's host never marked the hold claimed, so no answer came after the close")
-		}
-	})
+	held, ctx := holdUntakenReply(m.ctx(t), t)
+	claimed := make(chan error, 1)
+	go func() { claimed <- received.Claim(ctx) }()
+	<-held.back
+	// The parent's host has marked the hold claimed and said so, and the claim
+	// has not taken the answer yet. This is the moment a host that gave the
+	// child up closes it.
+	received.Close()
+	held.let()
+	if err := <-claimed; !errors.Is(err, vmmigrate.ErrClosed) {
+		t.Fatalf("a claim the close interrupted reported %v, want ErrClosed", err)
+	}
+	if !m.pages.Discard("vm-2") {
+		t.Fatal("the parent's host never marked the hold claimed, so its answer never came back")
+	}
 }
 
 // TestClosingAPostCopyEndsTheListingInFlight is the same close reaching the
 // listing of what the source holds, which the stream asks for once the pages
 // no checkpoint has are here. A listing is made under the backing's life like
-// every other request, so the close ends it, and the answer the source sends
-// after the close is not taken.
+// every other request, so the close ends it, and the source's answer that is
+// back but not yet taken is refused.
 func TestClosingAPostCopyEndsTheListingInFlight(t *testing.T) {
-	onOneProcessorAndAll(t, func(t *testing.T) {
-		s := newServed(t, nil, 4)
-		held := s.heldSourceHolding(t, "source-listing-held", peertest.IsListingReply, false, nil)
-		backing := s.backing(t, s.source, "ram0")
+	s := newServed(t, nil, 4)
+	backing := s.backing(t, nil, "ram0")
 
-		listed := make(chan error, 1)
-		go func() {
-			_, err := backing.Resident(s.ctx(t))
-			listed <- err
-		}()
-		<-held.sending
-		if err := backing.Close(); err != nil {
-			t.Fatal(err)
+	held, ctx := holdUntakenReply(s.ctx(t), t)
+	listed := make(chan error, 1)
+	go func() {
+		_, err := backing.Resident(ctx)
+		listed <- err
+	}()
+	<-held.back
+	if err := backing.Close(); err != nil {
+		t.Fatal(err)
+	}
+	held.let()
+	if err := <-listed; !errors.Is(err, vmmigrate.ErrClosed) {
+		t.Fatalf("a listing the close interrupted reported %v, want ErrClosed", err)
+	}
+}
+
+// untakenReply holds a request a peer backing makes once it is back from the
+// source, before the backing decides whether to take its reply. back reports
+// the request held there. A close made before the reply arrives reaches the
+// request from a goroutine of its own, and the Go scheduler orders that
+// goroutine against the reply. A close made while the reply is held here lands
+// between the two in every run, so only the backing's own check of its end
+// refuses the reply.
+type untakenReply struct {
+	back    chan struct{}
+	release chan struct{}
+}
+
+type untakenKey struct{}
+
+// holdUntakenReply holds the first request made under the context it returns,
+// which is ctx marked. Every other request, such as a stream's listing still in
+// flight, goes on.
+func holdUntakenReply(ctx context.Context, t *testing.T) (*untakenReply, context.Context) {
+	t.Helper()
+	held := &untakenReply{back: make(chan struct{}), release: make(chan struct{})}
+	var once sync.Once
+	vmmigrate.SetReplySeam(t, func(ctx context.Context) {
+		if ctx.Value(untakenKey{}) != held {
+			return
 		}
-		held.let()
-		if err := <-listed; !errors.Is(err, vmmigrate.ErrClosed) {
-			t.Fatalf("a listing the close interrupted reported %v, want ErrClosed", err)
-		}
+		once.Do(func() {
+			close(held.back)
+			<-held.release
+		})
 	})
+	// A test that stops early still lets the held request go.
+	t.Cleanup(held.let)
+	return held, context.WithValue(ctx, untakenKey{}, held)
+}
+
+func (h *untakenReply) let() {
+	select {
+	case <-h.release:
+	default:
+		close(h.release)
+	}
 }
 
 // onOneProcessorAndAll runs test three times on one processor and then on as

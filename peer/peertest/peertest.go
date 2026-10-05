@@ -44,26 +44,13 @@ func Read(frame platform.ReceivedFrame) (*Frame, error) {
 // IsPageReply reports a frame this host is about to send that answers a page
 // request, which is what a test that holds or drops a source's replies holds or
 // drops: a hello's answer, a listing or a claim's is something else.
-func IsPageReply(frame platform.Frame) bool { return answers(frame, new(migratev1.PageResponse)) }
-
-// IsListingReply reports a frame this host is about to send that answers a
-// listing of the pages it holds.
-func IsListingReply(frame platform.Frame) bool {
-	return answers(frame, new(migratev1.ResidentResponse))
-}
-
-// IsClaimReply reports a frame this host is about to send that answers a fork
-// child's claim of its hold.
-func IsClaimReply(frame platform.Frame) bool { return answers(frame, new(migratev1.ClaimResponse)) }
-
-// answers reports a frame about to be sent whose message is of response's kind.
-func answers(frame platform.Frame, response proto.Message) bool {
+func IsPageReply(frame platform.Frame) bool {
 	incoming, err := wire.Decode(platform.ReceivedFrame{Header: frame.Header,
 		Payload: io.NopCloser(bytes.NewReader(nil)), PayloadSize: frame.PayloadSize})
 	if err != nil {
 		return false
 	}
-	return incoming.Message.MessageIs(response)
+	return incoming.Message.MessageIs(new(migratev1.PageResponse))
 }
 
 // Checksummed says the frame's payload carried a checksum of its own in the

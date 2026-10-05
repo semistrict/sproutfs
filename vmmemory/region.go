@@ -14,7 +14,7 @@ import (
 	"github.com/semistrict/sproutfs/internal/latency"
 	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/resource"
-	"github.com/semistrict/sproutfs/vmmemory/internal/pageranges"
+	"github.com/semistrict/sproutfs/vmmemory/internal/zirconvm"
 )
 
 type failure struct{ err error }
@@ -73,9 +73,13 @@ type MemoryRegion struct {
 	pageCount  int
 	bindingsMu sync.Mutex
 	// changes is Config.MeasureChanges's state, empty unless it is on.
-	changes       changes
-	blocks        map[uint64]*bindingBlock
-	zeroRanges    pageranges.Map
+	changes changes
+	// pages is the memory region's page list, Zircon's VmPageList over this
+	// pager's page: a slot holds the binding of a page that has per-page
+	// state, and an Untracked zero interval is a compressed zero run, pages
+	// mapped to zero with no binding at all. A page with no slot holds
+	// nothing. Guarded by bindingsMu; see bindings.go.
+	pages         *zirconvm.PageList[binding]
 	dirtyBindings map[uint64]*binding
 	// dirtyRuns is the same set as dirtyBindings less the pages no mapping of
 	// this memory region covers, held as runs rather than as pages: it is what a seal
@@ -83,7 +87,7 @@ type MemoryRegion struct {
 	// than the pages they cover. It is maintained by every transition that
 	// changes whether a page is one the next seal would protect, all of which
 	// hold bindingsMu.
-	dirtyRuns pageranges.Map
+	dirtyRuns pageRuns
 	// coldPages is every cold copy of this memory region, and coldCopies the
 	// ones its session's worker has not taken yet, both guarded by bindingsMu;
 	// coldCopied wakes that worker. See cold.go.
@@ -236,7 +240,7 @@ func (h *Host) admit(ctx context.Context, memoryRegion MemoryRegionBacking, mapp
 		return nil, err
 	}
 	_, peer := backing.(UnpublishedLoader)
-	r := &MemoryRegion{live: ctxsync.NewRWMutex(), mu: ctxsync.NewRWMutex(), endMu: ctxsync.NewMutex(), protectMu: ctxsync.NewRWMutex(), filesMu: ctxsync.NewMutex(), ended: make(chan struct{}), coldCopied: make(chan struct{}, 1), host: h, backing: backing, kind: memoryRegion.Kind, peer: peer, mapping: mapping, tenant: memoryRegion.Tenant, pageCount: int(count), blocks: make(map[uint64]*bindingBlock), readAheadPages: h.cfg.ReadAheadPages}
+	r := &MemoryRegion{live: ctxsync.NewRWMutex(), mu: ctxsync.NewRWMutex(), endMu: ctxsync.NewMutex(), protectMu: ctxsync.NewRWMutex(), filesMu: ctxsync.NewMutex(), ended: make(chan struct{}), coldCopied: make(chan struct{}, 1), host: h, backing: backing, kind: memoryRegion.Kind, peer: peer, mapping: mapping, tenant: memoryRegion.Tenant, pageCount: int(count), pages: zirconvm.NewPageList[binding](h.pageSize), dirtyRuns: newPageRuns(h.pageSize), readAheadPages: h.cfg.ReadAheadPages}
 	if h.isolated() {
 		if err := h.newFiles(ctx, r); err != nil {
 			h.mu.Lock()
@@ -773,10 +777,9 @@ func (r *MemoryRegion) Detach(ctx context.Context) error {
 	h.signal()
 	h.mu.Unlock()
 	r.closed = true
-	r.blocks = nil
+	r.pages = zirconvm.NewPageList[binding](h.pageSize)
 	r.dirtyBindings = nil
-	r.zeroRanges = pageranges.Map{}
-	r.dirtyRuns = pageranges.Map{}
+	r.dirtyRuns = newPageRuns(h.pageSize)
 	r.pageCount = 0
 	return nil
 }

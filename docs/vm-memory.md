@@ -13,7 +13,8 @@ is the low-level syscall fixture for mapping races and malformed commands.
 
 Three parts of `vmmemory` are nested packages that only `vmmemory` can import:
 
-- `internal/pageranges` is the interval map that holds page state.
+- `internal/pageranges` is the interval map in which the Linux connection keeps
+  the mapping generation of each run of its client's pages.
 - `internal/slots` holds the arena free set and the consecutive runs of it that
   one mapping command covers.
 - `internal/zirconvm` is the Go port of the page layer of Zircon's VM, which
@@ -38,8 +39,8 @@ The histograms of the fault path are in `internal/latency`, outside `vmmemory`.
 None of these packages uses any pager state: no host lock, no memory region and
 no page.
 Everything else stays in `vmmemory`. The arena, the spill file, the UFFD session
-and the binding blocks all read and write the pager's state under its metadata
-lock, so they are files of one package and not separate packages.
+and the bindings all read and write the pager's state under its metadata lock,
+so they are files of one package and not separate packages.
 
 ## Why a pager of its own
 
@@ -572,6 +573,20 @@ arena. A zero range is one mapping command, however many pages it covers. So at
 4 KiB a sparse hole does not cost a command or a mapping per page. The first
 write replaces one page of it with a private arena page. The zero mapping is not
 an identity, and nothing is shared under it.
+
+A memory region keeps its per-page state in a page list, the port of Zircon's
+`VmPageList` in `internal/zirconvm`. A page that has state of its own has a
+slot, which holds the page's binding: its resident page, its reservation, and
+whether it is mapped, dirty, cold or held by a checkpoint. A run of zero
+mappings is a zero interval, which holds its two ends and nothing between
+them. A page nothing has touched has no slot. A node of the list is 16 slots
+of 16 bytes, so a page touched alone costs a node of 256 bytes, its entries in
+the list's tree and map, and a binding of 64. A memory region that reads one
+page in 512 holds 389 bytes for each page it read. The blocks of 256 bindings that the page list replaced held
+21,828 (`sparse_metadata_test.go`, 2026-10-05). A binding never leaves the list
+while its memory region is attached, because resident pages and faults hold
+pointers to it. A bound page that a zero run covers keeps that in its binding,
+because a slot holds a binding or lies in an interval, never both.
 
 ## Faults and read-ahead
 
@@ -1191,8 +1206,8 @@ volumes proceed concurrently. A short host lock covers capacity accounting,
 binding pointers and the shared index. No backing read, spill or mapping
 acknowledgement holds it. Each resident page has its own transition lock for
 mapping changes and reclaim. Read-ahead skips a page whose lock is busy instead
-of waiting. A memory region's per-page state is kept under that memory region's binding map
-lock. That state records whether a page is mapped, what it is dirty under and
+of waiting. A memory region's per-page state is kept under that memory region's binding
+lock, which guards its page list. That state records whether a page is mapped, what it is dirty under and
 which checkpoint holds it. This lock is needed because only one pair of holders
 does not otherwise exclude each other: a reclaim that revokes its victim's pages
 under a page's lock, and a seal that reads those pages under the memory region.
@@ -1239,9 +1254,11 @@ running. The walk holds the memory region that the seal took. For each page it:
 - moves the binding into the checkpoint
 - hands the checkpoint that page's reservation and the page it was copied from
 
-The memory region keeps its dirty set as runs for this purpose. Every transition that
-changes whether the next seal would protect a page updates the runs. So the
-pause reads O(runs), never O(pages), and takes the whole set in one step. A fault
+The memory region keeps its dirty set as runs for this purpose: the Dirty
+intervals of a page list of their own, which the list joins and splits as pages
+enter and leave the set. Every transition that changes whether the next seal
+would protect a page updates the runs. So the pause reads O(runs), never
+O(pages), and takes the whole set in one step. A fault
 of that memory region waits for the walk. Nothing else waits for it. The checkpoint's own
 readers (the settle, the page list and the upload) run after the pause anyway,
 and they wait for the walk there. On GCE, a capture of 2,204,672 sealed RAM

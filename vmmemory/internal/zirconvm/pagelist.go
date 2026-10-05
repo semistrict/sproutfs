@@ -197,10 +197,14 @@ const btreeDegree = 16
 // Zircon's tree is its own lib/btree, whose iterators the list and its cursors
 // step from node to node. This one is github.com/google/btree, which has no
 // iterators: a step to the next or previous node is a search from the
-// current node's offset. That finds the same node.
+// current node's offset. That finds the same node. The tree's search calls its
+// ordering through a function value at every level, so the nodes are also kept
+// by offset in a map, which finds a node that is there without a search: a
+// lookup of a slot whose node exists, and a step to the node beside.
 type PageList[P any] struct {
-	g    pageGeometry
-	list *btree.BTreeG[nodeEntry[P]]
+	g     pageGeometry
+	list  *btree.BTreeG[nodeEntry[P]]
+	nodes map[uint64]*pageListNode[P]
 }
 
 // NewPageList is an empty page list over pages of pageSize bytes, which is a
@@ -212,8 +216,9 @@ func NewPageList[P any](pageSize uint64) *PageList[P] {
 	// bits below the page shift, keeps its bits above the dirty state.
 	assert(shift >= awaitingCleanLengthShift, "the page shift leaves room below it")
 	return &PageList[P]{
-		g:    pageGeometry{shift: uint8(shift)},
-		list: btree.NewG(btreeDegree, lessNode[P]),
+		g:     pageGeometry{shift: uint8(shift)},
+		list:  btree.NewG(btreeDegree, lessNode[P]),
+		nodes: make(map[uint64]*pageListNode[P]),
 	}
 }
 
@@ -229,12 +234,25 @@ const NodePages = pageFanOut
 
 // find is the node at nodeOffset, or an invalid entry.
 func (pl *PageList[P]) find(nodeOffset uint64) nodeEntry[P] {
-	e, _ := pl.list.Get(nodeEntry[P]{offset: nodeOffset})
-	return e
+	if node := pl.nodes[nodeOffset]; node != nil {
+		return nodeEntry[P]{offset: nodeOffset, node: node}
+	}
+	return nodeEntry[P]{}
 }
 
 // lowerBound is the first node at or after offset, or an invalid entry.
 func (pl *PageList[P]) lowerBound(offset uint64) nodeEntry[P] {
+	// The first node offset at or after offset is the answer if a node is
+	// there, which the map tells without a search.
+	first := pl.g.nodeOffset(offset)
+	if first != offset {
+		first += pl.g.nodeSize()
+	}
+	if first >= offset {
+		if node := pl.nodes[first]; node != nil {
+			return nodeEntry[P]{offset: first, node: node}
+		}
+	}
 	var found nodeEntry[P]
 	pl.list.AscendGreaterOrEqual(nodeEntry[P]{offset: offset}, func(e nodeEntry[P]) bool {
 		found = e
@@ -266,6 +284,7 @@ func (pl *PageList[P]) insert(nodeOffset uint64, node *pageListNode[P]) nodeEntr
 	e := nodeEntry[P]{offset: nodeOffset, node: node}
 	_, replaced := pl.list.ReplaceOrInsert(e)
 	assert(!replaced, "a node is inserted where there is none")
+	pl.nodes[nodeOffset] = node
 	return e
 }
 
@@ -274,6 +293,7 @@ func (pl *PageList[P]) insert(nodeOffset uint64, node *pageListNode[P]) nodeEntr
 func (pl *PageList[P]) erase(e nodeEntry[P]) {
 	assert(e.node.hasNoPageOrRef(), "an erased node owns no page or reference")
 	pl.list.Delete(e)
+	delete(pl.nodes, e.offset)
 }
 
 // eraseNext erases e and returns the node after it, as Zircon's erase returns
@@ -536,6 +556,7 @@ func (pl *PageList[P]) Clear() {
 		return true
 	})
 	pl.list.Clear(false)
+	clear(pl.nodes)
 }
 
 // RemovePages calls fn on every slot in [start, end) that is not Empty. fn may
@@ -603,7 +624,8 @@ func (pl *PageList[P]) MergeRangeOnto(migrate func(src, dst *PageOrMarker[P], ot
 
 // HeapAllocationBytes is the memory the list's nodes take. Zircon counts its
 // tree's own nodes from the tree; google/btree does not report them, so this
-// counts each page list node and its entry in the tree.
+// counts each page list node and its entry in the tree. The map of nodes
+// beside the tree is not counted, as Zircon's tree has none.
 func (pl *PageList[P]) HeapAllocationBytes() uint64 {
 	perNode := unsafe.Sizeof(pageListNode[P]{}) + unsafe.Sizeof(nodeEntry[P]{})
 	return uint64(pl.list.Len()) * uint64(perNode)

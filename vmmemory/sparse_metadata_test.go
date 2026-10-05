@@ -270,3 +270,42 @@ func TestFragmentedPrivatePagesSplitCompressedZeroMappings(t *testing.T) {
 		}
 	})
 }
+
+// A memory region that touches one page in 512 holds per-page state for those
+// pages and not for their neighbours. Each read of a hole binds its page and
+// maps it to zero, so what the region retains is the page's binding and its
+// slot in the page list: a node of 16 slots, 256 bytes, its entries in the
+// list's tree and map, and a binding of 64. On 2026-10-05 the binding blocks
+// this replaced held 21,828 bytes a touched page here, a block of 256 bindings
+// for each, and the page list 389.
+func TestARegionTouchingOnePageIn512HoldsMetadataForThosePagesAlone(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const touched, stride = 1024, 512
+		pages := uint64(touched * stride)
+		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 1, LogicalPages: int(pages), DirtyPages: 1, ReadAheadPages: 1})
+		b := &sparseMemoryBacking{size: pages * uint64(pageSize), vm: "sparse", pages: make(map[uint64][]byte)}
+		m := &sparseZeroMapping{files: make(map[int]*arenaFile), data: make(map[uint64]place)}
+		r, err := f.h.Attach(t.Context(), ram(b), m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer r.Detach(t.Context())
+		runtime.GC()
+		var before, after runtime.MemStats
+		runtime.ReadMemStats(&before)
+		for k := range uint64(touched) {
+			if err := r.Fault(t.Context(), k*stride, false); err != nil {
+				t.Fatal(err)
+			}
+		}
+		runtime.GC()
+		runtime.ReadMemStats(&after)
+		perPage := (int64(after.HeapAlloc) - int64(before.HeapAlloc)) / touched
+		if perPage > 1<<10 {
+			t.Fatalf("the memory region holds %d metadata bytes a touched page, budget 1 KiB", perPage)
+		}
+		if m.zeroPages != touched {
+			t.Fatalf("%d pages were mapped to zero, want the %d read", m.zeroPages, touched)
+		}
+	})
+}

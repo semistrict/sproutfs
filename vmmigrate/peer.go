@@ -874,12 +874,24 @@ func (b *PeerBacking) bounded(caller context.Context) (context.Context, func()) 
 func request[T any](b *PeerBacking, caller, ctx context.Context, bug string,
 	send func(context.Context) (T, error)) (T, error) {
 	reply, err := send(ctx)
+	if replySeam != nil {
+		replySeam(ctx)
+	}
 	if b.life.Err() != nil && !sim.Bug(ctx, bug) {
 		var refused T
 		return refused, b.ended(caller, context.Cause(b.life))
 	}
 	return reply, err
 }
+
+// replySeam runs in request once a request made under ctx has come back from
+// the source and before request looks at whether this backing has ended. A
+// close that comes before the reply reaches the request from
+// context.AfterFunc's goroutine, and the Go scheduler decides whether that
+// goroutine or the reply comes first. Production leaves it nil. A test
+// installs it to close the backing while it holds a reply here, so the request
+// must refuse that reply every run.
+var replySeam func(ctx context.Context)
 
 // ended names this backing's own end as the cause of an ask that stopped for it,
 // rather than whatever the interrupted request happened to report.
