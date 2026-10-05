@@ -42,3 +42,9 @@ Step 5 of the plan. Zircon orders reclaim with page queues (zircon/kernel/vm/pag
 4. Run the whole suite in both arena modes, check-guards, just check.
 5. Benchmarks old vs new (10 alternating runs), Gremlins on page_queues.go, tests for meaningful survivors.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+TASK-92.9 ported the parts of page_queues.cc that VmCowPages calls into vmmemory/internal/zirconvm/pagequeues.go ahead of this step, without the 10 tests, threads, aging timers, LRU actions or loans. This step completes that file and ports its tests.
+<!-- SECTION:NOTES:END -->

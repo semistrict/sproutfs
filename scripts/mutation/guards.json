@@ -950,5 +950,17 @@
     "package": "vmmigrate",
     "run": "^TestClosingAPostCopyEndsTheListingInFlight$",
     "purpose": "Take the source's listing of what it holds once the backing was closed."
+  },
+  {
+    "id": "zircon-dirty-awaiting-clean-in-place",
+    "package": "vmmemory/internal/zirconvm",
+    "run": "^(TestAStoreIntoAPageACheckpointHoldsGetsADirtyCopy|TestAPagerAgreedStoreIntoAPageACheckpointHoldsGetsADirtyCopy)$",
+    "purpose": "Make an AwaitingClean page Dirty in place on a store, as Zircon does, against D1. The checkpoint then reads the bytes stored after its pause, and the store gets no copy. Each test fails alone: one stores through a lookup, the other through the pager's DirtyPages."
+  },
+  {
+    "id": "zircon-abandon-leaves-awaiting-clean",
+    "package": "vmmemory/internal/zirconvm",
+    "run": "^TestAnAbandonedWritebackMakesEveryPageDirtyAgain$",
+    "purpose": "Leave the pages of an abandoned writeback AwaitingClean, as Zircon has no abandon, against D4. The failed checkpoint keeps its pages and the copies it held, and the mappings it protected stay."
   }
 ]

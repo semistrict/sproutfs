@@ -4,6 +4,7 @@ title: 'Zircon port step 6: the spill as references in the page list'
 status: To Do
 assignee: []
 created_date: '2026-10-05 05:09'
+updated_date: '2026-10-05 07:39'
 labels:
   - pager
   - zircon-port
@@ -30,4 +31,11 @@ Step 6 of the plan. Zircon records a compressed page as a reference in its page 
 - [ ] #3 vmmemory/reservations_internal_test.go is rewritten against the new storage and keeps every property it tests
 - [ ] #4 The guards spill-sparse and pager-forget-spill sit in the new storage under the same names and are still killed by the tests guards.json names
 - [ ] #5 Every test in vmmemory, host, vmmigrate and internal/simtest passes unchanged in both arena modes
+- [ ] #6 A checkpoint's abandon (WritebackAbandon, from TASK-92.9) gives each page made Dirty again its own reservation, shown by a test
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+TASK-92.9 ported compressor.cc and compression.cc's reference bookkeeping into vmmemory/internal/zirconvm/compression.go ahead of this step, over storage and strategy interfaces, without D5 or the four tests. This step adds the reference storage, D5 and the reservations.
+<!-- SECTION:NOTES:END -->

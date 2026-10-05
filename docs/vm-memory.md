@@ -25,7 +25,15 @@ Three parts of `vmmemory` are nested packages that only `vmmemory` can import:
   lines of the Zircon files it is ported from and a line naming those files at
   fuchsia `90e54e09`. A test in the package checks each header against a list
   of the files under `zircon/kernel` at that revision, which
-  `scripts/zircon-sources.py` writes from a clone.
+  `scripts/zircon-sources.py` writes from a clone. It holds the page list and,
+  from step 9, the region's layer and the identity roots: Zircon's VmCowPages
+  and VmObjectPaged with their lookup cursor, supply, take, dirty states,
+  writeback, zero intervals, reclaim and snapshot-on-write children. A region's
+  layer falls through to the identity root its resolver names where Zircon
+  walks up to a parent. The departures D1 to D4 are marked in `dirty.go` and
+  `reclaim.go`. The parts of the page queues, the compression and the page
+  source that VmCowPages calls are ported with it, for steps 5, 6 and 8 to
+  complete. Nothing outside the package uses it yet.
 
 The histograms of the fault path are in `internal/latency`, outside `vmmemory`.
 None of these packages uses any pager state: no host lock, no memory region and
