@@ -562,8 +562,8 @@ func TestOnlyAnIsolatedPageIsReclaimable(t *testing.T) {
 	})
 }
 
-// What follows is not Zircon's: the aging a fault drives, and the walks the
-// pager's victim loop makes until the evictor is ported.
+// What follows is not Zircon's: the aging a fault drives, and the peeks
+// that pass over pages the pager's evictor may not take.
 
 func ids(pages []*queuedPage) []int {
 	result := make([]int, len(pages))
@@ -573,15 +573,38 @@ func ids(pages []*queuedPage) []int {
 	return result
 }
 
-func expectWalk(t *testing.T, what string, walk func(func(*queuedPage) bool), want ...int) {
+// peek is one of the filtered peeks, over the test's queues.
+type peek func(accept func(*queuedPage) bool) (VmoBacklink[*queuedPage, *testCow], bool)
+
+// expectPeeks peeks again and again, each time refusing every page an earlier
+// peek took, and checks the order the pages came in. The page stays where it
+// is each time, so this is the order an evictor that passes over each page it
+// has tried takes them in.
+func expectPeeks(t *testing.T, what string, peek peek, want ...int) {
 	t.Helper()
 	var got []*queuedPage
-	walk(func(p *queuedPage) bool {
-		got = append(got, p)
-		return true
-	})
+	taken := map[*queuedPage]bool{}
+	for {
+		backlink, ok := peek(func(p *queuedPage) bool { return !taken[p] })
+		if !ok {
+			break
+		}
+		if backlink.Cow != pagerVmo {
+			t.Errorf("%s gave page %d a backlink to %v, want the pager's object", what, backlink.Page.id, backlink.Cow)
+		}
+		taken[backlink.Page] = true
+		got = append(got, backlink.Page)
+	}
 	if !slices.Equal(ids(got), want) {
-		t.Errorf("%s walks pages %v, want %v", what, ids(got), want)
+		t.Errorf("%s peeks pages %v, want %v", what, ids(got), want)
+	}
+}
+
+// reclaimable peeks the isolate queues and every reclaim queue, the active
+// ones too, as the pager's evictor does.
+func reclaimable(pq *testQueues) peek {
+	return func(accept func(*queuedPage) bool) (VmoBacklink[*queuedPage, *testCow], bool) {
+		return pq.PeekIsolateWhere(0, accept)
 	}
 }
 
@@ -594,8 +617,8 @@ func makePages(n int) []*queuedPage {
 }
 
 // A pager ages the queues on every page a fault makes or marks accessed, so
-// its reclaimable pages are walked in the order a fault last touched them,
-// however many generations that spans.
+// its reclaimable pages are peeked in the order a fault last touched them,
+// however many generations that spans, the active ones too.
 func TestAgingOnEachAccessWalksPagesInTheOrderTheyWereTouched(t *testing.T) {
 	forEachPageSize(t, func(t *testing.T, ps uint64) {
 		pq := newTestQueues(ps)
@@ -609,18 +632,23 @@ func TestAgingOnEachAccessWalksPagesInTheOrderTheyWereTouched(t *testing.T) {
 			pq.MarkAccessed(pages[i])
 			pq.AgeOnAccess()
 		}
-		expectWalk(t, "the reclaim queues", pq.Reclaimable(), 2, 4, 6, 7, 8, 9, 11, 12, 5, 10, 3, 1)
 		if got := pq.LastAgeReason(); got != AgeReasonAccess {
 			t.Errorf("the last aging was for %v, want %v", got, AgeReasonAccess)
 		}
-		// The walk isolated every generation but the two active ones: the
-		// last page touched, and the empty generation after it.
-		expectCounts(t, pq, Counts{Reclaim: [NumReclaim]int{0, 1}, ReclaimIsolate: 11})
+		expectPeeks(t, "the reclaim queues", reclaimable(pq), 2, 4, 6, 7, 8, 9, 11, 12, 5, 10, 3, 1)
+		// The last page touched was active, so the peeks aged the queues
+		// until it was not, and isolated every page.
+		if got := pq.LastAgeReason(); got != AgeReasonManual {
+			t.Errorf("the last aging was for %v, want %v", got, AgeReasonManual)
+		}
+		expectCounts(t, pq, Counts{ReclaimIsolate: 12})
 	})
 }
 
-// The walk visits a page accessed in a generation, which is still in the list
-// of an older one, in the generation it was accessed in.
+// A peek takes a page accessed in a generation, which is still in the list of
+// an older one, in the generation it was accessed in. Zircon's LRU processing
+// moves it to the head of that generation's list, so it comes after a page
+// set in that generation before the processing.
 func TestTheWalkFindsALazilyMarkedPageInItsGeneration(t *testing.T) {
 	forEachPageSize(t, func(t *testing.T, ps uint64) {
 		pq := newTestQueues(ps)
@@ -632,8 +660,8 @@ func TestTheWalkFindsALazilyMarkedPageInItsGeneration(t *testing.T) {
 		pq.RotateReclaimQueues()
 		pq.MarkAccessed(pages[0])
 		pq.SetReclaim(pages[2], pagerVmo, 2*ps)
-		expectWalk(t, "the reclaim queues", pq.Reclaimable(), 2, 1, 3)
-		expectCounts(t, pq, Counts{Reclaim: [NumReclaim]int{2, 1}})
+		expectPeeks(t, "the reclaim queues", reclaimable(pq), 2, 3, 1)
+		expectCounts(t, pq, Counts{ReclaimIsolate: 3})
 	})
 }
 
@@ -677,9 +705,10 @@ func TestAMismatchedAgingPairPanics(t *testing.T) {
 	})
 }
 
-// The don't-need, zero-fork and whole-queue walks visit what each holds, the
-// first put there first, and stop where their body says.
-func TestTheWalksVisitTheirQueuesOldestFirst(t *testing.T) {
+// The don't-need, zero-fork and reclaim peeks take what each queue holds, the
+// first put there first, and stop at the first page they are let take; the
+// walk of every queue visits every page and stops where its body says.
+func TestThePeeksTakeTheirQueuesOldestFirst(t *testing.T) {
 	forEachPageSize(t, func(t *testing.T, ps uint64) {
 		pq := newTestQueues(ps)
 		pq.EnableAnonymousReclaim(false)
@@ -691,9 +720,14 @@ func TestTheWalksVisitTheirQueuesOldestFirst(t *testing.T) {
 		pq.MoveToReclaimDontNeed(pages[1])
 		pq.MoveAnonymousToAnonymousZeroFork(pages[4])
 		pq.MoveAnonymousToAnonymousZeroFork(pages[0])
-		expectWalk(t, "the don't-need queue", pq.DontNeed(), 4, 2)
-		expectWalk(t, "the zero-fork queue", pq.AnonymousZeroFork(), 5, 1)
-		expectWalk(t, "the reclaim queues", pq.Reclaimable(), 4, 2, 3, 6)
+		peeks := map[string]peek{
+			"the don't-need queue": pq.PeekDontNeedWhere,
+			"the zero-fork queue":  pq.PeekAnonymousZeroForkWhere,
+			"the reclaim queues":   reclaimable(pq),
+		}
+		expectPeeks(t, "the don't-need queue", peeks["the don't-need queue"], 4, 2)
+		expectPeeks(t, "the zero-fork queue", peeks["the zero-fork queue"], 5, 1)
+		expectPeeks(t, "the reclaim queues", peeks["the reclaim queues"], 4, 2, 3, 6)
 		var all []int
 		for p := range pq.Pages() {
 			all = append(all, p.id)
@@ -702,17 +736,18 @@ func TestTheWalksVisitTheirQueuesOldestFirst(t *testing.T) {
 		if want := []int{1, 2, 3, 4, 5, 6}; !slices.Equal(all, want) {
 			t.Errorf("every queue holds pages %v, want %v", all, want)
 		}
-		for name, walk := range map[string]func(func(*queuedPage) bool){
-			"the don't-need queue": pq.DontNeed(), "the zero-fork queue": pq.AnonymousZeroFork(),
-			"the reclaim queues": pq.Reclaimable(), "every queue": pq.Pages(),
-		} {
-			visited := 0
-			walk(func(*queuedPage) bool { visited++; return false })
-			if visited != 1 {
-				t.Errorf("%s visited %d pages after its body stopped it, want 1", name, visited)
+		for name, peek := range peeks {
+			asked := 0
+			if _, ok := peek(func(*queuedPage) bool { asked++; return true }); !ok || asked != 1 {
+				t.Errorf("%s asked about %d pages before it took the first, and took one %t; want 1 and true", name, asked, ok)
 			}
 		}
-		expectCounts(t, pq, Counts{Reclaim: [NumReclaim]int{2}, ReclaimIsolate: 2, AnonymousZeroFork: 2})
+		visited := 0
+		pq.Pages()(func(*queuedPage) bool { visited++; return false })
+		if visited != 1 {
+			t.Errorf("every queue visited %d pages after its body stopped it, want 1", visited)
+		}
+		expectCounts(t, pq, Counts{ReclaimIsolate: 4, AnonymousZeroFork: 2})
 	})
 }
 
@@ -738,8 +773,7 @@ func BenchmarkAPageTouchedAndAged(b *testing.B) {
 // isolateAll processes every generation older than the active ones, so the
 // LRU generation is one behind the MRU one.
 func isolateAll(pq *testQueues) {
-	for range pq.Reclaimable() {
-	}
+	pq.PeekIsolateWhere(NumActiveQueues, func(*queuedPage) bool { return false })
 }
 
 // activeQueues are queues with a multiplier of one whose LRU generation is

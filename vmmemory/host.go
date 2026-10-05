@@ -95,6 +95,9 @@ type Host struct {
 	zeroMemoryRegions int // attached memory regions retaining knowledge of explicit zeros
 	// queues order every resident page for reclaim. See queues.go.
 	queues *pageQueues
+	// evictor frees a slot for an allocation short of one, taking its
+	// victims from queues. See evictor.go.
+	evictor *pagerEvictor
 	// idlePages counts the resident pages no memory region maps: published
 	// pages kept for the next memory region that inherits their identity, and
 	// given up before any mapped page when a slot is short. See
@@ -240,6 +243,7 @@ func New(ctx context.Context, resources *resource.Budget, cfg Config, arena Aren
 		queues:        newPageQueues(pageSize),
 		memoryRegions: make(map[*MemoryRegion]struct{}), highWater: highWater(cfg.DirtyPages),
 		io: make(chan struct{}, cfg.ConcurrentIO), writeback: make(chan struct{}, 1)}
+	h.evictor = newPagerEvictor(h)
 	if cfg.Arena == ArenaIsolated {
 		// Every file is made for a memory region or a tenant when the first one
 		// needs it.
@@ -292,6 +296,7 @@ func (h *Host) Close(ctx context.Context) error {
 	}
 	h.signal()
 	h.unregisterIdle()
+	h.evictor.DisableEviction()
 	var result error
 	// Giving the last page of a file back can give the file back too.
 	for _, f := range slices.Clone(h.files) {

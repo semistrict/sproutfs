@@ -1242,70 +1242,112 @@ func (pq *PageQueues[P, O]) DebugPageIsFailedReclaim(page P) bool {
 	return pq.queueOf(page) == pageQueueFailedReclaim
 }
 
-// The walks below are not Zircon's. Zircon's evictor peeks the head of the
-// isolate queues one page at a time and reclaims it (vm/evictor.cc). Until the
-// evictor is ported, step 7 of the plan, the pager's own victim loop chooses
-// among pages it may not be able to take, so it walks the queues instead.
-// Each walk holds the list lock throughout, so its body must not call into
-// the queues.
+// The peeks below are not Zircon's. Zircon's evictor takes the head of the
+// isolate queues, and ReclaimPage moves a page it may not reclaim out of the
+// way, to the newest queue, so that the next peek finds another. The pager
+// passes over a page for reasons of its own: another memory region's fair
+// share protects it, or another holds its lock. Moving such a page would make
+// it look recently faulted, which it was not, so it must stay where it is.
+// Each peek returns the first page accept takes and leaves every page where
+// it is. It holds the list lock while it calls accept, so accept must not
+// call into the queues.
 
-// DontNeed walks the don't-need isolate queue in the order a peek takes it:
-// the page put there first comes first.
-func (pq *PageQueues[P, O]) DontNeed() iter.Seq[P] {
-	return func(yield func(P) bool) {
-		pq.listLock.Lock()
-		defer pq.listLock.Unlock()
-		walkFront(&pq.isolateQueues[isolateQueueDontNeed], yield)
-	}
+// PeekDontNeedWhere is the first page of the don't-need isolate queue that
+// accept takes, in the order a peek takes them: the page put there first
+// comes first.
+func (pq *PageQueues[P, O]) PeekDontNeedWhere(accept func(P) bool) (VmoBacklink[P, O], bool) {
+	pq.listLock.Lock()
+	defer pq.listLock.Unlock()
+	return peekWhere(&pq.isolateQueues[isolateQueueDontNeed], accept)
 }
 
-// AnonymousZeroFork walks the zero fork queue in the order
-// PopAnonymousZeroFork takes it: the page put there first comes first.
-func (pq *PageQueues[P, O]) AnonymousZeroFork() iter.Seq[P] {
-	return func(yield func(P) bool) {
-		pq.listLock.Lock()
-		defer pq.listLock.Unlock()
-		walkBack(&pq.pageQueues[pageQueueAnonymousZeroFork], yield)
+// PeekIsolateWhere is PeekIsolate for the first page accept takes. Where no
+// isolated page is taken, it isolates every page older than lowestQueue at
+// once, rather than a batch at a time, since accept may pass over many, and
+// looks again.
+//
+// A lowestQueue below NumActiveQueues takes the pages of the active queues
+// too, which PeekIsolate never does. Zircon's aging thread makes those pages
+// inactive while an eviction waits. Aging here is driven by faults only
+// (decision 4 of the plan), and a fault may be waiting for the eviction. So
+// the peek ages the queues itself until the active pages it may take are
+// inactive. Aging moves every page by one queue, so the order pages are
+// taken in does not change.
+func (pq *PageQueues[P, O]) PeekIsolateWhere(lowestQueue uint64, accept func(P) bool) (VmoBacklink[P, O], bool) {
+	if result, ok := pq.peekIsolateListWhere(accept); ok {
+		return result, true
 	}
-}
-
-// Reclaimable walks every page of the isolate and reclaim queues, oldest
-// first: the isolate queues in the order a peek takes them, and then the
-// reclaim queues from the LRU generation to the MRU one, which Zircon never
-// peeks because they are active. First every generation older than the
-// active ones is isolated, as a peek of every inactive queue would. A page
-// accessed in a generation but still in an older generation's list is walked
-// in the generation it was accessed in.
-func (pq *PageQueues[P, O]) Reclaimable() iter.Seq[P] {
-	return func(yield func(P) bool) {
-		pq.lock.Lock()
-		target := pq.mruGen.Load() - (NumActiveQueues - 1)
+	// Aging outstanding when the peek began is synchronized with once, as
+	// PeekIsolate does.
+	pq.synchronizeWithAging()
+	pq.lock.Lock()
+	pq.isolateOlderThanLocked(max(lowestQueue, NumActiveQueues))
+	pq.lock.Unlock()
+	if result, ok := pq.peekIsolateListWhere(accept); ok || lowestQueue >= NumActiveQueues {
+		return result, ok
+	}
+	pq.lock.Lock()
+	if pq.getActiveInactiveCountsLocked().Active == 0 {
 		pq.lock.Unlock()
-		pq.processLruQueue(target, noIsolateLimit)
-		pq.lock.Lock()
-		defer pq.lock.Unlock()
-		pq.listLock.Lock()
-		defer pq.listLock.Unlock()
-		for i := range pq.isolateQueues {
-			if !walkFront(&pq.isolateQueues[i], yield) {
-				return
-			}
-		}
-		for gen := pq.lruGen.Load(); gen <= pq.mruGen.Load(); gen++ {
-			queue := genToQueue(gen)
-			for older := pq.lruGen.Load(); older <= gen; older++ {
-				list := &pq.pageQueues[genToQueue(older)]
-				for n := list.head.prev; n != &list.head; n = n.prev {
-					if n.pageQueue == queue && !yield(n.page) {
-						return
-					}
-				}
-			}
-		}
+		return VmoBacklink[P, O]{}, false
 	}
+	for range NumActiveQueues - lowestQueue {
+		pq.rotateLocked(AgeReasonManual)
+	}
+	pq.isolateOlderThanLocked(NumActiveQueues)
+	pq.lock.Unlock()
+	return pq.peekIsolateListWhere(accept)
 }
 
-// Pages walks every queued page, in no particular order.
+// isolateOlderThanLocked isolates every page older than lowestQueue, which
+// is at least NumActiveQueues. It requires lock.
+func (pq *PageQueues[P, O]) isolateOlderThanLocked(lowestQueue uint64) {
+	// The limit is one larger than the lowest queue, since evicting queue X
+	// is done by making X+1 the LRU queue.
+	pq.processLruQueueLocked(pq.mruGen.Load()-(lowestQueue-1), noIsolateLimit)
+}
+
+// peekIsolateListWhere is the first isolated page accept takes, if any.
+func (pq *PageQueues[P, O]) peekIsolateListWhere(accept func(P) bool) (VmoBacklink[P, O], bool) {
+	pq.listLock.Lock()
+	defer pq.listLock.Unlock()
+	for i := range pq.isolateQueues {
+		if result, ok := peekWhere(&pq.isolateQueues[i], accept); ok {
+			assert(result.Page.QueueNode().pageQueue == pageQueueReclaimIsolate, "an isolate page is in the isolate queue")
+			return result, true
+		}
+	}
+	return VmoBacklink[P, O]{}, false
+}
+
+// PeekAnonymousZeroForkWhere is the first page of the zero fork queue that
+// accept takes, in the order PopAnonymousZeroFork takes them: the page put
+// there first comes first. Unlike the pop, it leaves the page in the queue.
+func (pq *PageQueues[P, O]) PeekAnonymousZeroForkWhere(accept func(P) bool) (VmoBacklink[P, O], bool) {
+	pq.listLock.Lock()
+	defer pq.listLock.Unlock()
+	list := &pq.pageQueues[pageQueueAnonymousZeroFork]
+	for n := list.head.prev; n != &list.head; n = n.prev {
+		if accept(n.page) {
+			return backlink(n), true
+		}
+	}
+	return VmoBacklink[P, O]{}, false
+}
+
+// peekWhere is the backlink of the first page of a list, from its head, that
+// accept takes. It requires listLock.
+func peekWhere[P any, O QueueObject](list *pageQueueList[P, O], accept func(P) bool) (VmoBacklink[P, O], bool) {
+	for n := list.head.next; n != &list.head; n = n.next {
+		if accept(n.page) {
+			return backlink(n), true
+		}
+	}
+	return VmoBacklink[P, O]{}, false
+}
+
+// Pages walks every queued page, in no particular order. It is not Zircon's
+// either: the pager's stats count the pages it holds by it.
 func (pq *PageQueues[P, O]) Pages() iter.Seq[P] {
 	return func(yield func(P) bool) {
 		pq.listLock.Lock()
@@ -1327,16 +1369,6 @@ func (pq *PageQueues[P, O]) Pages() iter.Seq[P] {
 // on to the end.
 func walkFront[P any, O QueueObject](list *pageQueueList[P, O], yield func(P) bool) bool {
 	for n := list.head.next; n != &list.head; n = n.next {
-		if !yield(n.page) {
-			return false
-		}
-	}
-	return true
-}
-
-// walkBack yields a list's pages from its tail.
-func walkBack[P any, O QueueObject](list *pageQueueList[P, O], yield func(P) bool) bool {
-	for n := list.head.prev; n != &list.head; n = n.prev {
 		if !yield(n.page) {
 			return false
 		}

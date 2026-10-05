@@ -12,7 +12,6 @@ import (
 	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/internal/ctxsync"
 	"github.com/semistrict/sproutfs/internal/latency"
-	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/resource"
 	"github.com/semistrict/sproutfs/vmmemory/internal/zirconvm"
 )
@@ -544,7 +543,7 @@ func (r *MemoryRegion) withoutMemoryRegion(ctx context.Context, read func() erro
 // read.
 func (r *MemoryRegion) reclaim(ctx context.Context, f *arenaFile) (fileSlot, error) {
 	return r.reclaimWith(ctx, func() (fileSlot, error) {
-		return r.host.allocate(ctx, r, f, nil, sim.Buggify(ctx, "vmmemory/evict-past-a-free-slot", 0.5))
+		return r.host.allocate(ctx, r, f, nil, evictPastAFreeSlot(ctx))
 	})
 }
 

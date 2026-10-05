@@ -14,6 +14,7 @@ import "github.com/semistrict/sproutfs/vmmemory/internal/zirconvm"
 //     it sees no access through a page table it has filled.
 //   - An idle page, which no memory region maps, is in the don't-need queue,
 //     which Zircon's peek takes first, as the pager took the idle list first.
+//     The evictor (evictor.go) takes its victims by peeking these queues.
 //   - A page a cold copy will be compared with is in the zero-fork queue. In
 //     Zircon that queue holds the pages a write fault copied from the zero page,
 //     outside the reclaim queues until the scanner has compared them with zero.

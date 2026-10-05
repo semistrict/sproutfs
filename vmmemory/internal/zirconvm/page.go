@@ -131,6 +131,9 @@ type Pmm interface {
 	// ZeroPage is the one page of zeros every object reads where it holds
 	// zeros. It is never written and never freed.
 	ZeroPage() *VmPage
+	// CountFreePages is how many pages are free, pmm_count_free_pages, which
+	// an evictor's free target is measured against.
+	CountFreePages() uint64
 }
 
 // Node is what Zircon's VM reaches through globals: Pmm::Node(), its page

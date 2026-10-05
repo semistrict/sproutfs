@@ -8,7 +8,6 @@ import (
 	"slices"
 
 	"github.com/semistrict/sproutfs/control"
-	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/vmmemory/internal/slots"
 	"lukechampine.com/blake3"
 )
@@ -227,10 +226,9 @@ func (h *Host) takeOwnLocked(r *MemoryRegion, index uint64, at fileSlot) fileSlo
 func (r *MemoryRegion) allocateOwn(ctx context.Context, index uint64, clean bool) (fileSlot, error) {
 	h := r.host
 	places := r.ownPlaces(index, clean)
-	// Taking a victim while the place is free is legal and merely wasteful, and
-	// it is how a pager sized to hold its whole guest reaches the eviction paths
-	// at all.
-	preferEviction := sim.Buggify(ctx, "vmmemory/evict-past-a-free-slot", 0.5)
+	// Taking a victim while the place is free is legal and merely wasteful:
+	// see evictPastAFreeSlot.
+	preferEviction := evictPastAFreeSlot(ctx)
 	for range loadAttempts {
 		h.mu.Lock()
 		if h.err != nil {

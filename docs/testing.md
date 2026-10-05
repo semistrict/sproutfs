@@ -3527,6 +3527,18 @@ diagnostic loop counts and their log lines, asserts' bounds, a ring bound no
 generation reaches, and the active ratio's product with a multiplier of one.
 The 31 not covered are compile-time asserts; the other is a diagnostic count.
 
+Step 7 added the evictor in `evictor.go`, with six of Zircon's seven cases,
+and replaced the pager's walks of the queues with peeks that pass over a page
+without moving it. Run with `--file evictor.go --file pagequeues.go`, the
+first run killed 226, left 42 alive, 33 not covered and 9 timed out. Tests of
+the node's levels and hints, a free target met exactly, a round's cap, the
+counts for an out of memory condition, the failure diagnosis, the printed
+counts and a peek that ages the active queues only as far as it asks brought
+it to 244 killed and 24 alive. The evictor's survivors are bounds where both
+sides give the same answer (a minimum met exactly, a carried-over minimum of
+zero), and the asynchronous path's log lines. The rest are the page queues'
+survivors from step 5, and a peek bound that only does more work.
+
 After a substantial change that spans packages, or periodically before a
 release, run `--all --integration` with the full suite. This is intentionally an
 occasional campaign. The changed-package command above is the ordinary

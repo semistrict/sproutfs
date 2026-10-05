@@ -330,7 +330,7 @@ func (r *MemoryRegion) allocatePrivate(ctx context.Context, index uint64) (fileS
 	return h.allocate(ctx, r, f, func() int {
 		at, _ := h.place(r, index)
 		return at.slot
-	}, sim.Buggify(ctx, "vmmemory/evict-past-a-free-slot", 0.5))
+	}, evictPastAFreeSlot(ctx))
 }
 
 // Prefer extending a neighboring mapping's physical run before using the
@@ -342,11 +342,9 @@ func (r *MemoryRegion) allocateNear(ctx context.Context, f *arenaFile, index uin
 		return fileSlot{}, err
 	}
 	h := r.host
-	// Taking a victim while free slots are there is legal and merely wasteful,
-	// and it is the only way an arena that is not full reaches the eviction
-	// paths at all: a pager sized to hold its whole guest never evicts, so
-	// nothing ever overlaps an eviction with a publication or a seal.
-	if preferEviction := sim.Buggify(ctx, "vmmemory/evict-past-a-free-slot", 0.5); preferEviction {
+	// Taking a victim while free slots are there is legal and merely wasteful:
+	// see evictPastAFreeSlot.
+	if evictPastAFreeSlot(ctx) {
 		return h.allocate(ctx, r, f, nil, true)
 	}
 	for _, delta := range []int64{-1, 1} {
@@ -376,12 +374,10 @@ func (r *MemoryRegion) allocateNear(ctx context.Context, f *arenaFile, index uin
 	return h.allocate(ctx, r, f, nil, false)
 }
 
-// allocate returns one slot of f for a page of r, evicting the least recently
-// used unlocked page when the arena is full. It waits for progress rather than
-// failing while every candidate is temporarily busy.
-//
-// The victim leaves every protected memory region its pages where it can: see
-// protectedLocked. Where it cannot, it is the least recently used page of all.
+// allocate returns one slot of f for a page of r, evicting a page by the
+// evictor's synchronous path when the arena is full. It waits for progress
+// rather than failing while every candidate is temporarily busy. See
+// evictor.go for which page goes.
 //
 // place, where it is not nil, is where the slot must be: the placement rule has
 // already decided this page's slot, so only the page budget is at stake and
@@ -392,6 +388,7 @@ func (r *MemoryRegion) allocateNear(ctx context.Context, f *arenaFile, index uin
 // the iteration after a fruitless preference takes the free slot, so a
 // buggified allocation cannot wait on a victim that will not come.
 func (h *Host) allocate(ctx context.Context, r *MemoryRegion, f *arenaFile, place func() int, preferEviction bool) (fileSlot, error) {
+	req := &evictionRequest{region: r, preferEviction: preferEviction}
 	for {
 		h.mu.Lock()
 		if h.err != nil {
@@ -405,7 +402,7 @@ func (h *Host) allocate(ctx context.Context, r *MemoryRegion, f *arenaFile, plac
 		resourceChanged := h.resources.Changed()
 		capacityBlocked := false
 		if place != nil {
-			if !preferEviction {
+			if !req.preferEviction {
 				if slot := place(); slot >= 0 {
 					h.mu.Unlock()
 					return fileSlot{f, slot}, nil
@@ -414,34 +411,25 @@ func (h *Host) allocate(ctx context.Context, r *MemoryRegion, f *arenaFile, plac
 			// The address is this page's whatever happens; what is missing is a
 			// page of the budget, which every eviction gives back.
 			capacityBlocked = true
-		} else if slot := h.firstFreeLocked(f); slot >= 0 && !preferEviction && h.takeFree(fileSlot{f, slot}, 1) {
+		} else if slot := h.firstFreeLocked(f); slot >= 0 && !req.preferEviction && h.takeFree(fileSlot{f, slot}, 1) {
 			h.mu.Unlock()
 			return fileSlot{f, slot}, nil
 		} else if slot >= 0 {
 			capacityBlocked = true
 		}
-		// An idle page is the first thing given up: no memory region maps it, so its
-		// slot costs no revocation and no spill, and nothing a guest is using.
-		if !preferEviction {
-			if pg := h.takeIdleLocked(); pg != nil {
-				h.mu.Unlock()
-				if err := h.dropIdle(ctx, pg); err != nil {
-					return fileSlot{}, err
-				}
-				continue
-			}
+		h.mu.Unlock()
+		evicted, err := h.evictOne(ctx, req)
+		if err != nil {
+			return fileSlot{}, err
 		}
-		// The slots of a prefetch still reading come next: nothing waits on
-		// its pages, and a page a guest maps is one it is using. The
-		// prefetches are cancelled, and their slots come back as their reads
-		// end. See prefetch.go.
-		if !preferEviction && !sim.Bug(ctx, "pager-prefetch-ignores-pressure") && h.cancelPrefetchesLocked(ctx) {
-			changed := h.changed
-			h.mu.Unlock()
+		if evicted {
+			continue
+		}
+		if req.prefetches {
 			select {
 			case <-ctx.Done():
 				return fileSlot{}, context.Cause(ctx)
-			case <-changed:
+			case <-req.changed:
 			}
 			// The prefetch that gave the slots back goes on beside this
 			// allocation; in a controlled run they go on one at a time, in
@@ -451,95 +439,19 @@ func (h *Host) allocate(ctx context.Context, r *MemoryRegion, f *arenaFile, plac
 			}
 			continue
 		}
-		var candidates []*resident
-		busy := false
-		share := h.cfg.ResidentPages / max(len(h.memoryRegions), 1)
-		// A page a cold copy will be compared with is spared while anything else
-		// can go, and taken last, which ends those copies being cold: an arena
-		// whose every page is one of those, or the one page a store is copying
-		// from, has nothing else to give. It waits in the zero-fork queue,
-		// outside the reclaim queues the first two passes walk. See cold.go.
-		passes := []struct{ fair, pinned bool }{{true, false}, {false, false}, {false, true}}
-		for _, pass := range passes {
-			pages := h.queues.Reclaimable()
-			if pass.pinned {
-				pages = h.queues.AnonymousZeroFork()
-			}
-			for pg := range pages {
-				if pass.fair && !h.fairLocked(pg, r, share) {
-					continue
-				}
-				if !pg.mu.TryLock() {
-					busy = true
-					continue
-				}
-				// A page a store is replacing is one the guest still reads through a
-				// mapping that names this offset, and the command that stops it
-				// naming it has not landed. It is not this reclaim's to take; the
-				// store gives it up itself once its mapping is in.
-				usable := pg.replacing == 0
-				for b := range pg.aliases.all() {
-					if b.memoryRegion.terminal.Load() != nil {
-						usable = false
-						break
-					}
-				}
-				if usable {
-					// One victim per reclaim: a page is the whole scratch budget one
-					// eviction may read out of the arena.
-					candidates = append(candidates, pg)
-					break
-				}
-				pg.mu.Unlock()
-			}
-			if len(candidates) > 0 {
-				break
-			}
-		}
-		changed := h.changed
-		// Slots reserved by a concurrent load are in no queue yet.
-		if h.queuedLocked() < h.cfg.ResidentPages {
-			busy = true
-		}
-		h.mu.Unlock()
-		if len(candidates) > 0 {
-			preferEviction = false
-			// A cold copy the guest did not change goes back to the page it was
-			// copied from rather than to the spill: see cold.go.
-			given, err := h.giveBackVictim(ctx, candidates[0])
-			if given || err != nil {
-				h.unlockAll(candidates)
-				if err != nil {
-					return fileSlot{}, err
-				}
-				continue
-			}
-			err = h.evictBatch(ctx, candidates)
-			h.unlockAll(candidates)
-			// A victim another memory region will not give up is not this allocation's
-			// failure: the next pass skips it, because that memory region is terminal
-			// from here, and takes another page. The arena is finite, so every
-			// such pass removes one page from what this loop will consider,
-			// and an arena made entirely of them reports ErrCapacity rather
-			// than spinning.
-			if err != nil && !errors.Is(err, errVictimHeld) {
-				return fileSlot{}, err
-			}
-			continue
-		}
-		if preferEviction {
+		if req.preferEviction {
 			// Nothing was evictable this pass. Take the free slot next one
 			// rather than wait for a victim.
-			preferEviction = false
+			req.preferEviction = false
 			continue
 		}
-		if !busy && !capacityBlocked {
+		if !req.busy && !capacityBlocked {
 			return fileSlot{}, ErrCapacity
 		}
 		select {
 		case <-ctx.Done():
 			return fileSlot{}, context.Cause(ctx)
-		case <-changed:
+		case <-req.changed:
 		case <-resourceChanged:
 		}
 		// Whatever freed something goes on beside this allocation, and so may
@@ -588,19 +500,23 @@ func (h *Host) takeIdleLocked() *resident { return h.takeIdleWhereLocked(nil) }
 // any where want is nil. Caller holds h.mu.
 func (h *Host) takeIdleWhereLocked(want func(*resident) bool) *resident {
 	// A page in the don't-need queue is idle and pinned by no cold copy.
-	for pg := range h.queues.DontNeed() {
+	idle, ok := h.queues.PeekDontNeedWhere(func(pg *resident) bool {
 		if want != nil && !want(pg) {
-			continue
+			return false
 		}
 		if !pg.mu.TryLock() {
-			continue
+			return false
 		}
 		if pg.aliases.len() == 0 && pg.replacing == 0 {
-			return pg
+			return true
 		}
 		pg.mu.Unlock()
+		return false
+	})
+	if !ok {
+		return nil
 	}
-	return nil
+	return idle.Page
 }
 
 // dropIdle gives up one idle page takeIdleLocked returned locked: its identity

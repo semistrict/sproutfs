@@ -33,7 +33,9 @@ Three parts of `vmmemory` are nested packages that only `vmmemory` can import:
   walks up to a parent. The departures D1 to D4 are marked in `dirty.go` and
   `reclaim.go`. The page queues are whole since step 5, generic over the page
   they hold, and order the pager's resident pages for reclaim: see
-  [choosing the victim](#choosing-the-victim). The compression is whole since
+  [choosing the victim](#choosing-the-victim). The evictor is whole since
+  step 7 (`evictor.go`), and an allocation short of a slot evicts by its
+  synchronous path. The compression is whole since
   step 6 (`compression.go`), but for LZ4, which a strategy that stores a page
   as it is replaces. Its storage is the spill file (`spillstorage.go`), in the
   shape of Zircon's slot storage: a spilled page is a reference, and a
@@ -1701,7 +1703,7 @@ The probe build's `TestSealTakingAReclaimingPagesReservationKeepsItsBytes` once 
 
 No write was lost. At every step, the page the guest was bound to held the bytes the guest last stored. With the audit finding made non-fatal, thirty lanes ran to completion, and the test's own `reads %d, want the %d the guest stored` check never fired. The audit had caught something else: the pager granted a binding the right to store into memory after that binding's dirty epoch had already ended.
 
-A reclaim for a private page releases the memory region while it looks for an arena slot. So a seal and a retire can both run inside a fault that has already decided what the page it serves is. The store path re-checks its decision across its own reclaim: `fault` compares the checkpoint's copy before and after. The spill refault in `loadOnce` did not re-check. A checkpoint taken in that window retires the page: the volume holds its bytes, the reservation that spilled them is returned, and the binding is clean. The refault then bound a private page into the binding anyway. That page has neither a reservation nor a checkpoint. `evictBatch` punches out a page in that state without writing it anywhere. Nothing names the page, so nothing that inherits the identity the checkpoint gave it can map it. Every other memory region of that volume reads its own copy of bytes this host already holds. The audit's generation bookkeeping is correct. The binding that owed the audit a newer generation was one the pager should never have granted.
+A reclaim for a private page releases the memory region while it looks for an arena slot. So a seal and a retire can both run inside a fault that has already decided what the page it serves is. The store path re-checks its decision across its own reclaim: `fault` compares the checkpoint's copy before and after. The spill refault in `loadOnce` did not re-check. A checkpoint taken in that window retires the page: the volume holds its bytes, the reservation that spilled them is returned, and the binding is clean. The refault then bound a private page into the binding anyway. That page has neither a reservation nor a checkpoint. The eviction (`evictPage`) punches out a page in that state without writing it anywhere. Nothing names the page, so nothing that inherits the identity the checkpoint gave it can map it. Every other memory region of that volume reads its own copy of bytes this host already holds. The audit's generation bookkeeping is correct. The binding that owed the audit a newer generation was one the pager should never have granted.
 
 `loadOnce` now reads the page's dirty state and the checkpoint's copy of the page together, before and after the reclaim. If either changed, it decides again from the start what the page is (`vmmemory/fault.go`, `bindings.go`, `privateEpoch`). `TestARefaultWhoseCheckpointRetiresWhileItReclaimsGivesThePageToTheVolume` drives the interleaving through a reclaim seam. Without the fix it fails on every run in both builds. The ordinary build fails with the second memory region reading its own copy. The probe build fails with the same panic and the same stack. Measured on 2026-09-22 on a fifteen-core machine, with 50 lanes each and a detector on the grant: **10 of 50 lanes before, 0 of 50 after**. At that rate, the chance of a clean result by luck is about 1 in 70,000. The panic that the lanes produce is rarer than the grant that causes it: about 1 lane in 50 on this machine, against 1 in 8 on the eight-core machine the earlier counts came from. After the fix the panic count is 0 of 150 lanes, but the grant's count is what supports the result.
 
@@ -2371,10 +2373,27 @@ the standard isolate queue once it has aged out of them. The queues age one
 generation for each page a fault creates or touches, so they hold the pages in
 fault order. Zircon ages them on a timer and by the accessed bits of page
 tables, which a userfaultfd pager cannot read. An idle page is in the
-don't-need queue, which is walked first. A page a cold copy will be compared
-with is in the zero-fork queue, which is walked last. Zircon's evictor peeks
-the head of the isolate queues; until it is ported, the pager walks the queues
-past the pages it cannot take.
+don't-need queue, which is taken first. A page a cold copy will be compared
+with is in the zero-fork queue, which is taken last.
+
+An allocation short of a slot evicts one page by the synchronous path of
+Zircon's evictor, ported in `internal/zirconvm/evictor.go`. The evictor calls
+the pager's reclaim step (`vmmemory/evictor.go`) until a page is freed or
+the step finds nothing to take. Each step takes the oldest idle page; or, while
+prefetches hold slots, cancels them and waits for those slots; or else the
+least recently faulted page the fair share lets it take, the least recently
+faulted page of all, and last a page a cold copy will be compared with. It
+then gives a cold copy back to its origin, drops a published page, and spills
+a memory region's own page. Zircon's evictor takes the head of the isolate
+queues, and moves a page it cannot reclaim to the newest queue. The pager
+passes over a page the fair share protects, or whose lock another holds, and
+leaves it where it is: moving it would make it look recently faulted. The
+newest pages are in the active queues, which Zircon's evictor never takes and
+its aging thread makes inactive. Aging here is by faults only, so a step that
+finds nothing older ages the queues itself. Aging moves every page by one
+queue, so the order does not change. Nothing evicts ahead of a shortage, so
+the evictor's asynchronous path is not used: an idle page is kept for the next
+VM that inherits it.
 
 So each attached memory region is owed a share: the arena's pages divided by
 the memory regions attached. A memory region is protected while it holds no

@@ -109,6 +109,13 @@ func (p *testPmm) FreePage(page *VmPage) {
 
 func (p *testPmm) ZeroPage() *VmPage { return p.zero }
 
+// CountFreePages is the pages of testPmmPages not out.
+func (p *testPmm) CountFreePages() uint64 { return uint64(testPmmPages - p.out) }
+
+// testPmmPages is the pages a test pmm counts itself as having: more than
+// any case allocates, as the kernel's pmm has for Zircon's cases.
+const testPmmPages = 1 << 16
+
 func allZero(b []byte) bool {
 	for _, x := range b {
 		if x != 0 {
