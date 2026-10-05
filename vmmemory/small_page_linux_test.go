@@ -76,12 +76,18 @@ func TestManagedPagerSmallRAMPageOwnsOnePageAndMapsARunAtOnce(t *testing.T) {
 	config := vmmemory.ConnectionConfig{QueuePages: pages, CommandTimeout: 30 * time.Second,
 		VerifyInterval: time.Hour}
 
-	// The parent reads one byte of each memory region. Read-ahead serves the whole run
-	// from one fault, loading it into consecutive arena slots, which is what
-	// lets a single command install it here and on every child after.
+	// The parent reads one byte of each memory region. The fault reads its
+	// page and prefetches the rest of the run behind it into the slots beside
+	// it, so the run sits in consecutive arena slots, which is what lets a
+	// single command install it here and on every child after. The prefetches
+	// land and map into the parent on their own goroutines, so they are
+	// settled before anything is counted.
 	parent := startNativeWithConfig(t, h, pages, config, fork("parent")...)
 	for memoryRegion := range names {
 		parent.request(fmt.Sprintf("read %d 0 1", memoryRegion), fmt.Sprintf("data %02x", pageByte(memoryRegion, 0)))
+	}
+	if err := h.SettlePrefetches(t.Context()); err != nil {
+		t.Fatal(err)
 	}
 	warm := kernelStats(t, h)
 	if warm.ResidentPages != 2*pages {
