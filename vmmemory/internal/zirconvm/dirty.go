@@ -1103,8 +1103,14 @@ func (c *CowPages) zeroPagesNoDirectPageSourceLocked(r CowRange, deferred *Defer
 			}
 			panic("zirconvm: no parent content marker is used")
 		}, func(gapStart, gapEnd uint64) error {
-			// A gap that sees no parent is zero already.
-			if !canSeeParent(gapStart, gapEnd-gapStart) {
+			// A gap that sees no parent is zero already. Departure: Zircon
+			// asks whether the whole gap sees the parent, so a gap across the
+			// parent limit is taken as zero, and the part before the limit
+			// keeps showing the parent. It reaches this only in a tree a pager
+			// backs; anonymous trees reach it here too, having no parent
+			// content markers. Any part seeing the parent sends the gap to the
+			// walk below, which looks at each offset.
+			if c.parent == nil || gapStart >= c.parentLimit {
 				zeroedLen += gapEnd - gapStart
 				return nil
 			}

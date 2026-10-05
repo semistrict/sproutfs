@@ -407,6 +407,33 @@ func TestARegionsChildReadsTheRootThroughTheRegion(t *testing.T) {
 	})
 }
 
+// A store into a region's page an identity root holds unmaps the root's page
+// from the region's mappings, so the next access finds the copy. Zircon
+// skips the unmap when a page fills an empty slot of a pager's object, as no
+// mapping can see one there; a region's mapping can.
+func TestAStoreIntoARegionUnmapsTheRootsPage(t *testing.T) {
+	forEachVmoPageSize(t, func(t *testing.T, env *vmoEnv) {
+		ps := env.ps
+		root, err := CreateIdentityRoot(env.node, NewPageSource(newRecordingProvider(false)), ps)
+		mustNotFail(t, "create the root", err)
+		rootPage := supplyPagerVmoPages(t, env, root, 0, 1)[0]
+		resolver := &staticResolver{ps: ps, root: root.DebugGetCowPages(), pages: map[uint64]uint64{0: 0}}
+		region, err := CreateRegionLayer(env.node, NewPageSource(newRecordingProvider(false)), ps, resolver)
+		mustNotFail(t, "create the region", err)
+		mapping := newTestMapping(t, env, region)
+		defer mapping.unmap()
+		mapping.fault(0, false)
+		mapped, _, _ := mapping.query(0)
+		expect(t, "the root's page mapped", mapped, rootPage)
+		mustNotFail(t, "store", region.Write(env.ctx, []byte{'X'}, 0))
+		_, _, isMapped := mapping.query(0)
+		expect(t, "the root's page unmapped", isMapped, false)
+		mapping.fault(0, false)
+		mapped, _, _ = mapping.query(0)
+		expect(t, "the copy mapped", mapped, region.DebugGetPage(0))
+	})
+}
+
 // D1: ending part of a writeback frees only what the checkpoint held there,
 // pages and zeros alike, and keeps the rest.
 func TestEndingPartOfAWritebackFreesOnlyWhatItHeldThere(t *testing.T) {
@@ -476,6 +503,17 @@ func TestAWritebacksCallsActOnTheirRangeAlone(t *testing.T) {
 			_, _, mapped := mapping.query(uint64(i) * ps)
 			expect(t, "mapped outside the abandon", mapped, want)
 		}
+		// Every page writable again: the first, still AwaitingClean, gets a
+		// copy and is held too.
+		mapping.commitAndMap(true)
+		mustNotFail(t, "the first is held", vmo.ReadWriteback(held, 0))
+		mustNotFail(t, "begin the third again", vmo.WritebackBegin(2*ps, ps, false))
+		for i, want := range []bool{true, true, false, true} {
+			_, writable, _ := mapping.query(uint64(i) * ps)
+			expect(t, "writable outside the begin", writable, want)
+		}
+		mustNotFail(t, "the first is held still", vmo.ReadWriteback(held, 0))
+		mustNotFail(t, "the fourth is held still", vmo.ReadWriteback(held, 3*ps))
 	})
 }
 
@@ -501,5 +539,25 @@ func TestAStoreThatGetsNoPageForItsCopyFails(t *testing.T) {
 		env.pmm.failNext = true
 		expect(t, "the agreement", trapped.DirtyPages(env.ctx, 0, ps), ErrNoMemory)
 		expect(t, "still awaiting clean", trapped.DebugGetPage(0).dirtyState, AwaitingClean)
+	})
+}
+
+// Ending a writeback cleans only the zeros it took: zeros added to the
+// interval after the pause stay dirty for the next one.
+func TestEndingAWritebackCleansOnlyTheZerosItTook(t *testing.T) {
+	forEachVmoPageSize(t, func(t *testing.T, env *vmoEnv) {
+		ps := env.ps
+		vmo := makeUncommittedPagerVmo(t, env, 4, false)
+		mustNotFail(t, "zero the second", vmo.ZeroRange(env.ctx, ps, ps))
+		expectRanges(t, "one dirty zero page", dirtyRanges(t, env, vmo), [][3]uint64{{1, 1, 1}})
+		mustNotFail(t, "begin", vmo.WritebackBegin(ps, ps, false))
+		mustNotFail(t, "zero the third", vmo.ZeroRange(env.ctx, 2*ps, ps))
+		expectRanges(t, "both dirty", dirtyRanges(t, env, vmo), [][3]uint64{{1, 2, 1}})
+		mustNotFail(t, "end", vmo.WritebackEnd(ps, 2*ps))
+		expectRanges(t, "the third still dirty", dirtyRanges(t, env, vmo), [][3]uint64{{2, 1, 1}})
+		// A single page of dirty zeros becomes untracked zeros when asked.
+		mustNotFail(t, "zero the third untracked", vmo.ZeroRangeUntracked(env.ctx, 2*ps, ps))
+		expectRanges(t, "nothing dirty", dirtyRanges(t, env, vmo), nil)
+		expect(t, "zeros read", allZero(readPage(t, env, vmo, 2*ps)), true)
 	})
 }

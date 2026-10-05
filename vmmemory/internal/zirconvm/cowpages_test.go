@@ -701,10 +701,68 @@ func TestTakingFromAChildLeavesMarkersOnlyOverItsParentsContent(t *testing.T) {
 	})
 }
 
+// lookupReadable lists the offsets and pages a readable lookup of r reports.
+func lookupReadable(t *testing.T, vmo *ObjectPaged, r CowRange) ([]uint64, []*VmPage) {
+	t.Helper()
+	var offsets []uint64
+	var pages []*VmPage
+	err := vmo.DebugGetCowPages().DebugLookupReadable(r, func(offset uint64, page *VmPage) error {
+		offsets = append(offsets, offset)
+		pages = append(pages, page)
+		return nil
+	})
+	mustNotFail(t, "lookup", err)
+	return offsets, pages
+}
+
 // A readable lookup of a clone reports the pages it reads from each object
-// above it. As Zircon's, it reads the rest of the range from the first owner
-// that has content, so a page that owner does not hold is not reported.
+// above it, at each one's offset, and no further than its range. An error
+// from the callback ends the lookup.
 func TestAReadableLookupReportsThePagesOfEachOwnerAbove(t *testing.T) {
+	forEachVmoPageSize(t, func(t *testing.T, env *vmoEnv) {
+		ps := env.ps
+		root, err := CreateObjectPaged(env.node, 5*ps)
+		mustNotFail(t, "create", err)
+		mustNotFail(t, "write the root", root.Write(env.ctx, pattern(5*ps, 'R'), 0))
+		child, err := root.CreateClone(SnapshotOnWrite, ps, 4*ps)
+		mustNotFail(t, "clone", err)
+		mustNotFail(t, "write the child's last", child.Write(env.ctx, pattern(ps, 'C'), 3*ps))
+		grandchild, err := child.CreateClone(SnapshotOnWrite, ps, 3*ps)
+		mustNotFail(t, "clone the child", err)
+		expect(t, "hangs from the child", grandchild.DebugGetCowPages().DebugGetParent(), child.DebugGetCowPages())
+		offsets, pages := lookupReadable(t, grandchild, CowRange{0, 3 * ps})
+		expect(t, "three pages", len(offsets), 3)
+		expect(t, "the root's third", offsets[0], uint64(0))
+		expect(t, "is the root's", pages[0], root.DebugGetPage(2*ps))
+		expect(t, "the root's fourth", offsets[1], ps)
+		expect(t, "is the root's", pages[1], root.DebugGetPage(3*ps))
+		expect(t, "the child's last", offsets[2], 2*ps)
+		expect(t, "is the child's", pages[2], child.DebugGetPage(3*ps))
+		// No further than the range, past a page of the object's own.
+		mustNotFail(t, "write the grandchild's first", grandchild.Write(env.ctx, pattern(ps, 'G'), 0))
+		offsets, pages = lookupReadable(t, grandchild, CowRange{0, 2 * ps})
+		expect(t, "two pages", len(offsets), 2)
+		expect(t, "its own", pages[0], grandchild.DebugGetPage(0))
+		expect(t, "the root's fourth again", offsets[1], ps)
+		expect(t, "is the root's again", pages[1], root.DebugGetPage(3*ps))
+		// An error from the callback ends the lookup, at the object's own
+		// page and at its parent's alike.
+		for _, off := range []uint64{0, ps} {
+			calls := 0
+			err = grandchild.DebugGetCowPages().DebugLookupReadable(CowRange{off, 2 * ps}, func(uint64, *VmPage) error {
+				calls++
+				return ErrIO
+			})
+			expect(t, "the callback's error", err, ErrIO)
+			expect(t, "one call", calls, 1)
+		}
+	})
+}
+
+// As Zircon's, a readable lookup reads the rest of the range from the first
+// owner above that has content, so a page that owner does not hold, but an
+// object above it does, is not reported.
+func TestAReadableLookupReadsTheRestFromTheFirstOwnerWithContent(t *testing.T) {
 	forEachVmoPageSize(t, func(t *testing.T, env *vmoEnv) {
 		ps := env.ps
 		root, err := CreateObjectPaged(env.node, 5*ps)
@@ -715,16 +773,8 @@ func TestAReadableLookupReportsThePagesOfEachOwnerAbove(t *testing.T) {
 		mustNotFail(t, "write the child's third", child.Write(env.ctx, pattern(ps, 'C'), 2*ps))
 		grandchild, err := child.CreateClone(SnapshotOnWrite, 0, 4*ps)
 		mustNotFail(t, "clone the child", err)
-		expect(t, "hangs from the child", grandchild.DebugGetCowPages().DebugGetParent(), child.DebugGetCowPages())
-		var offsets []uint64
-		var pages []*VmPage
-		err = grandchild.DebugGetCowPages().DebugLookupReadable(CowRange{0, 4 * ps}, func(offset uint64, page *VmPage) error {
-			offsets = append(offsets, offset)
-			pages = append(pages, page)
-			return nil
-		})
-		mustNotFail(t, "lookup", err)
-		expect(t, "three pages", len(offsets), 3)
+		offsets, pages := lookupReadable(t, grandchild, CowRange{0, 4 * ps})
+		expect(t, "three pages, not four", len(offsets), 3)
 		expect(t, "the root's second", offsets[0], uint64(0))
 		expect(t, "is the root's", pages[0], root.DebugGetPage(ps))
 		expect(t, "the root's third", offsets[1], ps)
@@ -817,6 +867,9 @@ func TestAnObjectsCallsRoundTrimOrRefuseTheirRanges(t *testing.T) {
 		expectAttribution(t, "trimmed to the object", vmo.GetAttributedMemoryInRange(ps, 10*ps), PrivateAttributionCounts(3*ps, 0))
 		expectAttribution(t, "rounded out to pages", vmo.GetAttributedMemoryInRange(ps+1, ps), PrivateAttributionCounts(2*ps, 0))
 		expectAttribution(t, "past the end", vmo.GetAttributedMemoryInRange(4*ps, ps), AttributionCounts{})
+		counts := PrivateAttributionCounts(2*ps, ps)
+		expect(t, "all bytes", counts.TotalBytes(), 3*ps)
+		expect(t, "private bytes", counts.TotalPrivateBytes(), 3*ps)
 		// A partial zero of a page past the first.
 		mustNotFail(t, "zero two bytes", vmo.ZeroRange(env.ctx, ps+1, 2))
 		want := pattern(ps, 'A')
@@ -843,6 +896,23 @@ func TestAnObjectsCallsRoundTrimOrRefuseTheirRanges(t *testing.T) {
 		modified, err = pager.QueryPagerVmoStats(false)
 		mustNotFail(t, "query again", err)
 		expect(t, "modified", modified, true)
+	})
+}
+
+// Zeroing part of a pager's page that reads as zeros already stores
+// nothing, so dirties nothing: a marker, or a page in a zero interval.
+func TestZeroingPartOfAZeroPageDirtiesNothing(t *testing.T) {
+	forEachVmoPageSize(t, func(t *testing.T, env *vmoEnv) {
+		ps := env.ps
+		vmo := makeUncommittedPagerVmo(t, env, 2, false)
+		supplyZeros(t, env, vmo, 0, 1)
+		mustNotFail(t, "zero untracked", vmo.ZeroRangeUntracked(env.ctx, ps, ps))
+		for _, off := range []uint64{1, ps + 1} {
+			mustNotFail(t, "zero two bytes", vmo.ZeroRange(env.ctx, off, 2))
+		}
+		expectRanges(t, "nothing dirty", dirtyRanges(t, env, vmo), nil)
+		expect(t, "the marker stays", vmo.DebugGetCowPages().DebugIsMarker(0), true)
+		expectAttribution(t, "no pages", vmo.GetAttributedMemory(), AttributionCounts{})
 	})
 }
 
@@ -1012,5 +1082,60 @@ func TestEvictionTakesTheNodeAroundAPageAndSpillsNoCleanPage(t *testing.T) {
 		events := anon.ReclamationEventCount()
 		expect(t, "deduplicated", anon.DebugGetCowPages().DedupZeroPage(anon.DebugGetPage(0), 0), true)
 		expect(t, "a reclamation counted", anon.ReclamationEventCount(), events+1)
+	})
+}
+
+// A page a root lets go is unmapped from every clone that sees it, at each
+// clone's own offset, and only there.
+func TestAPageLetGoIsUnmappedFromTheClonesThatSeeIt(t *testing.T) {
+	forEachVmoPageSize(t, func(t *testing.T, env *vmoEnv) {
+		ps := env.ps
+		root, err := CreateObjectPaged(env.node, 4*ps)
+		mustNotFail(t, "create", err)
+		mustNotFail(t, "write the root", root.Write(env.ctx, pattern(4*ps, 'R'), 0))
+		child, err := root.CreateClone(SnapshotOnWrite, ps, 3*ps)
+		mustNotFail(t, "clone", err)
+		mustNotFail(t, "write the child's second", child.Write(env.ctx, pattern(ps, 'C'), ps))
+		grandchild, err := child.CreateClone(SnapshotOnWrite, ps, 2*ps)
+		mustNotFail(t, "clone the child", err)
+		expect(t, "hangs from the child", grandchild.DebugGetCowPages().DebugGetParent(), child.DebugGetCowPages())
+		childMap := newTestMapping(t, env, child)
+		defer childMap.unmap()
+		childMap.commitAndMap(false)
+		grandMap := newTestMapping(t, env, grandchild)
+		defer grandMap.unmap()
+		grandMap.commitAndMap(false)
+		// The root's last page goes: the child sees it at its third page, the
+		// grandchild at its second.
+		mustNotFail(t, "decommit the root's last", root.DecommitRange(3*ps, ps))
+		for i, want := range []bool{true, true, false} {
+			_, _, mapped := childMap.query(uint64(i) * ps)
+			expect(t, "the child's mappings", mapped, want)
+		}
+		for i, want := range []bool{true, false} {
+			_, _, mapped := grandMap.query(uint64(i) * ps)
+			expect(t, "the grandchild's mappings", mapped, want)
+		}
+		expect(t, "the child reads zeros", allZero(readPage(t, env, child, 2*ps)), true)
+		expect(t, "the grandchild reads zeros", allZero(readPage(t, env, grandchild, ps)), true)
+		expect(t, "the grandchild reads the child", bytes.Equal(readPage(t, env, grandchild, 0), pattern(ps, 'C')), true)
+	})
+}
+
+// Zeroing a child over the end of what it sees of its parent zeroes the
+// part that sees the parent too. Zircon takes such a gap as zero already and
+// leaves the parent showing; the port departs there (dirty.go).
+func TestZeroingAChildPastItsParentsEndZeroesWhatItSaw(t *testing.T) {
+	forEachVmoPageSize(t, func(t *testing.T, env *vmoEnv) {
+		ps := env.ps
+		parent, err := CreateObjectPaged(env.node, 2*ps)
+		mustNotFail(t, "create", err)
+		mustNotFail(t, "write the parent", parent.Write(env.ctx, pattern(2*ps, 'P'), 0))
+		child, err := parent.CreateClone(SnapshotOnWrite, 0, 4*ps)
+		mustNotFail(t, "clone", err)
+		mustNotFail(t, "zero across the parent's end", child.ZeroRange(env.ctx, ps, 2*ps))
+		expect(t, "the first still the parent's", bytes.Equal(readPage(t, env, child, 0), pattern(ps, 'P')), true)
+		expect(t, "the second zero", allZero(readPage(t, env, child, ps)), true)
+		expect(t, "the parent unchanged", bytes.Equal(readPage(t, env, parent, ps), pattern(ps, 'P')), true)
 	})
 }
