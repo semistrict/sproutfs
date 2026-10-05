@@ -4,18 +4,22 @@ import (
 	"sort"
 	"time"
 
-	"github.com/semistrict/sproutfs/vmmemory/internal/pageranges"
+	"github.com/semistrict/sproutfs/vmmemory/internal/zirconvm"
 )
 
+// binding is a page's state in one memory region. It is the content of the
+// page's slot in the region's page list, as a page is the content of a slot of
+// Zircon's VmPageList. It holds what Zircon's slot holds in its own way — the
+// resident page, explicit zero and the spill reservation — and beside them
+// what Zircon has no place for: whether the page is mapped, the checkpoint's
+// copy it shares, the page it was copied from, whether it is cold and whether
+// write-ahead made it.
 type binding struct {
 	memoryRegion *MemoryRegion
 	index        uint64
 	// Host.mu protects the pointer. The pointed-to resident's lock protects
 	// mapping state. Eviction publishes spill before clearing this pointer.
 	resident *resident
-	mapped   bool
-	zero     bool // explicit zero backing, independent of arena residency
-	dirty    bool
 	// spillSlot names the dirty reservation this page was admitted under, or
 	// -1. Whether the slot holds the page's bytes is the slot's own state, in
 	// Host.reservations: a seal hands a reservation to the checkpoint's copy
@@ -28,11 +32,6 @@ type binding struct {
 	// store copies away from it. The detached copy itself is not reachable from
 	// the memory region's bindings and always has checkpoint == nil.
 	checkpoint *binding
-	// ahead marks a private page that write-ahead made resident before any
-	// store into it. A store into a writable page never faults, so it stays
-	// set until the page's dirty epoch ends, and only the bytes written back
-	// can tell whether the guest used it.
-	ahead bool
 	// origin is the resident page this private copy was made from, when that
 	// page held a published page identity: eight bytes, and not the identity
 	// itself. A write fault is not always a store, so the settle compares the
@@ -42,75 +41,110 @@ type binding struct {
 	// from a checkpoint's held copy, from the name a fork point lent a private
 	// page, from another host's unpublished page or from zeros has none.
 	origin *resident
-	// cold marks a copy a store trap made of origin, which is not yet known to
-	// be the guest's state and pins origin until it is: see cold.go.
-	cold bool
 	// coldAt is when the copy became cold, in Unix nanoseconds, which is how
 	// an eviction tells a copy the guest may still be about to store into from
 	// one it has had time to. See coldCopyAge. It is an integer rather than a
 	// time.Time because every page has one.
 	coldAt int64
+	mapped bool
+	zero   bool // explicit zero backing, independent of arena residency
+	dirty  bool
+	// ahead marks a private page that write-ahead made resident before any
+	// store into it. A store into a writable page never faults, so it stays
+	// set until the page's dirty epoch ends, and only the bytes written back
+	// can tell whether the guest used it.
+	ahead bool
+	// cold marks a copy a store trap made of origin, which is not yet known to
+	// be the guest's state and pins origin until it is: see cold.go.
+	cold bool
+	// inZeroRun marks a bound page that a compressed zero run maps: a page
+	// whose binding is clean and holds no memory, which a plan mapped to zero.
+	// The run's mapping becomes the page's own state when the page is next
+	// bound, as it does for a page of the run with no binding. A slot of the
+	// page list holds a binding or lies in an interval, never both, so the
+	// run keeps such a page here.
+	inZeroRun bool
 }
 
 // writable reports whether the guest may store into this page where it is,
 // without faulting: private state no checkpoint still depends on.
 func (b *binding) writable() bool { return b.dirty && b.checkpoint == nil }
 
-const bindingBlockPages = 256
+// offset is the page list's offset of a page. The page list keeps Zircon's byte
+// offsets; the pager counts pages, and converts here.
+func (r *MemoryRegion) offset(index uint64) uint64 { return index * r.host.pageSize }
 
-type bindingBlock [bindingBlockPages]binding
-
-// Binding addresses stay stable while a memory region is attached because resident
-// alias sets retain them. Untouched blocks have no binding allocation.
-// The memory region access lock protects lifetime; this mutex only protects the map.
+// Binding addresses stay stable while a memory region is attached because
+// resident alias sets retain them: a binding, once in the page list, stays
+// there until the memory region detaches. A page nothing has touched has no
+// slot. The memory region access lock protects lifetime; bindingsMu protects
+// the page list.
 func (r *MemoryRegion) binding(index uint64) *binding {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
-	b := r.bindingLocked(index)
-	if r.zeroRanges.Get(index).Zero {
-		// A touched page leaves the compressed zero run and owns its own
-		// binding state before any revoke or copy-on-write can begin.
-		r.zeroRanges.Set(index, index+1, pageranges.State{})
-		b.zero, b.mapped = true, true
-	}
-	return b
+	return r.bindingLocked(index)
 }
 
-// bindingRun is binding for the count pages from first, under one lock, and
-// takes the whole run out of the compressed zero runs at once.
+// bindingRun is binding for the count pages from first, under one lock.
 func (r *MemoryRegion) bindingRun(first, count uint64) []*binding {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
 	bindings := make([]*binding, count)
-	touched := false
 	for k := range bindings {
-		index := first + uint64(k)
-		b := r.bindingLocked(index)
-		if r.zeroRanges.Get(index).Zero {
-			b.zero, b.mapped = true, true
-			touched = true
-		}
-		bindings[k] = b
-	}
-	if touched {
-		r.zeroRanges.Set(first, first+count, pageranges.State{})
+		bindings[k] = r.bindingLocked(first + uint64(k))
 	}
 	return bindings
 }
 
-// bindingLocked is the binding of one page, allocating its block. Caller holds
-// bindingsMu.
+// bindingLocked is the binding of one page, which it makes where the page has
+// none. A touched page leaves the compressed zero run and owns its own binding
+// state before any revoke or copy-on-write can begin: the run's interval is
+// split around the page's slot, as Zircon's page list splits an interval
+// around a slot that gets content. Caller holds bindingsMu.
 func (r *MemoryRegion) bindingLocked(index uint64) *binding {
-	key := index / bindingBlockPages
-	block := r.blocks[key]
-	if block == nil {
-		block = new(bindingBlock)
-		for i := range block {
-			block[i] = binding{memoryRegion: r, index: key*bindingBlockPages + uint64(i), spillSlot: -1}
+	// Most pages a fault binds are bound already, and finding a binding is
+	// cheaper than allocating a slot, which has to look for an interval.
+	offset := r.offset(index)
+	if slot := r.pages.Lookup(offset); slot != nil && slot.IsPage() {
+		b := slot.Page()
+		if b.inZeroRun {
+			b.inZeroRun = false
+			b.zero, b.mapped = true, true
 		}
-		r.blocks[key] = block
+		return b
 	}
-	return &block[index%bindingBlockPages]
+	slot, inRun := r.pages.LookupOrAllocate(offset, zirconvm.SplitInterval)
+	b := &binding{memoryRegion: r, index: index, spillSlot: -1}
+	if inRun {
+		b.zero, b.mapped = true, true
+	}
+	slot.Set(zirconvm.Page(b))
+	return b
+}
+
+// lookupLocked is the binding of a page that has one, and whether a
+// compressed zero run maps the page. Caller holds bindingsMu.
+func (r *MemoryRegion) lookupLocked(index uint64) (b *binding, zeroRun bool) {
+	offset := r.offset(index)
+	if slot := r.pages.Lookup(offset); slot != nil && slot.IsPage() {
+		b = slot.Page()
+		return b, b.inZeroRun
+	}
+	return nil, r.pages.IsOffsetInZeroInterval(offset)
+}
+
+// eachBoundLocked calls visit on the binding of every page of [first, last)
+// that has one, in order. visit must not change the page list. Caller holds
+// bindingsMu.
+func (r *MemoryRegion) eachBoundLocked(first, last uint64, visit func(*binding)) {
+	if err := r.pages.ForEveryPageInRange(func(slot *zirconvm.PageOrMarker[binding], _ uint64) error {
+		if slot.IsPage() {
+			visit(slot.Page())
+		}
+		return nil
+	}, r.offset(first), r.offset(last)); err != nil {
+		panic("vmmemory: walking the page list: " + err.Error())
+	}
 }
 
 // spillTarget reports the dirty reservation this binding's bytes go to, and
@@ -142,12 +176,17 @@ func (r *MemoryRegion) setMapped(b *binding, mapped bool) {
 // is what makes reading it O(runs). Caller holds bindingsMu.
 func (r *MemoryRegion) noteSealableLocked(b *binding) {
 	sealable := b.dirty && b.checkpoint == nil && b.mapped
-	if r.dirtyRuns.Get(b.index).Dirty == sealable {
-		// Replacing a run costs the depth of its boundaries, and most of these
-		// transitions change nothing: a read of the run is what tells them apart.
+	if r.dirtyRuns.has(b.index) == sealable {
+		// Changing a run costs a join or a split, and most of these
+		// transitions change nothing: a read of the runs is what tells them
+		// apart.
 		return
 	}
-	r.dirtyRuns.Set(b.index, b.index+1, pageranges.State{Dirty: sealable})
+	if sealable {
+		r.dirtyRuns.add(b.index, b.index+1)
+	} else {
+		r.dirtyRuns.remove(b.index)
+	}
 }
 
 // sealableRuns is the runs of consecutive pages one seal write-protects. It is
@@ -156,15 +195,7 @@ func (r *MemoryRegion) noteSealableLocked(b *binding) {
 func (r *MemoryRegion) sealableRuns() []PageRun {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
-	var runs []PageRun
-	for page := uint64(0); page < uint64(r.pageCount); {
-		state, end := r.dirtyRuns.Run(page, uint64(r.pageCount))
-		if state.Dirty {
-			runs = append(runs, PageRun{Page: page, Count: int(end - page)})
-		}
-		page = end
-	}
-	return runs
+	return r.dirtyRuns.runs(uint64(r.pageCount))
 }
 
 // unmapPages takes back the record that a run of pages is mapped, which only a
@@ -176,13 +207,10 @@ func (r *MemoryRegion) sealableRuns() []PageRun {
 func (r *MemoryRegion) unmapPages(page uint64, count int) {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
-	for k := range uint64(count) {
-		if block := r.blocks[(page+k)/bindingBlockPages]; block != nil {
-			b := &block[(page+k)%bindingBlockPages]
-			b.mapped = false
-			r.noteSealableLocked(b)
-		}
-	}
+	r.eachBoundLocked(page, page+uint64(count), func(b *binding) {
+		b.mapped = false
+		r.noteSealableLocked(b)
+	})
 }
 
 // unmapRuns is unmapPages for the runs one mapping command carried, including
@@ -191,11 +219,33 @@ func (r *MemoryRegion) unmapRuns(runs []MapRun) {
 	for _, run := range runs {
 		if run.Zero {
 			r.bindingsMu.Lock()
-			r.zeroRanges.Set(run.Page, run.Page+uint64(run.Count), pageranges.State{})
+			r.unmapZerosLocked(run.Page, run.Page+uint64(run.Count))
 			r.bindingsMu.Unlock()
 			continue
 		}
 		r.unmapPages(run.Page, run.Count)
+	}
+}
+
+// unmapZerosLocked takes every page of [first, last) out of the compressed zero
+// runs. An interval that crosses either end is split there, and every interval
+// then inside the range goes. Caller holds bindingsMu.
+func (r *MemoryRegion) unmapZerosLocked(first, last uint64) {
+	r.eachBoundLocked(first, last, func(b *binding) { b.inZeroRun = false })
+	start, end := r.offset(first), r.offset(last)
+	if r.pages.IsOffsetInZeroInterval(start) {
+		r.pages.LookupOrAllocate(start, zirconvm.SplitInterval)
+	}
+	if lastPage := end - r.host.pageSize; lastPage > start && r.pages.IsOffsetInZeroInterval(lastPage) {
+		r.pages.LookupOrAllocate(lastPage, zirconvm.SplitInterval)
+	}
+	if err := r.pages.RemovePages(func(slot *zirconvm.PageOrMarker[binding], _ uint64) error {
+		if slot.IsInterval() {
+			slot.Take()
+		}
+		return nil
+	}, start, end); err != nil {
+		panic("vmmemory: walking the page list: " + err.Error())
 	}
 }
 
@@ -208,60 +258,39 @@ func (r *MemoryRegion) isMapped(b *binding) bool {
 func (r *MemoryRegion) lookupBinding(index uint64) *binding {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
-	if block := r.blocks[index/bindingBlockPages]; block != nil {
-		return &block[index%bindingBlockPages]
-	}
-	return nil
+	b, _ := r.lookupLocked(index)
+	return b
 }
 
 // lookupBindings is lookupBinding of every page of [first, last), under one
-// hold of the binding lock: a block's lookup for each of its pages the range
-// holds, and nil for a page of a block nothing has touched.
+// hold of the binding lock and one walk of the page list: nil for a page with
+// no binding.
 func (r *MemoryRegion) lookupBindings(first, last uint64) []*binding {
 	bindings := make([]*binding, last-first)
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
-	for page := first; page < last; {
-		key := page / bindingBlockPages
-		stop := min(last, (key+1)*bindingBlockPages)
-		if block := r.blocks[key]; block != nil {
-			for at := page; at < stop; at++ {
-				bindings[at-first] = &block[at%bindingBlockPages]
-			}
-		}
-		page = stop
-	}
+	r.eachBoundLocked(first, last, func(b *binding) { bindings[b.index-first] = b })
 	return bindings
 }
 
-// touchedBlock reports whether any page of the binding block holding index has
-// ever been given per-page state. A range operation checks this once per 256
-// pages instead of looking each page up.
-func (r *MemoryRegion) touchedBlock(index uint64) bool {
+// boundIn is the bindings of the pages of [first, last) that have one, in
+// order, under one hold of the binding lock and one walk of the page list.
+func (r *MemoryRegion) boundIn(first, last uint64) []*binding {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
-	return r.blocks[index/bindingBlockPages] != nil
+	var bound []*binding
+	r.eachBoundLocked(first, last, func(b *binding) { bound = append(bound, b) })
+	return bound
 }
 
-// Snapshot only allocated blocks in logical order. No binding-map lock is held
-// while taking resident locks, making kernel changes or accessing backing.
+// bindings is every binding of the memory region, in logical order. No
+// binding-map lock is held while taking resident locks, making kernel changes
+// or accessing backing.
 func (r *MemoryRegion) bindings() []*binding {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
-	keys := make([]uint64, 0, len(r.blocks))
-	for key := range r.blocks {
-		keys = append(keys, key)
-	}
-	sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
-	result := make([]*binding, 0, len(keys)*bindingBlockPages)
-	for _, key := range keys {
-		block := r.blocks[key]
-		for i := range block {
-			if block[i].index < uint64(r.pageCount) {
-				result = append(result, &block[i])
-			}
-		}
-	}
+	var result []*binding
+	r.eachBoundLocked(0, uint64(r.pageCount), func(b *binding) { result = append(result, b) })
 	return result
 }
 
@@ -270,7 +299,8 @@ func (r *MemoryRegion) bindings() []*binding {
 func (r *MemoryRegion) zeroMapped(index uint64) bool {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
-	return r.zeroRanges.Get(index).Zero
+	_, zero := r.lookupLocked(index)
+	return zero
 }
 
 // repeated reports whether a fault on index for this access would be a repeated
@@ -278,31 +308,43 @@ func (r *MemoryRegion) zeroMapped(index uint64) bool {
 func (r *MemoryRegion) repeated(index uint64, write bool) bool {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
-	if r.zeroRanges.Get(index).Zero {
+	b, zero := r.lookupLocked(index)
+	if zero {
 		return !write
 	}
-	block := r.blocks[index/bindingBlockPages]
-	if block == nil {
-		return false
-	}
-	b := &block[index%bindingBlockPages]
-	return b.mapped && (!write || b.writable())
+	return b != nil && b.mapped && (!write || b.writable())
 }
 func (r *MemoryRegion) mapped(index uint64) bool {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
-	if r.zeroRanges.Get(index).Zero {
-		return true
-	}
-	if block := r.blocks[index/bindingBlockPages]; block != nil {
-		return block[index%bindingBlockPages].mapped
-	}
-	return false
+	b, zero := r.lookupLocked(index)
+	return zero || b != nil && b.mapped
 }
+
+// mapZeros records that a plan mapped every page of [start, end) to zero. A
+// page with a binding keeps the run in it, and every other page joins an
+// Untracked zero interval, which the page list merges with the intervals
+// beside it.
 func (r *MemoryRegion) mapZeros(start, end uint64) {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
-	r.zeroRanges.Set(start, end, pageranges.State{Zero: true})
+	var gaps [][2]uint64
+	if err := r.pages.ForEveryPageAndGapInRange(func(slot *zirconvm.PageOrMarker[binding], _ uint64) error {
+		if slot.IsPage() {
+			slot.Page().inZeroRun = true
+		}
+		return nil
+	}, func(start, end uint64) error {
+		gaps = append(gaps, [2]uint64{start, end})
+		return nil
+	}, r.offset(start), r.offset(end)); err != nil {
+		panic("vmmemory: walking the page list: " + err.Error())
+	}
+	for _, gap := range gaps {
+		if err := r.pages.AddZeroInterval(gap[0], gap[1], zirconvm.IntervalUntracked); err != nil {
+			panic("vmmemory: adding a zero run: " + err.Error())
+		}
+	}
 }
 
 // fresh reports what a store may assume about a page whose lock it does not
@@ -313,15 +355,11 @@ func (r *MemoryRegion) mapZeros(start, end uint64) {
 // Caller holds the page's fault stripe.
 func (r *MemoryRegion) fresh(index uint64) (zero, untouched bool) {
 	r.bindingsMu.Lock()
-	if r.zeroRanges.Get(index).Zero {
-		r.bindingsMu.Unlock()
+	b, zeroRun := r.lookupLocked(index)
+	r.bindingsMu.Unlock()
+	if zeroRun {
 		return true, false
 	}
-	var b *binding
-	if block := r.blocks[index/bindingBlockPages]; block != nil {
-		b = &block[index%bindingBlockPages]
-	}
-	r.bindingsMu.Unlock()
 	if b == nil {
 		return false, true
 	}
@@ -348,12 +386,8 @@ func (r *MemoryRegion) fresh(index uint64) (zero, untouched bool) {
 func (r *MemoryRegion) needsPrivatePage(index uint64) bool {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
-	block := r.blocks[index/bindingBlockPages]
-	if block == nil {
-		return true
-	}
-	b := &block[index%bindingBlockPages]
-	return !b.dirty || b.checkpoint != nil
+	b, _ := r.lookupLocked(index)
+	return b == nil || !b.dirty || b.checkpoint != nil
 }
 
 // holdInCheckpoint hands b's private page and spill reservation to the
@@ -485,12 +519,12 @@ func (r *MemoryRegion) endDirty(b *binding) int {
 func (r *MemoryRegion) heldBy(index uint64, held *binding) bool {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
-	block := r.blocks[index/bindingBlockPages]
-	return block != nil && block[index%bindingBlockPages].checkpoint == held
+	b, _ := r.lookupLocked(index)
+	return b != nil && b.checkpoint == held
 }
 
 // Dirty ownership changes under the memory region access lock. The map mutex lets
-// independent faults add entries without scanning all touched blocks.
+// independent faults add entries without walking the page list.
 func (r *MemoryRegion) setDirty(b *binding, dirty bool) {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
@@ -534,7 +568,7 @@ func (r *MemoryRegion) setDirtyMappedRun(bindings []*binding) {
 	r.noteDirtyLocked()
 	if !held {
 		first := bindings[0].index
-		r.dirtyRuns.Set(first, first+uint64(len(bindings)), pageranges.State{Dirty: true})
+		r.dirtyRuns.add(first, first+uint64(len(bindings)))
 		return
 	}
 	for _, b := range bindings {
@@ -559,7 +593,7 @@ func (r *MemoryRegion) takeDirtySet() map[uint64]*binding {
 	defer r.bindingsMu.Unlock()
 	pending := r.dirtyBindings
 	r.dirtyBindings = nil
-	r.dirtyRuns = pageranges.Map{}
+	r.dirtyRuns = newPageRuns(r.host.pageSize)
 	return pending
 }
 
