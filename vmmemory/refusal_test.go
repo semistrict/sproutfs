@@ -124,3 +124,39 @@ func TestARefusedWriteAheadRunKeepsItsPagesUnmapped(t *testing.T) {
 		}
 	})
 }
+
+// A read of a hole maps its window to zero with one command, and the pager
+// records the run as mapped before the command is sent: an ambiguous
+// acknowledgement must leave it recorded. A refusal changed nothing, so the
+// whole run comes out of the record again. That is the faulting page, which
+// the fault bound before it planned, and the pages beside it, which have no
+// binding. The fault served again maps the run.
+func TestARefusedZeroRunIsNotRecordedAsMapped(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		_, r, m, _ := holeMemoryRegion(t, vmmemory.Config{ResidentPages: 8, LogicalPages: 8,
+			DirtyPages: 8, ReadAheadPages: 8}, 8)
+		m.refuseMap = true
+		maps := m.maps
+		if err := r.Fault(t.Context(), 3, false); !errors.Is(err, vmmemory.ErrMappingRefused) {
+			t.Fatalf("a read whose zero run was refused = %v, want the refusal", err)
+		}
+		for _, page := range []uint64{3, 5} {
+			if vmmemory.Repeated(r, page, false) {
+				t.Fatalf("page %d is recorded as mapped after its zero run was refused", page)
+			}
+		}
+		m.refuseMap = false
+		if err := r.Fault(t.Context(), 3, false); err != nil {
+			t.Fatalf("the read served again after the refusal: %v", err)
+		}
+		if m.maps-maps != 1 || len(m.pages) != 8 {
+			t.Fatalf("the read served again issued %d commands mapping %d pages, want 1 mapping the window's 8",
+				m.maps-maps, len(m.pages))
+		}
+		for _, page := range []uint64{3, 5} {
+			if !vmmemory.Repeated(r, page, false) {
+				t.Fatalf("page %d is not recorded as mapped after its zero run was", page)
+			}
+		}
+	})
+}

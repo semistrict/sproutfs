@@ -298,28 +298,32 @@ func (p *windowPlan) observeZeros() {
 }
 
 // markZeros records a whole explicit zero extent. A hole owns no arena slot and
-// no identity, so it costs one bookkeeping step per extent and one map lookup
-// per binding block rather than per page.
+// no identity, so it costs one bookkeeping step per extent and one walk of the
+// page list over it rather than a lookup per page: only a page with a binding
+// can be one that may not join.
 func (p *windowPlan) markZeros(first, last uint64) {
 	if first >= last {
 		return
 	}
 	p.observeZeros()
-	r := p.memoryRegion
-	for page := first; page < last; {
-		stop := min(last, (page/bindingBlockPages+1)*bindingBlockPages)
-		if !r.touchedBlock(page) {
-			for i := page; i < stop; i++ {
-				p.zeros[i-p.start], p.fresh[i-p.start] = true, true
+	// The pages that may not join, in order.
+	var held []uint64
+	if bound := p.memoryRegion.boundIn(first, last); len(bound) > 0 {
+		h := p.memoryRegion.host
+		h.mu.Lock()
+		for _, b := range bound {
+			if !eligibleLocked(b) {
+				held = append(held, b.index)
 			}
-			page = stop
+		}
+		h.mu.Unlock()
+	}
+	for page := first; page < last; page++ {
+		if len(held) > 0 && held[0] == page {
+			held = held[1:]
 			continue
 		}
-		for ; page < stop; page++ {
-			if p.eligible(page) {
-				p.zeros[page-p.start], p.fresh[page-p.start] = true, true
-			}
-		}
+		p.zeros[page-p.start], p.fresh[page-p.start] = true, true
 	}
 }
 

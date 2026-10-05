@@ -1,6 +1,8 @@
-// Package pageranges is the interval map the pager keeps page state in: a
-// state constant over half-open runs of pages, held so that replacing one
-// run costs the depth of its boundaries rather than its pages.
+// Package pageranges is the interval map the Linux connection keeps its
+// client's mapping generations in: a state constant over half-open runs of
+// pages, held so that replacing one run costs the depth of its boundaries
+// rather than its pages. A memory region's own page state is in its page list
+// (internal/zirconvm), which has no place for a generation.
 package pageranges
 
 // State is what a Map holds for every page of a run. Default state is
@@ -10,7 +12,6 @@ package pageranges
 type State struct {
 	Generation uint64
 	Zero       bool
-	Dirty      bool
 }
 type entry struct {
 	start, end uint64
