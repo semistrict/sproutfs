@@ -237,7 +237,7 @@ func (h *Host) Sharing(ctx context.Context) (SharingStats, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	var stats SharingStats
-	for pg := h.lru.front(); pg != nil; pg = h.lru.next(pg) {
+	for pg := range h.queues.Pages() {
 		gauge := &stats.Pmem
 		if pg.kind == Ram {
 			gauge = &stats.Ram
@@ -260,7 +260,7 @@ func (h *Host) Stats(ctx context.Context) (Stats, error) {
 	defer h.mu.Unlock()
 	stats := h.stats
 	stats.ResidentPages = h.heldLocked()
-	stats.IdlePages = h.idle.len()
+	stats.IdlePages = h.idlePages
 	stats.PrivateExtents = len(h.extents)
 	stats.DirtyPages = h.dirty
 	stats.LogicalPages = h.logical

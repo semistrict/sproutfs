@@ -457,10 +457,15 @@ func (h *Host) allocate(ctx context.Context, r *MemoryRegion, f *arenaFile, plac
 		// A page a cold copy will be compared with is spared while anything else
 		// can go, and taken last, which ends those copies being cold: an arena
 		// whose every page is one of those, or the one page a store is copying
-		// from, has nothing else to give. See cold.go.
+		// from, has nothing else to give. It waits in the zero-fork queue,
+		// outside the reclaim queues the first two passes walk. See cold.go.
 		passes := []struct{ fair, pinned bool }{{true, false}, {false, false}, {false, true}}
 		for _, pass := range passes {
-			for pg := h.lru.front(); pg != nil; pg = h.lru.next(pg) {
+			pages := h.queues.Reclaimable()
+			if pass.pinned {
+				pages = h.queues.AnonymousZeroFork()
+			}
+			for pg := range pages {
 				if pass.fair && !h.fairLocked(pg, r, share) {
 					continue
 				}
@@ -472,7 +477,7 @@ func (h *Host) allocate(ctx context.Context, r *MemoryRegion, f *arenaFile, plac
 				// mapping that names this offset, and the command that stops it
 				// naming it has not landed. It is not this reclaim's to take; the
 				// store gives it up itself once its mapping is in.
-				usable := pg.replacing == 0 && (pass.pinned || !h.pinned(pg))
+				usable := pg.replacing == 0
 				for b := range pg.aliases.all() {
 					if b.memoryRegion.terminal.Load() != nil {
 						usable = false
@@ -492,8 +497,8 @@ func (h *Host) allocate(ctx context.Context, r *MemoryRegion, f *arenaFile, plac
 			}
 		}
 		changed := h.changed
-		// Slots reserved by a concurrent load have no LRU entry yet.
-		if h.lru.len() < h.cfg.ResidentPages {
+		// Slots reserved by a concurrent load are in no queue yet.
+		if h.queuedLocked() < h.cfg.ResidentPages {
 			busy = true
 		}
 		h.mu.Unlock()
@@ -582,14 +587,15 @@ func (h *Host) takeIdleLocked() *resident { return h.takeIdleWhereLocked(nil) }
 // takeIdleWhereLocked is takeIdleLocked for the idle pages want accepts, or
 // any where want is nil. Caller holds h.mu.
 func (h *Host) takeIdleWhereLocked(want func(*resident) bool) *resident {
-	for pg := h.idle.front(); pg != nil; pg = h.idle.next(pg) {
+	// A page in the don't-need queue is idle and pinned by no cold copy.
+	for pg := range h.queues.DontNeed() {
 		if want != nil && !want(pg) {
 			continue
 		}
 		if !pg.mu.TryLock() {
 			continue
 		}
-		if pg.aliases.len() == 0 && pg.replacing == 0 && !h.pinned(pg) {
+		if pg.aliases.len() == 0 && pg.replacing == 0 {
 			return pg
 		}
 		pg.mu.Unlock()

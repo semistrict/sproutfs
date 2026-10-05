@@ -39,8 +39,10 @@ type Host struct {
 	// holds. See reservations.go.
 	reservations *reservations
 	mu           sync.Mutex
-	// pinMu guards every resident page's coldCopies. It is taken inside any
-	// other lock and never around one. See cold.go.
+	// pinMu guards every resident page's coldCopies, which pin it, and the
+	// page's moves between the page queues, which its pins and its being idle
+	// decide. It is taken inside any other lock of the pager, and around none
+	// but the page queues' own. See queues.go and cold.go.
 	pinMu sync.Mutex
 	cfg   Config
 	// clock times the fault path. It is Config.Clock, or the wall clock.
@@ -88,11 +90,13 @@ type Host struct {
 	// flushed is what a guest's flush of a memory region is handed to. See SetFlushed.
 	flushed           func(*MemoryRegion, func(error))
 	zeroMemoryRegions int // attached memory regions retaining knowledge of explicit zeros
-	lru               pageList
-	// idle is the resident pages no memory region maps, oldest first: published
-	// pages kept for the next memory region that inherits their identity, and given
-	// up before any mapped page when a slot is short. See Host.idleLocked.
-	idle pageList
+	// queues order every resident page for reclaim. See queues.go.
+	queues *pageQueues
+	// idlePages counts the resident pages no memory region maps: published
+	// pages kept for the next memory region that inherits their identity, and
+	// given up before any mapped page when a slot is short. See
+	// Host.idleLocked. Changed with mu and pinMu held.
+	idlePages int
 	// unregisterIdle takes the idle pages out of the host budget's cache,
 	// which Close does before it gives their memory back.
 	unregisterIdle func()
@@ -227,7 +231,7 @@ func New(ctx context.Context, resources *resource.Budget, cfg Config, arena Aren
 		extentPages: extentPages,
 		clean:       make(map[pageKey]*resident), changed: make(chan struct{}), revoked: make(chan struct{}),
 		inflight: make(map[pageKey]*prefetch), prefetches: make(map[*prefetch]struct{}),
-		lru: pageList{links: recentLinks}, idle: pageList{links: idleLinks},
+		queues:        newPageQueues(pageSize),
 		memoryRegions: make(map[*MemoryRegion]struct{}), highWater: highWater(cfg.DirtyPages),
 		io: make(chan struct{}, cfg.ConcurrentIO), writeback: make(chan struct{}, 1)}
 	if cfg.Arena == ArenaIsolated {

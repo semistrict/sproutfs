@@ -11,6 +11,7 @@ import (
 	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/internal/ctxsync"
 	"github.com/semistrict/sproutfs/platform/sim"
+	"github.com/semistrict/sproutfs/vmmemory/internal/zirconvm"
 )
 
 // pageKey identifies immutable bytes by the store page object that holds them.
@@ -38,9 +39,17 @@ type resident struct {
 	// the checkpoint's copy to a page a reclaim is already holding, and the
 	// reclaim finds it there.
 	aliases aliasSet
-	// recent is this page's place on Host.lru, and idle its place on Host.idle
-	// while no memory region maps it. Protected by Host.mu.
-	recent, idle pageLinks
+	// queue is this page's place in Host.queues: a reclaim or isolate queue,
+	// ordered by when a fault last touched it; the don't-need queue while it
+	// is idle; or the zero-fork queue while a cold copy will be compared with
+	// it. Its backlink is its file and the byte offset of its slot. See
+	// queues.go.
+	queue zirconvm.PageQueueNode[*resident, *arenaFile]
+	// queued marks a page in the queues, from its creation until its memory
+	// goes back. idle marks a page no memory region maps, kept for the next one
+	// that inherits its identity. Both are changed with Host.mu and Host.pinMu
+	// held, and read with either.
+	queued, idle bool
 	// replacing counts the stores that have taken a binding off this page and
 	// whose mapping command has not yet replaced the guest's mapping of it. The
 	// guest goes on reading this page's offset until that command lands, so no
@@ -51,10 +60,13 @@ type resident struct {
 	replacing int
 	dropped   bool
 	// coldCopies is every cold copy that will be compared with this page,
-	// which no eviction therefore takes. It is guarded by Host.pinMu. See
-	// cold.go.
+	// which keeps it in the zero-fork queue, where an eviction takes it only
+	// when nothing else can go. It is guarded by Host.pinMu. See cold.go.
 	coldCopies map[*binding]struct{}
 }
+
+// QueueNode is the page's place in the page queues.
+func (pg *resident) QueueNode() *zirconvm.PageQueueNode[*resident, *arenaFile] { return &pg.queue }
 
 // published reports a resident page holding a page identity some checkpoint
 // gave it, whose bytes therefore cannot change while it holds that name. It is
@@ -170,12 +182,6 @@ func (h *Host) joinReclaiming(held, b *binding) {
 	}
 }
 
-func (h *Host) touch(pg *resident) {
-	h.mu.Lock()
-	h.lru.moveToBack(pg)
-	h.mu.Unlock()
-}
-
 // create fills an already reserved slot and returns its locked page, not yet
 // visible in the sharing index.
 func (h *Host) create(ctx context.Context, at fileSlot, data []byte, key pageKey, private bool, kind MemoryRegionKind) (*resident, error) {
@@ -268,16 +274,17 @@ func (h *Host) adopt(at fileSlot, key pageKey, private bool, kind MemoryRegionKi
 	if at.file.pages != nil {
 		at.file.pages[at.slot] = pg
 	}
-	h.lru.pushBack(pg)
+	h.queueLocked(pg)
 	h.signal()
 	h.mu.Unlock()
+	h.queues.AgeOnAccess()
 	return pg
 }
 
 // adoptRun is adopt for the private zero pages of count consecutive slots, in
 // slot order. A write-ahead run is thousands of pages that every other fault
-// of the host is waiting to see, so they join the recency list under one host
-// lock and wake waiters once.
+// of the host is waiting to see, so they join the newest reclaim queue under
+// one host lock, as one access, and wake waiters once.
 func (h *Host) adoptRun(at fileSlot, count int, kind MemoryRegionKind) []*resident {
 	pages := make([]*resident, count)
 	for i := range pages {
@@ -290,10 +297,11 @@ func (h *Host) adoptRun(at fileSlot, count int, kind MemoryRegionKind) []*reside
 		if at.file.pages != nil {
 			at.file.pages[pg.slot] = pg
 		}
-		h.lru.pushBack(pg)
+		h.queueLocked(pg)
 	}
 	h.signal()
 	h.mu.Unlock()
+	h.queues.AgeOnAccess()
 	return pages
 }
 
@@ -318,8 +326,7 @@ func (h *Host) release(ctx context.Context, pg *resident) error {
 	}
 	h.putFree(pg.fileSlot)
 	pg.slot = -1
-	h.lru.remove(pg)
-	h.mappedLocked(pg)
+	h.dequeueLocked(pg)
 	if pg.key != (pageKey{}) && h.clean[pg.key] == pg {
 		delete(h.clean, pg.key)
 		h.cleanVersion++
@@ -380,21 +387,6 @@ func mappedBy(pg *resident, r *MemoryRegion) bool {
 		}
 	}
 	return false
-}
-
-// idleLocked puts a page no memory region maps any more on the idle list, newest
-// last, where it waits for a memory region that inherits its identity or for an
-// allocation that needs its slot. Caller holds h.mu.
-func (h *Host) idleLocked(pg *resident) {
-	if pg.aliases.len() == 0 && pg.slot >= 0 {
-		h.idle.pushBack(pg)
-	}
-}
-
-// mappedLocked takes a page off the idle list, which a memory region mapping it again
-// or its memory going back does. Caller holds h.mu.
-func (h *Host) mappedLocked(pg *resident) {
-	h.idle.remove(pg)
 }
 
 // releaseOrigin gives up a page a copy was made from once nothing maps it and

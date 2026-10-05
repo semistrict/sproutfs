@@ -13,25 +13,16 @@ package zirconvm
 // The pager's pages are slots of memfds (plan: Arena and residency), so here
 // a page carries its bytes, which the Pmm that made it hands out.
 type VmPage struct {
-	// queue is the page queue list the page is in, and prev and next its
-	// neighbours there. Together they are Zircon's queue_node.
-	queue      *pageQueueList
-	prev, next *VmPage
+	// PageQueueNode is the page's queue_node, its backlink (object and
+	// pageOffset) and its queue (pageQueue). See pagequeues.go.
+	PageQueueNode[*VmPage, *CowPages]
 
 	data []byte
-
-	// object and pageOffset are the backlink: the object holding the page and
-	// the page's offset in it, while the page is in a page queue.
-	object     *CowPages
-	pageOffset uint64
 
 	// shareCount is how many objects other than its owner can reach the page.
 	// Only a hidden node shares its pages, and the port has none, so it is 0
 	// here except while a compression carries it as metadata.
 	shareCount uint32
-
-	// pageQueue is the queue the page is in, Zircon's page_queue_priv.
-	pageQueue uint8
 
 	// alwaysNeed is the always_need hint: do not reclaim the page.
 	alwaysNeed bool
@@ -43,6 +34,9 @@ type VmPage struct {
 	// loaned pages are for contiguous memory; neither ports (plan: Which
 	// Zircon tests port).
 }
+
+// QueueNode is the page's part the page queues own.
+func (p *VmPage) QueueNode() *PageQueueNode[*VmPage, *CowPages] { return &p.PageQueueNode }
 
 // NewPage is a page over data, which is the page's bytes. A Pmm makes pages
 // with it.
@@ -120,7 +114,7 @@ type Pmm interface {
 type Node struct {
 	pmm         Pmm
 	pageSize    uint64
-	queues      *PageQueues
+	queues      *VmPageQueues
 	compression *Compression
 }
 
@@ -129,7 +123,7 @@ type Node struct {
 // GetPageCompression() is null when no compression is configured.
 func NewNode(pmm Pmm, pageSize uint64, compression *Compression) *Node {
 	assert(pageSize != 0 && pageSize&(pageSize-1) == 0, "the page size is a power of two")
-	return &Node{pmm: pmm, pageSize: pageSize, queues: NewPageQueues(), compression: compression}
+	return &Node{pmm: pmm, pageSize: pageSize, queues: NewPageQueues[*VmPage, *CowPages](pageSize), compression: compression}
 }
 
 // FreePage gives a page back to the node's pmm. With FreeReference it makes
@@ -147,7 +141,10 @@ func (n *Node) FreeReference(ref ReferenceValue) {
 }
 
 // PageQueues are the node's page queues.
-func (n *Node) PageQueues() *PageQueues { return n.queues }
+func (n *Node) PageQueues() *VmPageQueues { return n.queues }
+
+// VmPageQueues are the page queues of a Node's pages.
+type VmPageQueues = PageQueues[*VmPage, *CowPages]
 
 // PageSize is the size of the node's pages.
 func (n *Node) PageSize() uint64 { return n.pageSize }

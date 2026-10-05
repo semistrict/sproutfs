@@ -132,20 +132,20 @@ func (r *MemoryRegion) PressMappings() { r.pressed.Store(true) }
 // Unreachable describes every resident page that no memory region maps and
 // that is not idle either: memory nothing will ever give back. A host whose
 // memory regions have all released what they held has none. It also reports a
-// slot two pages claim, and a recency list whose length is not the slots held.
+// slot two pages claim, and page queues that hold other than the slots held.
 func (h *Host) Unreachable() []string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	var found []string
 	claimed := map[fileSlot]bool{}
 	listed := 0
-	for pg := h.lru.front(); pg != nil; pg = h.lru.next(pg) {
+	for pg := range h.queues.Pages() {
 		listed++
 		if claimed[pg.fileSlot] {
 			found = append(found, fmt.Sprintf("slot %d is claimed twice", pg.slot))
 		}
 		claimed[pg.fileSlot] = true
-		if pg.aliases.len() > 0 || h.idle.contains(pg) {
+		if pg.aliases.len() > 0 || pg.idle {
 			continue
 		}
 		found = append(found, fmt.Sprintf("slot %d key %+v private %t replacing %d dropped %t indexed %t free %t",

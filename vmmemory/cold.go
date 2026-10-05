@@ -57,30 +57,35 @@ import (
 // coldCopyAge is how old a cold copy is before its session gives it back.
 var coldCopyAge = 200 * time.Millisecond
 
-// pin keeps origin in the arena while b's cold copy is compared with it. Caller
-// holds origin's lock, so no eviction can be taking it at the same moment.
+// pin keeps origin in the arena while b's cold copy is compared with it: the
+// first pin moves it to the zero-fork queue, outside the queues an eviction
+// takes from while anything else can go. Caller holds origin's lock, so no
+// eviction can be taking it at the same moment.
 func (h *Host) pin(origin *resident, b *binding) {
 	h.pinMu.Lock()
 	defer h.pinMu.Unlock()
 	if origin.coldCopies == nil {
 		origin.coldCopies = make(map[*binding]struct{})
 	}
+	first := len(origin.coldCopies) == 0
 	origin.coldCopies[b] = struct{}{}
+	if first {
+		h.pinnedLocked(origin)
+	}
 }
 
-// unpin is the reverse of pin.
+// unpin is the reverse of pin: the last unpin moves origin back to the queue
+// it belongs in.
 func (h *Host) unpin(origin *resident, b *binding) {
 	h.pinMu.Lock()
 	defer h.pinMu.Unlock()
+	if _, pinned := origin.coldCopies[b]; !pinned {
+		return
+	}
 	delete(origin.coldCopies, b)
-}
-
-// pinned reports whether a cold copy is compared with pg, which no eviction may
-// therefore take. Caller holds pg's lock.
-func (h *Host) pinned(pg *resident) bool {
-	h.pinMu.Lock()
-	defer h.pinMu.Unlock()
-	return len(pg.coldCopies) > 0
+	if len(origin.coldCopies) == 0 {
+		h.unpinnedLocked(origin)
+	}
 }
 
 // markCold makes b's copy of origin cold, and records it for its session to
@@ -165,6 +170,9 @@ func (h *Host) dropCold(pg *resident) {
 	h.pinMu.Lock()
 	copies := slices.Collect(maps.Keys(pg.coldCopies))
 	pg.coldCopies = nil
+	if len(copies) > 0 {
+		h.unpinnedLocked(pg)
+	}
 	h.pinMu.Unlock()
 	for _, b := range copies {
 		r := b.memoryRegion
@@ -183,8 +191,14 @@ func (h *Host) moveCold(from, to *resident) {
 	h.pinMu.Lock()
 	copies := slices.Collect(maps.Keys(from.coldCopies))
 	from.coldCopies = nil
-	if len(copies) > 0 && to.coldCopies == nil {
-		to.coldCopies = make(map[*binding]struct{})
+	if len(copies) > 0 {
+		h.unpinnedLocked(from)
+		if to.coldCopies == nil {
+			to.coldCopies = make(map[*binding]struct{})
+		}
+		if len(to.coldCopies) == 0 {
+			h.pinnedLocked(to)
+		}
 	}
 	for _, b := range copies {
 		to.coldCopies[b] = struct{}{}
