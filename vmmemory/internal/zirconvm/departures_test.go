@@ -681,3 +681,38 @@ func TestAnAgreementThereAreTooFewReservationsForDirtiesNothing(t *testing.T) {
 		expect(t, "none left", env.storage.Available(), 0)
 	})
 }
+
+// D5 with D2: the agreement counts what it reserves for spilled pages by
+// their dirty state. A spilled Dirty page holds its reservation and stays
+// spilled; a spilled page the checkpoint holds comes back to the checkpoint
+// with its own, and the guest's copy takes a new one.
+func TestAnAgreementReservesOnlyForSpilledPagesNotDirty(t *testing.T) {
+	forEachVmoPageSize(t, func(t *testing.T, env *vmoEnv) {
+		ps := env.ps
+		vmo, _ := makeCommittedPagerVmo(t, env, 3, true)
+		mustNotFail(t, "agree", vmo.DirtyPages(env.ctx, 0, 3*ps))
+		cow := vmo.DebugGetCowPages()
+		paused := reservationOf(t, "the first", vmo.DebugGetPage(0))
+		// The guest stores through its mapping, so the pages do not spill to zeros.
+		for i, b := range []byte{'A', 'B', 'C'} {
+			copy(vmo.DebugGetPage(uint64(i)*ps).data, pattern(ps, b))
+		}
+		for i := range uint64(3) {
+			expect(t, "spilled", compressPage(t, env, cow, vmo.DebugGetPage(i*ps), i*ps), uint64(1))
+		}
+		mustNotFail(t, "begin the first", vmo.WritebackBegin(0, ps, false))
+		for env.storage.Available() > 1 {
+			env.storage.Reserve()
+		}
+		mustNotFail(t, "agree again", vmo.DirtyPages(env.ctx, 0, 3*ps))
+		expect(t, "none left", env.storage.Available(), 0)
+		copied := vmo.DebugGetPage(0)
+		expect(t, "the guest's copy is dirty", copied.dirtyState, Dirty)
+		expect(t, "with a reservation of its own", reservationOf(t, "the copy", copied) != paused, true)
+		expect(t, "the second stays spilled", cow.DebugIsReference(ps), true)
+		expect(t, "the third stays spilled", cow.DebugIsReference(2*ps), true)
+		held := make([]byte, ps)
+		mustNotFail(t, "read the writeback", vmo.ReadWriteback(env.ctx, held, 0))
+		expect(t, "the checkpoint keeps the pause", bytes.Equal(held, copied.data), true)
+	})
+}

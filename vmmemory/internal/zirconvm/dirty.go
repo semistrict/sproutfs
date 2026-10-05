@@ -149,12 +149,13 @@ func (c *CowPages) dirtyForStoreLocked(ctx context.Context, slot PageOrMarkerRef
 }
 
 // reserveFromLocked is reserveLocked, taking the reservation from reserved
-// where the caller took some up front.
+// where the caller took them up front, which it took enough of.
 func (c *CowPages) reserveFromLocked(page *VmPage, reserved *[]ReferenceValue) error {
 	if !c.node.reserves() || page.reserved {
 		return nil
 	}
-	if reserved != nil && len(*reserved) > 0 {
+	if reserved != nil {
+		assert(len(*reserved) > 0, "the reservations taken up front cover the range")
 		page.setReservation((*reserved)[0])
 		*reserved = (*reserved)[1:]
 		return nil
