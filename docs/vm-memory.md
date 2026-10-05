@@ -2865,7 +2865,12 @@ scripts/test-firecracker-lima.sh
 Every suite builds its pagers in the core `SPROUTFS_PAGER_CORE` names,
 `current` when it is unset (`internal/testcore`), and `just check` runs the
 suites that build pagers again under `SPROUTFS_PAGER_CORE=zircon` in both
-arena modes (`scripts/test-pager-core.py`).
+arena modes (`scripts/test-pager-core.py`). The GCE qualification passes it
+through, so the Linux suites run under the zircon core with:
+
+```sh
+SPROUTFS_GCE_QUALIFY=1 SPROUTFS_PAGER_CORE=zircon SPROUTFS_ARENA=shared scripts/bench-memory-gce.sh all
+```
 
 Every suite builds its pagers in the arena mode `SPROUTFS_ARENA` names,
 `isolated` when it is unset, and is run in both: `just check` runs the Go
