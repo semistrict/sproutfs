@@ -943,12 +943,12 @@
     "id": "migration-take-a-claim-after-close",
     "package": "vmmigrate",
     "run": "^TestClosingAForkChildEndsTheClaimInFlight$",
-    "purpose": "Take the parent's answer to a fork child's claim that arrived after the receive was closed, so a child its host gave up is reported claimed."
+    "purpose": "Take the parent's answer to a fork child's claim once the receive was closed, so a child its host gave up is reported claimed."
   },
   {
     "id": "migration-take-a-listing-after-close",
     "package": "vmmigrate",
     "run": "^TestClosingAPostCopyEndsTheListingInFlight$",
-    "purpose": "Take the source's listing of what it holds that arrived after the backing was closed, before the goroutine that ends the request in flight ran."
+    "purpose": "Take the source's listing of what it holds once the backing was closed."
   }
 ]

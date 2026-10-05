@@ -508,6 +508,17 @@ the reply anyway: `migration-take-a-reply-after-close`,
 `migration-take-a-listing-after-close`. Each fails its own test. Both tests
 run three times on one processor and once on all of them.
 
+That left the claim's and the listing's guards to the Go scheduler. A close
+made before the reply arrives reaches the request from the `AfterFunc`
+goroutine. When that goroutine ran first, the request ended with the close and
+the guard had no reply to take. Under load, `check-guards` reported
+`migration-take-a-claim-after-close` as surviving in about 3 runs in 30, and
+the listing's guard survived 20 runs in 60. Both tests now hold the request at
+a seam in `request`, after its reply is back and before the backing checks
+its end. The test closes the backing there and then lets the request go, so
+only that check refuses the reply. Each test passes 600 of 600 runs at one,
+two and eight processors, and its guard fails it in 600 of 600.
+
 The same sweep of `vmmigrate` and `peer` found no other request that can take
 a reply sent after its owner closed. A receive's stream is cancelled at once,
 and `Received.Close` waits for it to stop before it returns. A table of peers
