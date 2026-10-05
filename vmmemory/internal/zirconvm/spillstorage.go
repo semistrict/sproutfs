@@ -103,8 +103,8 @@ const (
 // extent is allocated. The file must be a platform.AllocatingFile. A budget
 // beyond MaxSpillPages, or below one, is ErrOutOfRange.
 func NewSpillStorage(ctx context.Context, file platform.File, pageSize uint64, budget int) (*SpillStorage, error) {
-	if budget < 1 || budget > MaxSpillPages {
-		return nil, fmt.Errorf("%w: a spill of %d pages, not 1 to %d", ErrOutOfRange, budget, MaxSpillPages)
+	if err := checkSpillBudget(budget); err != nil {
+		return nil, err
 	}
 	if err := file.Truncate(ctx, 0); err != nil {
 		return nil, err
@@ -124,6 +124,14 @@ func NewSpillStorage(ctx context.Context, file platform.File, pageSize uint64, b
 		}
 	}
 	return &SpillStorage{file: file, pageSize: pageSize, budget: budget}, nil
+}
+
+// checkSpillBudget refuses a budget no reference can name, and none at all.
+func checkSpillBudget(budget int) error {
+	if budget < 1 || budget > MaxSpillPages {
+		return fmt.Errorf("%w: a spill of %d pages, not 1 to %d", ErrOutOfRange, budget, MaxSpillPages)
+	}
+	return nil
 }
 
 // refToID is RefToAllocLocked's id: the allocation a reference names.

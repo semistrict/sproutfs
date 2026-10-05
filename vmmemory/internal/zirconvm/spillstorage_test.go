@@ -87,6 +87,12 @@ func TestASpillBeyondWhatAReferenceNamesIsRefused(t *testing.T) {
 		expect(t, "too many", errors.Is(err, ErrOutOfRange), true)
 		_, err = NewSpillStorage(env.ctx, file, env.ps, 0)
 		expect(t, "none", errors.Is(err, ErrOutOfRange), true)
+		// The bounds themselves are budgets: one page, and the most a
+		// reference names, which is not allocated here.
+		one, err := NewSpillStorage(env.ctx, file, env.ps, 1)
+		mustNotFail(t, "one page", err)
+		expect(t, "one available", one.Available(), 1)
+		mustNotFail(t, "the most", checkSpillBudget(MaxSpillPages))
 	})
 }
 
