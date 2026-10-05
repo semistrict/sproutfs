@@ -716,3 +716,47 @@ func TestAnAgreementReservesOnlyForSpilledPagesNotDirty(t *testing.T) {
 		expect(t, "the checkpoint keeps the pause", bytes.Equal(held, copied.data), true)
 	})
 }
+
+// A page at a Frame has no bytes in this process, so a copy, a zeroing or a
+// compression of it here asserts rather than copying nothing: its pager moves
+// its bytes itself.
+func TestAPageAtAFrameHasNoBytesHere(t *testing.T) {
+	page := NewFramePage("slot 3 of file 1")
+	expect(t, "its frame", page.Frame, any("slot 3 of file 1"))
+	defer func() {
+		expect(t, "the assertion", recover() != nil, true)
+	}()
+	_ = page.bytesHere()
+	t.Fatal("a page at a frame gave bytes")
+}
+
+// A splice list a supply has processed is reused for the next supply, and a
+// supplied page's backlink names the object and offset it went to.
+func TestASpliceListIsReusedAndASuppliedPagesBacklinkNamesItsObject(t *testing.T) {
+	forEachVmoPageSize(t, func(t *testing.T, env *vmoEnv) {
+		ps := env.ps
+		vmo := makeUncommittedPagerVmo(t, env, 4, false)
+		aux, err := CreateObjectPaged(env.node, 2*ps)
+		mustNotFail(t, "create aux", err)
+		mustNotFail(t, "commit aux", aux.CommitRange(env.ctx, 0, 2*ps))
+		splice := NewPageSpliceList[VmPage](ps, env.node)
+		mustNotFail(t, "take", aux.TakePages(env.ctx, 0, ps, splice))
+		mustNotFail(t, "supply", vmo.SupplyPages(env.ctx, 0, ps, splice, PagerSupply))
+		splice.Reuse()
+		mustNotFail(t, "take again", aux.TakePages(env.ctx, ps, ps, splice))
+		mustNotFail(t, "supply again", vmo.SupplyPages(env.ctx, 2*ps, ps, splice, PagerSupply))
+		expect(t, "processed", splice.IsProcessed(), true)
+		aux.Destroy()
+		for _, offset := range []uint64{0, 2 * ps} {
+			page, err := vmo.GetPage(env.ctx, offset, 0, nil)
+			mustNotFail(t, "get page", err)
+			link, ok := env.node.PageQueues().Backlink(page)
+			expect(t, "queued", ok, true)
+			expect(t, "the backlink's object", link.Cow, vmo.CowPages())
+			expect(t, "the backlink's offset", link.Offset, offset)
+			expect(t, "the page at the object's offset", vmo.CowPages().PageLocked(offset), page)
+		}
+		_, ok := env.node.PageQueues().Backlink(NewFramePage(nil))
+		expect(t, "a page in no queue has no backlink", ok, false)
+	})
+}
