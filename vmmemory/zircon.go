@@ -116,36 +116,10 @@ func newZirconHost(h *Host) *zirconHost {
 	return z
 }
 
-// attach admits and attaches a memory region as the current core's Attach
-// does, with a region layer of its own. A migration destination's peer
-// backing, whose loads can return bytes no checkpoint holds, takes a page
-// it serves as the region's own dirty state (zircon_peer.go).
-func (z *zirconHost) attach(ctx context.Context, backing MemoryRegionBacking, mapping Mapping) (*MemoryRegion, error) {
-	h := z.host
-	r, err := h.admit(ctx, backing, mapping)
-	if err != nil {
-		return nil, err
-	}
-	zr, err := z.newRegion(r)
-	if err != nil {
-		h.mu.Lock()
-		h.logical -= r.pageCount
-		h.forgetFilesLocked(r)
-		delete(h.memoryRegions, r)
-		h.mu.Unlock()
-		return nil, err
-	}
-	r.zircon = zr
-	if err := r.giveFiles(ctx); err != nil {
-		return r, err
-	}
-	if err := r.Populate(ctx); err != nil {
-		return r, err
-	}
-	return r, nil
-}
-
-// newRegion makes a memory region's layer.
+// newRegion makes a memory region's layer, which Host.admit does for every
+// region however it attaches. A migration destination's peer backing, whose
+// loads can return bytes no checkpoint holds, takes a page it serves as the
+// region's own dirty state (zircon_peer.go).
 func (z *zirconHost) newRegion(r *MemoryRegion) (*zirconRegion, error) {
 	ps := z.host.pageSize
 	zr := &zirconRegion{region: r, host: z, beside: zirconvm.NewPageList[zbinding](ps), dirtyRuns: newPageRuns(ps)}

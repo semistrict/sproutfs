@@ -195,3 +195,30 @@ func TestAColdCopyWhoseOriginWasEvictedIsComparedWithItsVolume(t *testing.T) {
 		}
 	})
 }
+
+// A store's cold copy that the guest changed is published, and then the page
+// it was copied from pins nothing: once no region maps it, it is idle, and a
+// drop of the idle pages takes it. A process that stores into a page and takes
+// a checkpoint, over and over, holds its own pages and no more after each drop.
+func TestTheOriginOfAPublishedColdCopyIsDroppedOnceIdle(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const pages = 8
+		f := newFixture(t, 2*pages, 4*pages, pages)
+		b := f.newBacking(pages)
+		r, m := f.attach(b)
+		held(t, r, m, 0, pages)
+		for round := range 3 {
+			page := uint64(pages/2 + round)
+			access(t, r, m, page, true)[0] = byte(100 + round)
+			f.mustCheckpoint(r, b)
+			if _, err := f.h.DropIdle(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			if s := hostStats(t, f); s.ResidentPages != pages || s.IdlePages != 0 || s.DirtyPages != 0 {
+				t.Fatalf("after round %d the pager holds %d pages, %d idle and %d dirty reservations, "+
+					"want the region's %d pages and none idle or dirty", round, s.ResidentPages, s.IdlePages,
+					s.DirtyPages, pages)
+			}
+		}
+	})
+}

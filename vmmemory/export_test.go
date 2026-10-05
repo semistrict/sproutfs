@@ -6,6 +6,14 @@ import (
 	"time"
 )
 
+// Core is the core this memory region's pages are served in.
+func (r *MemoryRegion) Core() Core {
+	if r.zircon != nil {
+		return CoreZircon
+	}
+	return CoreCurrent
+}
+
 // ColdCopyAge is how old a cold copy is before its session gives it back and
 // before an eviction may.
 func ColdCopyAge() time.Duration { return coldCopyAge }

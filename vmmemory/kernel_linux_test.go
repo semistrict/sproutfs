@@ -354,6 +354,21 @@ func requireKernelBytes(t *testing.T, b *kernelBacking, want []byte) {
 	}
 }
 
+// Every memory region a session attaches runs in its pager's core, as a region
+// Attach makes does. A session's region once ran the current core under a
+// zircon pager, whose host-wide work then never saw its pages.
+func TestASessionsMemoryRegionRunsInItsPagersCore(t *testing.T) {
+	h := kernelHost(t, 8, 16)
+	p := startNative(t, h, 4)
+	for region := range p.connections {
+		if got := p.memoryRegion(region).Core(); got != suiteCore {
+			t.Fatalf("memory region %d of the session runs the %s core, want its pager's %s", region, got, suiteCore)
+		}
+	}
+	p.request("fill 1 0 1 7", "filled")
+	p.request("read 1 0 1", "data 07")
+}
+
 // A store into a zero page owns no page and fences nothing, so through real
 // UFFD it is one mapping command, one remap and no revoke, whether a read had
 // zero-mapped the page or it is a hole never touched, and it reads nothing from

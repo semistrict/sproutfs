@@ -183,9 +183,6 @@ type MemoryRegion struct {
 // guessed it from a volume's name would report memory as disk the first time a
 // deployment named a volume something else.
 func (h *Host) Attach(ctx context.Context, backing MemoryRegionBacking, mapping Mapping) (*MemoryRegion, error) {
-	if z := h.zircon; z != nil {
-		return z.attach(ctx, backing, mapping)
-	}
 	r, err := h.admit(ctx, backing, mapping)
 	if err != nil {
 		return nil, err
@@ -263,6 +260,19 @@ func (h *Host) admit(ctx context.Context, memoryRegion MemoryRegionBacking, mapp
 	r.stripes = make([]*ctxsync.Mutex, min(windows, 1024))
 	for i := range r.stripes {
 		r.stripes[i] = ctxsync.NewMutex()
+	}
+	// Under the zircon core a memory region's own pages are a region layer
+	// of its own, however it attaches: here, or a session's Connect.
+	if z := h.zircon; z != nil {
+		zr, err := z.newRegion(r)
+		if err != nil {
+			h.mu.Lock()
+			h.logical -= int(count)
+			h.forgetFilesLocked(r)
+			h.mu.Unlock()
+			return nil, err
+		}
+		r.zircon = zr
 	}
 	// The dirty budget is shared, so relieving it is a choice among all the
 	// memory regions that hold it, not only the one whose store is waiting.
