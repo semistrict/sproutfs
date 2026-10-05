@@ -4,6 +4,7 @@ title: Replace the pager's page layer with a Go port of Zircon's
 status: To Do
 assignee: []
 created_date: '2026-10-05 05:09'
+updated_date: '2026-10-05 05:20'
 labels:
   - pager
   - zircon-port
@@ -29,3 +30,9 @@ The owner decided on 2026-10-05 to replace the page layer of vmmemory with a Go 
 - [ ] #2 The owner has answered the decisions at the end of the plan, and the answers are recorded in this task
 - [ ] #3 The pager runs on the ported page layer by default, the old core is deleted, and docs/vm-memory.md and docs/testing.md describe the new layout
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Owner decisions, taken by the coordinator overnight 2026-10-05 on the plan's recommendations (owner asleep, asked to proceed independently): D1 split on store — accepted; D2 spill dirty pages of named volumes — accepted; byte offsets with the pager's page size — accepted; aging driven by faults only — accepted; switch-over gate: the runs in step 13, no median fault slower than the spread of two runs of the old core — accepted; test names in repo sentence style with the Zircon name in a comment — accepted. Owner to review in the morning.
+<!-- SECTION:NOTES:END -->
