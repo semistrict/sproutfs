@@ -2965,6 +2965,38 @@ the write budget. Its invariants are `PromisesKept` and `GoalKept`. Its
 mutants put back a limiter that counts a spill file by its allocation, and
 B4.
 
+`spec/writeback/Writeback.tla` is a page's dirty life across a checkpoint, as
+the pager does it and as [the Zircon port](../plans/zircon-pager-port-2026-10-05.md)
+keeps it with its departures D1 to D5. It models a few pages of one region:
+
+- stores in place, and store faults that copy the page and give the region up
+  for their reclaim;
+- refaults of spilled pages, which give the region up for their reclaim too;
+- eviction in two halves under the page's lock, which spills a dirty page or a
+  checkpoint's copy and drops a clean page;
+- the pause, and the walk behind it, which meets a reclaim halfway;
+- the settle, the upload and a fork point's children reading the checkpoint;
+- a publication that lands or fails, the retire and the abandon.
+
+Its invariants are:
+
+- `SealedBytes`: whatever reads a checkpoint reads the bytes of its pause.
+- `NoLostWrite`: the guest reads what it last stored, and that write is
+  published, in the dirty set, or held by the checkpoint.
+- `Reserved`: every private page and every checkpoint's copy owns a
+  reservation, and a page that shares the copy owns none.
+- `Budget`: no reservation is held twice, so the reservations taken never
+  exceed the dirty budget.
+
+`MCWriteback` and `MCFork` run two pages in about two seconds each, and
+`deep/Three` runs three pages with fork points in about eighty seconds. Its
+mutants
+put back three defects. Zircon's rule, where a store makes a page the
+checkpoint holds Dirty in place, fails `SealedBytes`. The refault that ignored
+a retire until 2026-09-22 ([a refault decides again after its
+reclaim](vm-memory.md#a-refault-decides-again-after-its-reclaim)) fails
+`Reserved`. A walk that skips a page a reclaim holds fails `NoLostWrite`.
+
 A mutant may expect `deadlock`, or a liveness property, which must then be
 its only `PROPERTY`, because TLC does not name the liveness property it finds
 violated.
