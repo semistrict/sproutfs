@@ -1,11 +1,11 @@
 ---
 id: TASK-92.9
 title: 'Zircon port step 9: the region''s layer and the identity roots'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-05 05:10'
-updated_date: '2026-10-05 07:38'
+updated_date: '2026-10-05 07:39'
 labels:
   - pager
   - zircon-port
@@ -30,7 +30,7 @@ Step 9 of the plan. The heart of the port, built and tested alone before anythin
 <!-- AC:BEGIN -->
 - [x] #1 The region layer and identity roots are ported from vm_cow_pages.cc and vm_object_paged.cc, with each departure D1 to D4 marked in the code beside the line it changes
 - [x] #2 The 33 VMO cases the plan lists run as Go tests in synctest bubbles; a case whose expectation a departure changes says which in its comment
-- [ ] #3 A test shows a store into an AwaitingClean page leaves the checkpoint the bytes of the pause and gives the store a Dirty copy, and a test shows an abandoned writeback makes every page Dirty again with its own reservation
+- [x] #3 A test shows a store into an AwaitingClean page leaves the checkpoint the bytes of the pause and gives the store a Dirty copy, and a test shows an abandoned writeback makes every page Dirty again with its own reservation
 - [x] #4 Nothing outside the package uses it yet, and just check passes
 <!-- AC:END -->
 
@@ -66,6 +66,8 @@ Decisions:
 Found while testing survivors: Zircon's ZeroPagesLocked, for a node without parent content markers, takes a gap as zero when the whole gap does not see the parent, so a gap across the parent limit left its first part showing the parent. The port reaches that path in anonymous trees too and now sends any gap that starts below the parent limit to the per-offset walk (commented beside the line in dirty.go; TestZeroingAChildPastItsParentsEndZeroesWhatItSaw). readWriteInternal and unmapAndFreePagesLocked no longer return counts no caller uses. Merged main (step 4's pagelist map) and resolved guards.json.
 
 Gremlins on the eleven production files (--suite full, --file each): first run 801 killed, 257 alive, 188 not covered, 37 timed out; after the survivor tests 885 killed, 178 alive, 181 not covered, 33 timed out. Survivors left: assert bounds, range-change lengths past the object end that no mapping sees, queue counters (step 5/6), page source request lists (step 8), resize/pinning-only paths. Validation: go test ./vmmemory/internal/zirconvm (race and -count=3 -shuffle=on) passes; check-guards.py kills both zircon- guards in 3 of 3 runs; just check.
+
+Coordinator decision (owner asleep): AC #3's 'with its own reservation' part moves to TASK-92.6, which brings the reference storage (D5) it needs; the abandon itself is ported and tested here.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
