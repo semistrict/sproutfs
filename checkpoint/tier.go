@@ -2,6 +2,7 @@ package checkpoint
 
 import (
 	"context"
+	"github.com/semistrict/sproutfs/platform/sim"
 	"io"
 
 	"github.com/semistrict/sproutfs/platform"
@@ -27,7 +28,15 @@ type tier struct {
 // readObject runs read, an operation over the object key: against the hot
 // tier first where the store has one, and against the regional bucket where
 // it has none or the hot tier does not answer.
+//
+// A read whose context is done asks the store for nothing. A fetch the cache
+// shares is cancelled when its last caller leaves, and the read of the disk
+// or the cluster that fails for that comes here as a miss: a page a pull put
+// on the disk would otherwise be read from the store on behalf of no one.
 func (s *Store) readObject(ctx context.Context, key platform.ObjectKey, read func(context.Context, *tier) error) error {
+	if err := context.Cause(ctx); err != nil && !sim.Bug(ctx, "cache-read-the-store-once-cancelled") {
+		return err
+	}
 	if s.hot == nil {
 		return read(ctx, s.regional())
 	}

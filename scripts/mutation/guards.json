@@ -150,6 +150,21 @@
     ]
   },
   {
+    "id": "cache-read-the-store-once-cancelled",
+    "package": "checkpoint",
+    "run": "^TestAReadGivenUpReadsNothingFromTheStore$",
+    "purpose": "Read the store for a fetch whose last caller left, after its read of the disk failed for that, though the disk holds the page a pull put there."
+  },
+  {
+    "id": "pager-evict-past-a-freed-slot",
+    "package": "vmmemory",
+    "run": "^TestAnAllocationCancelsAPrefetchRatherThanEvict$",
+    "purpose": "Evict a page a guest maps when a cancelled prefetch gave its slots back between the allocation's look for a free slot and its eviction step, rather than take one of those slots.",
+    "cores": [
+      "current"
+    ]
+  },
+  {
     "id": "pager-prefetch-ignores-pressure",
     "package": "vmmemory",
     "run": "^TestAnAllocationCancelsAPrefetchRatherThanEvict$",
