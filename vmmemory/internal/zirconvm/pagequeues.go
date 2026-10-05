@@ -125,9 +125,6 @@ type PageQueueNode[P any, O QueueObject] struct {
 	pageQueue uint8
 }
 
-// InContainer is queue_node.InContainer: whether the page is in a queue.
-func (n *PageQueueNode[P, O]) InContainer() bool { return n.queue != nil }
-
 // QueuedPage is a page the queues can hold.
 type QueuedPage[P any, O QueueObject] interface {
 	comparable
@@ -138,7 +135,6 @@ type QueuedPage[P any, O QueueObject] interface {
 // through their prev and next, with a sentinel.
 type pageQueueList[P any, O QueueObject] struct {
 	head PageQueueNode[P, O]
-	len  int
 }
 
 func (l *pageQueueList[P, O]) init() {
@@ -161,7 +157,6 @@ func (l *pageQueueList[P, O]) insertAfter(n, at *PageQueueNode[P, O]) {
 	at.next.prev = n
 	at.next = n
 	n.queue = l
-	l.len++
 }
 
 // popBack takes the page at the tail.
@@ -186,12 +181,10 @@ func (l *pageQueueList[P, O]) back() *PageQueueNode[P, O] {
 
 // removeFromQueueList is RemoveFromContainer on a page's queue_node.
 func removeFromQueueList[P any, O QueueObject](n *PageQueueNode[P, O]) {
-	l := n.queue
-	assert(l != nil, "the page is in a queue list")
+	assert(n.queue != nil, "the page is in a queue list")
 	n.prev.next = n.next
 	n.next.prev = n.prev
 	n.prev, n.next, n.queue = nil, nil, nil
-	l.len--
 }
 
 // AgeReason is PageQueues::AgeReason: why the queues aged.

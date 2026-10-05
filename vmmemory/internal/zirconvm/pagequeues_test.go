@@ -732,3 +732,192 @@ func BenchmarkAPageTouchedAndAged(b *testing.B) {
 		pq.AgeOnAccess()
 	}
 }
+
+// What follows tests what Gremlins found Zircon's ten cases leave untested.
+
+// isolateAll processes every generation older than the active ones, so the
+// LRU generation is one behind the MRU one.
+func isolateAll(pq *testQueues) {
+	for range pq.Reclaimable() {
+	}
+}
+
+// activeQueues are queues with a multiplier of one whose LRU generation is
+// one behind the MRU one, and pages set in them, n of them queued.
+func activeQueues(ps uint64, n int) (*testQueues, []*queuedPage) {
+	pq := newTestQueues(ps)
+	pq.SetActiveRatioMultiplier(1)
+	isolateAll(pq)
+	pages := makePages(n)
+	for i, p := range pages {
+		pq.SetReclaim(p, pagerVmo, uint64(i)*ps)
+	}
+	return pq, pages
+}
+
+// A peek ages the queues once the active ratio calls for it, which is checked
+// once a margin's worth of pages, 2 MiB of them, may have changed queue.
+func TestAPeekAgesTheQueuesWhenTheActiveRatioIsTripped(t *testing.T) {
+	forEachPageSize(t, func(t *testing.T, ps uint64) {
+		margin := int((2 << 20) / ps)
+		pq, pages := activeQueues(ps, margin)
+		backlink, ok := pq.PeekIsolate(NumActiveQueues)
+		expectTrue(t, ok, "a peek found a page")
+		if backlink.Page != pages[0] {
+			t.Errorf("a peek found %+v, want page 1", backlink)
+		}
+		if got := pq.LastAgeReason(); got != AgeReasonActiveRatio {
+			t.Errorf("the queues last aged for %v, want %v", got, AgeReasonActiveRatio)
+		}
+		want := Counts{ReclaimIsolate: min(margin, peekIsolateBatch)}
+		want.Reclaim[2] = margin - want.ReclaimIsolate
+		expectCounts(t, pq, want)
+	})
+}
+
+// One page short of the margin, the active ratio is not checked, so a peek
+// ages nothing and finds nothing.
+func TestTheActiveRatioIsNotCheckedShortOfItsMargin(t *testing.T) {
+	forEachPageSize(t, func(t *testing.T, ps uint64) {
+		margin := int((2 << 20) / ps)
+		pq, _ := activeQueues(ps, margin-1)
+		backlink, ok := pq.PeekIsolate(NumActiveQueues)
+		expectFalse(t, ok, "a peek found a page")
+		if backlink.Page != nil {
+			t.Errorf("a peek found page %d, want none", backlink.Page.id)
+		}
+		expectCounts(t, pq, Counts{Reclaim: [NumReclaim]int{margin - 1}})
+	})
+}
+
+// A peek isolates sixteen pages at a time, not the whole queue.
+func TestAPeekIsolatesSixteenPagesAtATime(t *testing.T) {
+	forEachPageSize(t, func(t *testing.T, ps uint64) {
+		pq := newTestQueues(ps)
+		pages := makePages(20)
+		for i, p := range pages {
+			pq.SetReclaim(p, pagerVmo, uint64(i)*ps)
+		}
+		for range NumReclaim - 1 {
+			pq.RotateReclaimQueues()
+		}
+		expectPeek(t, pq, pages[0])
+		want := Counts{ReclaimIsolate: 16}
+		want.Reclaim[NumReclaim-1] = 4
+		expectCounts(t, pq, want)
+	})
+}
+
+// The reclaim counts put the two newest generations in newest, the two
+// oldest and the isolated pages in oldest, and every page in total.
+func TestTheReclaimCountsSplitThePagesByAge(t *testing.T) {
+	forEachPageSize(t, func(t *testing.T, ps uint64) {
+		pq := newTestQueues(ps)
+		pages := makePages(9)
+		// One page a generation, and then one isolated.
+		for i, p := range pages {
+			pq.SetReclaim(p, pagerVmo, uint64(i)*ps)
+			pq.RotateReclaimQueues()
+		}
+		// And one in the newest.
+		pq.SetReclaim(&queuedPage{id: 10}, pagerVmo, 9*ps)
+		expectCounts(t, pq, Counts{Reclaim: [NumReclaim]int{1, 1, 1, 1, 1, 1, 1, 1}, ReclaimIsolate: 2})
+		if got, want := pq.GetReclaimQueueCounts(), (ReclaimCounts{Total: 10, Newest: 2, Oldest: 4}); got != want {
+			t.Errorf("the reclaim counts are %+v, want %+v", got, want)
+		}
+		if got := pq.QueueCounts().Total(); got != 10 {
+			t.Errorf("the queues hold %d pages, want 10", got)
+		}
+	})
+}
+
+// A count's total is the sum of every queue's.
+func TestACountsTotalIsEveryQueue(t *testing.T) {
+	counts := Counts{Reclaim: [NumReclaim]int{1, 2, 3, 4, 5, 6, 7, 8}, ReclaimIsolate: 10, PagerBackedDirty: 20,
+		Anonymous: 40, Wired: 80, AnonymousZeroFork: 160, FailedReclaim: 320, HighPriority: 640}
+	if got := counts.Total(); got != 1306 {
+		t.Errorf("the total is %d, want 1306", got)
+	}
+}
+
+// A page's backlink can be changed, one page or many at a time, and pages can
+// be removed many at a time into a list.
+func TestBacklinksChangeAndPagesLeaveInBatches(t *testing.T) {
+	forEachPageSize(t, func(t *testing.T, ps uint64) {
+		pq := newTestQueues(ps)
+		other := &testCow{pager: true}
+		pages := makePages(3)
+		for i, p := range pages {
+			pq.SetReclaim(p, pagerVmo, uint64(i)*ps)
+			pq.MoveToReclaimDontNeed(p)
+		}
+		pq.ChangeObjectOffset(pages[0], other, 7*ps)
+		pq.ChangeObjectOffsetArray(pages[1:], other, []uint64{8 * ps, 9 * ps})
+		for i, p := range pages {
+			backlink, ok := pq.PeekIsolate(NumReclaim - 1)
+			if !ok || backlink != (VmoBacklink[*queuedPage, *testCow]{Cow: other, Page: p, Offset: uint64(7+i) * ps}) {
+				t.Errorf("peek %d found %+v, want page %d of the other object at page %d", i, backlink, p.id, 7+i)
+			}
+			pq.Remove(p)
+			pq.SetReclaim(p, pagerVmo, uint64(i)*ps)
+		}
+		var out []*queuedPage
+		pq.RemoveArrayIntoList(pages[:2], &out)
+		if !slices.Equal(ids(out), []int{1, 2}) {
+			t.Errorf("the removed pages are %v, want [1 2]", ids(out))
+		}
+		expectCounts(t, pq, reclaimAt(0))
+	})
+}
+
+// Where only a pager's pages are reclaimed, an anonymous page moves to the
+// zero-fork queue and a reclaim page does not, and a pop takes the zero fork
+// back to the anonymous queue. A high priority page is in its own queue.
+func TestAZeroForkLeavesAndReturnsToTheAnonymousQueue(t *testing.T) {
+	forEachPageSize(t, func(t *testing.T, ps uint64) {
+		pq := newTestQueues(ps)
+		anonymous, reclaim, high := &queuedPage{id: 1}, &queuedPage{id: 2}, &queuedPage{id: 3}
+		pq.SetAnonymous(anonymous, anonymousVmo, 0, false)
+		pq.SetReclaim(reclaim, pagerVmo, ps)
+		pq.SetHighPriority(high, pagerVmo, 2*ps)
+		pq.MoveAnonymousToAnonymousZeroFork(anonymous)
+		pq.MoveAnonymousToAnonymousZeroFork(reclaim)
+		expectTrue(t, pq.DebugPageIsAnonymousZeroFork(anonymous), "the anonymous page is a zero fork")
+		expectFalse(t, pq.DebugPageIsAnonymousZeroFork(reclaim), "the reclaim page is a zero fork")
+		expectTrue(t, pq.DebugPageIsHighPriority(high), "high priority")
+		expectFalse(t, pq.DebugPageIsHighPriority(reclaim), "the reclaim page is high priority")
+		expectCounts(t, pq, Counts{Reclaim: [NumReclaim]int{1}, AnonymousZeroFork: 1, HighPriority: 1})
+		backlink, ok := pq.PopAnonymousZeroFork()
+		if !ok || backlink.Page != anonymous || backlink.Cow != anonymousVmo || backlink.Offset != 0 {
+			t.Errorf("the pop took %+v, want the anonymous page at 0", backlink)
+		}
+		_, ok = pq.PopAnonymousZeroFork()
+		expectFalse(t, ok, "a second pop found a page")
+		pq.MoveToHighPriority(reclaim)
+		expectCounts(t, pq, Counts{Anonymous: 1, HighPriority: 2})
+	})
+}
+
+// queueIsValid holds a queue between the LRU and MRU queues, on either side
+// of the ring's wrap.
+func TestAQueueIsValidBetweenTheLRUAndMRUQueuesAcrossTheWrap(t *testing.T) {
+	base := pageQueueReclaimBase
+	for _, c := range []struct {
+		queue, lru, mru uint8
+		want            bool
+	}{
+		{base + 2, base + 2, base + 5, true},
+		{base + 5, base + 2, base + 5, true},
+		{base + 1, base + 2, base + 5, false},
+		{base + 6, base + 2, base + 5, false},
+		{base + 7, base + 6, base + 1, true},
+		{base + 1, base + 6, base + 1, true},
+		{base + 0, base + 6, base + 1, true},
+		{base + 2, base + 6, base + 1, false},
+		{base + 5, base + 6, base + 1, false},
+	} {
+		if got := queueIsValid(c.queue, c.lru, c.mru); got != c.want {
+			t.Errorf("queue %d between %d and %d is valid %t, want %t", c.queue-base, c.lru-base, c.mru-base, got, c.want)
+		}
+	}
+}

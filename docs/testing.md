@@ -3500,6 +3500,16 @@ object's end, which no mapping sees, the queue counters of steps 5 and 6, and
 the page source's request lists, which step 8 tests. The resize and pinning
 paths that would reach the rest are not ported.
 
+Step 5 completed the page queues in `pagequeues.go` with Zircon's ten cases.
+Run with `--file pagequeues.go`, the first run killed 117, left 38 alive, 78
+not covered and 7 timed out. Tests of the active ratio's margin and the peek
+it ages, the peek's batch of sixteen, the reclaim counts by age, backlink
+changes and batch removal, the zero-fork pop and the ring's wrap brought it to
+180 killed, 17 alive, 32 not covered and 8 timed out. The survivors are the
+diagnostic loop counts and their log lines, asserts' bounds, a ring bound no
+generation reaches, and the active ratio's product with a multiplier of one.
+The 31 not covered are compile-time asserts; the other is a diagnostic count.
+
 After a substantial change that spans packages, or periodically before a
 release, run `--all --integration` with the full suite. This is intentionally an
 occasional campaign. The changed-package command above is the ordinary
