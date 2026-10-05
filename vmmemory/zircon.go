@@ -52,6 +52,14 @@ type zirconHost struct {
 	prefetches map[*zprefetch]struct{}
 	// rootPages is how many pages the roots hold. Guarded by Host.mu.
 	rootPages uint64
+	// splices lends the splice lists a supply hands its pages over in, as
+	// *zirconvm.PageSpliceList[zirconvm.VmPage]: a fault supplies a page,
+	// and making a list for each was a sixth of what a fault at random
+	// allocated.
+	splices sync.Pool
+	// multis lends the requests a fault's lookup makes, as
+	// *zirconvm.MultiPageRequest, each back once it is answered.
+	multis sync.Pool
 }
 
 // zirconRegion is a memory region's state under the zircon core.
@@ -64,13 +72,20 @@ type zirconRegion struct {
 	layer    *zirconvm.ObjectPaged
 	pages    *zirconvm.CowPages
 	resolver *rootResolver
-	// mu guards beside, the bindings beside the layer.
+	// mu guards beside, the bindings beside the layer, and the dirty set's
+	// count and age.
 	mu sync.Mutex
 	// beside is the page list of the bindings beside the layer: a slot holds
 	// the binding of a page the region maps or maps from, and an Untracked
 	// zero interval a compressed zero run, pages mapped to zero with no
 	// binding at all, as the current core's page list does.
 	beside *zirconvm.PageList[zbinding]
+	// dirty is how many pages the region has stored into, and dirtySince
+	// when the oldest of them was written, zero while it holds none: the
+	// loss window's bookkeeping, as MemoryRegion.dirtySince is the current
+	// core's. No checkpoint ends it under this core yet.
+	dirty      int
+	dirtySince time.Time
 }
 
 func newZirconHost(h *Host) *zirconHost {
@@ -79,6 +94,8 @@ func newZirconHost(h *Host) *zirconHost {
 	// No compression: a page's dirty reservation is the pager's, kept beside
 	// the layer, until the spill moves into this core with eviction (step 12).
 	z.node = zirconvm.NewNode(z.pmm, h.pageSize, nil)
+	z.splices.New = func() any { return zirconvm.NewPageSpliceList[zirconvm.VmPage](h.pageSize, z.node) }
+	z.multis.New = func() any { return zirconvm.NewMultiPageRequest() }
 	return z
 }
 
@@ -120,6 +137,12 @@ func (z *zirconHost) newRegion(r *MemoryRegion) (*zirconRegion, error) {
 	ps := z.host.pageSize
 	zr := &zirconRegion{region: r, host: z, beside: zirconvm.NewPageList[zbinding](ps)}
 	zr.resolver = &rootResolver{region: zr}
+	// The layer's source is the region's own, and it traps dirty
+	// transitions, as a VMO whose pager tracks its writes does: a page of
+	// the layer becomes Dirty only when the pager says so (DirtyPages), which
+	// a store does once it holds the page's dirty reservation.
+	proxy := zirconvm.NewPagerProxy(true)
+	r.reads = &requestSource{source: zirconvm.NewPageSource(proxy), proxy: proxy}
 	layer, err := zirconvm.CreateRegionLayer(z.node, r.reads.source, uint64(r.pageCount)*ps, zr.resolver)
 	if err != nil {
 		return nil, err
@@ -194,10 +217,19 @@ func (z *zirconRegion) detach(ctx context.Context) error {
 	// Every page this region mapped from a root is mapped by it no more, and
 	// one nothing else maps is idle, kept for the next region that inherits
 	// its identity.
+	// Its writes go with it, and their reservations back to the budget. The
+	// pages they were copied from go too, where nothing else maps them.
 	z.mu.Lock()
 	var bound []*zbinding
-	z.eachBoundLocked(0, uint64(r.pageCount), func(b *zbinding) { bound = append(bound, b) })
+	var origins []*zirconvm.VmPage
+	z.eachBoundLocked(0, uint64(r.pageCount), func(b *zbinding) {
+		bound = append(bound, b)
+		if b.origin != nil {
+			origins = append(origins, b.origin)
+		}
+	})
 	z.mu.Unlock()
+	z.releaseDirty()
 	h.mu.Lock()
 	for _, b := range bound {
 		if b.page != nil {
@@ -205,6 +237,9 @@ func (z *zirconRegion) detach(ctx context.Context) error {
 		}
 	}
 	h.mu.Unlock()
+	for _, origin := range origins {
+		z.host.dropOrigin(origin)
+	}
 	h.mu.Lock()
 	h.logical -= r.pageCount
 	h.forgetExtents(r)
@@ -256,11 +291,33 @@ func (z *zirconRegion) giveBackColdCopies(context.Context) (int, error) {
 	return 0, unsupported(CoreZircon, "give cold copies back")
 }
 
-// setUnpublishedAge and oldestUnpublished are the loss window's, which holds
-// nothing while this core takes no store.
-func (z *zirconRegion) setUnpublishedAge(time.Duration) {}
+// setUnpublishedAge is MemoryRegion.SetUnpublishedAge: the older of age ago
+// and the region's own oldest unpublished write stands.
+func (z *zirconRegion) setUnpublishedAge(age time.Duration) {
+	if age <= 0 {
+		return
+	}
+	since := z.region.host.clock.Now().Add(-age)
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	z.dirtySince = older(z.dirtySince, since)
+}
 
-func (z *zirconRegion) oldestUnpublished() time.Time { return time.Time{} }
+// oldestUnpublished is when the oldest write the region holds was made, zero
+// where it holds none. No checkpoint of this core drains any yet.
+func (z *zirconRegion) oldestUnpublished() time.Time {
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	return z.dirtySince
+}
+
+// dirtyCount is MemoryRegion.dirtyCount: the pages the region has stored
+// into, which a full dirty budget is relieved by checkpointing.
+func (z *zirconRegion) dirtyCount() int {
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	return z.dirty
+}
 
 func (z *zirconRegion) readResident(context.Context, uint64, []byte) (bool, bool, error) {
 	return false, false, unsupported(CoreZircon, "read a resident page")

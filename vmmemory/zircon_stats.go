@@ -68,6 +68,7 @@ func (z *zirconRegion) stats(ctx context.Context) (MemoryRegionStats, error) {
 		}
 	}
 	h.mu.Unlock()
+	stats.PrivatePages = z.dirtyCount()
 	stats.DirtySince = z.oldestUnpublished()
 	return stats, nil
 }

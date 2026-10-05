@@ -129,10 +129,16 @@ func (z *zirconRegion) heldIn(first, last uint64) []uint64 {
 }
 
 // repeated is MemoryRegion.repeated: whether a fault on index for this access
-// would be a repeated one, the region mapping the page for it already. This
-// core maps nothing writable yet, so only a read can be.
+// would be a repeated one, the region mapping the page for it already: for a
+// store, its own Dirty page.
 func (z *zirconRegion) repeated(index uint64, write bool) bool {
-	return !write && z.mapped(index)
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	b, zero := z.lookupLocked(index)
+	if zero {
+		return !write
+	}
+	return b != nil && b.mapped && (!write || b.dirty)
 }
 
 // mapped reports whether the region maps a page, to a page or to zero.

@@ -3881,4 +3881,8 @@ SPROUTFS_PAGER_CORE=zircon go test ./vmmemory -run '^TestAPrivatePageIsPlacedAtI
 A guard in `scripts/mutation/guards.json` whose behaviour the zircon core has
 too names both cores, `"cores": ["current", "zircon"]`, and `check-guards`
 must kill it under each. Every Buggify site, probe, guard and controlled point
-on a path the zircon core serves exists there under the same name.
+on a path the zircon core serves exists there under the same name. The guards
+of the fault policy and `pager-zero-new-page` name both; the last is killed by
+`TestEveryPageAFaultReadsOrAStoreCopiesHoldsItsBytes`, because the scheduled
+world that killed it before checkpoints, which the zircon core does not serve
+yet.

@@ -917,6 +917,21 @@ func (pq *PageQueues[P, O]) removeLockedList(node *PageQueueNode[P, O]) {
 	removeFromQueueList(node)
 }
 
+// Backlink is the object and offset a queued page's backlink names, as
+// Zircon's page->object.get_object() and get_page_offset() are, and whether
+// the page is in a queue. The pager reaches the object of a page it is giving
+// up by it.
+func (pq *PageQueues[P, O]) Backlink(page P) (VmoBacklink[P, O], bool) {
+	pq.listLock.Lock()
+	defer pq.listLock.Unlock()
+	node := page.QueueNode()
+	var none O
+	if node.object == none {
+		return VmoBacklink[P, O]{}, false
+	}
+	return backlink(node), true
+}
+
 // IsPageReclaimable reports whether a page is in an isolate queue, where
 // reclamation takes pages from. Zircon's is static and reads the queue number
 // with an atomic load.

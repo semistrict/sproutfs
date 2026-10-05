@@ -31,7 +31,10 @@ type zplan struct {
 	reserved []fileSlot
 	// fresh marks a page whose mapping is not installed yet, zeros a page
 	// mapped to zero.
-	fresh, zeros  []bool
+	fresh, zeros []bool
+	// writable marks a page the plan maps writable: the region's own Dirty
+	// page, which the guest may store into where it is.
+	writable      []bool
 	observedZeros bool
 	installed     installedRuns
 	// request is the READ request the faulting page's lookup sent, which
@@ -44,7 +47,7 @@ type zplan struct {
 func (z *zirconRegion) newPlan(start, end, fault uint64) *zplan {
 	p := &zplan{z: z, start: start, end: end, fault: fault, store: end,
 		pages: make([]*zirconvm.VmPage, end-start), reserved: make([]fileSlot, end-start),
-		fresh: make([]bool, end-start), zeros: make([]bool, end-start)}
+		fresh: make([]bool, end-start), zeros: make([]bool, end-start), writable: make([]bool, end-start)}
 	for i := range p.reserved {
 		p.reserved[i] = fileSlot{slot: -1}
 	}
@@ -649,10 +652,11 @@ func (p *zplan) supplyRun(ctx context.Context, page uint64, id pageKey, shared b
 		} else {
 			hits++
 		}
+		// A store's own page is bound too, unmapped: it is what the store
+		// copies from, and the binding keeps it from an idle drop until the
+		// copy replaces it.
 		p.pages[i], p.fresh[i] = found, true
-		if q != p.store {
-			z.bind(q, found)
-		}
+		z.bind(q, found)
 	}
 	lock.Unlock()
 	if hits > 0 {
@@ -665,12 +669,13 @@ func (p *zplan) supplyRun(ctx context.Context, page uint64, id pageKey, shared b
 
 // install maps every planned page and resolves the faulting one, as
 // windowPlan.install does. The commands are issued with no object lock held:
-// a plan holds none, its pages being bound to the region already.
+// a plan holds none, its pages being bound to the region already. The
+// region's own Dirty pages are mapped writable, in runs of their own.
 func (p *zplan) install(ctx context.Context) (bool, error) {
 	z := p.z
 	r := z.region
 	h := r.host
-	var runs []MapRun
+	var runs, writable []MapRun
 	for page := p.start; page < p.end; {
 		i := page - p.start
 		pg := p.pages[i]
@@ -692,15 +697,20 @@ func (p *zplan) install(ctx context.Context) (bool, error) {
 		for page+run < p.end {
 			next := p.pages[i+run]
 			if !p.fresh[i+run] || page+run == p.store || z.mapped(page+run) || p.zeros[i+run] != zero ||
+				p.writable[i+run] != p.writable[i] ||
 				(!zero && (next == nil || frameOf(next).fileSlot != at.plus(int(run)))) {
 				break
 			}
 			run++
 		}
-		if zero {
+		switch {
+		case zero:
 			z.mapZeros(page, page+run)
 			runs = append(runs, MapRun{Page: page, Count: int(run), Zero: true})
-		} else {
+		case p.writable[i]:
+			z.setMapped(page, page+run, true)
+			writable = append(writable, r.runAt(page, at, int(run)))
+		default:
 			z.setMapped(page, page+run, true)
 			runs = append(runs, r.runAt(page, at, int(run)))
 		}
@@ -737,9 +747,25 @@ func (p *zplan) install(ctx context.Context) (bool, error) {
 		h.mu.Unlock()
 		p.installed.add(installedRuns{commands: uint64(commands), runs: uint64(mappingRuns), pages: pagesOf(runs)})
 	}
+	for _, run := range writable {
+		if err := r.mapPages(ctx, run, true); err != nil {
+			return false, r.mappingFailed(err, func() { z.unmapRuns([]MapRun{run}) })
+		}
+		h.mu.Lock()
+		h.stats.Mappings++
+		h.stats.MappingRuns++
+		h.mu.Unlock()
+		p.installed.add(installedRuns{commands: 1, runs: 1, pages: uint64(run.Count)})
+	}
 	resolved := false
 	for _, run := range runs {
 		if err := r.resolvePages(ctx, run.Page, run.Count, false); err != nil {
+			return false, r.fail(err)
+		}
+		resolved = resolved || (p.fault >= run.Page && p.fault < run.Page+uint64(run.Count))
+	}
+	for _, run := range writable {
+		if err := r.resolvePages(ctx, run.Page, run.Count, true); err != nil {
 			return false, r.fail(err)
 		}
 		resolved = resolved || (p.fault >= run.Page && p.fault < run.Page+uint64(run.Count))
@@ -752,7 +778,7 @@ func (p *zplan) install(ctx context.Context) (bool, error) {
 	if !z.mapped(p.fault) {
 		return false, nil
 	}
-	if err := r.resolvePages(ctx, p.fault, 1, false); err != nil {
+	if err := r.resolvePages(ctx, p.fault, 1, p.writable[p.fault-p.start]); err != nil {
 		return false, r.fail(err)
 	}
 	return true, nil

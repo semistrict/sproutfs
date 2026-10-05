@@ -12,52 +12,86 @@ import (
 // fault is MemoryRegion.Fault under the zircon core. A read's lookup is the
 // region layer's lookup cursor, Zircon's RequireReadPage, which falls through
 // to the identity root of the page; a page no object holds yet is a READ
-// request on its root's page source, which the fault answers by reading the
-// page into a frame and supplying it. Which pages a fault reads and in what
-// order is the current core's, and moves as it is (faultfirst.go): its page
-// first, the rest of its window prefetched behind it, a fault at random
-// alone, and a post-copy stream's whole run at once.
+// request, which the fault answers by reading the page into a frame and
+// supplying it. A store makes a page of the layer Dirty: a copy of the page
+// it maps, at the offset the placement rule gives it, or fresh zeros
+// (zircon_store.go). Which pages a fault reads and in what order is the
+// current core's, and moves as it is (faultfirst.go): its page first, the rest
+// of its window prefetched behind it, a fault at random alone, and a
+// post-copy stream's whole run at once.
 func (z *zirconRegion) fault(ctx context.Context, index uint64, write bool) error {
 	r := z.region
 	if index >= uint64(r.pageCount) {
 		return ErrRange
 	}
+	// Whatever this fault admitted to the dirty budget is measured against
+	// the high-water mark here, where it holds nothing.
+	defer r.host.askAtHighWater()
+	for range faultAttempts {
+		// A store that needs a page of its own takes its dirty reservation
+		// before any region, page or I/O resource, as in the current core.
+		var spill reservation
+		if write && z.needsPrivatePage(index) {
+			taken, err := r.host.takeSpill(ctx, r)
+			if err != nil {
+				return err
+			}
+			spill = taken
+		}
+		retry, err := z.faultOnce(ctx, index, write, &spill)
+		if !spill.none() {
+			r.host.releaseSpill(spill)
+		}
+		if !retry {
+			return err
+		}
+	}
+	return ErrContended
+}
+
+// faultOnce serves one attempt and reports whether it must be retried with a
+// dirty reservation it did not hold. It consumes *spill by setting it to
+// noReservation.
+func (z *zirconRegion) faultOnce(ctx context.Context, index uint64, write bool, spill *reservation) (retry bool, err error) {
+	r := z.region
 	started := r.host.clock.Now()
 	if err := r.live.RLock(ctx); err != nil {
-		return err
+		return false, err
 	}
 	defer r.live.RUnlock()
 	// The window's stripe comes before the memory region, as in the current
 	// core: a fault gives the region up across its backing read and takes it
 	// again.
 	if err := r.stripe(index).Lock(ctx); err != nil {
-		return err
+		return false, err
 	}
 	defer r.stripe(index).Unlock()
 	if err := r.lockPageAccess(ctx, index, write); err != nil {
-		return err
+		return false, err
 	}
-	var err error
 	defer func() {
 		if !errors.Is(err, errMemoryRegionDropped) {
 			r.mu.RUnlock()
 		}
 	}()
-	if write {
-		err = unsupported(CoreZircon, "serve a store")
-		return err
-	}
 	h := r.host
-	if err = h.beginIO(ctx); err != nil {
-		return err
+	if err := h.beginIO(ctx); err != nil {
+		return false, err
 	}
 	defer h.endIO()
 	h.mu.Lock()
 	h.stats.Faults++
 	h.mu.Unlock()
 	defer func() { h.faultLatency.Observe(h.clock.Since(started)) }()
-	err = z.load(ctx, index)
-	return err
+	if !write || z.writable(index) {
+		return false, z.load(ctx, index)
+	}
+	if spill.none() {
+		// The page needed one after all: it stopped being the region's own
+		// between the decision and the region lock.
+		return true, nil
+	}
+	return z.store(ctx, index, spill)
 }
 
 // load maps the faulting page and as much of its window as the fault reads,
@@ -78,8 +112,9 @@ func (z *zirconRegion) loadOnce(ctx context.Context, index uint64) (bool, error)
 	r := z.region
 	if z.mapped(index) {
 		// A refault after a failed ACK, or a page a prefetch or a populate
-		// mapped since the trap: its trapped access still has to complete.
-		if err := r.resolvePages(ctx, index, 1, false); err != nil {
+		// mapped since the trap: its trapped access still has to complete,
+		// writable where the page is the region's own Dirty page.
+		if err := r.resolvePages(ctx, index, 1, z.writable(index)); err != nil {
 			return false, r.fail(err)
 		}
 		return true, nil
@@ -214,18 +249,22 @@ func (p *zplan) takeFaulting(ctx context.Context, index uint64) (again bool, err
 	r := z.region
 	i := index - p.start
 	id, named := p.identity(index)
-	if named && id.zero() {
+	if named && id.zero() && !z.holdsOwn(index) {
+		// A hole the region has not stored into reads as zeros.
 		p.observeZeros()
 		p.zeros[i], p.fresh[i] = true, true
 		return false, nil
 	}
-	found, request, err := z.lookup(ctx, index, p.locationsOf(index), index != p.store)
+	found, request, err := z.lookup(ctx, index, p.locationsOf(index))
 	if err != nil {
 		return false, err
 	}
 	if found != nil {
 		p.pages[i], p.fresh[i] = found, true
-		if named {
+		// The region's own Dirty page is mapped writable: the guest may store
+		// into it where it is.
+		p.writable[i] = frameOf(found).own && z.writable(index)
+		if named && !frameOf(found).own {
 			h := r.host
 			h.mu.Lock()
 			h.stats.IdentityHits++
@@ -292,6 +331,8 @@ func (p *zplan) takeRun(ctx context.Context, index uint64) error {
 // which the fault that made it answers once its read has been supplied, or
 // fails where it could not read it.
 type zrequest struct {
+	host   *zirconHost
+	multi  *zirconvm.MultiPageRequest
 	source *requestSource
 	// offset and length are the range it asks for in its source's object,
 	// and answered marks it supplied or failed.
@@ -300,7 +341,8 @@ type zrequest struct {
 }
 
 // answer resolves the request: supplied where err is nil, failed otherwise.
-// Every read waiting on it looks again. Answering it twice does nothing.
+// Every read waiting on it looks again, and the request goes back to be made
+// again. Answering it twice does nothing.
 func (q *zrequest) answer(err error) {
 	if q == nil || q.answered {
 		return
@@ -308,9 +350,14 @@ func (q *zrequest) answer(err error) {
 	q.answered = true
 	if err != nil {
 		q.source.source.OnPagesFailed(q.offset, q.length, zirconvm.ErrIO)
-		return
+	} else {
+		q.source.source.OnPagesSupplied(q.offset, q.length)
 	}
-	q.source.source.OnPagesSupplied(q.offset, q.length)
+	// It is resolved: the wait takes its completion at once, and leaves it
+	// ready for another lookup.
+	_ = q.multi.Wait(context.Background())
+	q.host.multis.Put(q.multi)
+	q.multi = nil
 }
 
 // fail fails the request where the fault did not answer it.
@@ -319,14 +366,13 @@ func (q *zrequest) fail() { q.answer(zirconvm.ErrIO) }
 // lookup is the layer's lookup of one page, Zircon's RequireReadPage over a
 // lookup cursor, with the resolver naming the root of each page loc located
 // that a root holds. A page an object holds is reported, bound to the region
-// where bind says so while its owner's lock is still held, so that no idle
-// drop takes it first. A missing page is reported as the READ request the
-// lookup sent, which only the faults of its window make on the region's own
-// source, one at a time. A zero is reported as neither.
-func (z *zirconRegion) lookup(ctx context.Context, page uint64, loc *locations, bind bool) (*zirconvm.VmPage, *zrequest, error) {
+// while its owner's lock is still held, so that no idle drop takes it first:
+// mapped by the fault's install, or for a store's own page, kept unmapped to
+// copy from. A missing page is reported as the READ request the lookup sent,
+// which only the faults of its window make on the region's own source, one at
+// a time. A zero is reported as neither.
+func (z *zirconRegion) lookup(ctx context.Context, page uint64, loc *locations) (*zirconvm.VmPage, *zrequest, error) {
 	ps := z.region.host.pageSize
-	deferred := zirconvm.NewDeferredOps(z.pages)
-	defer deferred.Finish()
 	lock := z.pages.Lock()
 	lock.Lock()
 	defer lock.Unlock()
@@ -337,18 +383,22 @@ func (z *zirconRegion) lookup(ctx context.Context, page uint64, loc *locations, 
 		return nil, nil, err
 	}
 	defer cursor.Release()
-	multi := zirconvm.NewMultiPageRequest()
-	result, err := cursor.RequireReadPage(ctx, 1, deferred, multi)
+	multi := z.host.multis.Get().(*zirconvm.MultiPageRequest)
+	// A read changes no mapping and frees no page, so it defers nothing: no
+	// DeferredOps to finish.
+	result, err := cursor.RequireReadPage(ctx, 1, nil, multi)
+	if !errors.Is(err, zirconvm.ErrShouldWait) {
+		// No request was made, so the request goes back as it came.
+		z.host.multis.Put(multi)
+	}
 	switch {
 	case err == nil && result.Page == z.host.pmm.zero:
 		return nil, nil, nil
 	case err == nil:
-		if bind {
-			z.bind(page, result.Page)
-		}
+		z.bind(page, result.Page)
 		return result.Page, nil, nil
 	case errors.Is(err, zirconvm.ErrShouldWait):
-		return nil, z.requestOf(multi.ReadRequest()), nil
+		return nil, z.requestOf(multi), nil
 	}
 	return nil, nil, err
 }
@@ -356,7 +406,8 @@ func (z *zirconRegion) lookup(ctx context.Context, page uint64, loc *locations, 
 // requestOf is the request a lookup sent: on the region's own source, where
 // only the faults of one window ask, one at a time, so it is always sent; or
 // on a root's, where a supply may have answered it already.
-func (z *zirconRegion) requestOf(request *zirconvm.PageRequest) *zrequest {
+func (z *zirconRegion) requestOf(multi *zirconvm.MultiPageRequest) *zrequest {
+	request := multi.ReadRequest()
 	source := zirconvm.RequestSource(request)
 	r := z.region
 	rs := r.reads
@@ -380,11 +431,13 @@ func (z *zirconRegion) requestOf(request *zirconvm.PageRequest) *zrequest {
 			panic("vmmemory: a fault's read request met another read of its memory region's pages")
 		}
 		// It waits on a read of the root's, which the caller looks again
-		// after: withdrawn, it waits on nothing.
-		request.CancelRequest()
+		// after: withdrawn, it waits on nothing, and goes back.
+		multi.CancelRequests()
+		z.host.multis.Put(multi)
 		return &zrequest{source: rs, answered: true}
 	}
-	return &zrequest{source: rs, offset: zirconvm.RequestOffset(request), length: zirconvm.RequestLen(request)}
+	return &zrequest{host: z.host, multi: multi, source: rs, offset: zirconvm.RequestOffset(request),
+		length: zirconvm.RequestLen(request)}
 }
 
 // inFlight is a READ request of the faulting page waiting on the prefetch
@@ -547,6 +600,12 @@ func (z *zirconRegion) reclaimOwn(ctx context.Context, index uint64) (fileSlot, 
 // past that the arena is full.
 func (z *zirconHost) allocate(ctx context.Context, f *arenaFile, place func() int) (fileSlot, error) {
 	h := z.host
+	// Giving an idle page up where a free slot would do is legal and merely
+	// wasteful, as taking a victim is in the current core (evictPastAFreeSlot),
+	// and it is how an arena that is not full reaches the idle drop at all.
+	if evictPastAFreeSlot(ctx) {
+		z.takeIdle()
+	}
 	for {
 		h.mu.Lock()
 		if h.err != nil {
@@ -564,7 +623,9 @@ func (z *zirconHost) allocate(ctx context.Context, f *arenaFile, place func() in
 			return fileSlot{f, slot}, nil
 		}
 		changed := h.changed
-		holding := z.cancelPrefetchesLocked(ctx)
+		// The slots of a prefetch still reading come before giving up: nothing
+		// waits on its pages. See prefetch.go.
+		holding := !sim.Bug(ctx, "pager-prefetch-ignores-pressure") && z.cancelPrefetchesLocked(ctx)
 		h.mu.Unlock()
 		if z.takeIdle() {
 			continue

@@ -199,5 +199,15 @@ func (s *PageSpliceList[P]) Finalize() {
 // IsFinalized reports whether the list is finalized and not yet processed.
 func (s *PageSpliceList[P]) IsFinalized() bool { return s.state == spliceFinalized }
 
+// Reuse makes a processed list ready to be initialized again, keeping what
+// its page list allocated. Zircon's splice lists are objects on the stack of
+// the call that splices; a Go list is a heap object, and a pager that
+// supplies a page per fault keeps its lists for the next supply rather than
+// make one each time.
+func (s *PageSpliceList[P]) Reuse() {
+	assert(s.IsProcessed() && s.IsEmpty(), "a list is reused once processed and empty")
+	s.length, s.pos, s.state = 0, 0, spliceConstructed
+}
+
 // Position is where the list is in its range.
 func (s *PageSpliceList[P]) Position() uint64 { return s.pos }

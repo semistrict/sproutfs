@@ -90,11 +90,27 @@ while it reads or while its mapping commands run: it takes its pages under the
 locks and issues the commands after, and its window's stripe keeps the
 commands of one window in order. A page no region maps is idle: it stays in
 its root, in the don't-need queue, and an allocation short of a slot gives it
-up by Zircon's eviction of a clean page (`ReclaimRangeForEviction`). Eviction
-of a page a region maps, stores, seals, serving a migration and a peer backing
-come to this core with steps 11 and 12; until then it refuses them, and an
-allocation it could only meet by evicting a mapped page fails with
-`ErrCapacity`.
+up by Zircon's eviction of a clean page (`ReclaimRangeForEviction`).
+
+A store makes a page of the region's layer Dirty (`zircon_store.go`). The
+layer's page source traps dirty transitions, as a VMO whose pager tracks its
+writes does, so a page becomes Dirty only when the pager says so: the store
+takes its dirty reservation first, fills a frame with the bytes the page holds
+now at the offset of the region's private file the placement rule gives it,
+supplies it to the layer and makes it Dirty there (`DirtyPages`). The layer's
+page then shadows its root's. A store into fresh zeros makes its write-ahead
+run Dirty in fresh frames at once, and the gap and half-private rules copy the
+pages around a store as the current core's do. The page a store copied from
+stays bound to its binding until the store's one mapping command replaces the
+guest's mapping of it, so no idle drop takes it before then. A page the region
+read with no identity is its own already, and a store dirties it in place.
+The reservation stays the pager's, in the binding beside the layer, until the
+spill moves into this core with eviction.
+
+Eviction of a page a region maps, seals and everything a checkpoint does, cold
+copies, serving a migration and a peer backing come to this core with step 12.
+Until then it refuses them, and an allocation it could only meet by evicting a
+mapped page fails with `ErrCapacity`.
 
 The histograms of the fault path are in `internal/latency`, outside `vmmemory`.
 None of these packages uses any pager state: no host lock, no memory region and

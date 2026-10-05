@@ -123,49 +123,81 @@
     "id": "pager-read-the-run-first",
     "package": "vmmemory",
     "run": "^TestADependentChainOfFaultsWaitsForOnePageAHop$",
-    "purpose": "Read a fault's whole read-ahead run before its page is installed, as the pager did before 2026-10-04. Every hop of a dependent chain of faults then waits for a run instead of a page."
+    "purpose": "Read a fault's whole read-ahead run before its page is installed, as the pager did before 2026-10-04. Every hop of a dependent chain of faults then waits for a run instead of a page.",
+    "cores": [
+      "current",
+      "zircon"
+    ]
   },
   {
     "id": "pager-fault-waits-for-its-prefetch",
     "package": "vmmemory",
     "run": "^TestAFaultNeverWaitsForAPrefetchOfOtherPages$",
-    "purpose": "Start the prefetch of the rest of a fault's run, then read the faulting page only once that prefetch is in. A fault beside a held prefetch then waits for it."
+    "purpose": "Start the prefetch of the rest of a fault's run, then read the faulting page only once that prefetch is in. A fault beside a held prefetch then waits for it.",
+    "cores": [
+      "current",
+      "zircon"
+    ]
   },
   {
     "id": "pager-read-in-flight-again",
     "package": "vmmemory",
     "run": "^TestAGuestReadingForwardsStillReadsItsMemoryInRuns$",
-    "purpose": "Read a page a prefetch is already reading again rather than wait for that read. A guest reading forwards then reads pages twice and no longer in runs."
+    "purpose": "Read a page a prefetch is already reading again rather than wait for that read. A guest reading forwards then reads pages twice and no longer in runs.",
+    "cores": [
+      "current",
+      "zircon"
+    ]
   },
   {
     "id": "pager-prefetch-ignores-pressure",
     "package": "vmmemory",
     "run": "^TestAnAllocationCancelsAPrefetchRatherThanEvict$",
-    "purpose": "Evict a page a guest maps for a fault's slot while a prefetch holds free slots for pages nobody has asked for yet, rather than cancel that prefetch."
+    "purpose": "Evict a page a guest maps for a fault's slot while a prefetch holds free slots for pages nobody has asked for yet, rather than cancel that prefetch.",
+    "cores": [
+      "current",
+      "zircon"
+    ]
   },
   {
     "id": "pager-prefetch-every-fault",
     "package": "vmmemory",
     "run": "^TestADependentChainOfFaultsWaitsForOnePageAHop$",
-    "purpose": "Prefetch the rest of every fault's run, whether or not the fault follows a recent fault of its memory region. A chain of faults at random then prefetches on every hop."
+    "purpose": "Prefetch the rest of every fault's run, whether or not the fault follows a recent fault of its memory region. A chain of faults at random then prefetches on every hop.",
+    "cores": [
+      "current",
+      "zircon"
+    ]
   },
   {
     "id": "pager-read-alone-at-random",
     "package": "vmmemory",
     "run": "^TestAPagerThatPrefetchesAtRandomFaultsOnceARun$",
-    "purpose": "Read a fault at random's page alone even in a pager that prefetches at random, as every pager did from 2026-10-04 until the real application's restore. A guest of 2 MiB pages touching its heap at random then faults once a page instead of once a run."
+    "purpose": "Read a fault at random's page alone even in a pager that prefetches at random, as every pager did from 2026-10-04 until the real application's restore. A guest of 2 MiB pages touching its heap at random then faults once a page instead of once a run.",
+    "cores": [
+      "current",
+      "zircon"
+    ]
   },
   {
     "id": "pager-plan-the-window-first",
     "package": "vmmemory",
     "run": "^TestAForwardChainOf4KiBFaultsPlansItsWindowInOneLookup$",
-    "purpose": "Plan the window of a fault that prefetches before its own page's read starts, as every fault did. Each hop of a chain of 4 KiB faults reading forwards then pays the window's planning on top of its read."
+    "purpose": "Plan the window of a fault that prefetches before its own page's read starts, as every fault did. Each hop of a chain of 4 KiB faults reading forwards then pays the window's planning on top of its read.",
+    "cores": [
+      "current",
+      "zircon"
+    ]
   },
   {
     "id": "pager-plan-the-window-at-random",
     "package": "vmmemory",
     "run": "^(TestADependentChainOf4KiBFaultsPaysOnePageReadAHop|TestAFaultAtRandomMapsItsPageAloneAndTheNextInItsWindowTheRest)$",
-    "purpose": "Plan the whole window of a fault at random, every page of it located and looked up among the resident pages, as every fault did, rather than its page alone. Each hop of a chain of 4 KiB faults at random then pays the window's planning on top of its read, and maps the window's resident pages it will not read."
+    "purpose": "Plan the whole window of a fault at random, every page of it located and looked up among the resident pages, as every fault did, rather than its page alone. Each hop of a chain of 4 KiB faults at random then pays the window's planning on top of its read, and maps the window's resident pages it will not read.",
+    "cores": [
+      "current",
+      "zircon"
+    ]
   },
   {
     "id": "checkpoint-decode-every-lookup",
@@ -175,9 +207,13 @@
   },
   {
     "id": "pager-zero-new-page",
-    "package": "internal/simtest",
-    "run": "^TestScheduledWorldReproduces$",
-    "purpose": "Lose loaded or copied data when creating a resident page."
+    "package": "vmmemory",
+    "run": "^TestEveryPageAFaultReadsOrAStoreCopiesHoldsItsBytes$",
+    "purpose": "Lose loaded or copied data when creating a resident page.",
+    "cores": [
+      "current",
+      "zircon"
+    ]
   },
   {
     "id": "checkpoint-part-member-offset",

@@ -1,6 +1,7 @@
 package vmmemory_test
 
 import (
+	"fmt"
 	"slices"
 	"sync"
 	"testing"
@@ -204,44 +205,56 @@ func TestAFaultReadsNothingForTheResidentPagesItMapsAndStopsAtItsWindow(t *testi
 }
 
 // No object lock is held across a mapping command: a fault whose command the
-// client has not answered holds nothing another fault of the same region, in
-// another window, over pages of the same checkpoint, needs.
+// client has not answered, a read's or a store's, holds nothing another fault
+// of the same region, in another window, over pages of the same checkpoint,
+// needs: not the region's layer, not the root, not the region's own pages.
 func TestAFaultIsServedWhileAnotherFaultsCommandIsUnanswered(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		f := newConfiguredFixture(t, aroundConfig())
-		region, m, _ := aroundRegion(t, f, f.source, nil)
-		answer := make(chan struct{})
-		holding := make(chan struct{})
-		var once sync.Once
-		m.onMap = func(page uint64, _ int) {
-			if page == 0 {
-				once.Do(func() {
-					close(holding)
-					<-answer
-				})
-			}
-		}
-		first := make(chan error, 1)
-		go func() { first <- region.Fault(f.ctx, 0, false) }()
-		<-holding
-		// The first fault's command is in flight. A fault in another window
-		// is served meanwhile, from the same checkpoint.
-		if err := region.Fault(f.ctx, 16, false); err != nil {
-			t.Fatal(err)
-		}
-		requirePage(t, m, 16)
-		select {
-		case err := <-first:
-			t.Fatalf("the first fault ended before its command was answered: %v", err)
-		default:
-		}
-		close(answer)
-		if err := <-first; err != nil {
-			t.Fatal(err)
-		}
-		requirePage(t, m, 0)
-		if err := region.SettlePrefetches(f.ctx); err != nil {
-			t.Fatal(err)
-		}
-	})
+	for _, held := range []bool{false, true} {
+		t.Run(fmt.Sprintf("held-store=%t", held), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				f := newConfiguredFixture(t, aroundConfig())
+				region, m, _ := aroundRegion(t, f, f.source, nil)
+				answer := make(chan struct{})
+				holding := make(chan struct{})
+				var once sync.Once
+				m.onMap = func(page uint64, _ int) {
+					if page == 0 {
+						once.Do(func() {
+							close(holding)
+							<-answer
+						})
+					}
+				}
+				first := make(chan error, 1)
+				go func() { first <- region.Fault(f.ctx, 0, held) }()
+				<-holding
+				// The first fault's command is in flight. A read and a store
+				// in other windows are served meanwhile, from the same
+				// checkpoint and into the same region's own pages.
+				if err := region.Fault(f.ctx, 16, false); err != nil {
+					t.Fatal(err)
+				}
+				requirePage(t, m, 16)
+				if err := region.Fault(f.ctx, 25, true); err != nil {
+					t.Fatal(err)
+				}
+				if p, ok := m.mappedPage(25); !ok || !p.writable || m.arena.pageUnder(p.place)[0] != 26 {
+					t.Fatalf("the store into page 25 left it %+v, want its own writable copy of the volume's 26", p)
+				}
+				select {
+				case err := <-first:
+					t.Fatalf("the first fault ended before its command was answered: %v", err)
+				default:
+				}
+				close(answer)
+				if err := <-first; err != nil {
+					t.Fatal(err)
+				}
+				requirePage(t, m, 0)
+				if err := region.SettlePrefetches(f.ctx); err != nil {
+					t.Fatal(err)
+				}
+			})
+		})
+	}
 }

@@ -582,6 +582,9 @@ func (r *MemoryRegion) setDirtyMappedRun(bindings []*binding) {
 // dirtyCount reports how many pages hold private state a checkpoint has not
 // taken, which is what the next seal takes.
 func (r *MemoryRegion) dirtyCount() int {
+	if z := r.zircon; z != nil {
+		return z.dirtyCount()
+	}
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
 	return len(r.dirtyBindings)

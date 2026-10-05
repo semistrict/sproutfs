@@ -158,7 +158,7 @@ func (z *zirconHost) root(key rootKey) *identityRoot {
 func (z *zirconHost) supply(ctx context.Context, object *zirconvm.ObjectPaged, first uint64, pages []*zirconvm.VmPage) error {
 	ps := z.host.pageSize
 	length := uint64(len(pages)) * ps
-	list := zirconvm.NewPageSpliceList[zirconvm.VmPage](ps, z.node)
+	list := z.splices.Get().(*zirconvm.PageSpliceList[zirconvm.VmPage])
 	list.Initialize(length)
 	for i, p := range pages {
 		if err := list.Insert(uint64(i)*ps, zirconvm.Page(p)); err != nil {
@@ -166,11 +166,13 @@ func (z *zirconHost) supply(ctx context.Context, object *zirconvm.ObjectPaged, f
 		}
 	}
 	list.Finalize()
-	if err := object.SupplyPages(ctx, first*ps, length, list, zirconvm.PagerSupply); err != nil {
+	err := object.SupplyPages(ctx, first*ps, length, list, zirconvm.PagerSupply)
+	if err != nil {
 		list.Free()
-		return err
 	}
-	return nil
+	list.Reuse()
+	z.splices.Put(list)
+	return err
 }
 
 // rootResolver is a memory region layer's RootResolver: the identity root of
@@ -245,17 +247,30 @@ func identityAt(loc *locations, page uint64) (pageKey, bool) {
 
 // zbinding is what a memory region keeps beside its layer for one page:
 // whether its mapping is installed, and the page it maps, which Zircon keeps
-// in page tables it can read back and the pager cannot.
+// in page tables it can read back and the pager cannot; and of a page the
+// region has stored into, what Zircon has no place for: the dirty reservation
+// it was admitted under, the page it was copied from, and whether
+// write-ahead made it.
 type zbinding struct {
 	region *zirconRegion
 	index  uint64
 	// page is the page this region maps here, nil where it maps none or a
-	// zero. Guarded by Host.mu, as the page's aliases are.
+	// zero: a page of an identity root, or of the region's own layer. Guarded
+	// by Host.mu, as the page's aliases are.
 	page *zirconvm.VmPage
 	// mapped is whether the mapping is installed, and zero whether it is a
 	// zero. inZeroRun marks a bound page a compressed zero run maps, as the
 	// current core's binding does. Guarded by zirconRegion.mu.
 	mapped, zero, inZeroRun bool
+	// dirty marks a page of the layer the region has stored into, Dirty
+	// there, which the guest may store into where it is; spill is the dirty
+	// reservation it was admitted under, origin the root's page it was
+	// copied from, and ahead marks one write-ahead made before any store.
+	// Guarded by zirconRegion.mu.
+	dirty  bool
+	spill  reservation
+	origin *zirconvm.VmPage
+	ahead  bool
 }
 
 // aliasLocked makes b an alias of p: the region maps it, so it is not idle.
@@ -322,18 +337,46 @@ func (z *zirconHost) takeIdleIf(lock func() bool) bool {
 	if !ok {
 		return false
 	}
-	// The page is evicted only where it is still idle under its root's lock:
-	// a fault that takes it marks it accessed there first, which takes it
-	// out of the don't-need queue.
-	success, failure := idle.Cow.ReclaimRangeForEviction(idle.Offset, h.pageSize, zirconvm.IgnoreHint)
+	if !z.evictIdle(idle.Cow, idle.Offset) {
+		return false
+	}
+	h.mu.Lock()
+	h.stats.IdleDrops++
+	h.mu.Unlock()
+	return true
+}
+
+// evictIdle gives up the page a root holds at offset, which nothing mapped
+// when the caller looked. It is evicted only where it is still idle under the
+// root's lock: a fault that takes a page marks it accessed there first, which
+// takes it out of the don't-need queue. It reports whether it went.
+func (z *zirconHost) evictIdle(root *zirconvm.CowPages, offset uint64) bool {
+	h := z.host
+	success, failure := root.ReclaimRangeForEviction(offset, h.pageSize, zirconvm.IgnoreHint)
 	if failure != zirconvm.ReclaimSucceeded || success.NumPages == 0 {
 		return false
 	}
 	h.mu.Lock()
 	h.idlePages -= int(success.NumPages)
 	z.rootPages -= success.NumPages
-	h.stats.IdleDrops += success.NumPages
 	h.signal()
 	h.mu.Unlock()
 	return true
+}
+
+// dropOrigin gives up a page a region's stores copied from once nothing maps
+// it, which detaching the region does, as the current core's releaseOrigin
+// does: nothing else would ever give it up ahead of the pages other regions
+// still read.
+func (z *zirconHost) dropOrigin(page *zirconvm.VmPage) {
+	h := z.host
+	h.mu.Lock()
+	mapped := frameOf(page).aliases.len() > 0
+	h.mu.Unlock()
+	if mapped {
+		return
+	}
+	if link, ok := z.node.PageQueues().Backlink(page); ok {
+		z.evictIdle(link.Cow, link.Offset)
+	}
 }
