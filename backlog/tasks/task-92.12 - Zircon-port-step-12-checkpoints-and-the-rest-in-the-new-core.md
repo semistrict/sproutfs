@@ -4,6 +4,7 @@ title: 'Zircon port step 12: checkpoints and the rest in the new core'
 status: To Do
 assignee: []
 created_date: '2026-10-05 05:10'
+updated_date: '2026-10-05 17:20'
 labels:
   - pager
   - zircon-port
@@ -31,3 +32,9 @@ Step 12 of the plan. Everything else of the old core runs on the new one: the se
 - [ ] #4 The seal pause issues only range protections, shown by the seal pause tests, and the walk runs after the vCPUs resume
 - [ ] #5 The hostile, race and isolation Linux suites pass under the new core on GCE
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-10-05: the step 12 agent stopped at the account's weekly usage limit. Its branch worktree-agent-a46377a0b1e5763e3 holds 8 unmerged commits (c8aaf509..c10890a7: checkpoints and eviction, cold copies and give-back, isolation/moves/fork files, serving/handoff/peer backings, both-core suites and guards, capture-pause bench, serving in the pager's core, survivor tests) plus uncommitted backlog notes. Not yet verified or merged; GCE was left clean. Resume from that branch: merge main, run just check, finish docs and Gremlins, report.
+<!-- SECTION:NOTES:END -->

@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-03 18:46'
-updated_date: '2026-10-04 13:51'
+updated_date: '2026-10-05 17:20'
 labels:
   - storage
   - performance
@@ -66,4 +66,6 @@ AC8 not met as written: no zonal bucket on GCS takes standard-API writes (Rapid 
 Clarified 2026-10-03 by the owner: 'not cloud specific' means not depending on a cloud's managed features (Rapid Cache, Mountpoint, lifecycle rules); differences between cloud APIs are trivial and fine. So the hot tier writes a GCS Rapid zonal bucket through GCS's gRPC append API (BidiWriteObject, appendable objects) in the GCS adapter, and the same hot tier would use S3 Express One Zone directory buckets through the S3 adapter. The GCP measurement against a real Rapid bucket needs the project's rapid_zonal_bytes quota raised (Cloud Quotas API), which the owner does.
 
 AWS run 2026-10-04 (docs/measurements/aws-hot-tier-2026-10-04.md, scripts/bench-hot-tier-aws.sh). Decisions: S3 Express One Zone directory buckets need nothing in the S3 adapter but the name (SDK does CreateSession and the zonal endpoint); conformance against a real directory bucket passed create-if-absent (If-None-Match gives 412), If-Match, ranges, deletes; ETags are opaque (same bytes, different ETag); listings come back unordered and only under a prefix ending in /, so S3ObjectStore.List refuses a directory bucket (ErrUnorderedListing, errors.ErrUnsupported) and a directory bucket is a hot tier only. restorebench node takes -cloud aws. Hosts m7i.xlarge (Sapphire Rapids with SHA, 16 GiB so the fill queue holds a publication; same core/network/EBS limits as c7i.xlarge) in use1-az4; gp3 64 GiB, 16000 IOPS, 500 MiB/s per host. Results, median of 3 rounds, p50 2 MiB/4 KiB: regional S3 Standard 102/26.3 ms, warm hot tier on Express 16.9/4.20 ms, cluster on gp3 4+2 6.23/1.24 ms; cold hot tier all hits by the third walk. Cost for 10 TiB at 1000 page reads/s: hot tier $4,285/month at 2 MiB (retrieval $3,080) and $1,211 at 4 KiB; shards $1,270 and $1,229. AC8 (GCE zonal) still open: the zonal comparison is now done on AWS instead.
+
+2026-10-05: AWS run (docs/measurements/aws-hot-tier-2026-10-04.md): gp3 shards beat the S3 Express hot tier (6.2 vs 16.9 ms at 2 MiB, 1.2 vs 4.2 ms at 4 KiB) at equal or lower cost. Coordinator recommends removing the hot tier; owner to decide keep / off by default / remove.
 <!-- SECTION:NOTES:END -->
