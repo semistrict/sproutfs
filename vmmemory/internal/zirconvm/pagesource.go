@@ -10,12 +10,13 @@ import (
 	"sync"
 )
 
-// This is the part of Zircon's page source that VmCowPages calls, ported for
-// step 9 of the plan before step 8 makes faults and prefetches page requests
-// over it. Left out: the early wake of a request a supply has reached part of,
-// continuations of an early waking request, the debug dump and the provider's
-// free of pages. Outstanding requests are kept sorted in a slice where Zircon
-// keeps a WAVL tree keyed by their end.
+// Zircon's page source, ported for the region's layer (step 9 of the plan)
+// and for the pager's faults and prefetches (step 8), whose provider is the
+// PagerProxy of pagerproxy.go. Left out: the early wake of a request a supply
+// has reached part of, continuations of an early waking request, the overlap
+// counters, the debug dump and the provider's free of pages. Outstanding
+// requests are kept sorted in a slice where Zircon keeps a WAVL tree keyed by
+// their end. AppendOutstanding is not Zircon's; see there.
 
 // PageRequestType is page_request_type.
 type PageRequestType uint8
@@ -258,6 +259,27 @@ func IsValidExternalFailureCode(status error) bool {
 // request with status.
 func IsValidInternalFailureCode(status error) bool {
 	return status == ErrNoMemory || IsValidExternalFailureCode(status)
+}
+
+// RequestRange is the range an outstanding request asks for.
+type RequestRange struct{ Offset, Len uint64 }
+
+// AppendOutstanding appends to dst the range of each outstanding request of
+// typ that overlaps [start, end), in order, and returns the result.
+//
+// Departure: Zircon's callers never look at the outstanding requests. A
+// lookup sends its request and waits, and the user pager in another process
+// answers it. Here the pager is in the callers' process, and a caller that
+// reads pages itself asks first which of them a request already sent is
+// reading, to wait on that request or to leave those pages to it.
+func (s *PageSource) AppendOutstanding(dst []RequestRange, typ PageRequestType, start, end uint64) []RequestRange {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	list := s.outstanding[typ]
+	for i := s.upperBound(typ, start); i < len(list) && list[i].offset < end; i++ {
+		dst = append(dst, RequestRange{Offset: list[i].offset, Len: list[i].len})
+	}
+	return dst
 }
 
 // upperBound is the index of the first outstanding request of typ whose end

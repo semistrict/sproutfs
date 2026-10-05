@@ -68,12 +68,15 @@ type Host struct {
 	spill        *zirconvm.SpillStorage
 	clean        map[pageKey]*resident
 	cleanVersion uint64
-	// inflight is the prefetch reading each page identity, prefetches every
-	// prefetch whose slots are not settled yet (holding), and prefetching how
-	// many of them are still reading.
-	// prefetchRunning counts the prefetches whose goroutines have not ended,
-	// mapping their pages included. All are guarded by mu. See prefetch.go.
-	inflight        map[pageKey]*prefetch
+	// roots is the page source of each identity root a prefetch reads, which
+	// its READ requests go to (pagerequests.go), and requests the READ
+	// requests not in use. prefetches is every prefetch whose slots are not
+	// settled yet (holding), and prefetching how many of them are still
+	// reading. prefetchRunning counts the prefetches whose goroutines have not
+	// ended, mapping their pages included. All but requests are guarded by
+	// mu. See prefetch.go.
+	roots           map[rootKey]*requestSource
+	requests        sync.Pool
 	prefetches      map[*prefetch]struct{}
 	prefetching     int
 	prefetchRunning int
@@ -232,7 +235,8 @@ func New(ctx context.Context, resources *resource.Budget, cfg Config, arena Aren
 		extents:     make(map[extentKey]*extent),
 		extentPages: extentPages,
 		clean:       make(map[pageKey]*resident), changed: make(chan struct{}), revoked: make(chan struct{}),
-		inflight: make(map[pageKey]*prefetch), prefetches: make(map[*prefetch]struct{}),
+		roots: make(map[rootKey]*requestSource), prefetches: make(map[*prefetch]struct{}),
+		requests:      sync.Pool{New: func() any { return zirconvm.NewPageRequest() }},
 		queues:        newPageQueues(pageSize),
 		memoryRegions: make(map[*MemoryRegion]struct{}), highWater: highWater(cfg.DirtyPages),
 		io: make(chan struct{}, cfg.ConcurrentIO), writeback: make(chan struct{}, 1)}

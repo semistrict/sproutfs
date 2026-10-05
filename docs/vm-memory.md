@@ -31,19 +31,20 @@ Three parts of `vmmemory` are nested packages that only `vmmemory` can import:
   writeback, zero intervals, reclaim and snapshot-on-write children. A region's
   layer falls through to the identity root its resolver names where Zircon
   walks up to a parent. The departures D1 to D4 are marked in `dirty.go` and
-  `reclaim.go`. The part of the page source that VmCowPages calls is ported
-  with it, for step 8 to complete. The page queues are whole since step 5,
-  generic over the page they hold, and order the pager's resident pages for
-  reclaim: see [choosing the victim](#choosing-the-victim). The compression is
-  whole since step 6 (`compression.go`), but for LZ4, which a strategy that
-  stores a page as it is replaces. Its storage is the spill file
-  (`spillstorage.go`), in the shape of Zircon's slot storage: a spilled page
-  is a reference, and a reference is an allocation of one page of the file.
-  D5 is marked there and in `page.go`: a page holds a reference of the
-  storage, its reservation, from before it is Dirty until it is clean, and is
-  spilled into it. The pager's bindings use the page list, and its dirty
-  reservations are references of the spill storage; nothing outside the
-  package uses the region's layer yet.
+  `reclaim.go`. The page queues are whole since step 5, generic over the page
+  they hold, and order the pager's resident pages for reclaim: see
+  [choosing the victim](#choosing-the-victim). The compression is whole since
+  step 6 (`compression.go`), but for LZ4, which a strategy that stores a page
+  as it is replaces. Its storage is the spill file (`spillstorage.go`), in the
+  shape of Zircon's slot storage: a spilled page is a reference, and a
+  reference is an allocation of one page of the file. D5 is marked there and
+  in `page.go`: a page holds a reference of the storage, its reservation, from
+  before it is Dirty until it is clean, and is spilled into it. The page
+  source and its requests are whole since step 8, with Zircon's `PagerProxy`
+  as its provider (`pagerproxy.go`), and every backing read of a fault or a
+  prefetch answers one: see [page requests](#page-requests). The pager's
+  bindings use the page list, and its dirty reservations are references of
+  the spill storage; nothing outside the package uses the region's layer yet.
 
 The histograms of the fault path are in `internal/latency`, outside `vmmemory`.
 None of these packages uses any pager state: no host lock, no memory region and
@@ -644,9 +645,11 @@ migration's source still holds, and a page with no identity. A page the source
 turns out to hold when the read returns is dropped, not mapped.
 
 Nothing waits on a prefetch except a fault on a page that prefetch is already
-reading. That fault waits for the read rather than reading the page again, with
-the memory region given up as a backing read gives it up, and then plans its
-window again from the top. These rules keep a prefetch from costing a fault:
+reading. That fault's request waits on the prefetch's rather than reading the
+page again, with the memory region given up as a backing read gives it up, and
+the fault then plans its window again from the top
+([page requests](#page-requests)). These rules keep a prefetch from costing a
+fault:
 
 - At most `Config.PrefetchRuns` prefetches read at once, `ConcurrentIO` by
   default. Past that a fault reads its page and nothing else, and its
@@ -700,6 +703,45 @@ page's object read and three more. A backing that cannot be asked for part of
 a range, such as a migration destination's peer backing, is still read one
 stretch of wanted pages at a time, so its prefetch reads the pages before the
 faulting page and the pages after it apart.
+
+### Page requests
+
+Every backing read of a fault or a prefetch answers a `READ` request to a page
+source, as a Zircon VMO's missing pages do (`vmmemory/pagerequests.go`). The
+source and its requests are Zircon's, ported in `internal/zirconvm`
+(`vm/page_source.cc`). A request that starts inside one already sent waits on
+it, and a supply or a failure of a request's range wakes it and every request
+waiting on it. Zircon's `PagerProxy` hands each request to a user pager in
+another process, one port packet at a time. Here the pager is in the same
+process, so the fault or prefetch that sends a request answers it, on its own
+goroutine or one it starts: it reads the pages, then supplies the range, or
+fails it if the read failed. The proxy keeps no port; it keeps the requests it
+holds.
+
+There are two kinds of source:
+
+- **An identity root's.** A published checkpoint's pages of one volume are an
+  identity root. A page's identity names its root, and its offset in the root
+  is the page's own. A prefetch sends one request to the root of each run of
+  its pages. Two prefetches of one page batch: the later one leaves that page
+  to the earlier. A fault on a page a prefetch is reading sends a request that
+  waits on the prefetch's. When the prefetch has landed or dropped its pages,
+  it supplies its requests, or fails them if its read failed, and every fault
+  waiting on them plans again. A page the prefetch failed to land is that
+  fault's to read. A root's source lives while one of its requests is in use.
+- **A memory region's own.** A fault sends the requests of its own reads
+  there: the faulting page's read, which the fault waits on while it plans the
+  rest of its window, a page read alone, a run, and a store's read of the page
+  it copies. Only the faults of one window read its pages, one at a time, so
+  these requests never batch. A prefetch does not see them. So a prefetch can
+  still read a page that another memory region's fault is reading, and the
+  copy that lands second goes back
+  (`TestAPrefetchedPageAnotherLoadMadeResidentFirstIsDropped`).
+
+Which faults prefetch, which pages a fault reads and in what order, and how many
+prefetches read at once stay the pager's own policy. Zircon extends a request
+and leaves the rest to its user pager; it has no notion of reading the faulting
+page first.
 
 ### Reading forwards
 
@@ -783,13 +825,14 @@ reads is decided before it plans anything:
 
 A fault that plans its window looks at the whole window at once. It takes the
 window's bindings under the memory region's binding lock once, and looks up
-every page's identity among the resident and in-flight pages under the host's
-lock once. From that one look it binds the resident pages to map beside its
-own, and finds the file each page the prefetch reads goes in, which the
-reservations and the prefetch then use. A page's identity is an index into
-the window's extents rather than a search of them. The volume locates the
-window with one lookup of each page-table segment it crosses
-([reads](volumes.md#reads)).
+every page's identity among the resident pages under the host's lock once. In
+the same hold it asks each identity root of the window once which of its pages
+a prefetch's request is reading. From that one look it binds the resident
+pages to map beside its own, and finds the file each page the prefetch reads
+goes in, which the reservations and the prefetch then use. A page's identity
+is an index into the window's extents rather than a search of them. The
+volume locates the window with one lookup of each page-table segment it
+crosses ([reads](volumes.md#reads)).
 
 A fault that prefetches takes its own slot out of a run of free slots for the
 whole window, at its page's place in the run, so the prefetched pages land

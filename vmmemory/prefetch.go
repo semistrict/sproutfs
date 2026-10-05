@@ -10,6 +10,7 @@ import (
 
 	"github.com/semistrict/sproutfs/checkpoint"
 	"github.com/semistrict/sproutfs/platform/sim"
+	"github.com/semistrict/sproutfs/vmmemory/internal/zirconvm"
 )
 
 // A fault reads its own page first. The rest of its read-ahead run is a
@@ -41,9 +42,10 @@ import (
 // The rules that keep it from ever costing a fault:
 //
 //   - A fault never waits for a prefetch, except for a page that prefetch is
-//     already reading: it waits for that read rather than reading the page a
-//     second time (awaitPrefetch). So a guest reading forwards still reads its
-//     memory in runs, one read for the faulting page and one for the rest.
+//     already reading: its READ request waits on the prefetch's rather than
+//     reading the page a second time (awaitPrefetch, pagerequests.go). So a
+//     guest reading forwards still reads its memory in runs, one read for the
+//     faulting page and one for the rest.
 //   - A prefetch takes only slots that are free, giving up idle pages for them
 //     as read-ahead always has, and never evicts. Its landed pages are idle
 //     until something maps them, so they are the first memory an allocation
@@ -118,10 +120,12 @@ type prefetch struct {
 	// order, each with its identity and the free slot reserved for it.
 	start, end uint64
 	pages      []prefetchPage
-	// done is closed once every page has landed or been dropped, which is
-	// what a fault waiting for one of them waits on.
-	done   chan struct{}
-	cancel context.CancelCauseFunc
+	// requests are the READ requests it sent to the roots of its pages, one
+	// for each run of them in one root, which it answers when it finishes:
+	// every fault waiting on one of its pages waits on one of them. Guarded
+	// by Host.mu.
+	requests []prefetchRequest
+	cancel   context.CancelCauseFunc
 	// reading is set from the split until the read has ended, and holding
 	// until every slot is settled: given back, or holding a page that landed,
 	// idle. Until then a slot is neither free nor a page, and an allocation
@@ -141,6 +145,13 @@ type prefetchPage struct {
 	page uint64
 	key  pageKey
 	at   fileSlot
+}
+
+// prefetchRequest is one READ request a prefetch sent and answers.
+type prefetchRequest struct {
+	root    rootKey
+	rs      *requestSource
+	request *zirconvm.PageRequest
 }
 
 type streamKey struct{}
@@ -202,10 +213,11 @@ func (p *windowPlan) splitPrefetch(ctx context.Context, index uint64, into []*ar
 		return nil
 	}
 	kept := pages[:0]
+	reading := h.readingIn(p.start, p.end)
 	for _, page := range pages {
 		// Another prefetch reached this identity between the plan and here:
 		// it is that one's to read.
-		if h.inflight[page.key] != nil {
+		if reading.of(page.key) {
 			back = append(back, page.at)
 			continue
 		}
@@ -214,11 +226,8 @@ func (p *windowPlan) splitPrefetch(ctx context.Context, index uint64, into []*ar
 	if len(kept) == 0 {
 		return nil
 	}
-	pf := &prefetch{memoryRegion: r, start: p.start, end: p.end, pages: kept, done: make(chan struct{}),
-		reading: true, holding: true}
-	for _, page := range kept {
-		h.inflight[page.key] = pf
-	}
+	pf := &prefetch{memoryRegion: r, start: p.start, end: p.end, pages: kept, reading: true, holding: true}
+	pf.sendLocked()
 	// The context is made before the prefetch is registered: an allocation
 	// or a detach may cancel it from the moment it is. Its task is named by
 	// its window, under the task of the fault that split it off: a number
@@ -235,9 +244,66 @@ func (p *windowPlan) splitPrefetch(ctx context.Context, index uint64, into []*ar
 	return pf
 }
 
-// inFlight is the prefetch reading the faulting page, nil where none is. The
-// in-tree bug that reads such a page again reports none.
-func (p *windowPlan) inFlight(ctx context.Context, page uint64) *prefetch {
+// sendLocked sends the prefetch's READ requests: one to the root of each run
+// of its pages in one root. None of them meets a request outstanding, which
+// splitPrefetch has made sure of under the same hold of the host lock. Caller
+// holds h.mu.
+func (pf *prefetch) sendLocked() {
+	h := pf.memoryRegion.host
+	ps := h.pageSize
+	for at := 0; at < len(pf.pages); {
+		first := pf.pages[at]
+		root := rootOf(first.key)
+		run := 1
+		for at+run < len(pf.pages) && pf.pages[at+run].page == first.page+uint64(run) &&
+			rootOf(pf.pages[at+run].key) == root {
+			run++
+		}
+		rs := h.rootLocked(root)
+		request := h.newRequest()
+		_ = rs.source.GetPages(first.key.id.Page*ps, uint64(run)*ps, request)
+		if !rs.proxy.Holds(request) || zirconvm.RequestLen(request) != uint64(run)*ps {
+			panic("vmmemory: a prefetch's request met another")
+		}
+		pf.requests = append(pf.requests, prefetchRequest{root: root, rs: rs, request: request})
+		at += run
+	}
+}
+
+// answerLocked answers the prefetch's requests: their pages are supplied, or
+// failed where err says its read failed. Either wakes every fault waiting on
+// one of them. Caller holds h.mu.
+func (pf *prefetch) answerLocked(err error) {
+	h := pf.memoryRegion.host
+	for _, sent := range pf.requests {
+		offset, length := zirconvm.RequestOffset(sent.request), zirconvm.RequestLen(sent.request)
+		if err != nil {
+			sent.rs.source.OnPagesFailed(offset, length, zirconvm.ErrIO)
+		} else {
+			sent.rs.source.OnPagesSupplied(offset, length)
+		}
+		h.releaseRootLocked(sent.root, sent.rs)
+		h.requests.Put(sent.request)
+	}
+	pf.requests = nil
+}
+
+// waiter is a READ request waiting on the prefetch's first, nil once the
+// prefetch has finished. Every request of a prefetch is answered at once.
+func (pf *prefetch) waiter() *readWaiter {
+	h := pf.memoryRegion.host
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(pf.requests) == 0 {
+		return nil
+	}
+	return h.awaitReadLocked(pf.pages[0].key)
+}
+
+// inFlight is a READ request of the faulting page waiting on the prefetch
+// reading that page, nil where none is. The in-tree bug that reads such a page
+// again reports none.
+func (p *windowPlan) inFlight(ctx context.Context, page uint64) *readWaiter {
 	key, named := p.identity(page)
 	if !named || key.zero() || sim.Bug(ctx, "pager-read-in-flight-again") {
 		return nil
@@ -245,23 +311,22 @@ func (p *windowPlan) inFlight(ctx context.Context, page uint64) *prefetch {
 	h := p.memoryRegion.host
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return h.inflight[key]
+	return h.awaitReadLocked(key)
 }
 
 // awaitPrefetch waits, with the memory region given up as a backing read
-// gives it up, for the prefetch reading the faulting page to land or drop it.
+// gives it up, for the prefetch reading the faulting page to land or drop it:
+// for the prefetch's request the fault's waits on to be supplied or failed.
 // The fault then plans its window again from the top.
-func (r *MemoryRegion) awaitPrefetch(ctx context.Context, pf *prefetch) error {
+func (r *MemoryRegion) awaitPrefetch(ctx context.Context, waiter *readWaiter) error {
 	h := r.host
 	h.mu.Lock()
 	h.stats.PrefetchWaits++
 	h.mu.Unlock()
 	sim.Probe(ctx, ProbePrefetchWaited)
 	return r.withoutMemoryRegion(ctx, func() error {
-		select {
-		case <-pf.done:
-		case <-ctx.Done():
-			return context.Cause(ctx)
+		if err := waiter.wait(ctx, h); err != nil {
+			return err
 		}
 		// Every fault waiting on this prefetch is released at once. In a
 		// controlled run they go on one at a time, in the order it chooses.
@@ -287,34 +352,29 @@ func (pf *prefetch) run(ctx context.Context) {
 		pf.cancel(nil)
 	}()
 	landed := pf.land(ctx)
-	pf.finish()
+	pf.finish(nil)
 	if len(landed) > 0 {
 		r.mapPrefetched(ctx, pf, landed)
 	}
 }
 
-// finish ends the prefetch's read: its identities are no longer in flight, it
-// no longer counts against the bound, and the faults waiting on it go on. A
+// finish ends the prefetch's read: its requests are answered, supplied or
+// failed as err says, so its pages are no longer in flight and the faults
+// waiting on them go on, and it no longer counts against the bound. A
 // prefetch that lands nothing finishes before its slots go back, so the
 // allocation that takes one of them finds the bound already free. Calling it
 // again does nothing.
-func (pf *prefetch) finish() {
+func (pf *prefetch) finish(err error) {
 	h := pf.memoryRegion.host
 	h.mu.Lock()
+	defer h.mu.Unlock()
 	if pf.finished {
-		h.mu.Unlock()
 		return
 	}
 	pf.finished = true
-	for _, page := range pf.pages {
-		if h.inflight[page.key] == pf {
-			delete(h.inflight, page.key)
-		}
-	}
+	pf.answerLocked(err)
 	h.prefetching--
 	h.signal()
-	h.mu.Unlock()
-	close(pf.done)
 }
 
 // settle ends the prefetch's hold on its slots, once each is given back or
@@ -372,7 +432,7 @@ func (pf *prefetch) land(ctx context.Context) []prefetchPage {
 			slog.DebugContext(ctx, "vmmemory: a prefetch's read failed; its pages are left to their faults",
 				"pages", len(pf.pages), "error", err)
 		}
-		pf.finish()
+		pf.finish(err)
 		if prefetchSettleSeam != nil {
 			prefetchSettleSeam()
 		}

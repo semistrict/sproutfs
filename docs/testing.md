@@ -3503,6 +3503,20 @@ object's end, which no mapping sees, the queue counters of steps 5 and 6, and
 the page source's request lists, which step 8 tests. The resize and pinning
 paths that would reach the rest are not ported.
 
+Step 8 completed the page source in `pagesource.go` and added Zircon's
+`PagerProxy` in `pagerproxy.go`, with cases of the port's own: Zircon tests
+them only through its pager syscalls. Run with `--file` on both, the first run
+killed 68, left 25 alive and 4 not covered. Tests of a supply that comes out
+of order, a failure that covers a waiter's start or ends where the next
+request begins, and a request that spans one already sent brought it to 77
+killed, 17 alive and 3 not covered. The 3 not covered are the case conditions
+of the cancel's switch, which the cases do reach: each fails a test when
+applied by hand. The survivors are asserts' bounds, which only an empty or
+overflowing range reaches, and changes no caller can see: the length of a
+request that waits on another, which only its start is read of, a request's
+place among requests that never overlap, and bounds where both sides give
+the same answer.
+
 Step 5 completed the page queues in `pagequeues.go` with Zircon's ten cases.
 Run with `--file pagequeues.go`, the first run killed 117, left 38 alive, 78
 not covered and 7 timed out. Tests of the active ratio's margin and the peek
