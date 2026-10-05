@@ -51,6 +51,9 @@ type zframe struct {
 	// the guest goes on reading it until then, so nothing may take it. Guarded
 	// by Host.mu.
 	replacing int
+	// dropped marks a page whose last mapping went while a store replaced it,
+	// which goes back once that store's command lands. Guarded by Host.mu.
+	dropped bool
 	// coldCopies is every cold copy that will be compared with this page,
 	// which keeps it in the zero-fork queue (zircon_cold.go). Guarded by
 	// Host.pinMu.
@@ -129,7 +132,25 @@ func (z *zirconHost) newFrame(ctx context.Context, at fileSlot, data []byte, kin
 	if err := at.file.Write(ctx, at.slot, data); err != nil {
 		return nil, h.abandonSlots(ctx, at, 1, err)
 	}
-	return zirconvm.NewFramePage(newLockedZframe(at, kind, nil)), nil
+	page := zirconvm.NewFramePage(newLockedZframe(at, kind, nil))
+	z.noteFrame(page)
+	return page, nil
+}
+
+// noteFrame records a page of a private or a fork file at its slot, which
+// is where an allocation of an isolated arena finds it.
+func (z *zirconHost) noteFrame(page *zirconvm.VmPage) {
+	f := frameOf(page)
+	if f.file.pages == nil {
+		return
+	}
+	h := z.host
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if f.file.frames == nil {
+		f.file.frames = make(map[int]*zirconvm.VmPage)
+	}
+	f.file.frames[f.slot] = page
 }
 
 // newLockedZframe is newZframe, locked.
@@ -220,6 +241,9 @@ func (z *zirconHost) releaseFrame(p *zirconvm.VmPage) {
 		z.rootPages--
 	}
 	z.notIdleLocked(f)
+	if f.file.frames[f.slot] == p {
+		delete(f.file.frames, f.slot)
+	}
 	h.putFree(f.fileSlot)
 	f.slot = -1
 	h.signal()
@@ -275,6 +299,9 @@ type identityRoot struct {
 	// lentPages are the pages of a lent root, each naming its parent's frame.
 	// Guarded by Host.mu.
 	lentPages []*zirconvm.VmPage
+	// copies are the pages of a lent root copied into the point's fork file,
+	// for children on this host of an isolated arena. Guarded by Host.mu.
+	copies []*zirconvm.VmPage
 }
 
 // rootLocked is the identity root key names, made where there is none.
@@ -474,6 +501,15 @@ func (z *zirconHost) forgetAliasLocked(b *zbinding, p *zirconvm.VmPage) {
 		b.region.region.resident--
 	}
 	z.idleLocked(p)
+}
+
+// forgetGoingAliasLocked takes b off the aliases of p, a page in no object
+// any more, which therefore never becomes idle. Caller holds h.mu.
+func (z *zirconHost) forgetGoingAliasLocked(b *zbinding, p *zirconvm.VmPage) {
+	f := frameOf(p)
+	if f.aliases.remove(b) && !f.mappedBy(b.region) {
+		b.region.region.resident--
+	}
 }
 
 // mappedBy reports whether any alias of f belongs to z. Caller holds h.mu.

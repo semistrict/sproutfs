@@ -10,6 +10,7 @@ import (
 	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/resource"
 	"github.com/semistrict/sproutfs/vmmemory/internal/slots"
+	"github.com/semistrict/sproutfs/vmmemory/internal/zirconvm"
 )
 
 // arenaFile is one file of the arena as this pager keeps it: the file itself,
@@ -47,6 +48,9 @@ type arenaFile struct {
 	digests  map[int][32]byte
 	holders  map[*MemoryRegion]int
 	orphaned bool
+	// frames is the zircon core's page at each held slot of a private or a
+	// fork file, as pages is the current core's. Guarded by Host.mu.
+	frames map[int]*zirconvm.VmPage
 }
 
 // keepFile keeps one file the arena made, whose offsets space says which hold

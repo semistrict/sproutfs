@@ -388,7 +388,19 @@ func (p *zplan) takeFaulting(ctx context.Context, index uint64) (again bool, err
 			return nil
 		})
 	}
-	if err != nil {
+	if errors.Is(err, errUnreachable) {
+		// A page another region's private file holds, or a fork point lends:
+		// it is moved or copied where this region's process may map it. Where
+		// it cannot be, the fault reads its own copy.
+		reached, err := z.reach(ctx, found, id)
+		if err != nil {
+			return false, err
+		}
+		if reached != nil {
+			z.bind(index, reached)
+		}
+		found = reached
+	} else if err != nil {
 		return false, err
 	}
 	if found != nil {
@@ -405,7 +417,7 @@ func (p *zplan) takeFaulting(ctx context.Context, index uint64) (again bool, err
 		}
 		return false, nil
 	}
-	if request.source != r.reads {
+	if request != nil && request.source != r.reads {
 		// The root the resolver named gave the page up between the
 		// resolver's look and the lookup's, which then asked the root. Its
 		// request is answered at once, so nothing waits on it, and the fault
@@ -459,6 +471,10 @@ func (p *zplan) takeRun(ctx context.Context, index uint64) error {
 	p.reserveOwn()
 	return nil
 }
+
+// errUnreachable reports a page a lookup found, and holds, that this region's
+// process may not map where it is.
+var errUnreachable = errors.New("vmmemory: a page is in a file the region's process does not hold")
 
 // errPageBusy reports a page a lookup found whose lock something else holds.
 var errPageBusy = errors.New("vmmemory: a page's lock is held")
@@ -536,6 +552,10 @@ func (z *zirconRegion) lookup(ctx context.Context, page uint64, loc *locations) 
 		// looked up again once it is done.
 		if !frameOf(result.Page).mu.TryLock() {
 			return result.Page, nil, errPageBusy
+		}
+		if !z.reachable(result.Page) {
+			// The caller reaches it first, with no object lock held.
+			return result.Page, nil, errUnreachable
 		}
 		z.bind(page, result.Page)
 		return result.Page, nil, nil
@@ -720,19 +740,73 @@ func (z *zirconRegion) reclaim(ctx context.Context, f *arenaFile) (fileSlot, err
 // reclaimOwn takes a place of page index in the region's own file, with the
 // region given up.
 func (z *zirconRegion) reclaimOwn(ctx context.Context, index uint64) (fileSlot, error) {
+	return z.region.reclaimWith(ctx, func() (fileSlot, error) { return z.allocateOwn(ctx, index, true) })
+}
+
+// allocateOwn is MemoryRegion.allocateOwn over the zircon core: a place of
+// page index in the region's own file, evicting where the page budget rather
+// than the place is missing. A page never needs a third place: where both are
+// taken, one holds a root's page nothing maps, published from this region
+// and idle since, which is given up.
+func (z *zirconRegion) allocateOwn(ctx context.Context, index uint64, clean bool) (fileSlot, error) {
 	r := z.region
 	h := r.host
-	return r.reclaimWith(ctx, func() (fileSlot, error) {
-		for _, at := range r.ownPlaces(index, true) {
-			h.mu.Lock()
-			_, held := at.file.leases[at.slot]
+	places := r.ownPlaces(index, clean)
+	preferEviction := evictPastAFreeSlot(ctx)
+	for range loadAttempts {
+		h.mu.Lock()
+		if h.err != nil {
+			err := h.err
 			h.mu.Unlock()
-			if !held {
-				return z.host.allocate(ctx, r, at.file, func() int { return h.takeOwnLocked(r, index, at).slot })
+			return fileSlot{}, err
+		}
+		for _, at := range places {
+			if preferEviction {
+				break
+			}
+			if taken := h.takeOwnLocked(r, index, at); taken.slot >= 0 {
+				h.mu.Unlock()
+				return taken, nil
 			}
 		}
-		return fileSlot{}, fmt.Errorf("%w: both places of page %d of a memory region hold a page", ErrCapacity, index)
-	})
+		var free *fileSlot
+		for _, at := range places {
+			if _, held := at.file.leases[at.slot]; !held {
+				free = &at
+				break
+			}
+		}
+		var idle *zirconvm.VmPage
+		if free == nil {
+			for _, at := range places {
+				if page := at.file.frames[at.slot]; page != nil {
+					f := frameOf(page)
+					if f.layer == nil && f.aliases.len() == 0 && f.replacing == 0 {
+						idle = page
+						break
+					}
+				}
+			}
+		}
+		h.mu.Unlock()
+		if free != nil {
+			at := *free
+			return h.allocate(ctx, r, at.file, func() int { return h.takeOwnLocked(r, index, at).slot }, preferEviction)
+		}
+		if idle == nil {
+			return fileSlot{}, fmt.Errorf("%w: both places of page %d of a memory region hold a page it maps", ErrCapacity, index)
+		}
+		if !frameOf(idle).mu.TryLock() {
+			if err := z.host.lockPage(ctx, idle); err != nil {
+				return fileSlot{}, err
+			}
+		}
+		if link, ok := z.host.node.PageQueues().Backlink(idle); ok && frameOf(idle).layer == nil {
+			z.host.evictIdle(link.Cow, link.Offset)
+		}
+		z.host.unlockPage(idle)
+	}
+	return fileSlot{}, ErrContended
 }
 
 // allocate returns one slot of f for a page of r, or the slot place takes

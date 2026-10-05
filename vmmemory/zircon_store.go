@@ -301,15 +301,7 @@ func (z *zirconRegion) reclaimPrivate(ctx context.Context, index uint64) (fileSl
 			return fileSlot{}, err
 		}
 		if r.private != nil {
-			for _, at := range r.ownPlaces(index, false) {
-				h.mu.Lock()
-				_, held := at.file.leases[at.slot]
-				h.mu.Unlock()
-				if !held {
-					return z.host.allocate(ctx, r, at.file, func() int { return h.takeOwnLocked(r, index, at).slot })
-				}
-			}
-			return fileSlot{}, errors.Join(ErrCapacity, errBothPlacesHeld)
+			return z.allocateOwn(ctx, index, false)
 		}
 		f := r.privateFile()
 		h.mu.Lock()
@@ -348,10 +340,6 @@ func (z *zirconRegion) reclaimPrivate(ctx context.Context, index uint64) (fileSl
 	})
 }
 
-// errBothPlacesHeld is a page of an isolated arena's private file whose two
-// places both hold a page.
-var errBothPlacesHeld = errors.New("vmmemory: both places of a page of a memory region hold a page")
-
 // newZeroFrames fills the slots of every run, which are slots of f, with
 // zeros and reports the frames of each run, as Host.createZeroRuns does. A run
 // that fails takes the runs after it and the frames before it with it.
@@ -373,6 +361,7 @@ func (z *zirconRegion) newZeroFrames(ctx context.Context, f *arenaFile, runs []M
 			made := make([]*zirconvm.VmPage, run.Count)
 			for k := range made {
 				made[k] = zirconvm.NewFramePage(newLockedZframe(at.plus(k), z.region.kind, z))
+				z.host.noteFrame(made[k])
 			}
 			frames = append(frames, made)
 			continue
@@ -466,13 +455,25 @@ func (p *zreplacement) keep(page *zirconvm.VmPage) { p.made = append(p.made, pag
 // root's page nothing maps is idle from here, as any other is.
 func (p *zreplacement) done() {
 	h := p.z.region.host
+	var dropped []*zirconvm.VmPage
 	h.mu.Lock()
 	for _, page := range p.pages {
-		frameOf(page).replacing--
+		f := frameOf(page)
+		f.replacing--
+		if f.replacing == 0 && f.dropped && f.aliases.len() == 0 {
+			f.dropped = false
+			dropped = append(dropped, page)
+			continue
+		}
 		p.z.host.idleLocked(page)
 	}
 	h.signal()
 	h.mu.Unlock()
+	// A page that left its object while it was replaced goes back now that
+	// nothing reads it.
+	for _, page := range dropped {
+		p.z.host.releaseFrame(page)
+	}
 	p.pages, p.guests = nil, nil
 }
 

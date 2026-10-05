@@ -188,11 +188,17 @@ func (p *zplan) files() []*arenaFile {
 // whose bytes no identity names. This core takes no fork point's and no
 // other host's page yet.
 func (p *zplan) own(page uint64) bool {
-	if !p.z.region.host.isolated() {
+	h := p.z.region.host
+	if !h.isolated() {
 		return false
 	}
-	_, named := p.identity(page)
-	return !named
+	id, named := p.identity(page)
+	if named && id.zero() {
+		return false
+	}
+	// A page a fork point lends is read into the region's own file: its name
+	// lasts only as long as the point's seal.
+	return !named || h.lends(id)
 }
 
 // observeZeros is windowPlan.observeZeros.
@@ -256,16 +262,21 @@ func (p *zplan) take(ctx context.Context, page uint64, key pageKey) (*zirconvm.V
 		}
 		lock.Lock()
 		still := root.pages.PageLocked(offset) == found
-		if still {
-			z.host.node.PageQueues().MarkAccessed(found)
-			if page != p.store {
-				z.bind(page, found)
-			}
-		}
 		lock.Unlock()
 		if !still {
 			z.host.unlockPage(found)
 			continue
+		}
+		// A page this region's process may not map where it is is moved or
+		// copied where it may, and the copy is held in its place.
+		reached, err := z.reach(ctx, found, key)
+		if err != nil || reached == nil {
+			return nil, err
+		}
+		found = reached
+		z.host.node.PageQueues().MarkAccessed(found)
+		if page != p.store {
+			z.bind(page, found)
 		}
 		p.locked = append(p.locked, found)
 		h.mu.Lock()
@@ -328,10 +339,10 @@ func (p *zplan) survey(except uint64, prefetched bool) zsurvey {
 			}
 			last++
 		}
-		taken := p.takeRootRun(page, last, eligible)
+		taken, elsewhere := p.takeRootRun(page, last, eligible)
 		for q := page; q < last; q++ {
 			i := q - p.start
-			if taken[q-page] || p.pages[i] != nil || p.zeros[i] || p.reserved[i].slot >= 0 || !eligible[i] {
+			if taken[q-page] || elsewhere[q-page] || p.pages[i] != nil || p.zeros[i] || p.reserved[i].slot >= 0 || !eligible[i] {
 				continue
 			}
 			key, _ := p.identity(q)
@@ -351,13 +362,15 @@ func (p *zplan) survey(except uint64, prefetched bool) zsurvey {
 
 // takeRootRun takes every page of [first, last), all of one root, that the root
 // holds and that may join the plan, under one hold of the root's lock, and
-// reports which it took.
-func (p *zplan) takeRootRun(first, last uint64, eligible []bool) []bool {
+// reports which it took, and which the root holds where this region's process
+// may not map them: those are their own faults' to reach.
+func (p *zplan) takeRootRun(first, last uint64, eligible []bool) (taken, elsewhere []bool) {
 	z := p.z
 	h := z.region.host
 	key, _ := p.identity(first)
 	root := z.host.root(rootOf(key))
-	taken := make([]bool, last-first)
+	taken = make([]bool, last-first)
+	elsewhere = make([]bool, last-first)
 	hits := uint64(0)
 	lock := root.pages.Lock()
 	lock.Lock()
@@ -367,7 +380,14 @@ func (p *zplan) takeRootRun(first, last uint64, eligible []bool) []bool {
 			continue
 		}
 		found := root.pages.PageLocked(page * h.pageSize)
-		if found == nil || !p.hold(found) {
+		if found == nil {
+			continue
+		}
+		if !z.reachable(found) {
+			elsewhere[page-first] = true
+			continue
+		}
+		if !p.hold(found) {
 			continue
 		}
 		z.host.node.PageQueues().MarkAccessed(found)
@@ -381,7 +401,7 @@ func (p *zplan) takeRootRun(first, last uint64, eligible []bool) []bool {
 		h.stats.IdentityHits += hits
 		h.mu.Unlock()
 	}
-	return taken
+	return taken, elsewhere
 }
 
 // zfileFinder is fileFinder over a zplan.
@@ -699,7 +719,7 @@ func (p *zplan) supplyRun(ctx context.Context, page uint64, id pageKey, shared b
 				z.host.adoptLocked(found)
 				h.mu.Unlock()
 			}
-		} else if p.hold(found) {
+		} else if z.reachable(found) && p.hold(found) {
 			hits++
 		} else {
 			p.fresh[i] = false

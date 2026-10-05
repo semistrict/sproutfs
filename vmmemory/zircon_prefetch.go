@@ -498,7 +498,7 @@ func (p *zplan) bindLanded(page prefetchPage) bool {
 	lock.Lock()
 	defer lock.Unlock()
 	found := root.pages.PageLocked(page.key.id.Page * z.region.host.pageSize)
-	if found == nil || !p.hold(found) {
+	if found == nil || !z.reachable(found) || !p.hold(found) {
 		return false
 	}
 	z.host.node.PageQueues().MarkAccessed(found)

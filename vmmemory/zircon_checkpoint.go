@@ -1184,6 +1184,22 @@ func (z *zirconRegion) endFork(ctx context.Context, c *MemoryRegionCheckpoint) e
 // naming its frame, and the root goes.
 func (z *zirconHost) dropLentRoot(ctx context.Context, root *identityRoot) error {
 	h := z.host
+	// A copy in the point's file goes with the root: every child that maps
+	// it reads it through its own backing from here.
+	h.mu.Lock()
+	copies := root.copies
+	root.copies = nil
+	h.mu.Unlock()
+	for _, page := range copies {
+		if err := z.lockPage(ctx, page); err != nil {
+			return err
+		}
+		err := z.dropSharers(ctx, page)
+		z.unlockPage(page)
+		if err != nil {
+			return err
+		}
+	}
 	h.mu.Lock()
 	lent := root.lentPages
 	root.lentPages = nil
@@ -1234,14 +1250,41 @@ func (z *zirconHost) published(page *zirconvm.VmPage) bool {
 	return f.layer == nil && f.slot >= 0 && !isLent(page)
 }
 
-// endForkFile is the part of endFork an isolated arena's fork file needs.
-// This core copies no lent page into one yet.
+// endForkFile is the part of endFork an isolated arena's fork file needs:
+// each child closes the file, and the file goes back to the arena once its
+// copies, which went with the point's temporary root, are gone.
 func (z *zirconRegion) endForkFile(ctx context.Context, c *MemoryRegionCheckpoint) error {
+	h := z.region.host
 	c.mu.Lock()
 	f := c.fork
+	c.fork = nil
 	c.mu.Unlock()
-	if f != nil {
-		panic("vmmemory: a fork file reached the zircon core")
+	if f == nil {
+		return nil
 	}
-	return context.Cause(ctx)
+	h.mu.Lock()
+	holders := f.holders
+	f.holders = nil
+	for q := range holders {
+		delete(q.forks, f)
+	}
+	h.mu.Unlock()
+	for q, number := range holders {
+		if q.closed || q.terminal.Load() != nil {
+			continue
+		}
+		if err := q.mapping.DropFile(ctx, number); err != nil {
+			q.fail(err)
+		}
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if f.slots.Held() == 0 {
+		h.dropFileLocked(f)
+	} else {
+		// A copy a revocation could not take away belongs to a terminal
+		// region, and the file goes back once that region is closed.
+		f.orphaned = true
+	}
+	return nil
 }
