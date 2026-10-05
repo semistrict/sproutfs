@@ -239,12 +239,16 @@ func (z *zirconRegion) allocateRun(ctx context.Context, index, first, last uint6
 		return 0, nil, err
 	}
 	h.mu.Lock()
+	noExtent := h.carving(f) && f.slots.FreeExtents() == 0 && h.extents[extentKey{r, index / uint64(h.extentPages)}] == nil
 	if f.owner != nil {
 		// Every page of a private file's run is placed at once, so the run is
 		// what the pager has room for, and never less than the faulting page.
 		first, last = around(index, first, last, max(h.freeLocked(f), 1))
 	}
 	h.mu.Unlock()
+	if noExtent {
+		z.host.reclaimExtent(f)
+	}
 	if start, runs := h.placeRun(r, index, first, last); len(runs) > 0 {
 		return start, runs, nil
 	}
@@ -311,9 +315,20 @@ func (z *zirconRegion) reclaimPrivate(ctx context.Context, index uint64) (fileSl
 			return fileSlot{}, err
 		}
 		at, placeable := h.place(r, index)
+		noExtent := !placeable && h.carving(f) && f.slots.FreeExtents() == 0
 		h.mu.Unlock()
 		if at.slot >= 0 {
 			return at, nil
+		}
+		if noExtent && z.host.reclaimExtent(f) {
+			// The file's extents were held by the idle pages of regions that
+			// have gone; one was given back for this range.
+			h.mu.Lock()
+			at, placeable = h.place(r, index)
+			h.mu.Unlock()
+			if at.slot >= 0 {
+				return at, nil
+			}
 		}
 		if placeable {
 			return z.host.allocate(ctx, r, f, func() int {
@@ -658,7 +673,7 @@ func (z *zirconRegion) copyOnWrite(ctx context.Context, index uint64, spill *res
 		}()
 	}
 	data := make([]byte, h.pageSize)
-	err = z.readForCopy(ctx, index, src, held, data)
+	unpublished, err := z.readForCopy(ctx, index, src, held, data)
 	if src != nil {
 		// The bytes are read: the page may go from here, the copy holding
 		// them, and the slot the copy needs may be its.
@@ -699,6 +714,12 @@ func (z *zirconRegion) copyOnWrite(ctx context.Context, index uint64, spill *res
 		return false, err
 	}
 	*spill = noReservation
+	if unpublished {
+		// The bytes came from the host that still holds them, and this store
+		// has just made them the region's own: that host no longer holds the
+		// only copy, and its backing is told so.
+		r.installedUnpublished(index*h.pageSize, []bool{true})
+	}
 	h.mu.Lock()
 	h.stats.CopyOnWrites++
 	if unmapped {
@@ -739,6 +760,31 @@ func (z *zirconRegion) copyOnWrite(ctx context.Context, index uint64, spill *res
 	return false, nil
 }
 
+// reclaimExtent is Host.reclaimExtent over the zircon core: idle pages are
+// given up until an extent of f is free, where none is, and it reports
+// whether it freed one. A published page stays at the slot the placement rule
+// gave it when it goes idle, so it keeps that slot's extent from going back
+// after the region that placed it has gone.
+func (z *zirconHost) reclaimExtent(f *arenaFile) bool {
+	h := z.host
+	orphaned := func(frame *zframe) bool {
+		e := frame.file.leases[frame.slot].extent
+		return e != nil && e.file == f && h.extents[e.key] != e
+	}
+	for {
+		h.mu.Lock()
+		if !h.carving(f) || f.slots.FreeExtents() > 0 {
+			freed := h.carving(f) && f.slots.FreeExtents() > 0
+			h.mu.Unlock()
+			return freed
+		}
+		h.mu.Unlock()
+		if !z.takeIdleIf(func() bool { h.mu.Lock(); return true }, orphaned) {
+			return false
+		}
+	}
+}
+
 // zeroMapped reports whether a page is mapped to zero.
 func (z *zirconRegion) zeroMapped(index uint64) bool {
 	z.mu.Lock()
@@ -749,27 +795,34 @@ func (z *zirconRegion) zeroMapped(index uint64) bool {
 
 // readForCopy fills a store's copy with the page's current bytes: those of
 // the page it maps, zeros, or the backing's, read with the region given up.
-func (z *zirconRegion) readForCopy(ctx context.Context, index uint64, src *zirconvm.VmPage, held *zbinding, dst []byte) error {
+//
+// It reports whether the bytes are ones no checkpoint of the VM has: only a
+// backing read can say so, and only a backing that fetches from another host
+// ever does.
+func (z *zirconRegion) readForCopy(ctx context.Context, index uint64, src *zirconvm.VmPage, held *zbinding,
+	dst []byte) (unpublished bool, err error) {
 	r := z.region
 	if src != nil {
 		f := frameOf(src)
-		return f.file.Read(ctx, f.slot, dst)
+		return false, f.file.Read(ctx, f.slot, dst)
 	}
 	if held != nil {
 		// The checkpoint's copy the page shares was spilled: its reservation
 		// holds the bytes.
-		return r.host.readSpill(ctx, z.spillOf(held), dst)
+		return false, r.host.readSpill(ctx, z.spillOf(held), dst)
 	}
 	if z.zeroMapped(index) {
 		clear(dst)
-		return nil
+		return false, nil
 	}
-	return r.withoutMemoryRegion(ctx, func() error {
+	err = r.withoutMemoryRegion(ctx, func() error {
 		return r.requested(index, 1, func() error {
-			_, err := r.loadBacking(ctx, index*r.host.pageSize, dst)
+			fetched, err := r.loadBacking(ctx, index*r.host.pageSize, dst)
+			unpublished = len(fetched) > 0 && fetched[0]
 			return err
 		})
 	})
+	return unpublished, err
 }
 
 // readIn gives a store into a page the region holds nothing of something to
@@ -778,8 +831,21 @@ func (z *zirconRegion) readForCopy(ctx context.Context, index uint64, src *zirco
 // unmapped, until the copy replaces it. A page with no identity, or a hole,
 // has none, and the store reads its copy from the backing. It reports again
 // where the fault must look again.
+//
+// A peer backing's store reads its page alone, as the current core's does: a
+// load is what answers that the source still holds a page, which is per page,
+// and nothing may be shared under the name of a page it gives that answer
+// for.
 func (z *zirconRegion) readIn(ctx context.Context, index uint64) (*zirconvm.VmPage, bool, error) {
-	plan, err := z.planFault(ctx, index, z.region.end(index))
+	var plan *zplan
+	var err error
+	if z.region.peer {
+		if plan, err = z.plan(ctx, index, index+1, z.region.end(index)); err == nil {
+			plan.reading = readAlone
+		}
+	} else {
+		plan, err = z.planFault(ctx, index, z.region.end(index))
+	}
 	if err != nil {
 		return nil, false, err
 	}
@@ -795,8 +861,17 @@ func (z *zirconRegion) readIn(ctx context.Context, index uint64) (*zirconvm.VmPa
 	if err != nil || again {
 		return nil, again, err
 	}
-	if err := plan.read(ctx, index); err != nil {
+	if err := plan.read(ctx, index); errors.Is(err, errUnpublishedReservation) {
+		// The extents named the page the volume's and the load found the
+		// source still holding it: the store decides again from the top.
+		return nil, true, nil
+	} else if err != nil {
 		return nil, false, err
+	}
+	if plan.private[index-plan.start] {
+		// The load took the page as the region's own dirty state: the store
+		// decides again from the top, and finds it writable.
+		return nil, true, nil
 	}
 	origin := plan.pages[index-plan.start]
 	if origin == nil {
@@ -981,7 +1056,7 @@ func (z *zirconRegion) takeOneShared(ctx context.Context, page uint64, replaced 
 		return false, err
 	}
 	data := make([]byte, h.pageSize)
-	err = z.readForCopy(ctx, page, src, nil, data)
+	_, err = z.readForCopy(ctx, page, src, nil, data)
 	unlock()
 	if err != nil {
 		h.releaseSpill(spill)

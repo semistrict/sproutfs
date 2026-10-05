@@ -257,6 +257,10 @@ func (z *zirconHost) idleLocked(p *zirconvm.VmPage) {
 	if f.idle || f.layer != nil || f.slot < 0 || f.aliases.len() > 0 {
 		return
 	}
+	if _, queued := z.node.PageQueues().Backlink(p); !queued {
+		// In no object: it is going, not waiting to be inherited.
+		return
+	}
 	h := z.host
 	h.pinMu.Lock()
 	defer h.pinMu.Unlock()
@@ -302,6 +306,10 @@ type identityRoot struct {
 	// copies are the pages of a lent root copied into the point's fork file,
 	// for children on this host of an isolated arena. Guarded by Host.mu.
 	copies []*zirconvm.VmPage
+	// published marks a lent root whose point published the name it lent:
+	// it keeps the pages published under it when the seal ends. Guarded by
+	// Host.mu.
+	published bool
 }
 
 // rootLocked is the identity root key names, made where there is none.
@@ -537,16 +545,18 @@ func (z *zirconHost) takeIdle() bool {
 	return z.takeIdleIf(func() bool {
 		z.host.mu.Lock()
 		return true
-	})
+	}, nil)
 }
 
 // reclaimIdle is Host.reclaimIdle under this core: the host budget's cache
 // eviction, which never waits for h.mu, because the budget may call it from
 // inside an allocation that holds it.
-func (z *zirconHost) reclaimIdle() bool { return z.takeIdleIf(z.host.mu.TryLock) }
+func (z *zirconHost) reclaimIdle() bool { return z.takeIdleIf(z.host.mu.TryLock, nil) }
 
-// takeIdleIf is takeIdle, where lock takes h.mu or reports it could not.
-func (z *zirconHost) takeIdleIf(lock func() bool) bool {
+// takeIdleIf is takeIdle, where lock takes h.mu or reports it could not, of
+// the idle pages want accepts, any where want is nil. want is called with
+// h.mu held.
+func (z *zirconHost) takeIdleIf(lock func() bool, want func(*zframe) bool) bool {
 	h := z.host
 	if !lock() {
 		return false
@@ -555,7 +565,7 @@ func (z *zirconHost) takeIdleIf(lock func() bool) bool {
 	// copies it out of the way of its going.
 	idle, ok := z.node.PageQueues().PeekDontNeedWhere(func(p *zirconvm.VmPage) bool {
 		f := frameOf(p)
-		if f.aliases.len() != 0 || f.replacing != 0 || f.layer != nil || !f.mu.TryLock() {
+		if f.aliases.len() != 0 || f.replacing != 0 || f.layer != nil || (want != nil && !want(f)) || !f.mu.TryLock() {
 			return false
 		}
 		return true

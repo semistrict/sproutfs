@@ -118,13 +118,9 @@ func newZirconHost(h *Host) *zirconHost {
 
 // attach admits and attaches a memory region as the current core's Attach
 // does, with a region layer of its own. A migration destination's peer
-// backing, whose loads can return bytes no checkpoint holds, is refused: its
-// pages are private dirty state from the moment they arrive, which this core
-// takes on with the rest of the dirty set in step 12.
+// backing, whose loads can return bytes no checkpoint holds, takes a page
+// it serves as the region's own dirty state (zircon_peer.go).
 func (z *zirconHost) attach(ctx context.Context, backing MemoryRegionBacking, mapping Mapping) (*MemoryRegion, error) {
-	if _, peer := backing.Backing.(UnpublishedLoader); peer {
-		return nil, unsupported(CoreZircon, "attach a backing another host serves")
-	}
 	h := z.host
 	r, err := h.admit(ctx, backing, mapping)
 	if err != nil {
@@ -202,6 +198,11 @@ func (z *zirconRegion) verify(ctx context.Context) error {
 	}
 	if err := r.countAllocated(); err != nil {
 		return err
+	}
+	if r.handed {
+		// There is no authority left to observe: the volume is another
+		// host's, and this region only serves the pages it still holds.
+		return nil
 	}
 	if err := r.backing.Verify(ctx); err != nil {
 		return r.fail(err)
@@ -300,9 +301,6 @@ func (z *zirconHost) settlePrefetches(ctx context.Context) error {
 	return z.host.settlePrefetchesCounted(ctx)
 }
 
-// The operations this core does not serve yet. Each refuses, naming itself,
-// and changes nothing.
-
 // The loss window over the zircon core: one timestamp per region, the
 // oldest write it holds that no checkpoint covers, which a seal hands to its
 // checkpoint and an abandoned checkpoint hands back, as losswindow.go keeps
@@ -392,19 +390,3 @@ func (z *zirconRegion) noteSealableLocked(b *zbinding) {
 // writable reports whether the guest may store into b's page where it is:
 // its own dirty state, which no checkpoint still holds.
 func (b *zbinding) writable() bool { return b.dirty && b.checkpoint == nil }
-
-func (z *zirconRegion) readResident(context.Context, uint64, []byte) (bool, bool, error) {
-	return false, false, unsupported(CoreZircon, "read a resident page")
-}
-
-func (z *zirconRegion) resident() ([]uint64, error) {
-	return nil, unsupported(CoreZircon, "list resident pages")
-}
-
-func (z *zirconRegion) handoff(context.Context) (time.Duration, error) {
-	return 0, unsupported(CoreZircon, "hand a memory region off")
-}
-
-func (z *zirconRegion) unpublished() ([]uint64, error) {
-	return nil, unsupported(CoreZircon, "list unpublished pages")
-}

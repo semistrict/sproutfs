@@ -27,11 +27,14 @@ func (z *zirconRegion) fault(ctx context.Context, index uint64, write bool) erro
 	// Whatever this fault admitted to the dirty budget is measured against
 	// the high-water mark here, where it holds nothing.
 	defer r.host.askAtHighWater()
+	reserve := false
 	for range faultAttempts {
 		// A store that needs a page of its own takes its dirty reservation
-		// before any region, page or I/O resource, as in the current core.
+		// before any region, page or I/O resource, as in the current core,
+		// and so does a read of a page only another host holds, which the
+		// load makes the region's own dirty state.
 		var spill reservation
-		if write && z.needsPrivatePage(index) {
+		if reserve || (write && z.needsPrivatePage(index)) {
 			taken, err := r.host.takeSpill(ctx, r)
 			if err != nil {
 				return err
@@ -41,6 +44,9 @@ func (z *zirconRegion) fault(ctx context.Context, index uint64, write bool) erro
 		retry, err := z.faultOnce(ctx, index, write, &spill)
 		if !spill.none() {
 			r.host.releaseSpill(spill)
+		}
+		if errors.Is(err, errUnpublishedReservation) {
+			reserve, retry, err = true, true, nil
 		}
 		if !retry {
 			return err
@@ -84,7 +90,7 @@ func (z *zirconRegion) faultOnce(ctx context.Context, index uint64, write bool, 
 	h.mu.Unlock()
 	defer func() { h.faultLatency.Observe(h.clock.Since(started)) }()
 	if !write || z.writable(index) {
-		return false, z.load(ctx, index)
+		return false, z.load(ctx, index, spill)
 	}
 	if spill.none() {
 		// The page needed one after all: it stopped being the region's own
@@ -97,9 +103,9 @@ func (z *zirconRegion) faultOnce(ctx context.Context, index uint64, write bool, 
 // load maps the faulting page and as much of its window as the fault reads,
 // starting again from the top whenever it waited for a read, as Zircon's
 // page fault does after a page request.
-func (z *zirconRegion) load(ctx context.Context, index uint64) error {
+func (z *zirconRegion) load(ctx context.Context, index uint64, spill *reservation) error {
 	for range loadAttempts {
-		resolved, err := z.loadOnce(ctx, index)
+		resolved, err := z.loadOnce(ctx, index, spill)
 		if err != nil || resolved {
 			return err
 		}
@@ -108,7 +114,7 @@ func (z *zirconRegion) load(ctx context.Context, index uint64) error {
 }
 
 // loadOnce reports whether the faulting page ended mapped and resolved.
-func (z *zirconRegion) loadOnce(ctx context.Context, index uint64) (bool, error) {
+func (z *zirconRegion) loadOnce(ctx context.Context, index uint64, spill *reservation) (bool, error) {
 	r := z.region
 	z.mu.Lock()
 	b, zeroRun := z.lookupLocked(index)
@@ -150,6 +156,13 @@ func (z *zirconRegion) loadOnce(ctx context.Context, index uint64) (bool, error)
 		// once it has landed or failed. The plan holds nothing yet.
 		return false, z.awaitRead(ctx, waiter)
 	}
+	if plan.unpublished(index) && spill.none() {
+		// The extents say another host still holds this page, so the load
+		// takes it as the region's dirty state, under a reservation the
+		// waiting path takes with nothing held.
+		return false, errUnpublishedReservation
+	}
+	plan.spill = spill
 	again, err := plan.takeFaulting(ctx, index)
 	if err != nil || again {
 		return false, err
@@ -665,9 +678,11 @@ type zfaultRead struct {
 	host   *Host
 	page   uint64
 	buffer *[]byte
-	err    error
-	done   chan struct{}
-	cancel context.CancelCauseFunc
+	// unpublished is what a peer backing said of the page: another host's.
+	unpublished []bool
+	err         error
+	done        chan struct{}
+	cancel      context.CancelCauseFunc
 }
 
 // beginFaulting starts the faulting page's read where the plan reserved a
@@ -683,7 +698,7 @@ func (p *zplan) beginFaulting(ctx context.Context, index uint64) *zfaultRead {
 	go func() {
 		defer close(read.done)
 		if read.err = sim.Admit(readCtx, "vmmemory/fault-read"); read.err == nil {
-			_, read.err = r.readRun(readCtx, index, []bool{true}, *read.buffer, &h.loadLatency)
+			read.unpublished, read.err = r.readRun(readCtx, index, []bool{true}, *read.buffer, &h.loadLatency)
 		}
 	}()
 	return read
@@ -712,7 +727,7 @@ func (read *zfaultRead) land(ctx context.Context, p *zplan) error {
 	if err != nil {
 		return err
 	}
-	return p.publishRead(ctx, read.page, []bool{true}, *read.buffer)
+	return p.publishRead(ctx, read.page, []bool{true}, *read.buffer, read.unpublished)
 }
 
 // abandon ends a read the fault no longer wants.

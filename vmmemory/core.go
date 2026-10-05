@@ -1,7 +1,6 @@
 package vmmemory
 
 import (
-	"errors"
 	"fmt"
 )
 
@@ -21,8 +20,7 @@ const (
 	// default.
 	CoreCurrent Core = iota
 	// CoreZircon is the core over the ported region layer and identity
-	// roots (internal/zirconvm). It serves only what the steps of the port
-	// have moved onto it, and refuses the rest with ErrCoreUnsupported.
+	// roots (internal/zirconvm). It serves everything the current core does.
 	CoreZircon
 )
 
@@ -49,13 +47,3 @@ func ParseCore(name string) (Core, error) {
 
 // known reports a core this build has.
 func (c Core) known() bool { return c == CoreCurrent || c == CoreZircon }
-
-// ErrCoreUnsupported refuses an operation the pager's core does not serve yet.
-// Only the zircon core refuses anything, and only while the port is under way:
-// the operation is named, and nothing about the pager changed.
-var ErrCoreUnsupported = errors.New("managed-memory operation not served by this pager's core")
-
-// unsupported is the refusal of one operation by a core.
-func unsupported(core Core, operation string) error {
-	return fmt.Errorf("%w: the %s core does not %s yet", ErrCoreUnsupported, core, operation)
-}

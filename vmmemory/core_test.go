@@ -62,9 +62,9 @@ func TestAPagerRefusesACoreItDoesNotHave(t *testing.T) {
 	})
 }
 
-// The zircon core attaches, reads and detaches a memory region, and refuses,
-// naming it, each operation it does not serve yet.
-func TestTheZirconCoreRefusesWhatItDoesNotServeYet(t *testing.T) {
+// The zircon core attaches, reads, lists, hands off and detaches a memory
+// region: it serves every operation the current core does.
+func TestTheZirconCoreServesARegionFromAttachToDetach(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx := t.Context()
 		h, a, err := newCorePager(t, ctx, vmmemory.CoreZircon)
@@ -81,10 +81,15 @@ func TestTheZirconCoreRefusesWhatItDoesNotServeYet(t *testing.T) {
 		if got := access(t, r, m, 2, false)[0]; got != 3 {
 			t.Fatalf("page 2 reads %d under the zircon core, want 3", got)
 		}
-		_, err = r.Unpublished()
-		wantRefused(t, "unpublished", err, "the zircon core does not list unpublished pages yet")
-		_, err = r.Handoff(ctx)
-		wantRefused(t, "handoff", err, "the zircon core does not hand a memory region off yet")
+		if pages, err := r.Unpublished(); err != nil || len(pages) != 0 {
+			t.Fatalf("a region that stored nothing lists %v unpublished, %v, want none", pages, err)
+		}
+		if age, err := r.Handoff(ctx); err != nil || age != 0 {
+			t.Fatalf("a clean region's handoff carries %v, %v, want no age", age, err)
+		}
+		if _, err := r.Handoff(ctx); !errors.Is(err, vmmemory.ErrHandedOff) {
+			t.Fatalf("a second handoff = %v, want ErrHandedOff", err)
+		}
 		clear(m.pages)
 		if err := r.Detach(ctx); err != nil {
 			t.Fatal(err)
@@ -96,13 +101,4 @@ func TestTheZirconCoreRefusesWhatItDoesNotServeYet(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
-}
-
-// wantRefused fails unless err is the zircon core's refusal of an operation.
-func wantRefused(t *testing.T, operation string, err error, what string) {
-	t.Helper()
-	if !errors.Is(err, vmmemory.ErrCoreUnsupported) ||
-		err.Error() != "managed-memory operation not served by this pager's core: "+what {
-		t.Fatalf("%s under the zircon core = %v, want it refused: %s", operation, err, what)
-	}
 }

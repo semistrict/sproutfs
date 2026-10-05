@@ -41,6 +41,11 @@ type zplan struct {
 	// from the moment it takes it until the plan is unlocked, which is after
 	// its commands landed, so no eviction takes a page between the two.
 	locked []*zirconvm.VmPage
+	// spill is the dirty reservation the fault brought with it, for a page a
+	// peer backing serves as the region's own dirty state, nil or none where
+	// it brought none. private marks the pages the plan took so.
+	spill   *reservation
+	private []bool
 	// request is the READ request the faulting page's lookup sent, which
 	// this plan's read answers, nil where it sent none. One the plan has
 	// not answered when it is unlocked is failed, so whatever waits on it
@@ -51,7 +56,8 @@ type zplan struct {
 func (z *zirconRegion) newPlan(start, end, fault uint64) *zplan {
 	p := &zplan{z: z, start: start, end: end, fault: fault, store: end,
 		pages: make([]*zirconvm.VmPage, end-start), reserved: make([]fileSlot, end-start),
-		fresh: make([]bool, end-start), zeros: make([]bool, end-start), writable: make([]bool, end-start)}
+		fresh: make([]bool, end-start), zeros: make([]bool, end-start), writable: make([]bool, end-start),
+		private: make([]bool, end-start)}
 	for i := range p.reserved {
 		p.reserved[i] = fileSlot{slot: -1}
 	}
@@ -593,14 +599,27 @@ func (p *zplan) loadReserved(ctx context.Context) error {
 	// The read answers the READ request the faulting page's lookup sent,
 	// where the run holds that page: its supply below resolves it, and a
 	// failed read fails it when the plan is unlocked.
+	var unpublished []bool
 	err := r.withoutMemoryRegion(ctx, func() error {
-		_, err := r.readRun(ctx, first, wanted, data, &h.loadLatency)
+		var err error
+		unpublished, err = r.readRun(ctx, first, wanted, data, &h.loadLatency)
 		return err
 	})
 	if err != nil {
 		return err
 	}
-	return p.publishRead(ctx, first, wanted, data)
+	return p.publishRead(ctx, first, wanted, data, unpublished)
+}
+
+// unpublished is windowPlan.unpublished: the window's extents say this
+// page's bytes belong to no object of its volume, which for a backing that
+// fetches from another host means that host still holds them.
+func (p *zplan) unpublished(page uint64) bool {
+	if !p.z.region.peer {
+		return false
+	}
+	e, found := p.locationsOf(page).extent(page)
+	return found && !e.Identity.Zero && e.Identity.Ref.IsZero()
 }
 
 // publishRead supplies what one backing read brought in: the pages of [first,
@@ -608,7 +627,10 @@ func (p *zplan) loadReserved(ctx context.Context) error {
 // whole. A page with an identity goes to its root, and is bound to whichever
 // page the root then holds; one with none goes to the region's own layer.
 // A run of consecutive pages of one root is one supply.
-func (p *zplan) publishRead(ctx context.Context, first uint64, wanted []bool, data []byte) error {
+//
+// A page a peer backing reported another host's is the region's own dirty
+// state, which the backing is told the region went on to hold.
+func (p *zplan) publishRead(ctx context.Context, first uint64, wanted []bool, data []byte, unpublished []bool) error {
 	z := p.z
 	r := z.region
 	h := r.host
@@ -624,9 +646,22 @@ func (p *zplan) publishRead(ctx context.Context, first uint64, wanted []bool, da
 	h.stats.Loads++
 	h.stats.LoadedPages += loading
 	h.mu.Unlock()
+	var installed []bool
+	if len(unpublished) > 0 {
+		installed = make([]bool, last-first)
+		defer func() { r.installedUnpublished(first*ps, installed) }()
+	}
 	for page := first; page < last; {
 		at := page - first
 		if !wanted[at] {
+			page++
+			continue
+		}
+		if at < uint64(len(unpublished)) && unpublished[at] {
+			if err := p.publishPrivate(ctx, page, data[at*ps:(at+1)*ps]); err != nil {
+				return err
+			}
+			installed[at] = p.private[page-p.start]
 			page++
 			continue
 		}

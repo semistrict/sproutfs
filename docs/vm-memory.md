@@ -56,8 +56,7 @@ takes. It is the one part of the port that cannot be swapped in place, so the
 zircon core, over the region's layer and the identity roots, is built beside
 the current one and measured before it becomes the default. Every exported
 method of `Host` and `MemoryRegion` that reaches the page layer asks the core
-first (`core.go`, `zircon.go`). The zircon core refuses what it does not serve
-yet with `ErrCoreUnsupported`, naming the operation. What stays the pager's own
+first (`core.go`, `zircon.go`). Both serve every operation. What stays the pager's own
 whichever core runs is shared: the arena and its files, isolation, placement,
 pressure and the loss window, the flush, the connection and the statistics'
 clock. The supervisor logs each pager's core with the bounds it chose for it.

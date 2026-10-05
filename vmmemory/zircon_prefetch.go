@@ -291,8 +291,9 @@ func (pf *zprefetch) land(ctx context.Context) []prefetchPage {
 	if err == nil {
 		err = sim.BuggifyDelay(ctx, buggifyPrefetchSlow, 0.5, 50*time.Millisecond)
 	}
+	var unpublished []bool
 	if err == nil {
-		_, err = r.readRun(ctx, first, wanted, data, &h.prefetchLatency)
+		unpublished, err = r.readRun(ctx, first, wanted, data, &h.prefetchLatency)
 	}
 	if err == nil && sim.Buggify(ctx, buggifyPrefetchFailed, 0.1) {
 		err = errPrefetchFailed
@@ -327,6 +328,14 @@ func (pf *zprefetch) land(ctx context.Context) []prefetchPage {
 	// not be filled is left to its fault: newFrame gave its slot back.
 	frames := make([]*zirconvm.VmPage, len(pf.pages))
 	for at, page := range pf.pages {
+		if offset := page.page - first; offset < uint64(len(unpublished)) && unpublished[offset] {
+			// A migration's source holds this page after all: its bytes are
+			// the guest's own, not the identity's, and only a fault may take
+			// them, as the region's dirty state.
+			sim.Probe(ctx, ProbePrefetchHeld)
+			pf.drop(ctx, pf.pages[at:at+1])
+			continue
+		}
 		offset := (page.page - first) * ps
 		frame, err := z.host.newFrame(ctx, page.at, data[offset:offset+ps], r.kind)
 		if err != nil {

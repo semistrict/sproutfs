@@ -1024,9 +1024,22 @@ func (z *zirconHost) adopt(ctx context.Context, from *zirconRegion, page *zircon
 	root := z.root(rootOf(id))
 	lock := root.pages.Lock()
 	lock.Lock()
-	occupied := root.pages.PageLocked(id.id.Page*ps) != nil
+	existing := root.pages.PageLocked(id.id.Page * ps)
+	if existing != nil && z.lentHere(root, existing) {
+		// A fork point published the name it lent: its parent's own page
+		// takes the name back, and the root is a published checkpoint's from
+		// here, whose lent pages go when the seal ends.
+		root.pages.RemovePageLocked(id.id.Page*ps, existing)
+		h.mu.Lock()
+		if f := frameOf(existing); isLent(existing) && f.lent == existing {
+			f.lent = nil
+		}
+		root.published = true
+		h.mu.Unlock()
+		existing = nil
+	}
 	lock.Unlock()
-	if occupied {
+	if existing != nil {
 		return false
 	}
 	if from != nil && !from.layer.RemovePage(index*ps, page) {
@@ -1166,8 +1179,12 @@ func (z *zirconRegion) endFork(ctx context.Context, c *MemoryRegionCheckpoint) e
 	}
 	var roots []*identityRoot
 	for key, root := range z.host.roots {
-		if root.lent == c {
-			roots = append(roots, root)
+		if root.lent != c {
+			continue
+		}
+		roots = append(roots, root)
+		root.lent = nil
+		if !root.published {
 			delete(z.host.roots, key)
 		}
 	}
@@ -1180,8 +1197,23 @@ func (z *zirconRegion) endFork(ctx context.Context, c *MemoryRegionCheckpoint) e
 	return z.endForkFile(ctx, c)
 }
 
-// dropLentRoot takes a temporary identity root away: each of its pages stops
-// naming its frame, and the root goes.
+// lentHere reports a page of a lent root that is not a published one: a page
+// naming its parent's frame, or a copy in the point's file. Caller holds the
+// root's lock.
+func (z *zirconHost) lentHere(root *identityRoot, page *zirconvm.VmPage) bool {
+	h := z.host
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if root.lent == nil {
+		return false
+	}
+	return isLent(page) || slices.Contains(root.copies, page)
+}
+
+// dropLentRoot takes what a temporary identity root lent away: each of its
+// pages naming a parent's frame stops naming it, and each copy in the point's
+// file goes, with every mapping of it. A root the point published keeps the
+// pages it published; any other goes.
 func (z *zirconHost) dropLentRoot(ctx context.Context, root *identityRoot) error {
 	h := z.host
 	// A copy in the point's file goes with the root: every child that maps
@@ -1195,6 +1227,10 @@ func (z *zirconHost) dropLentRoot(ctx context.Context, root *identityRoot) error
 			return err
 		}
 		err := z.dropSharers(ctx, page)
+		if err == nil && frameOf(page).slot >= 0 {
+			z.removeFromObject(page)
+			z.releaseFrame(page)
+		}
 		z.unlockPage(page)
 		if err != nil {
 			return err
@@ -1208,8 +1244,20 @@ func (z *zirconHost) dropLentRoot(ctx context.Context, root *identityRoot) error
 			f.lent = nil
 		}
 	}
+	published := root.published
 	h.mu.Unlock()
-	root.object.Destroy()
+	if !published {
+		root.object.Destroy()
+		return context.Cause(ctx)
+	}
+	for _, page := range lent {
+		if link, ok := z.node.PageQueues().Backlink(page); ok {
+			lock := link.Cow.Lock()
+			lock.Lock()
+			link.Cow.RemovePageLocked(link.Offset, page)
+			lock.Unlock()
+		}
+	}
 	return context.Cause(ctx)
 }
 
