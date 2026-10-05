@@ -3405,6 +3405,29 @@ separate from the original campaign's score. For an equivalent mutation, record
 the reasoning instead of adding an assertion about an unobservable
 implementation detail. Keep unexplained timeouts as unresolved outcomes.
 
+The port of Zircon's page list in `vmmemory/internal/zirconvm` is mutated on
+its own:
+
+```sh
+python3 scripts/mutate-gremlins.py --package vmmemory/internal/zirconvm --suite full \
+  --gremlins /path/to/gremlins --output /tmp/zirconvm-mutations
+```
+
+Its tests read the package's `LICENSE`, so the source snapshot copies every
+`LICENSE` beside the Go files. On 2026-10-05 Zircon's 55 page list cases alone
+killed 343, left 56 alive and 77 not covered, mostly the parts Zircon reaches
+only through its VmCowPages tests. Tests of those parts and of what the
+survivors changed brought it to 420 killed, 26 alive and 30 not covered. They
+cover: a marker's share count, swaps of content, ParentContent, the mutable
+walks, the batch inserter, the cursor's range walk, splice lists walked and
+freed in every state, a node freed when a merge or an overwrite empties it, an
+interval found across nodes, and callback errors at each place a walk can end.
+Every survivor left is a boundary that valid input cannot reach or that gives
+the same result: an assert's bound, or an AwaitingClean length set to what it
+already is. The 30 not covered are the constants of a slot's bit layout,
+which no test run reaches, the branches for an offset past the list's end inside an
+interval, which cannot happen, and the list's own checks failing.
+
 After a substantial change that spans packages, or periodically before a
 release, run `--all --integration` with the full suite. This is intentionally an
 occasional campaign. The changed-package command above is the ordinary

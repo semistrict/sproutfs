@@ -52,7 +52,10 @@ def snapshot(root, target):
         path = Path(name)
         if not name or path.parts[0] == "third_party":
             continue
-        if path.suffix != ".go" and path.name not in ("go.mod", "go.sum") and "testdata" not in path.parts:
+        # A package's LICENSE is part of its source: the Zircon port's tests
+        # read the one beside it.
+        if (path.suffix != ".go" and path.name not in ("go.mod", "go.sum", "LICENSE")
+                and "testdata" not in path.parts):
             continue
         source = root / path
         if not source.is_file():
