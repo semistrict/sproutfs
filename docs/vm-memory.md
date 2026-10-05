@@ -14,11 +14,21 @@ is the low-level syscall fixture for mapping races and malformed commands.
 Three parts of `vmmemory` are nested packages that only `vmmemory` can import:
 
 - `internal/pageranges` is the interval map that holds page state.
-- `internal/latency` holds the fixed log-scale histograms of the fault path.
 - `internal/slots` holds the arena free set and the consecutive runs of it that
   one mapping command covers.
+- `internal/zirconvm` is the Go port of the page layer of Zircon's VM, which
+  is replacing the pager's own (TASK-92,
+  [the plan](../plans/zircon-pager-port-2026-10-05.md)). Its code is copied from
+  Zircon's kernel, which is under the MIT licence, so the directory keeps
+  Zircon's `LICENSE` beside it. Every Go file in it begins with the copyright
+  lines of the Zircon files it is ported from and a line naming those files at
+  fuchsia `90e54e09`. A test in the package checks each header against a list
+  of the files under `zircon/kernel` at that revision, which
+  `scripts/zircon-sources.py` writes from a clone.
 
-None of them uses any pager state: no host lock, no memory region and no page.
+The histograms of the fault path are in `internal/latency`, outside `vmmemory`.
+None of these packages uses any pager state: no host lock, no memory region and
+no page.
 Everything else stays in `vmmemory`. The arena, the spill file, the UFFD session
 and the binding blocks all read and write the pager's state under its metadata
 lock, so they are files of one package and not separate packages.
