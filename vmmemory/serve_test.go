@@ -65,6 +65,32 @@ func TestReadResidentServesHeldPagesAndNeverLoads(t *testing.T) {
 	})
 }
 
+// A page the guest wrote is this host's state even once it is evicted: the peer
+// server reads it back from the spill and hands it over as unpublished. A clean
+// page that was evicted is the volume's again, which the destination reads
+// itself.
+func TestReadResidentServesAnEvictedDirtyPageFromTheSpill(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := servingFixture(t, 2, 16, 8)
+		r, m, _ := f.memoryRegion(8)
+		access(t, r, m, 0, false)
+		access(t, r, m, 1, true)[0] = 71
+		for page := uint64(2); page < 6; page++ {
+			access(t, r, m, page, false)
+		}
+		if s := hostStats(t, f); s.Spills != 1 {
+			t.Fatalf("the reads spilled %d pages, want the one the guest wrote", s.Spills)
+		}
+		dst := make([]byte, pageSize)
+		if ok, unpublished, err := r.ReadResident(t.Context(), 1, dst); err != nil || !ok || !unpublished || dst[0] != 71 {
+			t.Fatalf("ReadResident(1) = %t, %t, %d, %v; want true, true and the 71 the spill holds", ok, unpublished, dst[0], err)
+		}
+		if ok, unpublished, err := r.ReadResident(t.Context(), 0, dst); err != nil || ok || unpublished {
+			t.Fatalf("ReadResident(0) = %t, %t, %v; want false for a clean page this host gave up", ok, unpublished, err)
+		}
+	})
+}
+
 // A page this host published is served as the checkpoint's own: the destination
 // could have read it from storage, so it need not be dirty there.
 func TestReadResidentReportsAPublishedPageAsTheCheckpointsOwn(t *testing.T) {

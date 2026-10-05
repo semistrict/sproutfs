@@ -279,6 +279,14 @@ func TestAColdCopyTheGuestStoredIntoIsKept(t *testing.T) {
 		if s := hostStats(t, f); s.GiveBackCompares != 1 || s.GivenBackPages != 0 {
 			t.Fatalf("compared %d and gave back %d, want 1 and 0", s.GiveBackCompares, s.GivenBackPages)
 		}
+		// Once found changed, it is a copy like any other: the next give-back
+		// does not compare it again.
+		if given := f.giveBack(a); given != 0 {
+			t.Fatalf("the next give-back gave back %d copies, want none", given)
+		}
+		if s := hostStats(t, f); s.GiveBackCompares != 1 {
+			t.Fatalf("the next give-back compared the changed copy again: %d compares, want 1", s.GiveBackCompares)
+		}
 	})
 }
 

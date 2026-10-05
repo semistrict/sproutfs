@@ -357,6 +357,14 @@ func TestSealRetriedAfterAPartialSealCapturesEveryDirtyPage(t *testing.T) {
 		if r.Checkpoint() != nil {
 			t.Fatal("a seal that failed partway left a checkpoint behind")
 		}
+		// The run it protected lost its mapping, so the guest faults there and
+		// maps it writable again; the run it never reached is as it was.
+		if p, mapped := m.pages[0]; mapped {
+			t.Fatalf("the guest still maps the run the abandoned seal protected, as %+v", p)
+		}
+		if p, mapped := m.pages[2]; !mapped || !p.writable {
+			t.Fatalf("the guest maps the run the abandoned seal never reached as %+v (mapped %t), want writable", p, mapped)
+		}
 		// The failed seal captured nothing, so this store belongs to the retry —
 		// and it reaches a page the abandoned seal had write-protected.
 		value := byte(99)
