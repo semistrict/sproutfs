@@ -36,7 +36,7 @@ type resident struct {
 	// aliases is protected by Host.mu, not by this page's lock: a seal joins
 	// the checkpoint's copy to a page a reclaim is already holding, and the
 	// reclaim finds it there.
-	aliases aliasSet
+	aliases aliasSet[*binding]
 	// queue is this page's place in Host.queues: a reclaim or isolate queue,
 	// ordered by when a fault last touched it; the don't-need queue while it
 	// is idle; or the zero-fork queue while a cold copy will be compared with

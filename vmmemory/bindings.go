@@ -306,6 +306,9 @@ func (r *MemoryRegion) zeroMapped(index uint64) bool {
 // repeated reports whether a fault on index for this access would be a repeated
 // fault: this memory region already maps the page for it. See repeats.go.
 func (r *MemoryRegion) repeated(index uint64, write bool) bool {
+	if z := r.zircon; z != nil {
+		return z.repeated(index, write)
+	}
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
 	b, zero := r.lookupLocked(index)

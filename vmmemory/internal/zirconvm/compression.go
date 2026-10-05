@@ -262,7 +262,7 @@ func (c *Compression) compress(ctx context.Context, src []byte, reservation *Ref
 		c.bufferPage = page
 	}
 	c.compressionAttempts.Add(1)
-	result := c.strategy.Compress(src, c.bufferPage.data, c.compressionThreshold)
+	result := c.strategy.Compress(src, c.bufferPage.bytesHere(), c.compressionThreshold)
 	switch result.Kind {
 	case CompressFailed:
 		c.compressionFail.Add(1)
@@ -272,7 +272,7 @@ func (c *Compression) compress(ctx context.Context, src []byte, reservation *Ref
 		return CompressResult{Kind: CompressedToZero}
 	}
 	assert(result.Size > 0 && result.Size <= c.compressionThreshold, "the compressed size is within the threshold")
-	data := c.bufferPage.data[:result.Size]
+	data := c.bufferPage.bytesHere()[:result.Size]
 	var ref ReferenceValue
 	if reservation != nil {
 		ref = *reservation
@@ -414,7 +414,7 @@ func (c *Compression) moveTempReference(ref ReferenceValue) PageAndMetadata {
 	if c.instance.page.reserved {
 		ret.setReservation(c.instance.takeReservation())
 	}
-	metadata := c.decompressTempReference(ref, ret.data)
+	metadata := c.decompressTempReference(ref, ret.bytesHere())
 	c.instance.sparePage = nil
 	return PageAndMetadata{Page: ret, Metadata: metadata}
 }
@@ -428,7 +428,7 @@ func (c *Compression) decompressTempReference(ref ReferenceValue, dst []byte) ui
 	assert(c.IsTempReference(ref), "the reference is the temporary reference")
 	assert(c.instance.usingTempReference, "the temporary reference is in use")
 	assert(c.instance.page != nil, "the compressor has a page")
-	copy(dst, c.instance.page.data)
+	copy(dst, c.instance.page.bytesHere())
 	metadata := c.instance.tempReferenceMetadata
 	c.freeTempReference(ref)
 	return metadata
@@ -512,9 +512,9 @@ func (c *Compressor) Start(src PageAndMetadata) ReferenceValue {
 func (c *Compressor) Compress(ctx context.Context) {
 	assert(c.state == compressorStarted, "the compressor is started")
 	if c.reserved {
-		c.result = c.compression.compressInto(ctx, c.page.data, c.reservation)
+		c.result = c.compression.compressInto(ctx, c.page.bytesHere(), c.reservation)
 	} else {
-		c.result = c.compression.Compress(ctx, c.page.data)
+		c.result = c.compression.Compress(ctx, c.page.bytesHere())
 	}
 	c.hasResult = true
 	c.state = compressorCompressed

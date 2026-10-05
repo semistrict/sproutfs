@@ -262,6 +262,12 @@ func (h *Host) Stats(ctx context.Context) (Stats, error) {
 	if err := context.Cause(ctx); err != nil {
 		return Stats{}, err
 	}
+	return h.snapshot()
+}
+
+// snapshot is the pager's counters as Stats reports them, which both cores
+// keep.
+func (h *Host) snapshot() (Stats, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	stats := h.stats

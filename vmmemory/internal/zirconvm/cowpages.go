@@ -665,16 +665,16 @@ func (c *CowPages) allocateCopyPage(parent *VmPage, allocList *[]*VmPage) (*VmPa
 		clone = p
 	}
 	if parent != c.node.pmm.ZeroPage() {
-		copy(clone.data, parent.data)
+		copy(clone.bytesHere(), parent.bytesHere())
 	} else {
-		clear(clone.data)
+		clear(clone.bytesHere())
 	}
 	return clone, nil
 }
 
 // isZeroPage reports whether a page's bytes are all zero.
 func isZeroPage(p *VmPage) bool {
-	for _, b := range p.data {
+	for _, b := range p.bytesHere() {
 		if b != 0 {
 			return false
 		}
@@ -700,12 +700,12 @@ func (c *CowPages) makePageFromReference(ctx context.Context, slot PageOrMarkerR
 	var metadata uint32
 	if _, state := unpackReferenceMetadata(compression.GetMetadata(ref)); state == Dirty || state == AwaitingClean {
 		var reservation ReferenceValue
-		metadata, reservation, err = compression.DecompressReserved(ctx, ref, p.data)
+		metadata, reservation, err = compression.DecompressReserved(ctx, ref, p.bytesHere())
 		if err == nil {
 			p.setReservation(reservation)
 		}
 	} else {
-		metadata, err = compression.Decompress(ctx, ref, p.data)
+		metadata, err = compression.Decompress(ctx, ref, p.bytesHere())
 	}
 	if err != nil {
 		c.freePage(p)
@@ -943,7 +943,7 @@ func (c *CowPages) completeAddNewPageLocked(t *addPageTransaction, page *VmPage,
 	assert(c.isPageRounded(t.offset), "the offset is page rounded")
 	initializeVmPage(page)
 	if zero {
-		clear(page.data)
+		clear(page.bytesHere())
 	}
 	// A new page of an object a pager backs starts Clean, and only a zero
 	// page may be added new.
@@ -1328,6 +1328,11 @@ func (c *CowPages) DebugGetPageLocked(offset uint64) *VmPage {
 	}
 	return nil
 }
+
+// PageLocked is the page the object holds at offset, nil where it holds
+// none: a lookup of its own page list, not of what reads there. The pager
+// looks up an identity root's pages with it, a root having no parent.
+func (c *CowPages) PageLocked(offset uint64) *VmPage { return c.DebugGetPageLocked(offset) }
 
 // DebugGetParent is the object's parent, for tests.
 func (c *CowPages) DebugGetParent() *CowPages {

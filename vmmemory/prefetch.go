@@ -679,6 +679,12 @@ func (r *MemoryRegion) SettlePrefetches(ctx context.Context) error {
 	if z := r.zircon; z != nil {
 		return z.settlePrefetches(ctx)
 	}
+	return r.settlePrefetchesCounted(ctx)
+}
+
+// settlePrefetchesCounted waits for this memory region's count of running
+// prefetches to reach zero, which both cores keep.
+func (r *MemoryRegion) settlePrefetchesCounted(ctx context.Context) error {
 	h := r.host
 	for {
 		h.mu.Lock()
@@ -703,6 +709,12 @@ func (h *Host) SettlePrefetches(ctx context.Context) error {
 	if z := h.zircon; z != nil {
 		return z.settlePrefetches(ctx)
 	}
+	return h.settlePrefetchesCounted(ctx)
+}
+
+// settlePrefetchesCounted waits for the host's count of running prefetches
+// to reach zero, which both cores keep.
+func (h *Host) settlePrefetchesCounted(ctx context.Context) error {
 	for {
 		h.mu.Lock()
 		running, changed := h.prefetchRunning, h.changed

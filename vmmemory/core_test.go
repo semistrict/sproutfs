@@ -62,8 +62,8 @@ func TestAPagerRefusesACoreItDoesNotHave(t *testing.T) {
 	})
 }
 
-// The zircon core is built and closed like any pager, and refuses, naming it,
-// each operation it does not serve yet.
+// The zircon core attaches, reads and detaches a memory region, and refuses,
+// naming it, each operation it does not serve yet.
 func TestTheZirconCoreRefusesWhatItDoesNotServeYet(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx := t.Context()
@@ -73,22 +73,28 @@ func TestTheZirconCoreRefusesWhatItDoesNotServeYet(t *testing.T) {
 		}
 		f := &fixture{t: t, ctx: ctx, h: h, a: a, pageSize: pageSize}
 		backing := f.newBacking(4)
-		r, err := h.Attach(ctx, vmmemory.MemoryRegionBacking{Kind: vmmemory.Pmem, Backing: backing},
-			newMapping(a))
-		wantRefused(t, "attach", err, "the zircon core does not attach a memory region yet")
-		if r != nil {
-			t.Fatalf("a refused attach returned memory region %v", r)
+		m := newMapping(a)
+		r, err := h.Attach(ctx, vmmemory.MemoryRegionBacking{Kind: vmmemory.Pmem, Backing: backing}, m)
+		if err != nil {
+			t.Fatal(err)
 		}
-		_, err = h.Stats(ctx)
-		wantRefused(t, "stats", err, "the zircon core does not report a pager's statistics yet")
-		_, err = h.Sharing(ctx)
-		wantRefused(t, "sharing", err, "the zircon core does not report a pager's sharing yet")
-		_, err = h.DropIdle(ctx)
-		wantRefused(t, "drop idle", err, "the zircon core does not drop idle pages yet")
-		err = h.SettlePrefetches(ctx)
-		wantRefused(t, "settle prefetches", err, "the zircon core does not settle prefetches yet")
+		if got := access(t, r, m, 2, false)[0]; got != 3 {
+			t.Fatalf("page 2 reads %d under the zircon core, want 3", got)
+		}
+		err = r.Seal(ctx)
+		wantRefused(t, "seal", err, "the zircon core does not seal a memory region yet")
+		_, err = r.Unpublished()
+		wantRefused(t, "unpublished", err, "the zircon core does not list unpublished pages yet")
+		_, err = r.Handoff(ctx)
+		wantRefused(t, "handoff", err, "the zircon core does not hand a memory region off yet")
+		_, err = r.GiveBackColdCopies(ctx)
+		wantRefused(t, "give back", err, "the zircon core does not give cold copies back yet")
+		clear(m.pages)
+		if err := r.Detach(ctx); err != nil {
+			t.Fatal(err)
+		}
 		if got := h.LogicalHeadroom(); got != 4 {
-			t.Fatalf("a zircon pager that attached nothing has %d logical pages of headroom, want 4", got)
+			t.Fatalf("a zircon pager that detached its region has %d logical pages of headroom, want 4", got)
 		}
 		if err := h.Close(ctx); err != nil {
 			t.Fatal(err)

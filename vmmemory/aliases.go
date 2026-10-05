@@ -2,19 +2,20 @@ package vmmemory
 
 import "iter"
 
-// aliasSet is the bindings that map one resident page. Almost every page has
-// exactly one — a page is a guest's own until a fork shares it — so that one is
-// held inline, and only a page with two or more keeps a map of them: a map for
-// every page was the largest thing a resident page cost the host's heap after
-// the page struct itself. It is protected by Host.mu, as the page's aliases
-// always were.
-type aliasSet struct {
-	one  *binding
-	more map[*binding]struct{}
+// aliasSet is the bindings that map one resident page: the current core's
+// bindings, or the zircon core's. Almost every page has exactly one — a page
+// is a guest's own until a fork shares it — so that one is held inline, and
+// only a page with two or more keeps a map of them: a map for every page was
+// the largest thing a resident page cost the host's heap after the page struct
+// itself. It is protected by Host.mu, as the page's aliases always were.
+type aliasSet[B comparable] struct {
+	one  B
+	more map[B]struct{}
 }
 
 // add reports whether b was not an alias already.
-func (a *aliasSet) add(b *binding) bool {
+func (a *aliasSet[B]) add(b B) bool {
+	var none B
 	switch {
 	case a.more != nil:
 		if _, ok := a.more[b]; ok {
@@ -23,22 +24,23 @@ func (a *aliasSet) add(b *binding) bool {
 		a.more[b] = struct{}{}
 	case a.one == b:
 		return false
-	case a.one == nil:
+	case a.one == none:
 		a.one = b
 	default:
-		a.more = map[*binding]struct{}{a.one: {}, b: {}}
-		a.one = nil
+		a.more = map[B]struct{}{a.one: {}, b: {}}
+		a.one = none
 	}
 	return true
 }
 
 // remove reports whether b was an alias.
-func (a *aliasSet) remove(b *binding) bool {
+func (a *aliasSet[B]) remove(b B) bool {
+	var none B
 	if a.more == nil {
-		if a.one != b {
+		if a.one != b || b == none {
 			return false
 		}
-		a.one = nil
+		a.one = none
 		return true
 	}
 	if _, ok := a.more[b]; !ok {
@@ -54,21 +56,23 @@ func (a *aliasSet) remove(b *binding) bool {
 	return true
 }
 
-func (a *aliasSet) len() int {
+func (a *aliasSet[B]) len() int {
+	var none B
 	if a.more != nil {
 		return len(a.more)
 	}
-	if a.one != nil {
+	if a.one != none {
 		return 1
 	}
 	return 0
 }
 
 // all yields every alias once, in no particular order.
-func (a *aliasSet) all() iter.Seq[*binding] {
-	return func(yield func(*binding) bool) {
+func (a *aliasSet[B]) all() iter.Seq[B] {
+	return func(yield func(B) bool) {
+		var none B
 		if a.more == nil {
-			if a.one != nil {
+			if a.one != none {
 				yield(a.one)
 			}
 			return

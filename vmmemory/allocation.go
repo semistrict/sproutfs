@@ -563,6 +563,9 @@ func (h *Host) makeRoom(ctx context.Context, f *arenaFile, want int) error {
 // idle pages itself, and another consumer that finds the lock taken waits for
 // the budget's next release, which a pager this busy is about to make.
 func (h *Host) reclaimIdle(ctx context.Context, _ int64) (bool, error) {
+	if z := h.zircon; z != nil {
+		return z.reclaimIdle(), nil
+	}
 	if !h.mu.TryLock() {
 		return false, nil
 	}

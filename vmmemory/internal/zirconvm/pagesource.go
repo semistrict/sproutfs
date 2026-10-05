@@ -72,6 +72,13 @@ func RequestOffset(request *PageRequest) uint64 {
 	return request.offset
 }
 
+// RequestSource is the source a request in use was made on, whether it was
+// sent or waits on another's.
+func RequestSource(request *PageRequest) *PageSource {
+	assert(request.isInitialized(), "the request is in use")
+	return request.src
+}
+
 // RequestLen is the length of a request the provider owns.
 func RequestLen(request *PageRequest) uint64 {
 	assert(request.providerOwned, "the provider owns the request")
@@ -585,6 +592,15 @@ func (m *MultiPageRequest) getLazy() *PageRequest {
 	if m.pageRequest == nil {
 		m.pageRequest = NewPageRequest()
 	}
+	return m.pageRequest
+}
+
+// ReadRequest is the read request a lookup made, which is active. Zircon's
+// page fault handler waits on it; the pager, which is in the faulting
+// process, asks its provider whether it was sent (PagerProxy.Holds), answers
+// it where it was, and waits on it where it waits on another.
+func (m *MultiPageRequest) ReadRequest() *PageRequest {
+	assert(m.readActive, "a read request is active")
 	return m.pageRequest
 }
 

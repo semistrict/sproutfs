@@ -252,7 +252,7 @@ func New(ctx context.Context, resources *resource.Budget, cfg Config, arena Aren
 		io: make(chan struct{}, cfg.ConcurrentIO), writeback: make(chan struct{}, 1)}
 	h.evictor = newPagerEvictor(h)
 	if cfg.Core == CoreZircon {
-		h.zircon = &zirconHost{host: h}
+		h.zircon = newZirconHost(h)
 	}
 	if cfg.Arena == ArenaIsolated {
 		// Every file is made for a memory region or a tenant when the first one
@@ -296,6 +296,13 @@ func (h *Host) LogicalHeadroom() int {
 // spill handles and closes them after this succeeds. A failed punch retains
 // its reservation and can be retried; new attachments are no longer accepted.
 func (h *Host) Close(ctx context.Context) error {
+	if z := h.zircon; z != nil {
+		// The zircon core's pages are its roots', which go first and give
+		// their slots back as they go.
+		if err := z.close(); err != nil {
+			return err
+		}
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.logical != 0 {

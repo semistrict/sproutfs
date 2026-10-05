@@ -152,6 +152,11 @@ func (o *ObjectPaged) IsResizable() bool { return o.resizable }
 // DebugGetCowPages is the object's CowPages, for tests.
 func (o *ObjectPaged) DebugGetCowPages() *CowPages { return o.cowPages }
 
+// CowPages is the VmCowPages the object sees: Zircon's cow_pages_locked(),
+// which a region's resolver names an identity root by and the pager locks
+// to look a root's pages up.
+func (o *ObjectPaged) CowPages() *CowPages { return o.cowPages }
+
 // DebugGetPage is the page at offset, or nil.
 func (o *ObjectPaged) DebugGetPage(offset uint64) *VmPage { return o.cowPages.DebugGetPage(offset) }
 
@@ -511,7 +516,7 @@ func (o *ObjectPaged) readWriteInternal(ctx context.Context, offset, length uint
 					status = err
 					break
 				}
-				copyFn(result.Page.data[pageOffset:pageOffset+toCopy], destOffset)
+				copyFn(result.Page.bytesHere()[pageOffset:pageOffset+toCopy], destOffset)
 				srcOffset += toCopy
 				destOffset += toCopy
 				remainingPages--

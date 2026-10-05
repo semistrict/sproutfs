@@ -46,7 +46,8 @@ Three parts of `vmmemory` are nested packages that only `vmmemory` can import:
   as its provider (`pagerproxy.go`), and every backing read of a fault or a
   prefetch answers one: see [page requests](#page-requests). The pager's
   bindings use the page list, and its dirty reservations are references of
-  the spill storage; nothing outside the package uses the region's layer yet.
+  the spill storage. The region's layer and the identity roots are what the
+  zircon core runs over (below).
 
 A pager runs one of two cores, which `Config.Core` names (the host's
 `SPROUTFS_PAGER_CORE`): `current`, the default, or `zircon`. The core is the
@@ -60,6 +61,40 @@ yet with `ErrCoreUnsupported`, naming the operation. What stays the pager's own
 whichever core runs is shared: the arena and its files, isolation, placement,
 pressure and the loss window, the flush, the connection and the statistics'
 clock. The supervisor logs each pager's core with the bounds it chose for it.
+
+Under the zircon core a page is a `zirconvm.VmPage` whose `Frame` is a slot
+of an arena file, which stands where Zircon has a physical address
+(`zircon_frames.go`). The arena is the node's `Pmm`, but it makes no page
+itself: the pager fills every page where its placement and isolation put it
+and supplies it, as a user pager supplies a VMO. A published checkpoint's
+pages of one volume are an identity root, made when a region first locates
+one of its pages and kept until the pager closes. A region's own pages are
+its layer, whose resolver names the root of each page the fault has located
+and a root holds. What Zircon keeps in page tables, whether a page is mapped
+and which page it maps, is a binding beside the layer (`zircon_bindings.go`);
+a run of zeros is an Untracked zero interval of the same page list, as the
+current core's compressed zero runs are.
+
+A read fault's lookup is the layer's lookup cursor (`RequireReadPage`). A page
+an object holds is bound under that object's lock, so no idle drop takes it
+between the lookup and the binding. A page no root holds is the region's own
+to read: the lookup sends a READ request on the region's own page source,
+which the fault answers by reading the page into a frame and supplying it to
+its root. So a fault's own read is not in flight for prefetches to see, as in
+the current core, and a fault that meets a page a prefetch is reading waits on
+the prefetch's request in the root first (`zircon_fault.go`). Which pages a
+fault reads and in what order is the current core's policy, moved as it is
+(`zircon_window.go`, `zircon_prefetch.go`, `zircon_population.go`), with the
+same sites, probes, guards and controlled points. A fault holds no object lock
+while it reads or while its mapping commands run: it takes its pages under the
+locks and issues the commands after, and its window's stripe keeps the
+commands of one window in order. A page no region maps is idle: it stays in
+its root, in the don't-need queue, and an allocation short of a slot gives it
+up by Zircon's eviction of a clean page (`ReclaimRangeForEviction`). Eviction
+of a page a region maps, stores, seals, serving a migration and a peer backing
+come to this core with steps 11 and 12; until then it refuses them, and an
+allocation it could only meet by evicting a mapped page fails with
+`ErrCapacity`.
 
 The histograms of the fault path are in `internal/latency`, outside `vmmemory`.
 None of these packages uses any pager state: no host lock, no memory region and

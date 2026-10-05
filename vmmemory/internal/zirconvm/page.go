@@ -19,6 +19,13 @@ type VmPage struct {
 
 	data []byte
 
+	// Frame is where the page's bytes are, for a Pmm whose pages are not
+	// this process's memory: Zircon's paddr. The pager's pages are slots of
+	// arena files, which the guest maps (plan: Arena and residency), so its
+	// Pmm names the slot here and keeps no bytes in data. Nothing in this
+	// package looks inside it.
+	Frame any
+
 	// shareCount is how many objects other than its owner can reach the page.
 	// Only a hidden node shares its pages, and the port has none, so it is 0
 	// here except while a compression carries it as metadata.
@@ -67,8 +74,21 @@ func (p *VmPage) QueueNode() *PageQueueNode[*VmPage, *CowPages] { return &p.Page
 // with it.
 func NewPage(data []byte) *VmPage { return &VmPage{data: data} }
 
+// NewFramePage is a page whose bytes are at frame, which the Pmm that makes it
+// names and reads. Such a page has no bytes in this process, so nothing may
+// copy, zero or compress it here: the Pmm's owner moves its bytes itself.
+func NewFramePage(frame any) *VmPage { return &VmPage{Frame: frame} }
+
 // Data is the page's bytes.
 func (p *VmPage) Data() []byte { return p.data }
+
+// bytesHere is the page's bytes, which a copy, a zeroing or a compression in
+// this package reads and writes. Only a page whose bytes are in this process
+// has them: a page at a Frame is moved by the Pmm's owner.
+func (p *VmPage) bytesHere() []byte {
+	assert(p.Frame == nil, "the page's bytes are in this process")
+	return p.data
+}
 
 // DirtyState is the dirty state of a page, VmCowPages::DirtyState.
 //

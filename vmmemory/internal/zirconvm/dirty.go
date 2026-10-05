@@ -854,7 +854,7 @@ func (c *CowPages) ReadWritebackLocked(ctx context.Context, offset uint64, buf [
 				}
 			}
 			if held.Get().IsPage() {
-				copy(dst, held.Get().Page().data)
+				copy(dst, held.Get().Page().bytesHere())
 			} else {
 				clear(dst)
 			}
@@ -880,7 +880,7 @@ func (c *CowPages) ReadWritebackLocked(ctx context.Context, offset uint64, buf [
 		if !slot.Get().IsPage() || slot.Get().Page().dirtyState != AwaitingClean {
 			return ErrBadState
 		}
-		copy(dst, slot.Get().Page().data)
+		copy(dst, slot.Get().Page().bytesHere())
 	}
 	return nil
 }

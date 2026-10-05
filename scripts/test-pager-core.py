@@ -60,6 +60,7 @@ def main():
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 2) // 2))
     parser.add_argument("--timeout", type=int, default=600, help="seconds per test process")
+    parser.add_argument("--race", action="store_true", help="build the test binaries with the race detector")
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     listed = json.loads((root / "scripts/pager-core-zircon.json").read_text())
@@ -78,7 +79,7 @@ def main():
     binaries = {}
     for package in sorted(packages):
         binary = logs / (package.replace("/", "-") + ".test")
-        build = subprocess.run(["go", "test", "-c", "-o", str(binary), "./" + package],
+        build = subprocess.run(["go", "test", "-c"] + (["-race"] if args.race else []) + ["-o", str(binary), "./" + package],
                                cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         if build.returncode != 0:
             sys.exit(f"building {package} failed:\n{build.stdout.decode(errors='replace')}")

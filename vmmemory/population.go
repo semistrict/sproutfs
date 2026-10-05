@@ -246,17 +246,26 @@ func (p *windowPlan) residentRuns(candidates []candidate, runs []populateRun) []
 		}
 	}
 	h.mu.Unlock()
+	return groupResidentRuns(candidates, slots, named, runs)
+}
+
+// groupResidentRuns groups candidates into the runs one mapping command each
+// covers, given the slot of each candidate's resident page (slot -1 for one
+// with none) and whether a fork point named it, nil for none named, and
+// appends them to runs. Both cores' populates group their candidates so.
+func groupResidentRuns(candidates []candidate, slots []fileSlot, named []bool, runs []populateRun) []populateRun {
+	isNamed := func(i int) bool { return named != nil && named[i] }
 	for first := 0; first < len(candidates); first++ {
 		if slots[first].slot < 0 {
 			continue
 		}
 		last := first + 1
-		for last < len(candidates) && named[last] == named[first] &&
+		for last < len(candidates) && isNamed(last) == isNamed(first) &&
 			slots[last] == slots[last-1].plus(1) && candidates[last].page == candidates[last-1].page+1 {
 			last++
 		}
 		runs = append(runs, populateRun{first: candidates[first].page, last: candidates[last-1].page + 1,
-			from: first, to: last, named: named[first]})
+			from: first, to: last, named: isNamed(first)})
 		first = last - 1
 	}
 	return runs
@@ -299,8 +308,13 @@ func (b *populationBudget) spend(run populateRun) (populateRun, bool) {
 }
 
 func (p *windowPlan) afford(runs []populateRun, budget *populationBudget) []populateRun {
+	return affordRuns(runs, budget, uint64(p.memoryRegion.populationRun()))
+}
+
+// affordRuns is afford for runs no shorter than least, which is the region's
+// population run.
+func affordRuns(runs []populateRun, budget *populationBudget, least uint64) []populateRun {
 	sort.Slice(runs, func(i, j int) bool { return runs[i].first < runs[j].first })
-	least := uint64(p.memoryRegion.populationRun())
 	kept := runs[:0:0]
 	for _, named := range [2]bool{true, false} {
 		for _, run := range runs {
