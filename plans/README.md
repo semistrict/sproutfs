@@ -5,6 +5,13 @@ across all of them is in the [backlog](../backlog/tasks), one task per file.
 
 ## Designs under way
 
+- [2026-10-05 a Go port of Zircon's page layer](zircon-pager-port-2026-10-05.md)
+  — the pager's page list, page queues, spill references, evictor, page
+  requests and dirty tracking copied from Zircon's VM, with five departures
+  where a checkpoint needs more than a writeback gives; the arena, isolation,
+  the mapping protocol and the userfaultfd connection stay ours. **Planned;
+  waits for the owner's decisions at the end of the plan. TASK-92 and its
+  fourteen subtasks.**
 - [2026-09-25 an isolated arena](isolated-arena-2026-09-25.md) — a
   private file per memory region that only its VMM gets, and read-only shared
   and fork files per tenant and fork point, so a compromised VMM reaches no
