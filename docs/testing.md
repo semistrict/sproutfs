@@ -1831,6 +1831,21 @@ a read of the store or a timeout happened. The world's reads still ask k+1
 ranks, replace misses, rebuild from any k and repair, which the answers alone
 decide. The read campaign above drives the timed paths under a scheduler.
 
+A read that the store answered first, or whose caller gave up on it, leaves
+its requests running. They run out under the reads' life, and they keep the
+holders' disks busy after the read has returned. `Cache.SettleReads` waits
+for them, for every read of the store past a bound, and for every read whose
+caller went on without it. The restore bench settles the reader after each
+case. Before it did, `TestEveryCaseReadsTheGuestBack` failed in about one run
+of twenty. The 4 KiB run cases read the store past their bound and left
+requests for 2,048 pages each on the disks. The next case's reads queued
+behind them, and a simulated disk serves the requests that reach it in one
+instant in the order the Go scheduler sends them. So how far those requests
+had got decided whether a 2 MiB read of the next case passed its bound, and
+the delays the reader learned from it decided the bound of the cases after.
+`TestSettlingReadsWaitsOutTheRequestsOfAReadTheStoreAnswered` holds the
+property.
+
 [The bounds on the object store](hosting.md#bounds-on-the-object-store) are
 tested over a simulated store that holds requests. `sim.ObjectStore` can hold
 the next requests of an operation before their reply (`HangNext`), apply the
@@ -2623,7 +2638,7 @@ sequence number, and so the drawn latency, that a later frame on its link
 would have taken. A run behind a slow holder would then differ from one
 behind a quick one by more than the holder's writes.
 
-Seventeen guards break the reads of the cluster:
+Eighteen guards break the reads of the cluster:
 
 ```sh
 SPROUTFS_SIM_BUG=cluster-read-by-index \
@@ -2660,6 +2675,8 @@ SPROUTFS_SIM_BUG=cluster-one-delay-for-every-size \
   go test ./checkpoint -run '^TestALargeReadAfterManySmallFastReadsIsNotHedgedToTheStore$' -count=1
 SPROUTFS_SIM_BUG=cluster-envelope-shares-reply \
   go test ./checkpoint -run '^TestAPageReadFromAPeerOutlivesItsReplysBuffer$' -count=1
+SPROUTFS_SIM_BUG=cluster-idle-before-requests-end \
+  go test ./checkpoint -run '^TestSettlingReadsWaitsOutTheRequestsOfAReadTheStoreAnswered$' -count=1
 ```
 
 The first takes from each rank only the index the list puts on it, which a
@@ -2679,9 +2696,12 @@ list's code, so after a change every earlier window is read from the store,
 and a window read under the earlier code that is never filled under the new
 one. The next keeps one delay and one bound for reads of every size, as the
 reader once did: after 512 reads of 4 KiB, four reads of 2 MiB each pass the
-bound the small reads set and read the store too. The last keeps a page
+bound the small reads set and read the store too. The next keeps a page
 rebuilt under 1+1 as a view of its peer's reply buffer, which the pool hands
-the next reply: once the replies are written over, the page has changed.
+the next reply: once the replies are written over, the page has changed. The
+last leaves a read's requests out of what `Cache.SettleReads` waits for: the
+store answers a read whose holders stall, and settling returns while its five
+requests are still in flight, none of them timed out.
 
 Nine guards break a pull as a prefetch
 ([pulling a VM's memory](hosting.md#pulling-a-vms-memory)):
