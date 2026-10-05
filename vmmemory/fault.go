@@ -137,7 +137,7 @@ func (r *MemoryRegion) fault(ctx context.Context, index uint64, write bool, spil
 			// No memory region maps the page read in, so it is idle once this
 			// store is over, as the page an ordinary store copies from is once
 			// the store leaves it. It is not idle before then, so that the copy's
-			// own slot is not taken from it. Off the idle list, only a reclaim
+			// own slot is not taken from it. Out of the don't-need queue, only a reclaim
 			// would ever give its memory back, whether the store succeeds or
 			// fails.
 			defer func() {

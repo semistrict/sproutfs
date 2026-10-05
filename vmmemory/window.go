@@ -221,7 +221,7 @@ func (p *windowPlan) unlock() {
 	for pg := range p.locked {
 		pages = append(pages, pg)
 		// A published page the plan loaded and a failure left unmapped is idle,
-		// like any other published page nothing maps. Off the idle list, only
+		// like any other published page nothing maps. Out of the don't-need queue, only
 		// a reclaim would ever give its memory back.
 		if pg.published() {
 			h.idleLocked(pg)

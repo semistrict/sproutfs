@@ -715,3 +715,20 @@ func TestTheWalksVisitTheirQueuesOldestFirst(t *testing.T) {
 		expectCounts(t, pq, Counts{Reclaim: [NumReclaim]int{2}, ReclaimIsolate: 2, AnonymousZeroFork: 2})
 	})
 }
+
+// BenchmarkAPageTouchedAndAged is what the pager pays the queues for each page
+// a fault touches: a mark and an aging, over pages that have aged into the
+// isolate queue.
+func BenchmarkAPageTouchedAndAged(b *testing.B) {
+	pq := newTestQueues(4 << 10)
+	pages := makePages(1024)
+	for i, p := range pages {
+		pq.SetReclaim(p, pagerVmo, uint64(i)<<12)
+		pq.AgeOnAccess()
+	}
+	b.ResetTimer()
+	for i := range b.N {
+		pq.MarkAccessed(pages[i%len(pages)])
+		pq.AgeOnAccess()
+	}
+}

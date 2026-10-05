@@ -31,9 +31,12 @@ Three parts of `vmmemory` are nested packages that only `vmmemory` can import:
   writeback, zero intervals, reclaim and snapshot-on-write children. A region's
   layer falls through to the identity root its resolver names where Zircon
   walks up to a parent. The departures D1 to D4 are marked in `dirty.go` and
-  `reclaim.go`. The parts of the page queues, the compression and the page
-  source that VmCowPages calls are ported with it, for steps 5, 6 and 8 to
-  complete. Nothing outside the package uses it yet.
+  `reclaim.go`. The parts of the compression and the page source that
+  VmCowPages calls are ported with it, for steps 6 and 8 to complete. The
+  page queues are whole since step 5, generic over the page they hold, and
+  order the pager's resident pages for reclaim: see
+  [choosing the victim](#choosing-the-victim). The pager's bindings use the
+  page list; nothing outside the package uses the region's layer yet.
 
 The histograms of the fault path are in `internal/latency`, outside `vmmemory`.
 None of these packages uses any pager state: no host lock, no memory region and
@@ -1548,7 +1551,9 @@ guest changed it. A protect trap is a store into a page the guest maps, which
 KVM reports only for a real store, so its copy is never cold. While a copy is
 cold:
 
-- **Its origin is pinned.** An eviction takes any other page first. It takes a
+- **Its origin is pinned.** A pinned page waits in the page queues' zero-fork
+  queue, outside the queues an eviction takes from first. An eviction takes any
+  other page first. It takes a
   pinned page only when nothing else can go, as in a one-page arena. Its copies
   stay cold, and are compared with the bytes their volume holds for their page
   instead, which are what the origin held: a copy is cold only while no
@@ -2304,6 +2309,17 @@ memory than the arena holds faults on almost every store. Its pages are always
 the newest, so its neighbours' working sets are always the oldest, and each
 fault of the hog evicted one of them. A neighbour then held the arena only in
 proportion to how often it faulted, which is to say only by thrashing.
+
+The order is kept by Zircon's page queues, ported in `internal/zirconvm`
+(`vmmemory/queues.go`). A resident page is in a reclaim queue, by age, or in
+the standard isolate queue once it has aged out of them. The queues age one
+generation for each page a fault creates or touches, so they hold the pages in
+fault order. Zircon ages them on a timer and by the accessed bits of page
+tables, which a userfaultfd pager cannot read. An idle page is in the
+don't-need queue, which is walked first. A page a cold copy will be compared
+with is in the zero-fork queue, which is walked last. Zircon's evictor peeks
+the head of the isolate queues; until it is ported, the pager walks the queues
+past the pages it cannot take.
 
 So each attached memory region is owed a share: the arena's pages divided by
 the memory regions attached. A memory region is protected while it holds no

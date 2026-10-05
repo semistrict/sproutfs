@@ -89,14 +89,12 @@ func (h *Host) touch(pg *resident) {
 // the don't-need queue, where it waits for a memory region that inherits its
 // identity or for an allocation that needs its slot. Caller holds h.mu.
 func (h *Host) idleLocked(pg *resident) {
-	if pg.aliases.len() > 0 || pg.slot < 0 {
+	// idle is read here under h.mu alone, which its writers also hold.
+	if pg.idle || pg.aliases.len() > 0 || pg.slot < 0 {
 		return
 	}
 	h.pinMu.Lock()
 	defer h.pinMu.Unlock()
-	if pg.idle {
-		return
-	}
 	pg.idle = true
 	h.idlePages++
 	if len(pg.coldCopies) == 0 {
@@ -107,11 +105,12 @@ func (h *Host) idleLocked(pg *resident) {
 // mappedLocked ends a page being idle, which a memory region mapping it again
 // does: it goes to the newest reclaim queue. Caller holds h.mu.
 func (h *Host) mappedLocked(pg *resident) {
-	h.pinMu.Lock()
-	defer h.pinMu.Unlock()
+	// idle is read here under h.mu alone, which its writers also hold.
 	if !pg.idle {
 		return
 	}
+	h.pinMu.Lock()
+	defer h.pinMu.Unlock()
 	pg.idle = false
 	h.idlePages--
 	if len(pg.coldCopies) == 0 {

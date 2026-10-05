@@ -338,7 +338,7 @@ func queueIsInactive(pageQueue, mru uint8) bool {
 	return queueAge(pageQueue, mru) >= NumActiveQueues
 }
 
-// mruGenToQueue is the MRU queue. It requires lock or listLock.
+// mruGenToQueue is the MRU queue.
 func (pq *PageQueues[P, O]) mruGenToQueue() uint8 { return genToQueue(pq.mruGen.Load()) }
 
 // canIncrementMruGenLocked reports whether the MRU generation may advance, or
@@ -376,6 +376,11 @@ func (pq *PageQueues[P, O]) checkActiveRatioAgingLocked() {
 // isActiveRatioTriggeringAging reports whether the active pages, multiplied,
 // outnumber the inactive.
 func (pq *PageQueues[P, O]) isActiveRatioTriggeringAging() bool {
+	// No count trips a multiplier of zero, Zircon's default, so the count is
+	// not taken, which every aging and page move would otherwise pay for.
+	if pq.activeRatioMultiplier == 0 {
+		return false
+	}
 	counts := pq.getActiveInactiveCountsLocked()
 	return counts.Active*pq.activeRatioMultiplier > counts.Inactive
 }
@@ -478,23 +483,26 @@ func (pq *PageQueues[P, O]) RotateReclaimQueues() { pq.rotate(AgeReasonManual) }
 // RotateReclaimQueues it makes room for itself, since there is no LRU thread.
 func (pq *PageQueues[P, O]) AgeOnAccess() {
 	pq.lock.Lock()
-	disabled := pq.agingDisabled
-	pq.lock.Unlock()
-	if disabled {
+	defer pq.lock.Unlock()
+	if pq.agingDisabled {
 		return
 	}
-	pq.rotate(AgeReasonAccess)
+	pq.rotateLocked(AgeReasonAccess)
 }
 
 // rotate is RotateReclaimQueues with its reason.
 func (pq *PageQueues[P, O]) rotate(reason AgeReason) {
 	pq.lock.Lock()
 	defer pq.lock.Unlock()
+	pq.rotateLocked(reason)
+}
+
+// rotateLocked is rotate with lock held. Zircon processes the LRU queue with
+// lock dropped, and ProcessLruQueue takes it again for each round; it is held
+// throughout here, as processLruQueueLocked says.
+func (pq *PageQueues[P, O]) rotateLocked(reason AgeReason) {
 	for !pq.canIncrementMruGenLocked() {
-		target := pq.lruGen.Load() + 1
-		pq.lock.Unlock()
-		pq.processLruQueue(target, noIsolateLimit)
-		pq.lock.Lock()
+		pq.processLruQueueLocked(pq.lruGen.Load()+1, noIsolateLimit)
 	}
 	pq.incrementMruGenLocked(reason)
 }
@@ -513,76 +521,75 @@ func (pq *PageQueues[P, O]) LastAgeReason() AgeReason {
 // isolate queue. It is ProcessLruQueue with no LRU action.
 func (pq *PageQueues[P, O]) processLruQueue(target uint64, isolate int) {
 	pq.lock.Lock()
+	defer pq.lock.Unlock()
+	pq.processLruQueueLocked(target, isolate)
+}
+
+// processLruQueueLocked is processLruQueue with lock held. Zircon takes its
+// locks afresh for each round of the loop, so that it can act on the pages
+// it isolated with no lock held; with no LRU action there is nothing to act
+// on, so both locks are held throughout, and lruGen does not change under it.
+func (pq *PageQueues[P, O]) processLruQueueLocked(target uint64, isolate int) {
 	// To evict queue X the target is X+1, so the target may reach the first
 	// active queue but not pass it. mru_gen_ only grows, so this stays true.
 	assert(target <= pq.mruGen.Load()-(NumActiveQueues-1), "the target leaves the active queues")
+	pq.listLock.Lock()
+	defer pq.listLock.Unlock()
 	// A worst case loop count, for diagnosis: every page in the LRU queue and
-	// every queue to step through.
-	counts := pq.getActiveInactiveCountsLocked()
-	pq.lock.Unlock()
-	maxLruIterations := counts.Active + counts.Inactive + NumReclaim
-	loopIterations := 0
-	for isolate > 0 {
+	// every queue to step through. Zircon counts it before the loop; it is at
+	// least NumReclaim, so here it is counted only by a loop that gets that
+	// far, which an aging on every access almost never does.
+	maxLruIterations := NumReclaim
+	for loopIterations := 0; isolate > 0; loopIterations++ {
+		if loopIterations == NumReclaim {
+			counts := pq.getActiveInactiveCountsLockedList()
+			maxLruIterations += counts.Active + counts.Inactive
+		}
 		if loopIterations == maxLruIterations {
 			slog.Error("zirconvm: processing the LRU queue exceeded its expected iterations",
 				"iterations", maxLruIterations)
 		}
-		loopIterations++
-		if pq.processLruQueueOnce(target, &isolate) {
+		lru := pq.lruGen.Load()
+		if lru >= target {
 			return
 		}
-		// Zircon wakes its MRU thread here when the LRU generation moved.
-	}
-}
-
-// processLruQueueOnce is one round of ProcessLruQueue's loop, with both locks
-// held so that lruGen does not change under it. It reports whether lruGen has
-// reached target.
-func (pq *PageQueues[P, O]) processLruQueueOnce(target uint64, isolate *int) bool {
-	pq.lock.Lock()
-	defer pq.lock.Unlock()
-	pq.listLock.Lock()
-	defer pq.listLock.Unlock()
-	lru := pq.lruGen.Load()
-	if lru >= target {
-		return true
-	}
-	mruQueue := pq.mruGenToQueue()
-	lruQueue := genToQueue(lru)
-	list := &pq.pageQueues[lruQueue]
-	for iterations := 0; !list.isEmpty() && *isolate > 0; {
-		// Newer pages are at the head and older at the tail, so the tail goes
-		// first.
-		node := list.popBack()
-		pageQueue := node.pageQueue
-		assert(pageQueue >= pageQueueReclaimBase, "the page is in a reclaim queue")
-		// A page whose queue does not match was accessed since and goes to its
-		// queue, unless MarkAccessed raced and its queue is invalid, in which
-		// case it is very old and is isolated.
-		if pageQueue != lruQueue && queueIsValid(pageQueue, lruQueue, mruQueue) {
-			// The head, because it is newer.
-			pq.pageQueues[pageQueue].pushFront(node)
-		} else {
-			// Aged pages go to the standard isolate queue, at its tail, so
-			// older pages stay at its head.
-			oldQueue := node.pageQueue
-			node.pageQueue = pageQueueReclaimIsolate
-			assert(oldQueue >= pageQueueReclaimBase, "the aged page was in a reclaim queue")
-			pq.pageQueueCounts[oldQueue]--
-			pq.pageQueueCounts[pageQueueReclaimIsolate]++
-			pq.isolateQueues[isolateQueueStandard].pushBack(node)
-			*isolate--
+		mruQueue := pq.mruGenToQueue()
+		lruQueue := genToQueue(lru)
+		list := &pq.pageQueues[lruQueue]
+		for iterations := 0; !list.isEmpty() && isolate > 0; {
+			// Newer pages are at the head and older at the tail, so the tail
+			// goes first.
+			node := list.popBack()
+			pageQueue := node.pageQueue
+			assert(pageQueue >= pageQueueReclaimBase, "the page is in a reclaim queue")
+			// A page whose queue does not match was accessed since and goes to
+			// its queue, unless MarkAccessed raced and its queue is invalid,
+			// in which case it is very old and is isolated.
+			if pageQueue != lruQueue && queueIsValid(pageQueue, lruQueue, mruQueue) {
+				// The head, because it is newer.
+				pq.pageQueues[pageQueue].pushFront(node)
+			} else {
+				// Aged pages go to the standard isolate queue, at its tail, so
+				// older pages stay at its head.
+				oldQueue := node.pageQueue
+				node.pageQueue = pageQueueReclaimIsolate
+				assert(oldQueue >= pageQueueReclaimBase, "the aged page was in a reclaim queue")
+				pq.pageQueueCounts[oldQueue]--
+				pq.pageQueueCounts[pageQueueReclaimIsolate]++
+				pq.isolateQueues[isolateQueueStandard].pushBack(node)
+				isolate--
+			}
+			iterations++
+			if pq.batchOpShouldDropLock(iterations) {
+				break
+			}
 		}
-		iterations++
-		if pq.batchOpShouldDropLock(iterations) {
-			break
+		if list.isEmpty() {
+			// Both locks were held throughout, so this is exactly lru + 1.
+			// Zircon wakes its MRU thread here.
+			pq.lruGen.Add(1)
 		}
 	}
-	if list.isEmpty() {
-		// Both locks were held throughout, so this is exactly lru + 1.
-		pq.lruGen.Add(1)
-	}
-	return false
 }
 
 // batchOpShouldDropLock is BatchOpShouldDropLock: every opBatchSize pages, a
@@ -590,20 +597,6 @@ func (pq *PageQueues[P, O]) processLruQueueOnce(target uint64, isolate *int) boo
 // it is, so it is never dropped early: a batch ends as an uncontested one
 // does, with the lock held longer.
 func (pq *PageQueues[P, O]) batchOpShouldDropLock(int) bool { return false }
-
-// markAccessedMaybeIsolate is MarkAccessed for a page that may be in the
-// isolate queue, which must be moved between the lists.
-func (pq *PageQueues[P, O]) markAccessedMaybeIsolate(node *PageQueueNode[P, O]) {
-	pq.listLock.Lock()
-	// A page can only leave the reclaim queues under the list lock.
-	if !queueIsReclaim(node.pageQueue) {
-		pq.listLock.Unlock()
-		return
-	}
-	pq.moveToQueueLockedList(node, pq.mruGenToQueue())
-	pq.listLock.Unlock()
-	pq.maybeCheckActiveRatioAging(1)
-}
 
 // MarkAccessed tells the queues the page was accessed, so it moves to the
 // newest reclaim queue. A page in no reclaim queue does not move.
@@ -621,10 +614,13 @@ func (pq *PageQueues[P, O]) MarkAccessed(page P) {
 		pq.listLock.Unlock()
 		return
 	}
-	// The isolate queue is a reclaim queue, but the page must move lists.
+	// The isolate queue is a reclaim queue, but the page must move lists,
+	// which Zircon does in MarkAccessedMaybeIsolate after taking the list
+	// lock. It is held already.
 	if oldGen == pageQueueReclaimIsolate {
+		pq.moveToQueueLockedList(node, target)
 		pq.listLock.Unlock()
-		pq.markAccessedMaybeIsolate(node)
+		pq.maybeCheckActiveRatioAging(1)
 		return
 	}
 	// Zircon changes only the page's queue number, with a compare and swap
@@ -1114,6 +1110,12 @@ func (pq *PageQueues[P, O]) GetActiveInactiveCounts() ActiveInactiveCounts {
 func (pq *PageQueues[P, O]) getActiveInactiveCountsLocked() ActiveInactiveCounts {
 	pq.listLock.Lock()
 	defer pq.listLock.Unlock()
+	return pq.getActiveInactiveCountsLockedList()
+}
+
+// getActiveInactiveCountsLockedList is GetActiveInactiveCounts. It requires
+// both locks.
+func (pq *PageQueues[P, O]) getActiveInactiveCountsLockedList() ActiveInactiveCounts {
 	mru := pq.mruGenToQueue()
 	var counts ActiveInactiveCounts
 	for queue := range uint8(pageQueueNumQueues) {
