@@ -1,9 +1,11 @@
 ---
 id: TASK-92.9
 title: 'Zircon port step 9: the region''s layer and the identity roots'
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-05 05:10'
+updated_date: '2026-10-05 07:06'
 labels:
   - pager
   - zircon-port
@@ -31,3 +33,33 @@ Step 9 of the plan. The heart of the port, built and tested alone before anythin
 - [ ] #3 A test shows a store into an AwaitingClean page leaves the checkpoint the bytes of the pause and gives the store a Dirty copy, and a test shows an abandoned writeback makes every page Dirty again with its own reservation
 - [ ] #4 Nothing outside the package uses it yet, and just check passes
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Steps 5, 6 and 8 have not landed, so port the parts of them VmCowPages calls, standalone and marked for those steps to complete: page.go (vm_page_t's object fields, the PMM as an interface), pagequeues.go (page_queues.cc without its threads, aging timers, LRU actions and loans; aging by faults and manual rotation only, decision 4), compression.go (compressor.cc whole and compression.cc's reference bookkeeping over storage and strategy interfaces, no LRU4), pagesource.go (PageSource/PageRequest: populate, resolve on supply/dirty/fail, wait).
+2. Commit A, cursor+supply+take: cowpages.go (create, add-page transactions, FindPageContentLocked with the identity-root lookup in place of the parent walk, attribution, lookup, lookup readable, commit, supply, take, decommit, DeferredOps, range changes), lookupcursor.go, objectpaged.go (Create, CreateExternal, Read/Write, GetPage, Lookup, Commit, Supply, Take, Hint, Prefetch, mappings as an interface). One lock per clone tree, as the plan's Locking section says; a region's lookup takes an identity root's lock after its own.
+3. Commit B, dirty states: dirty.go: UpdateDirtyStateLocked, PrepareForWriteLocked, DirtyPages, EnumerateDirtyRanges, WritebackBegin/End, zero pages and zero intervals; D1 (a store into an AwaitingClean page or AwaitingClean zero interval moves the AwaitingClean content to the checkpoint's list beside the page list and gives the store a Dirty copy), D3 nothing at this layer, D4 WritebackAbandon; ReadWriteback reads what a checkpoint holds. sim.Bug guards zircon-dirty-awaiting-clean-in-place (D1) and zircon-abandon-leaves-awaiting-clean (D4) in guards.json.
+4. Commit C, reclaim: reclaim.go: ReclaimPage, ReclaimRangeForEviction, ReclaimPageForCompression with D2 (a Dirty or AwaitingClean page of a dirty-tracked object, or a checkpoint's copy, is compressed; its reference keeps the dirty state), DedupZeroPage, hints.
+5. Commit D, clone: clone.go: CreateCloneLocked with the snapshot-on-write path only (unidirectional children of any root, no hidden parents, no parent content markers), CloneChildLocked, children, dead transition, RangeChangeUpdateCowChildren.
+6. Tests: the 33 vmo_unittest.cc cases in sentence names with the Zircon name in a comment, each in a synctest bubble over a sim runtime at 4 KiB and 2 MiB; cases that need hidden parents, full snapshots or slices are adapted to snapshot-on-write and say so. Our own tests for D1, D2, D4 and identity roots.
+7. Gremlins on the new files; tests for meaningful survivors. docs/testing.md mutation note. just check.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Decisions:
+- One lock per clone tree: a child shares its parent's mutex. A region's lookup takes an identity root's lock after its own, and only when the root is a different tree.
+- D1: pages and zero intervals a checkpoint holds live in a second page list (held) beside the page list. A store into an AwaitingClean page moves the page there and stores into a Dirty copy. WritebackBegin records AwaitingClean zero intervals as held zero intervals. WritebackEnd and Abandon free what is held in their range. ReadWriteback reads what a checkpoint holds.
+- D2: a Dirty or AwaitingClean page, or a held page, of an object with a page source is compressed when a compressor is given. The reference metadata keeps the dirty state in its top two bits. A dirty page of zeros becomes a Dirty zero interval.
+- D3: nothing at this layer; WritebackProtect is the range protection, WritebackBegin the walk.
+- D4: WritebackAbandon makes AwaitingClean pages, references and zero intervals Dirty, frees what is held and unmaps the range.
+- No hidden parents, so no parent content markers. Snapshot-on-write clones are allowed for any root; full snapshots are refused; modified snapshots only of an object with no parent.
+- Identity roots: CreateIdentityRoot makes a pager-backed root that is never dirtied (an assert). CreateRegionLayer takes a RootResolver; the lookup falls through to the root at the root offset, one page at a time. A store copies the root's page into the layer as Dirty; a read commit copies it as Clean.
+- Steps 5, 6 and 8 had not landed, so the parts VmCowPages calls are ported here: page.go, pagequeues.go (no threads, aging timers, LRU actions or loans), compression.go, pagesource.go. Those steps finish them and port their own tests.
+- Not ported: pinning, loaned pages, discardable, high priority, cache policy, slices, references, contiguous objects.
+- Known gap: a region's mapping of a root's page is not revoked when the root evicts it; step 12's alias set does that.
+- Guards zircon-dirty-awaiting-clean-in-place (D1) and zircon-abandon-leaves-awaiting-clean (D4) in scripts/mutation/guards.json; killed 3 of 3 runs each.
+- AC #3's "with its own reservation": reservations are not at this layer; they come with step 6 (D5, the reference storage). The abandon test shows every page Dirty again with its own page.
+<!-- SECTION:NOTES:END -->

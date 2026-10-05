@@ -2196,6 +2196,10 @@ SPROUTFS_SIM_BUG=store-request-unbounded \
   go test ./platform/bounded -run '^TestAHungGetIsAbandonedAtItsFirstByteBoundAndTheRetrySucceeds$' -count=1
 SPROUTFS_SIM_BUG=store-resume-any-object \
   go test ./platform/bounded -run '^TestAStalledBodyWhoseObjectChangedIsRefused$' -count=1
+SPROUTFS_SIM_BUG=zircon-dirty-awaiting-clean-in-place \
+  go test ./vmmemory/internal/zirconvm -run '^(TestAStoreIntoAPageACheckpointHoldsGetsADirtyCopy|TestAPagerAgreedStoreIntoAPageACheckpointHoldsGetsADirtyCopy)$' -count=1
+SPROUTFS_SIM_BUG=zircon-abandon-leaves-awaiting-clean \
+  go test ./vmmemory/internal/zirconvm -run '^TestAnAbandonedWritebackMakesEveryPageDirtyAgain$' -count=1
 ```
 
 Each invocation must fail. `just check-guards` runs every entry and fails if
@@ -2317,6 +2321,16 @@ Only a receive whose caller hung up is in flight when a retry looks, and no
 campaign draws that fault. With the guard on, a second host starts a guest of
 the VM, and the receive that outlived its caller takes the VM in after the
 handover ended.
+
+The two `zircon-` guards put back Zircon's rules where the port of its page
+layer departs from them ([the plan](../plans/zircon-pager-port-2026-10-05.md),
+D1 and D4). `zircon-dirty-awaiting-clean-in-place` makes a page a checkpoint
+holds Dirty in place on a store. Its tests store into such a page, through a
+lookup and through the pager's DirtyPages, and find the checkpoint reading
+the store's bytes and the store given no copy. `zircon-abandon-leaves-awaiting-clean`
+leaves the pages of an abandoned writeback AwaitingClean, as Zircon has no
+abandon. Its test finds the pages still the failed checkpoint's, its copies
+not freed and its mappings not revoked.
 
 The `migration-strip-published-pages`, `migration-strip-published-holes` and
 `migration-ask-for-published-pages` guards need a destination that publishes

@@ -4,6 +4,7 @@ title: 'Zircon port step 5: the page queues'
 status: To Do
 assignee: []
 created_date: '2026-10-05 05:09'
+updated_date: '2026-10-05 07:06'
 labels:
   - pager
   - zircon-port
@@ -30,3 +31,9 @@ Step 5 of the plan. Zircon orders reclaim with page queues (zircon/kernel/vm/pag
 - [ ] #3 The host recency list, idle list and cold-copy pins are the reclaim, don't-need and zero-fork queues; vmmemory/pagelist.go is deleted
 - [ ] #4 Every test in vmmemory, host, vmmigrate and internal/simtest passes unchanged in both arena modes, including the idle-page and cold-copy tests
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+TASK-92.9 ported the parts of page_queues.cc that VmCowPages calls into vmmemory/internal/zirconvm/pagequeues.go ahead of this step, without the 10 tests, threads, aging timers, LRU actions or loans. This step completes that file and ports its tests.
+<!-- SECTION:NOTES:END -->

@@ -4,6 +4,7 @@ title: 'Zircon port step 8: faults and prefetches as page requests'
 status: To Do
 assignee: []
 created_date: '2026-10-05 05:09'
+updated_date: '2026-10-05 07:06'
 labels:
   - pager
   - zircon-port
@@ -31,3 +32,9 @@ Step 8 of the plan. Zircon asks its pager for missing pages with page requests t
 - [ ] #4 BenchmarkARandom4KiBFault and BenchmarkAForward4KiBFault are recorded before and after on one machine, and neither median is slower by more than the spread of two runs before
 - [ ] #5 Every test in vmmemory, host, vmmigrate and internal/simtest passes unchanged in both arena modes
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+TASK-92.9 ported PageSource, PageRequest and MultiPageRequest into vmmemory/internal/zirconvm/pagesource.go ahead of this step, with a PageProvider interface and no early wake. This step adds PagerProxy as a goroutine and wires faults and prefetches.
+<!-- SECTION:NOTES:END -->
