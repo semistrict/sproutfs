@@ -322,13 +322,8 @@ func (s *supervisor) startPager(ctx context.Context, kind pagerSlot, cfg vmmemor
 		return nil, err
 	}
 	s.spills[kind] = spill
-	slog.InfoContext(ctx, "host: a pager was assembled", "kind", string(kind),
-		"page_bytes", cfg.PageSize, "resident_pages", cfg.ResidentPages,
-		"arena", cfg.Arena.String(), "arena_offsets", cfg.Offsets(), "huge_pages", arena.HugePolicy(),
-		"logical_pages", cfg.LogicalPages, "dirty_pages", cfg.DirtyPages,
-		"loss_window", cfg.LossWindow.String(), "concurrent_io", cfg.ConcurrentIO,
-		"read_ahead_pages", cfg.ReadAheadPages, "write_ahead_pages", cfg.WriteAheadPages,
-		"settle_workers", cfg.SettleWorkers)
+	slog.InfoContext(ctx, "host: a pager was assembled",
+		append(assembled(kind, cfg), "huge_pages", arena.HugePolicy())...)
 	return pager, nil
 }
 

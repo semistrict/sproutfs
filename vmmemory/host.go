@@ -143,6 +143,10 @@ type Host struct {
 	probe probeState
 	// changeSeed keys the block sums Config.MeasureChanges compares.
 	changeSeed maphash.Seed
+	// zircon is this pager's state under the zircon core, nil under the
+	// current one. Every exported method that reaches the page layer asks it
+	// first; see Core.
+	zircon *zirconHost
 }
 
 // maximumReadAheadBytes is the largest run one fault may hold a buffer for,
@@ -178,6 +182,9 @@ func New(ctx context.Context, resources *resource.Budget, cfg Config, arena Aren
 		uint64(cfg.LogicalPages) > math.MaxInt64/pageSize || arena == nil || spill == nil ||
 		(cfg.Arena != ArenaShared && cfg.Arena != ArenaIsolated) {
 		return nil, ErrConfig
+	}
+	if !cfg.Core.known() {
+		return nil, fmt.Errorf("%w: pager core %s", ErrConfig, cfg.Core)
 	}
 	if cfg.Ephemeral && (cfg.DirtyPages != cfg.LogicalPages || cfg.LossWindow != 0) {
 		return nil, fmt.Errorf("%w: an ephemeral pager's dirty budget must be its logical budget, and it keeps no loss window",
@@ -244,6 +251,9 @@ func New(ctx context.Context, resources *resource.Budget, cfg Config, arena Aren
 		memoryRegions: make(map[*MemoryRegion]struct{}), highWater: highWater(cfg.DirtyPages),
 		io: make(chan struct{}, cfg.ConcurrentIO), writeback: make(chan struct{}, 1)}
 	h.evictor = newPagerEvictor(h)
+	if cfg.Core == CoreZircon {
+		h.zircon = &zirconHost{host: h}
+	}
 	if cfg.Arena == ArenaIsolated {
 		// Every file is made for a memory region or a tenant when the first one
 		// needs it.

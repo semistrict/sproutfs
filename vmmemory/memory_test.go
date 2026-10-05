@@ -16,6 +16,7 @@ import (
 	"github.com/semistrict/sproutfs/checkpoint"
 	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/internal/testarena"
+	"github.com/semistrict/sproutfs/internal/testcore"
 	"github.com/semistrict/sproutfs/internal/testresource"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/platform/sim"
@@ -41,14 +42,21 @@ var pageSizes = []int{checkpoint.PageSize4KiB, checkpoint.PageSize2MiB}
 // SPROUTFS_ARENA names. The suite is run once in each.
 var suiteArena vmmemory.ArenaMode
 
+// suiteCore is the core the fixtures build their pagers in, which
+// SPROUTFS_PAGER_CORE names. The whole suite runs in the current core, and the
+// tests the zircon core serves run in it too (scripts/pager-core-zircon.json).
+var suiteCore vmmemory.Core
+
 // TestMain runs the whole suite once per page. A failure names the page and the
 // arena mode it happened at, because the test names cannot.
 func TestMain(m *testing.M) {
 	suiteArena = testarena.MustMode()
+	suiteCore = testcore.MustCore()
 	for _, size := range pageSizes {
 		pageSize = size
 		if code := m.Run(); code != 0 {
-			fmt.Fprintf(os.Stderr, "vmmemory: the suite failed with the pager's page at %d bytes in a %s arena\n", size, suiteArena)
+			fmt.Fprintf(os.Stderr, "vmmemory: the suite failed with the pager's page at %d bytes in a %s arena under the %s core\n",
+				size, suiteArena, suiteCore)
 			os.Exit(code)
 		}
 	}
@@ -803,9 +811,13 @@ func newBrokenFixture(t *testing.T, cfg vmmemory.Config, shared ...*resource.Bud
 
 // newFixtureOn is newBrokenFixture with its spill file on disk, and its pager
 // built under ctx, which carries the runtime whose guards the pager consults.
+// A configuration that names the current core takes the suite's.
 func newFixtureOn(t *testing.T, ctx context.Context, disk *sim.Disk, cfg vmmemory.Config,
 	shared ...*resource.Budget) (*fixture, error) {
 	t.Helper()
+	if cfg.Core == vmmemory.CoreCurrent {
+		cfg.Core = suiteCore
+	}
 	spill, err := disk.Open(ctx, "spill", platform.OpenOptions{Create: true})
 	if err != nil {
 		t.Fatal(err)

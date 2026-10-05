@@ -286,6 +286,9 @@ func kernelHostArena(t testing.TB, cfg vmmemory.Config) (*vmmemory.Host, *vmmemo
 	if cfg.Arena == vmmemory.ArenaShared {
 		cfg.Arena = suiteArena
 	}
+	if cfg.Core == vmmemory.CoreCurrent {
+		cfg.Core = suiteCore
+	}
 	return kernelHostArenaIn(t, cfg)
 }
 

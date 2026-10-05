@@ -52,6 +52,10 @@ func (r *MemoryRegion) restoreDirtySince(since time.Time) {
 // that has been faulting since it resumed keeps the earlier of its own first
 // store and what it was handed.
 func (r *MemoryRegion) SetUnpublishedAge(age time.Duration) {
+	if z := r.zircon; z != nil {
+		z.setUnpublishedAge(age)
+		return
+	}
 	if age <= 0 {
 		return
 	}
@@ -67,6 +71,9 @@ func (r *MemoryRegion) SetUnpublishedAge(age time.Duration) {
 // It is what a host sums across the memory regions of one VM to answer Pressure.Oldest,
 // and what it reports that VM's loss window from.
 func (r *MemoryRegion) OldestUnpublished() time.Time {
+	if z := r.zircon; z != nil {
+		return z.oldestUnpublished()
+	}
 	r.bindingsMu.Lock()
 	since := r.dirtySince
 	r.bindingsMu.Unlock()

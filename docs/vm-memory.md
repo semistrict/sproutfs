@@ -48,6 +48,19 @@ Three parts of `vmmemory` are nested packages that only `vmmemory` can import:
   bindings use the page list, and its dirty reservations are references of
   the spill storage; nothing outside the package uses the region's layer yet.
 
+A pager runs one of two cores, which `Config.Core` names (the host's
+`SPROUTFS_PAGER_CORE`): `current`, the default, or `zircon`. The core is the
+fault and checkpoint code: what a fault maps, what a store copies, what a seal
+takes. It is the one part of the port that cannot be swapped in place, so the
+zircon core, over the region's layer and the identity roots, is built beside
+the current one and measured before it becomes the default. Every exported
+method of `Host` and `MemoryRegion` that reaches the page layer asks the core
+first (`core.go`, `zircon.go`). The zircon core refuses what it does not serve
+yet with `ErrCoreUnsupported`, naming the operation. What stays the pager's own
+whichever core runs is shared: the arena and its files, isolation, placement,
+pressure and the loss window, the flush, the connection and the statistics'
+clock. The supervisor logs each pager's core with the bounds it chose for it.
+
 The histograms of the fault path are in `internal/latency`, outside `vmmemory`.
 None of these packages uses any pager state: no host lock, no memory region and
 no page.
@@ -2780,6 +2793,13 @@ scripts/test-vm-memory-lima.sh
 SPROUTFS_VM_MEMORY_REPEAT=20 scripts/test-vm-memory-lima.sh
 scripts/test-firecracker-lima.sh
 ```
+
+Every suite builds its pagers in the core `SPROUTFS_PAGER_CORE` names,
+`current` when it is unset (`internal/testcore`). The tests the zircon core
+serves are listed in `scripts/pager-core-zircon.json`, and `just check` runs
+them again under `SPROUTFS_PAGER_CORE=zircon` in both arena modes
+(`scripts/test-pager-core.py`); a listed test that fails or does not exist
+fails the check.
 
 Every suite builds its pagers in the arena mode `SPROUTFS_ARENA` names,
 `isolated` when it is unset, and is run in both: `just check` runs the Go

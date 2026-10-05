@@ -80,7 +80,7 @@ func newBenchPager(b *testing.B, ctx context.Context, runtime *sim.Runtime, back
 	}
 	host, err := vmmemory.New(ctx, testresource.New(), vmmemory.Config{PageSize: checkpoint.PageSize4KiB,
 		ResidentPages: benchPages, LogicalPages: benchPages, DirtyPages: benchWindow, ReadAheadPages: benchWindow,
-		PrefetchRuns: 1}, newArena(checkpoint.PageSize4KiB), spill)
+		PrefetchRuns: 1, Core: suiteCore}, newArena(checkpoint.PageSize4KiB), spill)
 	if err != nil {
 		b.Fatal(err)
 	}

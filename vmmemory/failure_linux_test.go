@@ -56,7 +56,7 @@ func TestARefusedCommandNamesTheFrameTheClientRefused(t *testing.T) {
 	t.Cleanup(func() { _ = spill.Close() })
 	h, err := vmmemory.New(t.Context(), testresource.New(), vmmemory.Config{PageSize: page,
 		ResidentPages: pages, ArenaOffsets: rangePages, LogicalPages: 4 * pages,
-		DirtyPages: pages, ReadAheadPages: pages, Arena: suiteArena}, arena, spill)
+		DirtyPages: pages, ReadAheadPages: pages, Arena: suiteArena, Core: suiteCore}, arena, spill)
 	if err != nil {
 		t.Fatal(err)
 	}

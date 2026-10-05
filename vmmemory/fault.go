@@ -12,6 +12,9 @@ import (
 // as free slots allow; pages of the window that are already resident under the
 // same stored identity are mapped without loading anything.
 func (r *MemoryRegion) Fault(ctx context.Context, index uint64, write bool) error {
+	if z := r.zircon; z != nil {
+		return z.fault(ctx, index, write)
+	}
 	if index >= uint64(r.pageCount) {
 		return ErrRange
 	}

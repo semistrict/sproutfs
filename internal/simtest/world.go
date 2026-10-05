@@ -21,6 +21,7 @@ import (
 	"github.com/semistrict/sproutfs/internal/handover"
 	"github.com/semistrict/sproutfs/internal/knobs"
 	"github.com/semistrict/sproutfs/internal/testarena"
+	"github.com/semistrict/sproutfs/internal/testcore"
 	"github.com/semistrict/sproutfs/internal/testpager"
 	"github.com/semistrict/sproutfs/internal/testresource"
 	"github.com/semistrict/sproutfs/membership"
@@ -916,8 +917,10 @@ func spillBytes(k knobs.Knobs) int64 {
 func (w *World) newPager(ctx context.Context, h *hostState) (*pager, func(), error) {
 	k := w.config.Knobs
 	p := &pager{arenas: map[*vmmemory.Host]*testpager.Arena{}, runtime: w.runtime}
-	// Every pager of the run is built in the arena mode SPROUTFS_ARENA names.
+	// Every pager of the run is built in the arena mode SPROUTFS_ARENA names,
+	// and in the core SPROUTFS_PAGER_CORE names.
 	mode := testarena.MustMode()
+	core := testcore.MustCore()
 	// RAM places a private page at the offset it has within its 2 MiB range, so
 	// its arena has an address per logical page — one 512-offset extent per
 	// range any memory region may write into — beside the pages it may hold at
@@ -960,7 +963,7 @@ func (w *World) newPager(ctx context.Context, h *hostState) (*pager, func(), err
 		spills = append(spills, spill)
 		a := testpager.NewArena(mode)
 		memory, err := vmmemory.New(ctx, h.config.Resources, vmmemory.Config{
-			PageSize: kind.pageSize, Arena: mode,
+			PageSize: kind.pageSize, Arena: mode, Core: core,
 			ResidentPages: k.ResidentPages, ArenaOffsets: kind.offsets,
 			LogicalPages: k.LogicalPages, DirtyPages: kind.dirty,
 			ReadAheadPages: k.ReadAheadPages, WriteAheadPages: k.WriteAheadPages,

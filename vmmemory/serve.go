@@ -40,6 +40,9 @@ var ErrHandedOff = errors.New("managed-memory-region handed its volume off")
 // While the guest runs, the answer is only as current as the moment it is
 // taken, exactly like the pages a bulk stream already sent.
 func (r *MemoryRegion) ReadResident(ctx context.Context, page uint64, dst []byte) (held, unpublished bool, err error) {
+	if z := r.zircon; z != nil {
+		return z.readResident(ctx, page, dst)
+	}
 	h := r.host
 	if uint64(len(dst)) != h.pageSize {
 		return false, false, ErrRange
@@ -102,6 +105,9 @@ func (r *MemoryRegion) ReadResident(ctx context.Context, page uint64, dst []byte
 // holds nothing, and a destination told that reads every page from the volume,
 // which is only correct when this host really holds none of them.
 func (r *MemoryRegion) Resident() ([]uint64, error) {
+	if z := r.zircon; z != nil {
+		return z.resident()
+	}
 	// The caller of a listing has no deadline to give: this waits only for the
 	// exclusive holders of the memory region, which are bounded page-table work.
 	if err := r.mu.RLock(context.Background()); err != nil {
@@ -132,6 +138,9 @@ func (r *MemoryRegion) Resident() ([]uint64, error) {
 // instead of starting a new one. It is read here, under the lock that makes the
 // volume another host's, because that is the moment the set stops changing.
 func (r *MemoryRegion) Handoff(ctx context.Context) (time.Duration, error) {
+	if z := r.zircon; z != nil {
+		return z.handoff(ctx)
+	}
 	if err := r.mu.Lock(ctx); err != nil {
 		return 0, err
 	}
@@ -156,6 +165,9 @@ func (r *MemoryRegion) Handoff(ctx context.Context) (time.Duration, error) {
 // destination acts on by fetching nothing: these pages exist nowhere else, and
 // a handoff that names none of them rewinds the guest to the last checkpoint.
 func (r *MemoryRegion) Unpublished() ([]uint64, error) {
+	if z := r.zircon; z != nil {
+		return z.unpublished()
+	}
 	if err := r.mu.RLock(context.Background()); err != nil {
 		return nil, err
 	}
@@ -216,6 +228,9 @@ func (s MemoryRegionStats) SharedBytes() uint64   { return uint64(s.SharedPages)
 // Stats reports this memory region's pages. It is a snapshot taken without stopping
 // the guest, exactly like Resident.
 func (r *MemoryRegion) Stats(ctx context.Context) (MemoryRegionStats, error) {
+	if z := r.zircon; z != nil {
+		return z.stats(ctx)
+	}
 	if err := r.mu.RLock(ctx); err != nil {
 		return MemoryRegionStats{}, err
 	}

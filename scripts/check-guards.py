@@ -13,6 +13,10 @@ Each entry runs once with no guard on first, so a test that fails on its own
 does not count as a kill. --repeat runs the guarded tests that many times, and
 every run must fail. An entry with a "goos" runs only on that system, and one
 with "root" only as root: its tests skip themselves anywhere else.
+
+An entry runs under the pager core its "cores" name, current where it names
+none. While the zircon core is ported beside the current one, a guard whose
+behaviour lives in both names both, and must be killed under each.
 """
 
 import argparse
@@ -28,9 +32,11 @@ import tempfile
 import time
 
 
-def run(binary, directory, pattern, bug, timeout):
-    """Runs one test binary and reports passed, failed, no-tests, timeout or process-error."""
+def run(binary, directory, pattern, bug, core, timeout):
+    """Runs one test binary under one pager core and reports passed, failed,
+    no-tests, timeout or process-error."""
     env = {k: v for k, v in os.environ.items() if not k.startswith("SPROUTFS_")}
+    env["SPROUTFS_PAGER_CORE"] = core
     if bug:
         env["SPROUTFS_SIM_BUG"] = bug
     started = time.monotonic()
@@ -65,27 +71,35 @@ def check(guards, root, logs, repeat, jobs, timeout):
             sys.exit(f"building {package} failed:\n{build.stdout.decode(errors='replace')}")
         binaries[package] = binary
 
-    def one(guard):
+    def one(job):
+        guard, core = job
         binary, directory = binaries[guard["package"]], root / guard["package"]
-        status, seconds, output = run(binary, directory, guard["run"], None, timeout)
+        name = f"{guard['id']}.{core}"
+        status, seconds, output = run(binary, directory, guard["run"], None, core, timeout)
         if status != "passed":
-            (logs / f"{guard['id']}.clean.log").write_text(output)
-            return guard, f"clean-{status}", seconds
+            (logs / f"{name}.clean.log").write_text(output)
+            return guard, core, f"clean-{status}", seconds
         for attempt in range(1, repeat + 1):
-            status, took, output = run(binary, directory, guard["run"], guard["id"], timeout)
+            status, took, output = run(binary, directory, guard["run"], guard["id"], core, timeout)
             seconds += took
-            (logs / f"{guard['id']}.{attempt}.log").write_text(output)
+            (logs / f"{name}.{attempt}.log").write_text(output)
             if status != "failed":
-                return guard, {"passed": "SURVIVED"}.get(status, status), seconds
-        return guard, "killed", seconds
+                return guard, core, {"passed": "SURVIVED"}.get(status, status), seconds
+        return guard, core, "killed", seconds
 
     failures = []
+    jobs_list = [(guard, core) for guard in guards for core in cores(guard)]
     with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
-        for guard, outcome, seconds in pool.map(one, guards):
-            print(f"{outcome:>16} {seconds:7.1f}s  {guard['id']}", flush=True)
+        for guard, core, outcome, seconds in pool.map(one, jobs_list):
+            print(f"{outcome:>16} {seconds:7.1f}s  {guard['id']} ({core} core)", flush=True)
             if outcome != "killed":
-                failures.append((guard, outcome))
-    return failures
+                failures.append((guard, core, outcome))
+    return failures, len(jobs_list)
+
+
+def cores(guard):
+    """The pager cores a guard is checked under."""
+    return guard.get("cores", ["current"])
 
 
 def main():
@@ -106,6 +120,9 @@ def main():
     duplicates = sorted({i for i in ids if ids.count(i) > 1})
     if duplicates:
         parser.error(f"duplicate guard IDs: {duplicates}")
+    unknown_cores = sorted({c for g in guards for c in cores(g)} - {"current", "zircon"})
+    if unknown_cores:
+        parser.error(f"unknown pager cores: {unknown_cores}")
     if args.guard:
         unknown = set(args.guard) - set(ids)
         if unknown:
@@ -122,20 +139,21 @@ def main():
     logs.mkdir(parents=True, exist_ok=True)
     started = time.monotonic()
 
-    failures = check(guards, root, logs, args.repeat, args.jobs, args.timeout)
+    failures, runs = check(guards, root, logs, args.repeat, args.jobs, args.timeout)
     for guard in skipped:
         needs = " as root" if guard.get("root") else ""
         print(f"{'skipped':>16} {'':8}  {guard['id']} (runs on {guard.get('goos', system)}{needs} only)")
     repeated = f" in each of {args.repeat} runs" if args.repeat > 1 else ""
-    print(f"{len(guards) - len(failures)} of {len(guards)} guards killed{repeated}, "
+    print(f"{runs - len(failures)} of {runs} guard runs killed{repeated} "
+          f"({len(guards)} guards), "
           f"{len(skipped)} skipped, {time.monotonic() - started:.0f}s")
     if not failures:
         if args.logs is None:
             shutil.rmtree(logs)
         return
-    for guard, outcome in failures:
-        print(f"{outcome}: SPROUTFS_SIM_BUG={guard['id']} go test ./{guard['package']} "
-              f"-run '{guard['run']}' -count=1", file=sys.stderr)
+    for guard, core, outcome in failures:
+        print(f"{outcome}: SPROUTFS_PAGER_CORE={core} SPROUTFS_SIM_BUG={guard['id']} "
+              f"go test ./{guard['package']} -run '{guard['run']}' -count=1", file=sys.stderr)
     sys.exit(f"logs in {logs}")
 
 

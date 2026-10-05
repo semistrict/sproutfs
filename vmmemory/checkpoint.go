@@ -172,6 +172,9 @@ func (c *MemoryRegionCheckpoint) Hold() { c.held.Store(true) }
 // checkpoint holds its pages, and a VMM asks every memory region it maps to
 // seal for a capture, so it succeeds rather than failing the capture.
 func (r *MemoryRegion) Seal(ctx context.Context) error {
+	if z := r.zircon; z != nil {
+		return z.seal(ctx)
+	}
 	// A capture's pause is this call, so it is timed: the range write-protects
 	// are timed separately inside it, and the difference is what the pager
 	// spends on the pause beside its commands.
@@ -549,6 +552,9 @@ func (c *MemoryRegionCheckpoint) Retire(ctx context.Context, published bool) err
 // Guest stores never waited for the seal: with copy-on-write, what it holds back
 // is the memory region's next checkpoint, not the guest.
 func (r *MemoryRegion) Unseal(ctx context.Context) error {
+	if z := r.zircon; z != nil {
+		return z.unseal(ctx)
+	}
 	return r.endSeal(ctx, nil, false)
 }
 

@@ -380,6 +380,13 @@ func loadConfig(lookup func(string) string) (config, error) {
 	if c.Arena, err = vmmemory.ParseArenaMode(arena); err != nil {
 		fail("SPROUTFS_ARENA is %q, want shared or isolated", arena)
 	}
+	// The pager core is the fault and checkpoint code every pager runs: the
+	// pager's own, or the port of Zircon's page layer, which runs beside it
+	// until it has been measured (plans/zircon-pager-port-2026-10-05.md).
+	core := text("SPROUTFS_PAGER_CORE", vmmemory.CoreCurrent.String())
+	if c.PagerCore, err = vmmemory.ParseCore(core); err != nil {
+		fail("SPROUTFS_PAGER_CORE is %q, want current or zircon", core)
+	}
 	if c.SpillBytes.Total() != spillBytes {
 		fail("SPROUTFS_SPILL_BYTES is %d, which %d%% cannot divide into whole %d-byte RAM pages and whole %d-byte PMEM pages",
 			spillBytes, ramShare, ramPageSize, pmemPageSize)

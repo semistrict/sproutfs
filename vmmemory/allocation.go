@@ -579,6 +579,9 @@ func (h *Host) reclaimIdle(ctx context.Context, _ int64) (bool, error) {
 // kept for the next VM to inherit calls it; so does a test whose machine must
 // fault every page from scratch.
 func (h *Host) DropIdle(ctx context.Context) (int, error) {
+	if z := h.zircon; z != nil {
+		return z.dropIdle(ctx)
+	}
 	dropped := 0
 	for {
 		h.mu.Lock()

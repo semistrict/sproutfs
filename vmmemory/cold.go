@@ -229,6 +229,9 @@ func (r *MemoryRegion) takeColdCopies() []uint64 {
 // them itself, coldCopyAge after they are made; this is for a pager with no
 // session, and for a test.
 func (r *MemoryRegion) GiveBackColdCopies(ctx context.Context) (int, error) {
+	if z := r.zircon; z != nil {
+		return z.giveBackColdCopies(ctx)
+	}
 	return r.givingBack(ctx, r.takeColdCopies)
 }
 

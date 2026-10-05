@@ -16,6 +16,7 @@ import (
 	hostapi "github.com/semistrict/sproutfs/api/host"
 	"github.com/semistrict/sproutfs/host"
 	"github.com/semistrict/sproutfs/internal/testarena"
+	"github.com/semistrict/sproutfs/internal/testcore"
 	"github.com/semistrict/sproutfs/internal/testnet"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/platform/adapters"
@@ -106,6 +107,7 @@ func TestPulledGuestsFaultWithoutTheObjectStore(t *testing.T) {
 		PMEMPageSize: pmemPageBytes(t),
 		ArenaBytes:   host.KindBytes{RAM: pullRAMArena, PMEM: pullPMEMArena},
 		Arena:        testarena.Mode(t),
+		PagerCore:    testcore.Core(t),
 		MemoryBytes:  pullRAMArena + pullPMEMArena,
 		// The memory tier keeps no page, so a page the arena let go of is read
 		// from the disk or from the store and nowhere else.

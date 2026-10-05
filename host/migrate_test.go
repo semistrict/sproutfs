@@ -16,6 +16,7 @@ import (
 	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/host"
 	"github.com/semistrict/sproutfs/internal/testarena"
+	"github.com/semistrict/sproutfs/internal/testcore"
 	"github.com/semistrict/sproutfs/internal/testpager"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/platform/sim"
@@ -89,7 +90,8 @@ func newMixedPagers(t *testing.T, resources *resource.Budget, budget func(*vmmem
 	built := &hostPagers{arenas: map[vmmemory.MemoryRegionKind]*testpager.Arena{}}
 	for _, kind := range []vmmemory.MemoryRegionKind{vmmemory.Ram, vmmemory.Pmem} {
 		cfg := vmmemory.Config{PageSize: checkpoint.PageSize2MiB,
-			ResidentPages: 32, LogicalPages: 64, DirtyPages: 32, ReadAheadPages: 1, Arena: testarena.Mode(t)}
+			ResidentPages: 32, LogicalPages: 64, DirtyPages: 32, ReadAheadPages: 1, Arena: testarena.Mode(t),
+			Core: testcore.Core(t)}
 		if kind == vmmemory.Ram {
 			cfg.PageSize = checkpoint.PageSize4KiB
 		}
@@ -145,6 +147,9 @@ func newPagerWithConfig(t *testing.T, resources *resource.Budget, cfg vmmemory.C
 	}
 	if cfg.Arena == vmmemory.ArenaShared {
 		cfg.Arena = testarena.Mode(t)
+	}
+	if cfg.Core == vmmemory.CoreCurrent {
+		cfg.Core = testcore.Core(t)
 	}
 	built := &hostPagers{arenas: map[vmmemory.MemoryRegionKind]*testpager.Arena{}}
 	for _, kind := range []vmmemory.MemoryRegionKind{vmmemory.Ram, vmmemory.Pmem} {

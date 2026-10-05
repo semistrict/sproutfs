@@ -231,6 +231,9 @@ type SharingStats struct {
 // holds — a page a store copied away from and left behind, or one a fault has
 // created and not yet bound — so it counts in UniqueBytes and in no mapping.
 func (h *Host) Sharing(ctx context.Context) (SharingStats, error) {
+	if z := h.zircon; z != nil {
+		return z.sharing(ctx)
+	}
 	if err := context.Cause(ctx); err != nil {
 		return SharingStats{}, err
 	}
@@ -253,6 +256,9 @@ func (h *Host) Sharing(ctx context.Context) (SharingStats, error) {
 }
 
 func (h *Host) Stats(ctx context.Context) (Stats, error) {
+	if z := h.zircon; z != nil {
+		return z.stats(ctx)
+	}
 	if err := context.Cause(ctx); err != nil {
 		return Stats{}, err
 	}

@@ -245,6 +245,9 @@ type SupervisorConfig struct {
 	// Arena is how both pagers divide their resident pages between the files
 	// of their arenas. The zero value is vmmemory.ArenaIsolated.
 	Arena vmmemory.ArenaMode
+	// PagerCore is the fault and checkpoint core every pager of this host
+	// runs. The zero value is vmmemory.CoreCurrent.
+	PagerCore vmmemory.Core
 	// MemoryBytes is the host-wide RAM allotment both pagers take their pages
 	// from. It is one budget because it is one machine's memory, and because
 	// bytes are the only unit the two pagers' pages can be added in.

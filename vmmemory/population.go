@@ -90,6 +90,9 @@ func (r *MemoryRegion) Populated() PopulateStats {
 // at most populationRuns runs of them. Call it once the mapping accepts commands
 // and before memory users start.
 func (r *MemoryRegion) Populate(ctx context.Context) error {
+	if z := r.zircon; z != nil {
+		return z.populate(ctx)
+	}
 	h := r.host
 	started := h.clock.Now()
 	var installed installedRuns

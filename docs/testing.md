@@ -22,6 +22,8 @@ campaign is a schedule, a fault set and an invariant set over the deployment's
 - the determinism rule below;
 - `gofmt`, `go build` and `go vet` for Linux and macOS;
 - `go test ./...`;
+- the tests `scripts/pager-core-zircon.json` lists, under the zircon pager
+  core in both arena modes (see [the pager cores](#the-pager-cores));
 - `buf lint` and `shellcheck`;
 - the Rust crate's `fmt`, `clippy` and unit tests;
 - the TLA+ specs, model-checked with TLC (see [Model checking](#model-checking)).
@@ -2229,7 +2231,9 @@ SPROUTFS_SIM_BUG=zircon-abandon-leaves-awaiting-clean \
 ```
 
 Each invocation must fail. `just check-guards` runs every entry and fails if
-any of them passes; `just check` runs it, and so does CI. It builds each
+any of them passes; `just check` runs it, and so does CI. An entry runs under
+the pager cores its `cores` names, `current` where it names none; see
+[the pager cores](#the-pager-cores). It builds each
 package's test binary once, runs each entry once with no guard on, and then
 once with its guard on. It takes about fifteen seconds once the binaries are
 built. The `vmmachine` entries name `"goos": "linux"` and `"root": true`, and
@@ -3854,3 +3858,27 @@ VMs left pinned has no tests, because it has no implementation. Its work would
 be what the deployment check's allowances name. The scenarios that pass with
 those allowances measure how much of that work a real deployment would
 accumulate.
+
+## The pager cores
+
+While the pager's page layer is ported from Zircon's
+(`plans/zircon-pager-port-2026-10-05.md`), a pager runs one of two cores,
+which `SPROUTFS_PAGER_CORE` names: `current`, the default, or `zircon`. Every
+suite builds its pagers in the core the variable names (`internal/testcore`),
+as it builds them in the arena mode `SPROUTFS_ARENA` names.
+
+The zircon core serves a growing part of what the current one does.
+`scripts/pager-core-zircon.json` lists, per package, the tests that pass under
+it, and `just check-zircon-core` runs them under it in both arena modes. A
+listed test that fails, or that does not exist, fails the check. Each step of
+the port adds the tests of what it moved:
+
+```sh
+just check-zircon-core
+SPROUTFS_PAGER_CORE=zircon go test ./vmmemory -run '^TestAPrivatePageIsPlacedAtItsOwnOffsetInItsRangesExtent$' -count=1
+```
+
+A guard in `scripts/mutation/guards.json` whose behaviour the zircon core has
+too names both cores, `"cores": ["current", "zircon"]`, and `check-guards`
+must kill it under each. Every Buggify site, probe, guard and controlled point
+on a path the zircon core serves exists there under the same name.

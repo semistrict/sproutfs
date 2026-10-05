@@ -167,6 +167,10 @@ type MemoryRegion struct {
 	// dirty budget at that moment is told a checkpoint is coming rather than
 	// that nothing is.
 	sealing bool
+	// zircon is this memory region's state under the zircon core, nil under
+	// the current one. Every exported method that reaches the page layer asks
+	// it first; see Core.
+	zircon *zirconRegion
 }
 
 // Attach admits metadata and verifies writer authority before exposing a memory region.
@@ -179,6 +183,9 @@ type MemoryRegion struct {
 // guessed it from a volume's name would report memory as disk the first time a
 // deployment named a volume something else.
 func (h *Host) Attach(ctx context.Context, backing MemoryRegionBacking, mapping Mapping) (*MemoryRegion, error) {
+	if z := h.zircon; z != nil {
+		return z.attach(ctx, backing, mapping)
+	}
 	r, err := h.admit(ctx, backing, mapping)
 	if err != nil {
 		return nil, err
@@ -700,6 +707,9 @@ func (r *MemoryRegion) readForCopy(ctx context.Context, b *binding, pg *resident
 // Faults continue while it runs. A memory region that has handed its volume off has no
 // authority to observe and reports success without touching it.
 func (r *MemoryRegion) Verify(ctx context.Context) error {
+	if z := r.zircon; z != nil {
+		return z.verify(ctx)
+	}
 	if err := r.mu.RLock(ctx); err != nil {
 		return err
 	}
@@ -726,6 +736,9 @@ func (r *MemoryRegion) Verify(ctx context.Context) error {
 // checkpoint a publication may still be reading, and permits reuse after failed
 // mapping ACKs. The caller retains ownership of Backing and its lifetime.
 func (r *MemoryRegion) Detach(ctx context.Context) error {
+	if z := r.zircon; z != nil {
+		return z.detach(ctx)
+	}
 	// Faults in flight hold the memory region live, including across the backing reads
 	// they give the memory region lock up for, so the teardown waits for them here
 	// rather than meeting one halfway through.

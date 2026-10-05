@@ -676,6 +676,9 @@ func (r *MemoryRegion) cancelPrefetches(ctx context.Context) error {
 // Nothing waits on a prefetch; this is what a test of a guest that reads only
 // once its neighbours are in waits on.
 func (r *MemoryRegion) SettlePrefetches(ctx context.Context) error {
+	if z := r.zircon; z != nil {
+		return z.settlePrefetches(ctx)
+	}
 	h := r.host
 	for {
 		h.mu.Lock()
@@ -697,6 +700,9 @@ func (r *MemoryRegion) SettlePrefetches(ctx context.Context) error {
 // this is what a test, or a benchmark about to read what is resident, waits
 // on.
 func (h *Host) SettlePrefetches(ctx context.Context) error {
+	if z := h.zircon; z != nil {
+		return z.settlePrefetches(ctx)
+	}
 	for {
 		h.mu.Lock()
 		running, changed := h.prefetchRunning, h.changed
