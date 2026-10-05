@@ -1,11 +1,11 @@
 ---
 id: TASK-92.8
 title: 'Zircon port step 8: faults and prefetches as page requests'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-05 05:09'
-updated_date: '2026-10-05 09:01'
+updated_date: '2026-10-05 09:24'
 labels:
   - pager
   - zircon-port
@@ -27,11 +27,11 @@ Step 8 of the plan. Zircon asks its pager for missing pages with page requests t
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Page requests are ported from page_source.cc; every backing read of a fault or a prefetch goes through one
-- [ ] #2 The prefetch Buggify sites, the nine prefetch probes and the guards pager-read-in-flight-again, pager-read-alone-at-random, pager-prefetch-every-fault, pager-plan-the-window-at-random, pager-read-the-run-first, pager-plan-the-window-first and pager-fault-waits-for-its-prefetch keep their names and are killed or reached as before
-- [ ] #3 TestPrefetchCampaignReplaysItsSeeds and TestPrefetchSurvivesItsFaultsAndReachesItsProbes pass, with the sim.Admit points and the priced planning work under their names
-- [ ] #4 BenchmarkARandom4KiBFault and BenchmarkAForward4KiBFault are recorded before and after on one machine, and neither median is slower by more than the spread of two runs before
-- [ ] #5 Every test in vmmemory, host, vmmigrate and internal/simtest passes unchanged in both arena modes
+- [x] #1 Page requests are ported from page_source.cc; every backing read of a fault or a prefetch goes through one
+- [x] #2 The prefetch Buggify sites, the nine prefetch probes and the guards pager-read-in-flight-again, pager-read-alone-at-random, pager-prefetch-every-fault, pager-plan-the-window-at-random, pager-read-the-run-first, pager-plan-the-window-first and pager-fault-waits-for-its-prefetch keep their names and are killed or reached as before
+- [x] #3 TestPrefetchCampaignReplaysItsSeeds and TestPrefetchSurvivesItsFaultsAndReachesItsProbes pass, with the sim.Admit points and the priced planning work under their names
+- [x] #4 BenchmarkARandom4KiBFault and BenchmarkAForward4KiBFault are recorded before and after on one machine, and neither median is slower by more than the spread of two runs before
+- [x] #5 Every test in vmmemory, host, vmmigrate and internal/simtest passes unchanged in both arena modes
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -54,4 +54,15 @@ Design. zirconvm/pagesource.go is completed in place: AppendOutstanding is the o
 Decision: a fault's own reads go to its memory region's source, not to the root's, so prefetches do not see them. That keeps TestAPrefetchedPageAnotherLoadMadeResidentFirstIsDropped and the duplicate probe as they are (AC 5 and AC 2): the test says a fault's own read is not in flight for prefetches to see. Batching on the roots is prefetch with prefetch (the later leaves those pages to the earlier) and fault waiting on prefetch (the fault's READ request waits on the prefetch's; the prefetch's supply, or failure when its read fails, wakes every waiter at once).
 Deleted: Host.inflight (the per-identity map of prefetches), prefetch.done, and the select on the faulting read's done channel; the fault now waits on its page's request. The prefetch's cancel for pressure stays its context; its read then fails and it fails its requests' range, which is Zircon's failure of a range rather than CancelRequest, because waiters must wake. The bug pager-fault-waits-for-its-prefetch now waits on the prefetch's requests.
 Validation so far: vmmemory, host, vmmigrate, internal/simtest, vmmachine pass in both arena modes; the eight prefetch guards killed in each of 2 runs; campaign tests pass three times.
+
+Benchmarks on the Mac (M5 Pro), before (b0d5af86) and after binaries alternated, ten runs each, three rounds; rounds 2 and 3 ran beside other agents' load. Medians, ns/op, before -> after: BenchmarkARandom4KiBFault 2963 -> 3026, 3404 -> 3697, 4264 -> 4288; BenchmarkAForward4KiBFault 365771 -> 358524, 409924 -> 405486, 504686 -> 469751. Allocations unchanged (38 and about 1950 a fault). The spread of two runs before is 441 ns for the random fault (rounds 1 and 2); the quiet round's +63 ns (2%) is within it, and the forward fault is faster in every round (each root is asked once a window for its prefetches' requests, where the in-flight map was asked once a page).
+Gremlins on pagesource.go and pagerproxy.go: first run 68 killed, 25 lived, 4 not covered; with tests of an out-of-order supply, a failure covering a waiter's start or ending where the next request begins, and a request spanning one already sent: 77 killed, 17 lived, 3 not covered. The 3 not covered are the cancel switch's case conditions; each fails the package's tests when applied by hand. The 17 survivors are asserts' bounds reached only by empty or overflowing ranges, the length of a waiting request (only its start is read), the insert position among requests that never overlap, and boundaries both sides of which agree.
+Race: go test -race ./vmmemory ./vmmemory/internal/zirconvm passes. Guards: 154 of 154 killed in just check; the eight prefetch guards killed in each of two runs. TestPrefetchCampaignReplaysItsSeeds and TestPrefetchSurvivesItsFaultsAndReachesItsProbes pass (run three times).
+Seen while checking, not caused here: cmd/sproutfs-restorebench TestEveryCaseReadsTheGuestBack is flaky on b0d5af86 too (2 of 40 runs fail; the 2MiB/sequential/page/16 cluster case sometimes hedges). just check passed on its second run.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Ported Zircon's page requests in place: zirconvm/pagesource.go completed (AppendOutstanding added as a marked departure) and object/pager_proxy.cc ported as zirconvm/pagerproxy.go, with cases of the port's own. Every backing read of a fault or a prefetch now answers a READ request: a prefetch's go to the identity roots of its pages, so prefetches batch and a fault on a page a prefetch reads waits on its request, which the prefetch's supply or failure wakes; a fault's own reads go to its memory region's source, which prefetches do not see, as before. Deleted Host.inflight and prefetch.done. Verified: the suites of vmmemory, host, vmmigrate, internal/simtest and vmmachine in both arena modes, race on vmmemory and zirconvm, every guard, the campaign replay, Gremlins (77 killed, 17 equivalent survivors), and alternated benchmarks within the spread of two runs before.
+<!-- SECTION:FINAL_SUMMARY:END -->
