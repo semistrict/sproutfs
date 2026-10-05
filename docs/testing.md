@@ -2262,7 +2262,10 @@ scenarios fail a first receive on purpose.
 
 `spill-sparse` leaves a pager's spill file sparse. Its test fills the
 simulated filesystem from outside once the pager has started, and the guest's
-next spill then fails for want of space.
+next spill then fails for want of space. Both spill guards sit in the spill
+storage, `vmmemory/internal/zirconvm/spillstorage.go`, since step 6 of the
+Zircon port made a pager's dirty reservations references of it; their tests
+are still the pager's own.
 
 The sixteen `diskcache-` guards break the page cache's disk. Each is killed by a
 test of the one property it breaks. `diskcache-table-before-sync` is killed

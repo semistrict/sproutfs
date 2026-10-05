@@ -31,12 +31,19 @@ Three parts of `vmmemory` are nested packages that only `vmmemory` can import:
   writeback, zero intervals, reclaim and snapshot-on-write children. A region's
   layer falls through to the identity root its resolver names where Zircon
   walks up to a parent. The departures D1 to D4 are marked in `dirty.go` and
-  `reclaim.go`. The parts of the compression and the page source that
-  VmCowPages calls are ported with it, for steps 6 and 8 to complete. The
-  page queues are whole since step 5, generic over the page they hold, and
-  order the pager's resident pages for reclaim: see
-  [choosing the victim](#choosing-the-victim). The pager's bindings use the
-  page list; nothing outside the package uses the region's layer yet.
+  `reclaim.go`. The part of the page source that VmCowPages calls is ported
+  with it, for step 8 to complete. The page queues are whole since step 5,
+  generic over the page they hold, and order the pager's resident pages for
+  reclaim: see [choosing the victim](#choosing-the-victim). The compression is
+  whole since step 6 (`compression.go`), but for LZ4, which a strategy that
+  stores a page as it is replaces. Its storage is the spill file
+  (`spillstorage.go`), in the shape of Zircon's slot storage: a spilled page
+  is a reference, and a reference is an allocation of one page of the file.
+  D5 is marked there and in `page.go`: a page holds a reference of the
+  storage, its reservation, from before it is Dirty until it is clean, and is
+  spilled into it. The pager's bindings use the page list, and its dirty
+  reservations are references of the spill storage; nothing outside the
+  package uses the region's layer yet.
 
 The histograms of the fault path are in `internal/latency`, outside `vmmemory`.
 None of these packages uses any pager state: no host lock, no memory region and
@@ -187,8 +194,12 @@ separate memfds and never draw on the same allotment.
 Each pager takes an arena, a dedicated scratch spill file, and explicit
 resident, logical and dirty page budgets. Logical admission bounds metadata for
 every attached memory region, including pages never touched. Every private page takes
-a spill slot before a write can resume. The spill slot covers resident and
-spilled dirty state together. The dirty budget sets the size of the spill file.
+a dirty reservation before a write can resume: a reference of the spill
+storage (`internal/zirconvm/spillstorage.go`), which names one page of the
+spill file. The reservation covers resident and spilled dirty state together.
+A spill writes the page into it, and a refault reads it back and checks it
+against the CRC32C the write recorded. The dirty budget sets the size of the
+spill file.
 So the file's whole extent is the pager's fixed disk cap, and a store never
 needs room from anywhere else. `New` allocates that extent (`fallocate` on
 Linux) before the pager takes any work, and a filesystem that cannot hold it
@@ -1302,11 +1313,11 @@ waits for it. A reclaim is the only thing that can hold a page of the memory reg
 being sealed. It ends with the page nonresident and the page's bytes in that
 page's own dirty reservation. So the seal joins the checkpoint's copy of the
 page to that resident page without taking its lock, and lets the reservation
-carry the bytes. For this reason, whether a reservation's slot holds its page's
-bytes is state of the slot, not of the binding. The seal hands the reservation to the
-copy while the reclaim is still writing to it, and the slot is the only thing
-both of them name. The seal revokes such a page instead of write-protecting it.
-The reclaim is revoking it anyway, and revocation is stronger. The reclaim reads
+carry the bytes. For this reason, whether a reservation holds its page's
+bytes is state of the spill storage, not of the binding. The seal hands the
+reservation to the copy while the reclaim is still writing to it, and the
+reservation is the only thing both of them name. The seal revokes such a page
+instead of write-protecting it. The reclaim is revoking it anyway, and revocation is stronger. The reclaim reads
 the page's aliases and then the reservations they name. The seal joins the copy
 to the page before it hands that copy the reservation. So the reclaim walks the
 alias set again if it has grown since the reservations were read. The alias that
@@ -1627,8 +1638,9 @@ that never completes still reports the work that walk did.
 The spill file is scratch storage. It is never an acknowledged crash-recovery
 image. A starting process truncates it, because a restart is a host loss and
 nothing in the file is valid afterwards. For the same reason, it is written but
-not synced. A released slot keeps its blocks. Punching them would give them back
-to the filesystem, and the next page spilled to that slot could find them
+not synced. The spill storage truncates it and allocates its extent when the
+pager starts. A released slot keeps its blocks. Punching them would give them
+back to the filesystem, and the next page spilled to that slot could find them
 taken. Allocating the slot again before that write would not help, because the
 allocation is itself the write that finds the disk full. A released slot's old
 bytes are never read: the slot holds nothing until it is written again.

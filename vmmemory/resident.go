@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"hash/crc32"
-	"io"
 	"slices"
 
 	"github.com/semistrict/sproutfs/control"
@@ -93,24 +91,10 @@ func (h *Host) read(ctx context.Context, b *binding, pg *resident, dst []byte) e
 			// two share a resident page, so a nonresident binding means both are.
 			return h.read(ctx, b.checkpoint, nil, dst)
 		}
-		sum, held := h.spillDigest(b.spillSlot)
-		if !held {
-			return errors.New("private page has no current backing")
-		}
-		n, err := h.spill.ReadAt(ctx, dst, int64(b.spillSlot)*int64(h.pageSize))
-		if err == nil && n != len(dst) {
-			err = io.ErrUnexpectedEOF
-		}
-		if err != nil {
-			return err
-		}
 		// The spill file is the only copy of this page, and a local device that
 		// loses or garbles a sector of it would otherwise hand the guest memory
-		// it never wrote. The page is refused instead.
-		if crc32.Checksum(dst, spillChecksums) != sum {
-			return ErrSpillCorrupt
-		}
-		return nil
+		// it never wrote. The storage checks it, and the page is refused.
+		return h.readSpill(ctx, b.spill, dst)
 	}
 	_, err := b.memoryRegion.loadBacking(ctx, b.index*h.pageSize, dst)
 	return err
@@ -462,7 +446,7 @@ func (r *MemoryRegion) storedIdentities(ctx context.Context, held []*binding) (m
 	result := make(map[uint64]storedPage, len(held))
 	var window *windowPlan
 	for _, checkpoint := range held {
-		if checkpoint.spillSlot < 0 {
+		if checkpoint.spill.none() {
 			continue
 		}
 		index := checkpoint.index

@@ -170,7 +170,7 @@ func (s *settler) compare(ctx context.Context, c *MemoryRegionCheckpoint, held *
 	r := c.memoryRegion
 	h := r.host
 	origin := r.originOf(held)
-	if origin == nil || held.spillSlot < 0 {
+	if origin == nil || held.spill.none() {
 		return nil, nil
 	}
 	if h.wholeRange(r, held.index) {
@@ -368,8 +368,8 @@ func (c *MemoryRegionCheckpoint) drop(ctx context.Context, held *binding, pg, or
 	if err := h.unlink(ctx, held, pg); err != nil {
 		return err
 	}
-	h.releaseSpill(held.spillSlot)
-	held.spillSlot, held.dirty, held.origin = -1, false, nil
+	h.releaseSpill(held.spill)
+	held.spill, held.dirty, held.origin = noReservation, false, nil
 	return nil
 }
 

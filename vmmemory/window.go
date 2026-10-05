@@ -52,12 +52,12 @@ type windowPlan struct {
 	private       []bool
 	observedZeros bool
 	locked        map[*resident]bool
-	// spill names the dirty reservation the fault brought with it, or -1. A
+	// spill names the dirty reservation the fault brought with it, or none. A
 	// page the backing serves out of another host's memory is this memory region's own
 	// dirty state, so loading it takes a reservation, and the faulting page's
 	// is taken by the waiting path before the fault holds any lock. It is
-	// consumed by setting it to -1.
-	spill *int
+	// consumed by setting it to none.
+	spill *reservation
 	// installed is what this plan's own mapping commands came to, beside the
 	// pager-wide counters they also advance: a populate adds it up over its
 	// windows to say what one attach cost before its guest ran.
@@ -99,7 +99,7 @@ func (r *MemoryRegion) planPage(ctx context.Context, start, end, fault, page uin
 }
 
 func (r *MemoryRegion) newPlan(start, end, fault uint64) *windowPlan {
-	none := -1
+	none := noReservation
 	p := &windowPlan{memoryRegion: r, start: start, end: end, fault: fault, store: end,
 		pages: make([]*resident, end-start), file: r.sharedFile(), reserved: make([]fileSlot, end-start),
 		fresh: make([]bool, end-start), zeros: make([]bool, end-start), private: make([]bool, end-start),
@@ -736,9 +736,9 @@ func (p *windowPlan) publish(ctx context.Context, page uint64, data []byte, priv
 		// budget stalls the fault before it holds anything rather than failing
 		// it; read-ahead takes only a reservation that is free now and leaves
 		// the page for a later fault when none is.
-		spill := -1
-		if page == p.fault && *p.spill >= 0 {
-			spill, *p.spill = *p.spill, -1
+		var spill reservation
+		if page == p.fault && !p.spill.none() {
+			spill, *p.spill = *p.spill, noReservation
 		} else {
 			var err error
 			if spill, err = h.tryTakeSpill(); err != nil {
@@ -762,7 +762,7 @@ func (p *windowPlan) publish(ctx context.Context, page uint64, data []byte, priv
 		}
 		b := p.memoryRegion.binding(page)
 		b.zero = false
-		b.spillSlot = spill
+		b.spill = spill
 		p.memoryRegion.setDirty(b, true)
 		h.bind(b, pg)
 		h.probe.granted(b, pg, nil)

@@ -289,7 +289,7 @@ func (r *MemoryRegion) takePages(ctx context.Context, pending map[uint64]*bindin
 					locked = append(locked, pg)
 				}
 				held := &copies[taken+i]
-				*held = binding{memoryRegion: r, index: b.index, dirty: true, spillSlot: b.spillSlot}
+				*held = binding{memoryRegion: r, index: b.index, dirty: true, spill: b.spill}
 				switch {
 				case pg != nil:
 					h.bind(held, pg)
@@ -649,7 +649,7 @@ func (r *MemoryRegion) finalizeCheckpoint(ctx context.Context, c *MemoryRegionCh
 		return err
 	}
 	for _, checkpoint := range held {
-		if checkpoint.spillSlot < 0 {
+		if checkpoint.spill.none() {
 			continue
 		}
 		b := r.lookupBinding(checkpoint.index)
@@ -689,8 +689,8 @@ func (r *MemoryRegion) finalizeCheckpoint(ctx context.Context, c *MemoryRegionCh
 				return err
 			}
 		}
-		h.releaseSpill(checkpoint.spillSlot)
-		checkpoint.spillSlot, checkpoint.dirty = -1, false
+		h.releaseSpill(checkpoint.spill)
+		checkpoint.spill, checkpoint.dirty = noReservation, false
 	}
 	return nil
 }
@@ -721,7 +721,7 @@ func (r *MemoryRegion) revokeHandedBack(ctx context.Context, held []*binding, id
 	h := r.host
 	var guests []*binding
 	for _, checkpoint := range held {
-		if checkpoint.spillSlot < 0 {
+		if checkpoint.spill.none() {
 			continue
 		}
 		now := identities[checkpoint.index]
@@ -763,12 +763,12 @@ func (r *MemoryRegion) abandonPages(ctx context.Context, pages []*binding) error
 	h := r.host
 	var restored []*binding
 	for _, held := range pages {
-		if held.spillSlot < 0 {
+		if held.spill.none() {
 			continue // already retired
 		}
 		b := r.lookupBinding(held.index)
 		shared := b != nil && r.heldBy(held.index, held)
-		slot := held.spillSlot
+		spill := held.spill
 		pg, err := h.current(ctx, held)
 		if err != nil {
 			return err
@@ -796,7 +796,7 @@ func (r *MemoryRegion) abandonPages(ctx context.Context, pages []*binding) error
 				restored = append(restored, b)
 			}
 		} else {
-			held.spillSlot, held.dirty = -1, false
+			held.spill, held.dirty = noReservation, false
 		}
 		// The live page keeps its memory when it still shares one; unlink
 		// releases it only where the checkpoint's copy is its last alias.
@@ -808,7 +808,7 @@ func (r *MemoryRegion) abandonPages(ctx context.Context, pages []*binding) error
 			}
 		}
 		if !shared {
-			h.releaseSpill(slot)
+			h.releaseSpill(spill)
 		}
 	}
 	// The seal left these pages mapped in the read-only form the guest traps
@@ -838,9 +838,9 @@ func (r *MemoryRegion) discardCheckpoint(ctx context.Context, checkpoint *Memory
 				return err
 			}
 		}
-		if held.spillSlot >= 0 {
-			h.releaseSpill(held.spillSlot)
-			held.spillSlot, held.dirty = -1, false
+		if !held.spill.none() {
+			h.releaseSpill(held.spill)
+			held.spill, held.dirty = noReservation, false
 		}
 	}
 	if err := checkpoint.endFork(ctx); err != nil {

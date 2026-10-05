@@ -20,12 +20,12 @@ type binding struct {
 	// Host.mu protects the pointer. The pointed-to resident's lock protects
 	// mapping state. Eviction publishes spill before clearing this pointer.
 	resident *resident
-	// spillSlot names the dirty reservation this page was admitted under, or
-	// -1. Whether the slot holds the page's bytes is the slot's own state, in
-	// Host.reservations: a seal hands a reservation to the checkpoint's copy
-	// while a reclaim may already be writing the bytes it will hold, and the
-	// fact has to follow the slot rather than the binding that named it.
-	spillSlot int
+	// spill is the dirty reservation this page was admitted under, or none.
+	// Whether it holds the page's bytes is the spill storage's own state: a
+	// seal hands a reservation to the checkpoint's copy while a reclaim may
+	// already be writing the bytes it will hold, and the fact has to follow the
+	// reservation rather than the binding that named it.
+	spill reservation
 	// checkpoint names the detached copy holding this page's sealed bytes while a
 	// checkpoint ingests. Such a binding is dirty but owns neither the spill
 	// reservation nor the right to store: it shares the checkpoint's page until a
@@ -114,7 +114,7 @@ func (r *MemoryRegion) bindingLocked(index uint64) *binding {
 		return b
 	}
 	slot, inRun := r.pages.LookupOrAllocate(offset, zirconvm.SplitInterval)
-	b := &binding{memoryRegion: r, index: index, spillSlot: -1}
+	b := &binding{memoryRegion: r, index: index}
 	if inRun {
 		b.zero, b.mapped = true, true
 	}
@@ -152,10 +152,10 @@ func (r *MemoryRegion) eachBoundLocked(first, last uint64, visit func(*binding))
 // copy of it, or because the page is not this memory region's own state at all. Both
 // are read together under the map lock, because a seal moves the reservation to
 // the checkpoint's copy while a reclaim of the resident page is reading it.
-func (b *binding) spillTarget() (slot int, elsewhere bool) {
+func (b *binding) spillTarget() (spill reservation, elsewhere bool) {
 	b.memoryRegion.bindingsMu.Lock()
 	defer b.memoryRegion.bindingsMu.Unlock()
-	return b.spillSlot, !b.dirty || b.checkpoint != nil
+	return b.spill, !b.dirty || b.checkpoint != nil
 }
 
 // setMapped and isMapped carry a page's mapping state across the one pair of
@@ -398,7 +398,7 @@ func (r *MemoryRegion) holdInCheckpoint(b, held *binding) {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
 	r.uncoldLocked(b)
-	b.checkpoint, b.spillSlot = held, -1
+	b.checkpoint, b.spill = held, noReservation
 	held.ahead, b.ahead = b.ahead, false
 	// The bytes the seal froze are the ones that were copied, so the page they
 	// came from is the checkpoint's to compare them with.
@@ -439,11 +439,11 @@ func (r *MemoryRegion) checkpointCopy(b *binding) *binding {
 // because a page that is dirty with neither of them is a page a reclaim would
 // punch. It is also what a store into a clean page does, which depends on no
 // checkpoint and takes the same reservation.
-func (r *MemoryRegion) takeFromCheckpoint(b *binding, slot int, origin *resident) {
+func (r *MemoryRegion) takeFromCheckpoint(b *binding, spill reservation, origin *resident) {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
 	r.uncoldLocked(b)
-	b.checkpoint, b.spillSlot, b.dirty, b.zero = nil, slot, true, false
+	b.checkpoint, b.spill, b.dirty, b.zero = nil, spill, true, false
 	b.origin = origin
 	if r.dirtyBindings == nil {
 		r.dirtyBindings = make(map[uint64]*binding)
@@ -463,9 +463,9 @@ func (r *MemoryRegion) restoreFromCheckpoint(b, held *binding) {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
 	r.uncoldLocked(b)
-	b.checkpoint, b.spillSlot, b.dirty, b.ahead = nil, held.spillSlot, true, held.ahead
+	b.checkpoint, b.spill, b.dirty, b.ahead = nil, held.spill, true, held.ahead
 	b.origin, held.origin = held.origin, nil
-	held.spillSlot, held.dirty, held.ahead = -1, false, false
+	held.spill, held.dirty, held.ahead = noReservation, false, false
 	if r.dirtyBindings == nil {
 		r.dirtyBindings = make(map[uint64]*binding)
 	}
@@ -500,18 +500,18 @@ func (r *MemoryRegion) forgetOrigin(b *binding, origin *resident) {
 // reservation the page was admitted under, for the caller to give back. A
 // memory region left with no dirty page holds no unpublished write, so its
 // loss window ends too.
-func (r *MemoryRegion) endDirty(b *binding) int {
+func (r *MemoryRegion) endDirty(b *binding) reservation {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
 	r.uncoldLocked(b)
-	slot := b.spillSlot
-	b.spillSlot, b.dirty, b.ahead, b.origin = -1, false, false, nil
+	spill := b.spill
+	b.spill, b.dirty, b.ahead, b.origin = noReservation, false, false, nil
 	delete(r.dirtyBindings, b.index)
 	r.noteSealableLocked(b)
 	if len(r.dirtyBindings) == 0 {
 		r.dirtySince = time.Time{}
 	}
-	return slot
+	return spill
 }
 
 // heldBy reports whether the live page still shares the checkpoint's copy,

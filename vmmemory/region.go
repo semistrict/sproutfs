@@ -754,9 +754,9 @@ func (r *MemoryRegion) Detach(ctx context.Context) error {
 			}
 		}
 		b.dirty, b.checkpoint, b.ahead = false, nil, false
-		if b.spillSlot >= 0 {
-			h.releaseSpill(b.spillSlot)
-			b.spillSlot = -1
+		if !b.spill.none() {
+			h.releaseSpill(b.spill)
+			b.spill = noReservation
 		}
 	}
 	if checkpoint := r.currentCheckpoint(); checkpoint != nil {

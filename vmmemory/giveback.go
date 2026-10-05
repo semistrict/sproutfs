@@ -214,8 +214,8 @@ func (r *MemoryRegion) shareOrigin(ctx context.Context, b *binding, pg, origin *
 		return err
 	}
 	h.bind(b, origin)
-	if slot := r.endDirty(b); slot >= 0 {
-		h.releaseSpill(slot)
+	if spill := r.endDirty(b); !spill.none() {
+		h.releaseSpill(spill)
 	}
 	h.probe.retired(b)
 	h.touch(origin)

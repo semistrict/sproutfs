@@ -466,8 +466,8 @@ func (r *MemoryRegion) giveBackSpilled(ctx context.Context, b *binding, origin *
 		panic(found)
 	}
 	h.bind(b, origin)
-	if slot := r.endDirty(b); slot >= 0 {
-		h.releaseSpill(slot)
+	if spill := r.endDirty(b); !spill.none() {
+		h.releaseSpill(spill)
 	}
 	h.probe.retired(b)
 	h.touch(origin)
@@ -546,8 +546,8 @@ func (r *MemoryRegion) giveBackToVolume(ctx context.Context, b *binding, buffers
 			return false, err
 		}
 	}
-	if slot := r.endDirty(b); slot >= 0 {
-		h.releaseSpill(slot)
+	if spill := r.endDirty(b); !spill.none() {
+		h.releaseSpill(spill)
 	}
 	h.probe.retired(b)
 	h.mu.Lock()

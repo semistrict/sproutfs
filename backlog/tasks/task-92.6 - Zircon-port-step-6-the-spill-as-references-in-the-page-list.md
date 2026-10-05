@@ -1,10 +1,11 @@
 ---
 id: TASK-92.6
 title: 'Zircon port step 6: the spill as references in the page list'
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-05 05:09'
-updated_date: '2026-10-05 07:39'
+updated_date: '2026-10-05 09:03'
 labels:
   - pager
   - zircon-port
@@ -34,8 +35,26 @@ Step 6 of the plan. Zircon records a compressed page as a reference in its page 
 - [ ] #6 A checkpoint's abandon (WritebackAbandon, from TASK-92.9) gives each page made Dirty again its own reservation, shown by a test
 <!-- AC:END -->
 
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. zirconvm/compression.go: complete VmCompression in place: the storage interface with a context for I/O, statistics and memory usage, StoreAsIs as the strategy (LZ4 not ported), and D5: Reserve, a store into the page's own reservation, a decompress that keeps it. No timestamp: a page stored as it is fills its slot.
+2. zirconvm/spillstorage.go: the spill file as compressed storage in the shape of VmSlotPageStorage: a reference is an allocation's id past the alignment bits; allocations handed out lowest first and reused last-freed first (reservations.go's order); the file truncated and allocated at start (spill-sparse), a CRC32C per allocation checked on read, pager-forget-spill on store, consecutive references written in one write.
+3. D5 in VmCowPages: a page holds a reservation while Dirty or AwaitingClean, taken before it becomes Dirty (store, D1 copy, dirty copy of a root's page, DirtyPages all up front), kept through spill and refault, given back when it is cleaned or freed. WritebackAbandon gives each page made Dirty again its own.
+4. Tests: compression_smoke/zero/fail/move_reference ported over a sim.Disk spill file at both page sizes; the zirconvm test helper's memory storage replaced by it; reservations_internal_test.go's properties against the spill storage; D5 cases and the abandon AC.
+5. Replace in place in vmmemory: reservations.go deleted; the binding's spill slot becomes a reservation (a reference of the spill storage); takeSpill, releaseSpill, evictBatch's writes, the spill read, New and Close go through the storage.
+6. Whole suite both arena modes, -race on vmmemory and zirconvm, check-guards, benchmarks old/new alternated, Gremlins on changed zirconvm files, docs, just check.
+<!-- SECTION:PLAN:END -->
+
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
 TASK-92.9 ported compressor.cc and compression.cc's reference bookkeeping into vmmemory/internal/zirconvm/compression.go ahead of this step, over storage and strategy interfaces, without D5 or the four tests. This step adds the reference storage, D5 and the reservations.
+
+Design: zirconvm.SpillStorage (spillstorage.go, the shape of slot_page_storage.cc) is the spill file as VmCompression's storage. A reference is an allocation id shifted past the alignment bits, one page of the file per allocation; ids are handed out lowest first and reused last-freed first, the order reservations.go had, so state is kept only for what was handed out and seeds replay. It truncates and allocates the file at start (spill-sparse sits there), records a CRC32C per store (pager-forget-spill sits there) and checks it on read (ErrIODataIntegrity, which vmmemory reports as ErrSpillCorrupt), writes consecutive references in one write, and keeps Zircon's metadata and memory usage. MaxSpillPages is 2^29-1, every id a reference names but the temporary one; a larger dirty budget is ErrConfig.
+compression.go is whole but for LZ4 (StoreAsIs replaces it), the timestamp (no room after a whole page) and Dump. Its storage interface takes a context, since the storage is a file; Decompress can fail, and then the reference stays.
+D5 in VmCowPages: VmPage carries a reservation, taken before the page becomes Dirty (dirtyForStoreLocked, D1's copy, the lookup cursor's dirty copy, DirtyPages all up front so it stays all or nothing), held while Dirty or AwaitingClean, compressed into (the reference is the reservation), decompressed back keeping it (DecompressReserved), given back when the page is cleaned or freed. A moved temporary reference hands the reservation to the spare page; a compression result written into a reservation someone else now holds is unstored, not freed. updateDirtyStateLocked asserts the invariant. Anonymous pages compress as Zircon's do. A spilled AwaitingClean page that WritebackEnd cleans stays a Clean reference holding its bytes, as step 9 left it.
+vmmemory: reservations.go deleted; the binding's spillSlot int is now a reservation (a spill storage reference, or none); Host.spill is the storage. reservations_internal_test.go's properties moved to zirconvm/spillstorage_test.go against the storage.
+A binding still holds its reservation rather than the page list slot holding a Reference: the old core's bindings must stay in their slots while spilled (faults, alias sets and seals hold them), so a spilled page's reference is in the page list in the region's layer (zirconvm) and in the binding's reservation in the old core until step 11/12 replaces it.
+Signature changes for the context the storage needs: ReclaimPage, ReadWriteback, SupplyPages, RequireReadPage, DecompressInRange, ProcessPagesForSupply take ctx; zirconvm tests updated mechanically. fault.go touched only for the reservation type (spill *int -> *reservation, -1 -> noReservation); faultfirst.go, prefetch.go, pagesource.go untouched.
 <!-- SECTION:NOTES:END -->

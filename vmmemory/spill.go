@@ -3,60 +3,63 @@ package vmmemory
 import (
 	"context"
 	"errors"
-	"fmt"
-	"hash/crc32"
-	"io"
 	"sort"
 
-	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/platform/sim"
+	"github.com/semistrict/sproutfs/vmmemory/internal/zirconvm"
 )
 
-// spillHolds reports whether a reservation's slot holds its page's bytes. It is
-// the slot's state, not the binding's: an eviction publishes those bytes while
-// a seal may be handing the reservation to the checkpoint's copy of the page,
-// and only the slot is named by both.
-func (h *Host) spillHolds(slot int) bool {
-	if slot < 0 {
-		return false
-	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.reservations.holds(slot)
+// reservation is the dirty reservation a page was admitted under: a reference
+// of the pager's spill storage (zirconvm.SpillStorage), which is where the
+// page's bytes go when it is spilled, or none. A page takes it before it is
+// dirty, so a spill never needs room (D5 of the Zircon port). Whether the
+// reference holds the page's bytes is the storage's state, not the binding's:
+// an eviction writes those bytes while a seal may be handing the reservation
+// to the checkpoint's copy of the page, and only the reference is named by
+// both.
+type reservation struct {
+	ref   zirconvm.ReferenceValue
+	taken bool
 }
 
-// spillChecksums is what every spilled page is checked against when it comes
-// back. The spill file is scratch on a local device, so the authority for what
-// it should hold lives in this process and not in the file: a page that comes
-// back short, zeroed or holding bytes nobody wrote is a page the device lost,
-// and handing it to the guest would be handing the guest silently wrong memory.
-var spillChecksums = crc32.MakeTable(crc32.Castagnoli)
+// noReservation is no reservation at all.
+var noReservation reservation
 
-// spillDigest reports the checksum a slot's bytes must have, and whether the
-// slot holds any.
-func (h *Host) spillDigest(slot int) (uint32, bool) {
-	if slot < 0 {
-		return 0, false
-	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.reservations.digest(slot)
+// none reports whether this is no reservation.
+func (r reservation) none() bool { return !r.taken }
+
+// spillHolds reports whether a reservation holds its page's bytes.
+func (h *Host) spillHolds(spill reservation) bool {
+	return !spill.none() && h.spill.Holds(spill.ref)
 }
 
 // ErrSpillCorrupt reports a spilled page whose bytes are not the ones that were
-// written to its reservation.
+// written to its reservation. The spill file is scratch on a local device, so
+// the authority for what it should hold lives in this process and not in the
+// file: a page that comes back short, zeroed or holding bytes nobody wrote is a
+// page the device lost, and handing it to the guest would be handing the guest
+// silently wrong memory.
 var ErrSpillCorrupt = errors.New("vmmemory: spilled page does not match its checksum")
 
-// releaseSpill returns a dirty page's spill slot to the host and wakes waiters.
-func (h *Host) releaseSpill(slot int) {
-	// The slot keeps its blocks. Punching them would give them back to the
-	// filesystem, where another writer on the node can take them, and the next
-	// page spilled to this slot would then have nowhere to go. Allocating the
-	// slot again before that write would not help: the allocation is itself the
-	// write that finds the disk full. The stale bytes are never read, because
-	// the slot is not recorded as holding any until it is written again.
+// readSpill reads the bytes a reservation holds into dst.
+func (h *Host) readSpill(ctx context.Context, spill reservation, dst []byte) error {
+	if spill.none() {
+		return errors.New("private page has no current backing")
+	}
+	if _, _, err := h.spill.CompressedData(ctx, spill.ref, dst); err != nil {
+		if errors.Is(err, zirconvm.ErrIODataIntegrity) {
+			return errors.Join(ErrSpillCorrupt, err)
+		}
+		return err
+	}
+	return nil
+}
+
+// releaseSpill returns a dirty page's reservation to the host and wakes
+// waiters.
+func (h *Host) releaseSpill(spill reservation) {
 	h.mu.Lock()
-	h.reservations.put(slot)
+	h.spill.Free(spill.ref)
 	h.dirty--
 	if h.dirty < h.highWater {
 		// Back under the mark: the next store to cross it asks again.
@@ -66,63 +69,51 @@ func (h *Host) releaseSpill(slot int) {
 	h.mu.Unlock()
 }
 
-// allocateSpill sizes a new pager's spill file to its dirty budget and
-// allocates that whole extent. A spilled dirty page is the only copy of what
-// the guest wrote, so a spill must never fail for want of disk. A sparse file
-// would not do: the space it has not used yet is only free space on the
-// filesystem, which another writer on the node can take. The extent is this
-// pager's fixed cap on the disk, held from start to close.
-func allocateSpill(ctx context.Context, spill platform.File, size int64) error {
-	if sim.Bug(ctx, "spill-sparse") {
-		return spill.Truncate(ctx, size)
-	}
-	file, ok := spill.(platform.AllocatingFile)
+// takeReservationLocked admits one more private page to the dirty budget if
+// the budget has room. Caller holds h.mu.
+func (h *Host) takeReservationLocked() (reservation, bool) {
+	ref, ok := h.spill.Reserve()
 	if !ok {
-		return fmt.Errorf("%w: a spill file must allocate its extent", ErrConfig)
+		return noReservation, false
 	}
-	if err := file.Allocate(ctx, 0, size); err != nil {
-		return fmt.Errorf("allocating the spill file's %d bytes: %w", size, err)
-	}
-	return nil
+	h.dirty++
+	h.stats.PeakDirtyPages = max(h.stats.PeakDirtyPages, h.dirty)
+	return reservation{ref: ref, taken: true}, true
 }
 
 // tryTakeSpill admits one more private page to the dirty budget without
 // waiting. A load that cannot have one fails rather than holding resident locks
 // and an I/O permit while the budget frees up.
-func (h *Host) tryTakeSpill() (int, error) {
+func (h *Host) tryTakeSpill() (reservation, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.err != nil {
-		return 0, h.err
+		return noReservation, h.err
 	}
-	if slot, ok := h.reservations.take(); ok {
-		h.dirty++
-		h.stats.PeakDirtyPages = max(h.stats.PeakDirtyPages, h.dirty)
-		return slot, nil
+	if spill, ok := h.takeReservationLocked(); ok {
+		return spill, nil
 	}
-	return 0, ErrCapacity
+	return noReservation, ErrCapacity
 }
 
 // takeFreeSpill admits up to want more private pages to the dirty budget
 // without waiting: it takes only reservations that are free now, which is all
 // write-ahead may use.
-func (h *Host) takeFreeSpill(want int) []int {
+func (h *Host) takeFreeSpill(want int) []reservation {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.err != nil || want <= 0 {
 		return nil
 	}
-	slots := make([]int, 0, min(want, h.reservations.available()))
-	for len(slots) < want {
-		slot, ok := h.reservations.take()
+	spills := make([]reservation, 0, min(want, h.spill.Available()))
+	for len(spills) < want {
+		spill, ok := h.takeReservationLocked()
 		if !ok {
 			break
 		}
-		slots = append(slots, slot)
+		spills = append(spills, spill)
 	}
-	h.dirty += len(slots)
-	h.stats.PeakDirtyPages = max(h.stats.PeakDirtyPages, h.dirty)
-	return slots
+	return spills
 }
 
 // evictionSeam runs in a reclaim between reading one victim's aliases and
@@ -143,11 +134,11 @@ func (h *Host) evictBatch(ctx context.Context, victims []*resident) error {
 	// page before this walk and by the copy after it, and is written once
 	// either way.
 	type spillPage struct {
-		slot     int
+		spill    reservation
 		resident *resident
 	}
 	var pages []spillPage
-	taken := make(map[int]bool)
+	taken := make(map[reservation]bool)
 	byMemoryRegion := make(map[*MemoryRegion][]*binding)
 	for _, pg := range victims {
 		// The seal joins the checkpoint's copy to the page before it hands
@@ -180,8 +171,8 @@ func (h *Host) evictBatch(ctx context.Context, victims []*resident) error {
 				if !pg.private {
 					continue
 				}
-				slot, elsewhere := b.spillTarget()
-				if slot < 0 {
+				spill, elsewhere := b.spillTarget()
+				if spill.none() {
 					// A page sharing a checkpoint's copy owns no reservation of its own:
 					// the checkpoint's copy is the alias that spills those bytes, and so
 					// does a machine that inherited the name a seal gave the page, whose
@@ -192,11 +183,11 @@ func (h *Host) evictBatch(ctx context.Context, victims []*resident) error {
 					}
 					continue
 				}
-				if taken[slot] {
+				if taken[spill] {
 					continue
 				}
-				taken[slot] = true
-				pages = append(pages, spillPage{slot, pg})
+				taken[spill] = true
+				pages = append(pages, spillPage{spill, pg})
 			}
 		}
 	}
@@ -217,44 +208,26 @@ func (h *Host) evictBatch(ctx context.Context, victims []*resident) error {
 			return errors.Join(errVictimHeld, err)
 		}
 	}
-	sort.Slice(pages, func(i, j int) bool { return pages[i].slot < pages[j].slot })
+	// The storage writes each run of consecutive reservations in one write, so
+	// the pages go to it in the order of their reservations.
+	sort.Slice(pages, func(i, j int) bool { return pages[i].spill.ref.Value() < pages[j].spill.ref.Value() })
 	if len(pages) > 0 {
 		ps := int(h.pageSize)
 		data := make([]byte, len(pages)*ps)
+		refs := make([]zirconvm.ReferenceValue, len(pages))
 		for i, page := range pages {
 			if err := page.resident.file.Read(ctx, page.resident.slot, data[i*ps:(i+1)*ps]); err != nil {
 				return err
 			}
+			refs[i] = page.spill.ref
 		}
-		for start := 0; start < len(pages); {
-			end := start + 1
-			for end < len(pages) && pages[end].slot == pages[end-1].slot+1 {
-				end++
-			}
-			bytes := data[start*ps : end*ps]
-			h.mu.Lock()
-			for i, page := range pages[start:end] {
-				// The bytes are written to scratch and the slot is not recorded
-				// as holding them, so a refault reads whatever the slot held
-				// before instead of the guest's private page.
-				h.reservations.record(page.slot, crc32.Checksum(bytes[i*ps:(i+1)*ps], spillChecksums),
-					!sim.Bug(ctx, "pager-forget-spill"))
-			}
-			h.mu.Unlock()
-			n, err := h.spill.WriteAt(ctx, bytes, int64(pages[start].slot)*int64(h.pageSize))
-			if err == nil && n != len(bytes) {
-				err = io.ErrShortWrite
-			}
-			if err != nil {
-				return err
-			}
-			h.mu.Lock()
-			h.stats.SpillWrites++
-			h.stats.SpillWriteBytes += uint64(len(bytes))
-			h.mu.Unlock()
-			start = end
+		writes, err := h.spill.StoreReserved(ctx, refs, data)
+		if err != nil {
+			return err
 		}
 		h.mu.Lock()
+		h.stats.SpillWrites += uint64(writes)
+		h.stats.SpillWriteBytes += uint64(len(data))
 		h.stats.Spills += uint64(len(pages))
 		h.mu.Unlock()
 	}

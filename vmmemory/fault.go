@@ -28,16 +28,16 @@ func (r *MemoryRegion) Fault(ctx context.Context, index uint64, write bool) erro
 		// still holds is the same kind of page — the load makes it this
 		// memory region's dirty state — so the attempt that discovers it comes back
 		// here to take one the same way.
-		spill := -1
+		var spill reservation
 		if reserve || (write && r.needsPrivatePage(index)) {
-			slot, err := r.host.takeSpill(ctx, r)
+			taken, err := r.host.takeSpill(ctx, r)
 			if err != nil {
 				return err
 			}
-			spill = slot
+			spill = taken
 		}
 		retry, err := r.fault(ctx, index, write, &spill)
-		if spill >= 0 {
+		if !spill.none() {
 			r.host.releaseSpill(spill)
 		}
 		if errors.Is(err, errUnpublishedReservation) {
@@ -62,8 +62,8 @@ var errUnpublishedReservation = errors.New("managed-memory fault needs a dirty r
 const faultAttempts = 8
 
 // fault serves one attempt and reports whether it must be retried with a dirty
-// reservation it did not hold. It consumes *spill by setting it to -1.
-func (r *MemoryRegion) fault(ctx context.Context, index uint64, write bool, spill *int) (retry bool, err error) {
+// reservation it did not hold. It consumes *spill by setting it to noReservation.
+func (r *MemoryRegion) fault(ctx context.Context, index uint64, write bool, spill *reservation) (retry bool, err error) {
 	started := r.host.clock.Now()
 	if err := r.live.RLock(ctx); err != nil {
 		return false, err
@@ -109,7 +109,7 @@ func (r *MemoryRegion) fault(ctx context.Context, index uint64, write bool, spil
 	if !write || b.writable() {
 		return false, r.load(ctx, index, spill)
 	}
-	if *spill < 0 {
+	if spill.none() {
 		// A seal took this page into a checkpoint after the reservation decision.
 		return true, nil
 	}
@@ -226,7 +226,7 @@ func (r *MemoryRegion) fault(ctx context.Context, index uint64, write bool, spil
 	if err := r.takePrivate(ctx, b, old, pg, *spill, origin, replaced); err != nil {
 		return false, err
 	}
-	*spill = -1
+	*spill = noReservation
 	if unpublished {
 		// The bytes came from the host that still holds them and this store has
 		// just bound them here as this memory region's own dirty state, so that host no
@@ -496,7 +496,7 @@ func (r *MemoryRegion) readInPage(ctx context.Context, index uint64) (*resident,
 // command the store issues for its whole run, so the page it is leaving is
 // handed to replaced instead: held where it is until that command lands, and
 // given up there.
-func (r *MemoryRegion) takePrivate(ctx context.Context, b *binding, old, pg *resident, slot int, origin *resident, replaced *replacement) error {
+func (r *MemoryRegion) takePrivate(ctx context.Context, b *binding, old, pg *resident, spill reservation, origin *resident, replaced *replacement) error {
 	h := r.host
 	if old != nil {
 		defer h.unlock(old)
@@ -517,7 +517,7 @@ func (r *MemoryRegion) takePrivate(ctx context.Context, b *binding, old, pg *res
 		}
 	}
 	h.bind(b, pg)
-	r.takeFromCheckpoint(b, slot, origin)
+	r.takeFromCheckpoint(b, spill, origin)
 	h.probe.granted(b, pg, origin)
 	if h.measuring() {
 		if err := r.noteCopied(ctx, b.index, pg); err != nil {
@@ -543,7 +543,7 @@ func (r *MemoryRegion) takePrivate(ctx context.Context, b *binding, old, pg *res
 // command puts fresh pages where the zeros or the trap were, and a zero
 // mapping keeps serving reads until it lands. Write-ahead makes the fresh zero
 // pages around it private in that same command.
-func (r *MemoryRegion) storeFresh(ctx context.Context, index uint64, spill *int) (bool, error) {
+func (r *MemoryRegion) storeFresh(ctx context.Context, index uint64, spill *reservation) (bool, error) {
 	zero, untouched := r.fresh(index)
 	if !zero && !untouched {
 		return false, nil
@@ -613,13 +613,13 @@ func around(index, first, last uint64, n int) (uint64, uint64) {
 // finds. Each set of consecutive arena offsets the run landed in is one mapping
 // command — one, unless the placement rule put the run in the extents of
 // several ranges and those extents are not themselves consecutive.
-func (r *MemoryRegion) storeZeros(ctx context.Context, index, first, last uint64, spill *int) error {
+func (r *MemoryRegion) storeZeros(ctx context.Context, index, first, last uint64, spill *reservation) error {
 	h := r.host
 	extras := h.takeFreeSpill(int(last-first) - 1)
 	used := 0
 	defer func() {
-		for _, slot := range extras[used:] {
-			h.releaseSpill(slot)
+		for _, extra := range extras[used:] {
+			h.releaseSpill(extra)
 		}
 	}()
 	first, last = around(index, first, last, 1+len(extras))
@@ -649,9 +649,9 @@ func (r *MemoryRegion) storeZeros(ctx context.Context, index, first, last uint64
 		}
 		b.zero = false
 		if b.index == index {
-			b.spillSlot, *spill = *spill, -1
+			b.spill, *spill = *spill, noReservation
 		} else {
-			b.spillSlot, b.ahead = extras[used], true
+			b.spill, b.ahead = extras[used], true
 			used++
 		}
 	}
@@ -741,7 +741,7 @@ const loadAttempts = 64
 // without evicting. A publication race for the faulting page's identity is
 // resolved by retrying with no resident lock held, never by waiting for the
 // winner from inside a plan that already holds others.
-func (r *MemoryRegion) load(ctx context.Context, index uint64, spill *int) error {
+func (r *MemoryRegion) load(ctx context.Context, index uint64, spill *reservation) error {
 	for range loadAttempts {
 		resolved, err := r.loadOnce(ctx, index, spill)
 		if err != nil || resolved {
@@ -754,7 +754,7 @@ func (r *MemoryRegion) load(ctx context.Context, index uint64, spill *int) error
 // loadOnce reports whether the faulting page ended mapped and resolved. The
 // faulting page may evict; read-ahead only uses free slots and only pages whose
 // locks are free, so it never waits behind other work and cannot deadlock.
-func (r *MemoryRegion) loadOnce(ctx context.Context, index uint64, spill *int) (bool, error) {
+func (r *MemoryRegion) loadOnce(ctx context.Context, index uint64, spill *reservation) (bool, error) {
 	h := r.host
 	b := r.binding(index)
 	if b.zero {
@@ -853,7 +853,7 @@ func (r *MemoryRegion) loadOnce(ctx context.Context, index uint64, spill *int) (
 		// it has landed. The plan holds nothing yet.
 		return false, r.awaitPrefetch(ctx, pf)
 	}
-	if plan.unpublished(index) && *spill < 0 {
+	if plan.unpublished(index) && spill.none() {
 		// The extents say another host still holds this page, so the load takes
 		// it as this memory region's dirty state. The reservation for it is taken by
 		// the waiting path, with no memory region, page or I/O resource held: a

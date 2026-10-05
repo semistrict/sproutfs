@@ -42,7 +42,7 @@ func (h *Host) SetPressure(p Pressure) {
 // dirty page however much room the budget has, while a sealed checkpoint of it
 // is uploading. See window for when a store past the window waits and when it
 // goes through.
-func (h *Host) takeSpill(ctx context.Context, r *MemoryRegion) (int, error) {
+func (h *Host) takeSpill(ctx context.Context, r *MemoryRegion) (reservation, error) {
 	for {
 		// The signal this attempt will wait on is taken before anything is
 		// decided, because deciding takes locks of its own: a checkpoint that
@@ -53,21 +53,19 @@ func (h *Host) takeSpill(ctx context.Context, r *MemoryRegion) (int, error) {
 		answer := h.window(r)
 		if answer == windowStall {
 			h.stall(r, ErrWindowStalled)
-			return 0, ErrWindowStalled
+			return noReservation, ErrWindowStalled
 		}
 		over := answer == windowWait
 		h.mu.Lock()
 		if h.err != nil {
 			err := h.err
 			h.mu.Unlock()
-			return 0, err
+			return noReservation, err
 		}
 		if !over {
-			if slot, ok := h.reservations.take(); ok {
-				h.dirty++
-				h.stats.PeakDirtyPages = max(h.stats.PeakDirtyPages, h.dirty)
+			if spill, ok := h.takeReservationLocked(); ok {
 				h.mu.Unlock()
-				return slot, nil
+				return spill, nil
 			}
 		}
 		h.mu.Unlock()
@@ -82,7 +80,7 @@ func (h *Host) takeSpill(ctx context.Context, r *MemoryRegion) (int, error) {
 			default:
 			}
 			if !h.takeBack(r) {
-				return 0, ErrDirtyStalled
+				return noReservation, ErrDirtyStalled
 			}
 		}
 		h.mu.Lock()
@@ -94,7 +92,7 @@ func (h *Host) takeSpill(ctx context.Context, r *MemoryRegion) (int, error) {
 		h.mu.Unlock()
 		select {
 		case <-ctx.Done():
-			return 0, context.Cause(ctx)
+			return noReservation, context.Cause(ctx)
 		case <-changed:
 		}
 	}

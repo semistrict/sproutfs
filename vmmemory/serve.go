@@ -82,7 +82,7 @@ func (r *MemoryRegion) ReadResident(ctx context.Context, page uint64, dst []byte
 	}
 	if pg != nil {
 		defer h.unlock(pg)
-	} else if !b.dirty || (b.checkpoint == nil && !h.spillHolds(b.spillSlot)) {
+	} else if !b.dirty || (b.checkpoint == nil && !h.spillHolds(b.spill)) {
 		// Evicted since it was listed, or never held at all.
 		return false, false, nil
 	}

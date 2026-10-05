@@ -15,6 +15,7 @@ import (
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/resource"
 	"github.com/semistrict/sproutfs/vmmemory/internal/slots"
+	"github.com/semistrict/sproutfs/vmmemory/internal/zirconvm"
 )
 
 // Host accounts for shared backing under a short metadata lock. Each MemoryRegion
@@ -35,10 +36,7 @@ type Host struct {
 	// that places nothing. Both are guarded by mu; see placement.go.
 	extents     map[extentKey]*extent
 	extentPages int
-	// reservations is the dirty budget: the spill file's slots and what each
-	// holds. See reservations.go.
-	reservations *reservations
-	mu           sync.Mutex
+	mu          sync.Mutex
 	// pinMu guards every resident page's coldCopies, which pin it, and the
 	// page's moves between the page queues, which its pins and its being idle
 	// decide. It is taken inside any other lock of the pager, and around none
@@ -64,8 +62,10 @@ type Host struct {
 	shared map[string]*arenaFile
 	// lent is the checkpoint a fork point's name belongs to, for every fork
 	// point that lends its pages to children on this host. Guarded by mu.
-	lent         map[lentKey]*MemoryRegionCheckpoint
-	spill        platform.File
+	lent map[lentKey]*MemoryRegionCheckpoint
+	// spill is the dirty budget: the spill file as the storage of a
+	// reservation per private page this pager admits. See spill.go.
+	spill        *zirconvm.SpillStorage
 	clean        map[pageKey]*resident
 	cleanVersion uint64
 	// inflight is the prefetch reading each page identity, prefetches every
@@ -214,18 +214,20 @@ func New(ctx context.Context, resources *resource.Budget, cfg Config, arena Aren
 		cfg.WriteAheadPages < 1 || cfg.WriteAheadPages > 4096 {
 		return nil, ErrConfig
 	}
-	// Whatever the file held is dropped first: the spill is scratch, and none of
-	// it is read back.
-	if err := spill.Truncate(ctx, 0); err != nil {
-		return nil, err
+	// The spill storage drops whatever the file held, since the spill is
+	// scratch and none of it is read back, and allocates the file's whole
+	// extent.
+	spillStorage, err := zirconvm.NewSpillStorage(ctx, spill, pageSize, cfg.DirtyPages)
+	if errors.Is(err, zirconvm.ErrNotSupported) || errors.Is(err, zirconvm.ErrOutOfRange) {
+		return nil, fmt.Errorf("%w: %w", ErrConfig, err)
 	}
-	if err := allocateSpill(ctx, spill, int64(cfg.DirtyPages)*int64(pageSize)); err != nil {
+	if err != nil {
 		return nil, err
 	}
 	// An extent is one 2 MiB-aligned range's worth of this pager's pages: 512 at
 	// 4 KiB, and one at 2 MiB, which is a pager with nothing to place.
 	extentPages := int(rangeBytes / pageSize)
-	h := &Host{changeSeed: maphash.MakeSeed(), pageSize: pageSize, cfg: cfg, clock: platform.ClockOr(cfg.Clock), spill: spill, resources: resources, reservations: newReservations(cfg.DirtyPages),
+	h := &Host{changeSeed: maphash.MakeSeed(), pageSize: pageSize, cfg: cfg, clock: platform.ClockOr(cfg.Clock), spill: spillStorage, resources: resources,
 		arena:       arena,
 		extents:     make(map[extentKey]*extent),
 		extentPages: extentPages,
@@ -300,10 +302,8 @@ func (h *Host) Close(ctx context.Context) error {
 			h.putFree(fileSlot{f, slot})
 		}
 	}
-	if err := h.spill.Truncate(ctx, 0); err != nil {
+	if err := h.spill.Release(ctx); err != nil {
 		result = errors.Join(result, err)
-	} else {
-		h.reservations.forget()
 	}
 	return result
 }
