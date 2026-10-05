@@ -278,7 +278,7 @@ func (c *CowPages) TakePages(ctx context.Context, r CowRange, spliceOffset uint6
 
 // ProcessPagesForSupply turns the references in pages into pages, for an
 // object a page source backs, which holds pages only.
-func (c *CowPages) ProcessPagesForSupply(pages *PageSpliceList[VmPage]) error {
+func (c *CowPages) ProcessPagesForSupply(ctx context.Context, pages *PageSpliceList[VmPage]) error {
 	if c.pageSource == nil {
 		return nil
 	}
@@ -287,7 +287,7 @@ func (c *CowPages) ProcessPagesForSupply(pages *PageSpliceList[VmPage]) error {
 		if slot.Get().IsReference() {
 			// Zircon waits for the pmm here and goes again; a Go allocation
 			// succeeds or fails at once.
-			return c.makePageFromReference(slot)
+			return c.makePageFromReference(ctx, slot)
 		}
 		return nil
 	}, 0)
@@ -554,7 +554,7 @@ func (c *CowPages) ProtectRangeFromReclamation(ctx context.Context, r CowRange, 
 
 // DecompressInRange decompresses every reference the object owns in r,
 // committing nothing else.
-func (c *CowPages) DecompressInRange(r CowRange) error {
+func (c *CowPages) DecompressInRange(ctx context.Context, r CowRange) error {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 	if !r.IsBoundedBy(c.size) {
@@ -571,6 +571,6 @@ func (c *CowPages) DecompressInRange(r CowRange) error {
 		if !p.Get().IsReference() {
 			return nil
 		}
-		return c.replaceReferenceWithPageLocked(p, offset)
+		return c.replaceReferenceWithPageLocked(ctx, p, offset)
 	}, curOffset, endOffset)
 }

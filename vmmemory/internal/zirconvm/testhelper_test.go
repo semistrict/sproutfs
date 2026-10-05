@@ -8,8 +8,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"fmt"
 	"testing"
 
+	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/platform/sim"
 )
 
@@ -19,24 +21,55 @@ import (
 // globals.
 type vmoEnv struct {
 	ctx         context.Context
+	runtime     *sim.Runtime
 	ps          uint64
 	pmm         *testPmm
 	node        *Node
 	compression *Compression
+	storage     *SpillStorage
+	disk        *sim.Disk
+	// disks is how many spill disks the case has made.
+	disks int
 }
 
 // forEachVmoPageSize runs body at each page size a pager runs at, in a
-// synctest bubble over a simulated runtime, as every ported case does.
+// synctest bubble over a simulated runtime, as every ported case does. The
+// node's compression stores pages as they are in a spill file on a simulated
+// disk, as the pager's does.
 func forEachVmoPageSize(t *testing.T, body func(t *testing.T, env *vmoEnv)) {
 	t.Helper()
 	forEachPageSize(t, func(t *testing.T, ps uint64) {
 		runtime := sim.New(sim.Config{})
 		ctx := sim.WithRuntime(t.Context(), runtime)
 		pmm := newTestPmm(ps)
-		compression := NewCompression(pmm, ps, newMemoryStorage(), storeAsIs{}, ps)
-		env := &vmoEnv{ctx: ctx, ps: ps, pmm: pmm, node: NewNode(pmm, ps, compression), compression: compression}
+		env := &vmoEnv{ctx: ctx, runtime: runtime, ps: ps, pmm: pmm}
+		env.storage, env.disk = env.newSpillStorage(t, testSpillPages)
+		env.compression = NewCompression(pmm, ps, env.storage, StoreAsIs{}, ps)
+		env.node = NewNode(pmm, ps, env.compression)
 		body(t, env)
 	})
+}
+
+// testSpillPages is the dirty budget of a case's spill: more pages than any
+// case dirties.
+const testSpillPages = 64
+
+// newSpillStorage is a spill of pages pages on a disk of its own, with room
+// for it, and the disk.
+func (env *vmoEnv) newSpillStorage(t *testing.T, pages int) (*SpillStorage, *sim.Disk) {
+	t.Helper()
+	env.disks++
+	disk := env.runtime.NewDisk(fmt.Sprintf("spill-%d", env.disks),
+		sim.DiskConfig{Space: sim.SpaceConfig{TotalBytes: int64(pages) * int64(env.ps) * 2}})
+	file, err := disk.Open(env.ctx, "spill", platform.OpenOptions{Create: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	storage, err := NewSpillStorage(env.ctx, file, env.ps, pages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return storage, disk
 }
 
 // testPmm hands out pages of one size and counts those out. Zircon's cases
@@ -75,64 +108,6 @@ func (p *testPmm) FreePage(page *VmPage) {
 }
 
 func (p *testPmm) ZeroPage() *VmPage { return p.zero }
-
-// memoryStorage keeps compressed pages in memory, by reference. Zircon's
-// cases compress into the kernel's configured storage.
-type memoryStorage struct {
-	next     uint32
-	data     map[uint32][]byte
-	metadata map[uint32]uint32
-	failNext bool
-}
-
-func newMemoryStorage() *memoryStorage {
-	return &memoryStorage{next: 1, data: map[uint32][]byte{}, metadata: map[uint32]uint32{}}
-}
-
-func (s *memoryStorage) Store(data []byte) (ReferenceValue, bool) {
-	if s.failNext {
-		s.failNext = false
-		return ReferenceValue{}, false
-	}
-	value := s.next << ReferenceAlignBits
-	s.next++
-	s.data[value] = bytes.Clone(data)
-	return MakeReferenceValue(value), true
-}
-
-func (s *memoryStorage) Free(ref ReferenceValue) {
-	if _, ok := s.data[ref.Value()]; !ok {
-		panic("a reference is freed twice")
-	}
-	delete(s.data, ref.Value())
-	delete(s.metadata, ref.Value())
-}
-
-func (s *memoryStorage) CompressedData(ref ReferenceValue) ([]byte, uint32) {
-	return s.data[ref.Value()], s.metadata[ref.Value()]
-}
-
-func (s *memoryStorage) GetMetadata(ref ReferenceValue) uint32 { return s.metadata[ref.Value()] }
-
-func (s *memoryStorage) SetMetadata(ref ReferenceValue, metadata uint32) {
-	s.metadata[ref.Value()] = metadata
-}
-
-// storeAsIs is a compression strategy that stores a page as it is, as the
-// spill does, and finds a page of zeros as Zircon's LZ4 strategy does.
-type storeAsIs struct{}
-
-func (storeAsIs) Compress(src, dst []byte, limit uint64) StrategyResult {
-	if allZero(src) {
-		return StrategyResult{Kind: CompressedToZero}
-	}
-	if uint64(len(src)) > limit {
-		return StrategyResult{Kind: CompressFailed}
-	}
-	return StrategyResult{Kind: CompressedToRef, Size: uint64(copy(dst, src))}
-}
-
-func (storeAsIs) Decompress(src, dst []byte) { copy(dst, src) }
 
 func allZero(b []byte) bool {
 	for _, x := range b {
@@ -223,7 +198,7 @@ func supplyPagerVmoPages(t *testing.T, env *vmoEnv, vmo *ObjectPaged, pageOffset
 	mustNotFail(t, "commit aux", aux.CommitRange(env.ctx, 0, numPages*env.ps))
 	splice := NewPageSpliceList[VmPage](env.ps, env.node)
 	mustNotFail(t, "take", aux.TakePages(env.ctx, 0, numPages*env.ps, splice))
-	mustNotFail(t, "supply", vmo.SupplyPages(pageOffset*env.ps, numPages*env.ps, splice, PagerSupply))
+	mustNotFail(t, "supply", vmo.SupplyPages(env.ctx, pageOffset*env.ps, numPages*env.ps, splice, PagerSupply))
 	aux.Destroy()
 	pages := make([]*VmPage, numPages)
 	for i := range numPages {
@@ -369,12 +344,12 @@ func reclaim(env *vmoEnv, vmo *ObjectPaged, page *VmPage, offset uint64, action 
 	if !pq.DebugPageIsPagerBackedDirty(page) {
 		pq.MoveToReclaimDontNeed(page)
 	}
-	return reclaimCow(vmo.DebugGetCowPages(), page, offset, action, nil)
+	return reclaimCow(env.ctx, vmo.DebugGetCowPages(), page, offset, action, nil)
 }
 
 // reclaimCow is the helper's form over a CowPages, with a compressor.
-func reclaimCow(cow *CowPages, page *VmPage, offset uint64, action EvictionAction, compressor *Compressor) uint64 {
-	result, failure := cow.ReclaimPage(page, offset, action, compressor)
+func reclaimCow(ctx context.Context, cow *CowPages, page *VmPage, offset uint64, action EvictionAction, compressor *Compressor) uint64 {
+	result, failure := cow.ReclaimPage(ctx, page, offset, action, compressor)
 	if failure != ReclaimSucceeded {
 		return 0
 	}
@@ -389,7 +364,7 @@ func compressPage(t *testing.T, env *vmoEnv, cow *CowPages, page *VmPage, offset
 	defer guard.Release()
 	compressor := guard.Get()
 	mustNotFail(t, "arm", compressor.Arm())
-	return reclaimCow(cow, page, offset, FollowHint, compressor)
+	return reclaimCow(env.ctx, cow, page, offset, FollowHint, compressor)
 }
 
 // pagesMatch is AllPagesMatch: every page in the range passes pred.

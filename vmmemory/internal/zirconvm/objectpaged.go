@@ -286,7 +286,7 @@ func (o *ObjectPaged) PrefetchRange(ctx context.Context, offset, length uint64) 
 	if o.cowPages.isRootSourceUserPagerBacked() {
 		return o.cowPages.ProtectRangeFromReclamation(ctx, r, false, false)
 	}
-	return o.cowPages.DecompressInRange(r)
+	return o.cowPages.DecompressInRange(ctx, r)
 }
 
 // CommitRange commits [offset, offset+len), waiting for any pages to be
@@ -626,7 +626,7 @@ func (o *ObjectPaged) TakePages(ctx context.Context, offset, length uint64, page
 }
 
 // SupplyPages puts pages in [offset, offset+len).
-func (o *ObjectPaged) SupplyPages(offset, length uint64, pages *PageSpliceList[VmPage], options SupplyOptions) error {
+func (o *ObjectPaged) SupplyPages(ctx context.Context, offset, length uint64, pages *PageSpliceList[VmPage], options SupplyOptions) error {
 	r, ok := o.getCowRange(offset, length)
 	if !ok {
 		return ErrOutOfRange
@@ -635,7 +635,7 @@ func (o *ObjectPaged) SupplyPages(offset, length uint64, pages *PageSpliceList[V
 		return nil
 	}
 	// References become pages first, where the object needs pages.
-	if err := o.cowPages.ProcessPagesForSupply(pages); err != nil {
+	if err := o.cowPages.ProcessPagesForSupply(ctx, pages); err != nil {
 		return err
 	}
 	deferred := NewDeferredOps(o.cowPages)
@@ -737,10 +737,10 @@ func (o *ObjectPaged) WritebackAbandon(ctx context.Context, offset, length uint6
 
 // ReadWriteback reads what a writeback in progress holds of whole pages
 // from offset into buf: the bytes of its pause (D1).
-func (o *ObjectPaged) ReadWriteback(buf []byte, offset uint64) error {
+func (o *ObjectPaged) ReadWriteback(ctx context.Context, buf []byte, offset uint64) error {
 	o.lock().Lock()
 	defer o.lock().Unlock()
-	return o.cowPages.ReadWritebackLocked(offset, buf)
+	return o.cowPages.ReadWritebackLocked(ctx, offset, buf)
 }
 
 // QueryPagerVmoStats reports whether the object was modified, and resets

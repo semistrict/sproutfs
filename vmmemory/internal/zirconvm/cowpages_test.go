@@ -9,6 +9,8 @@ import (
 	"context"
 	"testing"
 	"testing/synctest"
+
+	"github.com/semistrict/sproutfs/platform/sim"
 )
 
 // Cases of the port's own, not Zircon's, for what its VMO cases do not reach:
@@ -65,7 +67,7 @@ func TestReadsOfOneRangeWaitOnOneRequestAndASupplyWakesThem(t *testing.T) {
 		mustNotFail(t, "write aux", aux.Write(env.ctx, pattern(4*ps, 'S'), 0))
 		splice := NewPageSpliceList[VmPage](ps, env.node)
 		mustNotFail(t, "take", aux.TakePages(env.ctx, 0, 4*ps, splice))
-		mustNotFail(t, "supply", vmo.SupplyPages(0, 4*ps, splice, PagerSupply))
+		mustNotFail(t, "supply", vmo.SupplyPages(env.ctx, 0, 4*ps, splice, PagerSupply))
 		expect(t, "the read", bytes.Equal(<-done, pattern(4*ps, 'S')), true)
 		expect(t, "the fault's page", <-faulted, vmo.DebugGetPage(2*ps))
 	})
@@ -146,14 +148,14 @@ func TestADetachedSourceKeepsOnlyPagesNotWrittenBack(t *testing.T) {
 		splice := NewPageSpliceList[VmPage](ps, env.node)
 		splice.Initialize(ps)
 		splice.Finalize()
-		expect(t, "no supply after the detach", vmo.SupplyPages(ps, ps, splice, PagerSupply), ErrBadState)
+		expect(t, "no supply after the detach", vmo.SupplyPages(env.ctx, ps, ps, splice, PagerSupply), ErrBadState)
 	})
 }
 
-// raceStrategy compresses as storeAsIs does, but first calls race, with no
+// raceStrategy compresses as StoreAsIs does, but first calls race, with no
 // lock held, as another thread meeting the compression would.
 type raceStrategy struct {
-	storeAsIs
+	StoreAsIs
 	race func()
 }
 
@@ -163,7 +165,7 @@ func (s *raceStrategy) Compress(src, dst []byte, limit uint64) StrategyResult {
 		s.race = nil
 		race()
 	}
-	return s.storeAsIs.Compress(src, dst, limit)
+	return s.StoreAsIs.Compress(src, dst, limit)
 }
 
 // A lookup that meets a page while it is being compressed copies it back
@@ -172,7 +174,8 @@ func TestALookupDuringACompressionTakesThePageBack(t *testing.T) {
 	forEachVmoPageSize(t, func(t *testing.T, env *vmoEnv) {
 		ps := env.ps
 		strategy := &raceStrategy{}
-		compression := NewCompression(env.pmm, ps, newMemoryStorage(), strategy, ps)
+		storage, _ := env.newSpillStorage(t, testSpillPages)
+		compression := NewCompression(env.pmm, ps, storage, strategy, ps)
 		node := NewNode(env.pmm, ps, compression)
 		vmo, err := CreateObjectPaged(node, ps)
 		mustNotFail(t, "create", err)
@@ -186,7 +189,7 @@ func TestALookupDuringACompressionTakesThePageBack(t *testing.T) {
 		}
 		guard := compression.AcquireCompressor()
 		mustNotFail(t, "arm", guard.Get().Arm())
-		result, failure := vmo.DebugGetCowPages().ReclaimPage(page, 0, FollowHint, guard.Get())
+		result, failure := vmo.DebugGetCowPages().ReclaimPage(env.ctx, page, 0, FollowHint, guard.Get())
 		guard.Release()
 		expect(t, "no failure", failure, ReclaimSucceeded)
 		expect(t, "nothing reclaimed", result.NumPages, uint64(0))
@@ -202,7 +205,8 @@ func TestATakeDuringACompressionTakesThePageFromTheCompressor(t *testing.T) {
 	forEachVmoPageSize(t, func(t *testing.T, env *vmoEnv) {
 		ps := env.ps
 		strategy := &raceStrategy{}
-		compression := NewCompression(env.pmm, ps, newMemoryStorage(), strategy, ps)
+		storage, _ := env.newSpillStorage(t, testSpillPages)
+		compression := NewCompression(env.pmm, ps, storage, strategy, ps)
 		node := NewNode(env.pmm, ps, compression)
 		vmo, err := CreateObjectPaged(node, ps)
 		mustNotFail(t, "create", err)
@@ -214,7 +218,7 @@ func TestATakeDuringACompressionTakesThePageFromTheCompressor(t *testing.T) {
 		}
 		guard := compression.AcquireCompressor()
 		mustNotFail(t, "arm", guard.Get().Arm())
-		result, failure := vmo.DebugGetCowPages().ReclaimPage(page, 0, FollowHint, guard.Get())
+		result, failure := vmo.DebugGetCowPages().ReclaimPage(env.ctx, page, 0, FollowHint, guard.Get())
 		guard.Release()
 		expect(t, "no failure", failure, ReclaimSucceeded)
 		expect(t, "nothing reclaimed", result.NumPages, uint64(0))
@@ -239,10 +243,10 @@ func TestAPageThatCannotBeStoredStaysAndIsNotTriedAgain(t *testing.T) {
 		page := vmo.DebugGetPage(0)
 		ok, _ := pq.DebugPageIsReclaim(page)
 		expect(t, "anonymous pages are reclaimable", ok, true)
-		env.compression.storage.(*memoryStorage).failNext = true
+		env.disk.FailNext(sim.DiskWrite, 1)
 		guard := env.compression.AcquireCompressor()
 		mustNotFail(t, "arm", guard.Get().Arm())
-		_, failure := vmo.DebugGetCowPages().ReclaimPage(page, 0, FollowHint, guard.Get())
+		_, failure := vmo.DebugGetCowPages().ReclaimPage(env.ctx, page, 0, FollowHint, guard.Get())
 		guard.Release()
 		expect(t, "the failure", failure, CompressFailedReclaim)
 		expect(t, "the page stays", vmo.DebugGetPage(0), page)
@@ -362,14 +366,14 @@ func TestAGapInASupplyIsAMarker(t *testing.T) {
 		mustNotFail(t, "write aux", aux.Write(env.ctx, pattern(ps, 'A'), 0))
 		splice := NewPageSpliceList[VmPage](ps, env.node)
 		mustNotFail(t, "take", aux.TakePages(env.ctx, 0, 2*ps, splice))
-		mustNotFail(t, "supply", vmo.SupplyPages(0, 2*ps, splice, PagerSupply))
+		mustNotFail(t, "supply", vmo.SupplyPages(env.ctx, 0, 2*ps, splice, PagerSupply))
 		expect(t, "a page", vmo.DebugGetCowPages().DebugIsPage(0), true)
 		expect(t, "a marker", vmo.DebugGetCowPages().DebugIsMarker(ps), true)
 		expect(t, "zeros", allZero(readPage(t, env, vmo, ps)), true)
 		// A pager may not transfer.
 		splice2 := NewPageSpliceList[VmPage](ps, env.node)
 		mustNotFail(t, "take again", aux.TakePages(env.ctx, 0, ps, splice2))
-		expect(t, "no transfer to a pager's object", vmo.SupplyPages(0, ps, splice2, TransferData), ErrNotSupported)
+		expect(t, "no transfer to a pager's object", vmo.SupplyPages(env.ctx, 0, ps, splice2, TransferData), ErrNotSupported)
 		splice2.Free()
 	})
 }
@@ -431,7 +435,7 @@ func TestARegionsMissingRunEndsAtTheNextRootPage(t *testing.T) {
 		cursor, err = cow.GetLookupCursorLocked(CowRange{0, 4 * ps})
 		mustNotFail(t, "cursor again", err)
 		request := NewMultiPageRequest()
-		_, err = cursor.RequireReadPage(4, deferred, request)
+		_, err = cursor.RequireReadPage(env.ctx, 4, deferred, request)
 		cursor.Release()
 		cow.lock.Unlock()
 		deferred.Finish()
@@ -534,7 +538,7 @@ func supplyZeros(t *testing.T, env *vmoEnv, vmo *ObjectPaged, pageOffset, numPag
 	mustNotFail(t, "create aux", err)
 	splice := NewPageSpliceList[VmPage](env.ps, env.node)
 	mustNotFail(t, "take zeros", aux.TakePages(env.ctx, 0, numPages*env.ps, splice))
-	mustNotFail(t, "supply zeros", vmo.SupplyPages(pageOffset*env.ps, numPages*env.ps, splice, PagerSupply))
+	mustNotFail(t, "supply zeros", vmo.SupplyPages(env.ctx, pageOffset*env.ps, numPages*env.ps, splice, PagerSupply))
 }
 
 // A store into an object whose pager traps dirty transitions waits for the
@@ -964,7 +968,7 @@ func TestASupplyAroundAPageAlreadyThereEndsTheReadsOnBothSides(t *testing.T) {
 		mustNotFail(t, "write aux", aux.Write(env.ctx, pattern(3*ps, 'S'), 0))
 		splice := NewPageSpliceList[VmPage](ps, env.node)
 		mustNotFail(t, "take", aux.TakePages(env.ctx, 0, 3*ps, splice))
-		mustNotFail(t, "supply", vmo.SupplyPages(0, 3*ps, splice, PagerSupply))
+		mustNotFail(t, "supply", vmo.SupplyPages(env.ctx, 0, 3*ps, splice, PagerSupply))
 		for i := range reads {
 			expect(t, "a read on either side", bytes.Equal(<-reads[i], pattern(ps, 'S')), true)
 		}
@@ -1070,7 +1074,7 @@ func TestEvictionTakesTheNodeAroundAPageAndSpillsNoCleanPage(t *testing.T) {
 		guard := env.compression.AcquireCompressor()
 		compressor := guard.Get()
 		mustNotFail(t, "arm", compressor.Arm())
-		evicted := reclaimCow(cow, pages[NodePages+1], (NodePages+1)*ps, IgnoreHint, compressor)
+		evicted := reclaimCow(env.ctx, cow, pages[NodePages+1], (NodePages+1)*ps, IgnoreHint, compressor)
 		guard.Release()
 		expect(t, "the second node evicted", evicted, uint64(NodePages))
 		for i := range uint64(2 * NodePages) {

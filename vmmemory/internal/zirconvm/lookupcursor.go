@@ -266,6 +266,13 @@ func (lc *LookupCursor) targetAllocateCopyPageAsResult(source *VmPage, dirtyStat
 		// page, which it owns.
 		assert(source == zeroPage || target.roots != nil, "a paged object copies only zero, or a root's page")
 		assert(source == zeroPage || !lc.targetIsOwner(), "a root's page is not the target's")
+		if dirtyState == Dirty {
+			// D5: the copy takes its reservation before it is dirty.
+			if err := target.reserveLocked(outPage); err != nil {
+				target.freePage(outPage)
+				return RequireResult{}, err
+			}
+		}
 		target.updateDirtyStateLocked(outPage, lc.offset, dirtyState, true)
 	}
 	// The slot found can be reused when the target owns it, there is a slot,
@@ -314,9 +321,9 @@ func (lc *LookupCursor) targetAllocateCopyPageAsResult(source *VmPage, dirtyStat
 }
 
 // cursorReferenceToPage decompresses the cursor's reference in its owner.
-func (lc *LookupCursor) cursorReferenceToPage() error {
+func (lc *LookupCursor) cursorReferenceToPage(ctx context.Context) error {
 	assert(lc.cursorIsReference(), "the cursor is at a reference")
-	return lc.ownerInfo.owner.lockedOr(lc.target).replaceReferenceWithPageLocked(lc.ownerCursor, lc.ownerInfo.ownerOffset)
+	return lc.ownerInfo.owner.lockedOr(lc.target).replaceReferenceWithPageLocked(ctx, lc.ownerCursor, lc.ownerInfo.ownerOffset)
 }
 
 // readRequest asks the owner's page source for the content from the current
@@ -463,7 +470,7 @@ func (lc *LookupCursor) RequireOwnedPage(ctx context.Context, willWrite bool, ma
 	lc.establishCursor()
 	// Decompress a reference in place.
 	if lc.cursorIsReference() {
-		if err := lc.cursorReferenceToPage(); err != nil {
+		if err := lc.cursorReferenceToPage(ctx); err != nil {
 			return RequireResult{}, err
 		}
 	}
@@ -540,13 +547,13 @@ func (lc *LookupCursor) RequireOwnedPage(ctx context.Context, willWrite bool, ma
 // RequireReadPage is the page that reads at the current offset, which may be
 // the zero page or a parent's page. Absent content is asked for, returning
 // ErrShouldWait with pageRequest to wait on. On success the cursor moves on.
-func (lc *LookupCursor) RequireReadPage(maxRequestPages uint64, deferred *DeferredOps,
+func (lc *LookupCursor) RequireReadPage(ctx context.Context, maxRequestPages uint64, deferred *DeferredOps,
 	pageRequest *MultiPageRequest) (RequireResult, error) {
 	assert(pageRequest != nil, "there is a page request")
 	lc.establishCursor()
 	if lc.cursorIsPage() || lc.cursorIsReference() {
 		if lc.cursorIsReference() {
-			if err := lc.cursorReferenceToPage(); err != nil {
+			if err := lc.cursorReferenceToPage(ctx); err != nil {
 				return RequireResult{}, err
 			}
 			assert(lc.cursorIsPage(), "the reference is a page now")
@@ -566,5 +573,5 @@ func (lc *LookupCursor) RequirePage(ctx context.Context, willWrite bool, maxRequ
 	if willWrite {
 		return lc.RequireOwnedPage(ctx, true, maxRequestPages, deferred, pageRequest)
 	}
-	return lc.RequireReadPage(maxRequestPages, deferred, pageRequest)
+	return lc.RequireReadPage(ctx, maxRequestPages, deferred, pageRequest)
 }

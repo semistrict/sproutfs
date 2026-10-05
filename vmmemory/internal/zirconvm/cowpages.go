@@ -5,6 +5,7 @@
 package zirconvm
 
 import (
+	"context"
 	"errors"
 	"sync"
 )
@@ -602,9 +603,11 @@ func (r *pageRemover) pushContent(p *PageOrMarker[VmPage]) {
 	}
 }
 
-// freePage gives a page that is in no queue back to the pmm.
+// freePage gives a page that is in no queue back to the pmm, and its
+// reservation back to the storage (D5).
 func (c *CowPages) freePage(page *VmPage) {
 	assert(page.queue == nil, "a freed page is in no queue")
+	c.node.releaseReservation(page)
 	page.shareCount = 0
 	page.alwaysNeed = false
 	page.dirtyState = Untracked
@@ -626,6 +629,7 @@ func (c *CowPages) removePageLocked(page *VmPage, ops *DeferredOps) {
 // initializeVmPage gets a page ready to go in an object, InitializeVmPage.
 func initializeVmPage(p *VmPage) {
 	assert(p.queue == nil, "the page is in no queue")
+	assert(!p.reserved, "the page holds no reservation")
 	p.shareCount = 0
 	p.alwaysNeed = false
 	p.dirtyState = Untracked
@@ -679,8 +683,12 @@ func isZeroPage(p *VmPage) bool {
 }
 
 // makePageFromReference decompresses a slot's reference into a new page in
-// the slot. The page is not put in a page queue.
-func (c *CowPages) makePageFromReference(slot PageOrMarkerRef[VmPage]) error {
+// the slot. The page is not put in a page queue. A page Dirty or
+// AwaitingClean holds its reservation again (D5): the reference itself, or
+// for the temporary reference the reservation of the page being compressed.
+// Zircon's cannot fail once it has a page; reading the storage can, and then
+// the slot keeps its reference.
+func (c *CowPages) makePageFromReference(ctx context.Context, slot PageOrMarkerRef[VmPage]) error {
 	assert(slot.Get().IsReference(), "the slot holds a reference")
 	compression := c.node.compression
 	assert(compression != nil, "a reference has a compression")
@@ -688,8 +696,22 @@ func (c *CowPages) makePageFromReference(slot PageOrMarkerRef[VmPage]) error {
 	if err != nil {
 		return err
 	}
-	ref := slot.SwapReferenceForPage(p)
-	metadata := compression.Decompress(ref, p.data)
+	ref := slot.Get().Reference()
+	var metadata uint32
+	if _, state := unpackReferenceMetadata(compression.GetMetadata(ref)); state == Dirty || state == AwaitingClean {
+		var reservation ReferenceValue
+		metadata, reservation, err = compression.DecompressReserved(ctx, ref, p.data)
+		if err == nil {
+			p.setReservation(reservation)
+		}
+	} else {
+		metadata, err = compression.Decompress(ctx, ref, p.data)
+	}
+	if err != nil {
+		c.freePage(p)
+		return err
+	}
+	slot.SwapReferenceForPage(p)
 	// The reference carried the page's share count, and under D2 its dirty
 	// state (reclaim.go).
 	p.shareCount, p.dirtyState = unpackReferenceMetadata(metadata)
@@ -698,12 +720,28 @@ func (c *CowPages) makePageFromReference(slot PageOrMarkerRef[VmPage]) error {
 
 // replaceReferenceWithPageLocked decompresses a reference in the page list
 // and queues the page.
-func (c *CowPages) replaceReferenceWithPageLocked(slot PageOrMarkerRef[VmPage], offset uint64) error {
-	if err := c.makePageFromReference(slot); err != nil {
+func (c *CowPages) replaceReferenceWithPageLocked(ctx context.Context, slot PageOrMarkerRef[VmPage], offset uint64) error {
+	if err := c.makePageFromReference(ctx, slot); err != nil {
 		return err
 	}
 	// References are never pinned.
 	c.setNotPinnedLocked(slot.Get().Page(), offset)
+	return nil
+}
+
+// reserveLocked gives a page about to be dirty its reservation, where the
+// node keeps them and the page holds none yet (D5). It fails with ErrNoSpace
+// where the storage has none left: a store that could not be spilled is not
+// taken.
+func (c *CowPages) reserveLocked(page *VmPage) error {
+	if !c.node.reserves() || page.reserved {
+		return nil
+	}
+	ref, ok := c.node.compression.Reserve()
+	if !ok {
+		return ErrNoSpace
+	}
+	page.setReservation(ref)
 	return nil
 }
 

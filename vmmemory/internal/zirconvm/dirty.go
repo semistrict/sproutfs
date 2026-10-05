@@ -54,6 +54,10 @@ func (c *CowPages) updateDirtyStateLocked(page *VmPage, offset uint64, state Dir
 	case Clean:
 		// Outside an add, only an AwaitingClean page becomes Clean.
 		assert(isPendingAdd || page.dirtyState == AwaitingClean, "only an AwaitingClean page is cleaned")
+		// D5: a clean page's bytes are the pager's, so its reservation goes.
+		// A new page has none.
+		assert(!isPendingAdd || !page.reserved, "a new Clean page holds no reservation")
+		c.node.releaseReservation(page)
 		updatePageQueues = !isPendingAdd
 	case Dirty:
 		// Outside an add, only a Clean page becomes Dirty. Zircon also makes
@@ -63,6 +67,8 @@ func (c *CowPages) updateDirtyStateLocked(page *VmPage, offset uint64, state Dir
 		assert(isPendingAdd || page.dirtyState == Clean, "only a Clean page becomes Dirty")
 		// An identity root's pages never change.
 		assert(!c.isIdentityRoot(), "an identity root's page is not dirtied")
+		// D5: the page took its reservation before it became dirty.
+		assert(!c.node.reserves() || page.reserved, "a page holds its reservation before it is dirty")
 		updatePageQueues = !isPendingAdd
 	case AwaitingClean:
 		// A new page does not start AwaitingClean, and only a Dirty page
@@ -71,6 +77,8 @@ func (c *CowPages) updateDirtyStateLocked(page *VmPage, offset uint64, state Dir
 		assert(page.dirtyState == Dirty, "only a Dirty page begins a writeback")
 		// The page stays in the dirty queue until its writeback ends.
 		assert(c.node.queues.DebugPageIsPagerBackedDirty(page), "the page is in the dirty queue")
+		// D5: the checkpoint holds the page's bytes in its reservation.
+		assert(!c.node.reserves() || page.reserved, "an AwaitingClean page holds its reservation")
 	default:
 		panic("zirconvm: not a dirty tracked state")
 	}
@@ -87,13 +95,18 @@ func (c *CowPages) updateDirtyStateLocked(page *VmPage, offset uint64, state Dir
 // checkpoint holds (D1). The page keeps its place in the dirty queue, under
 // the same offset. Mappings of the offset, which map the checkpoint's page
 // read-only, are revoked so the next fault maps the copy. The copy is
-// returned.
+// returned. The checkpoint's page keeps its reservation, and the copy takes
+// one of its own (D5).
 func (c *CowPages) splitAwaitingCleanLocked(slot PageOrMarkerRef[VmPage], offset uint64,
-	deferred *DeferredOps) (*VmPage, error) {
+	deferred *DeferredOps, reserved *[]ReferenceValue) (*VmPage, error) {
 	held := slot.Get().Page()
 	assert(held.dirtyState == AwaitingClean, "the page is AwaitingClean")
 	copyPage, err := c.allocateCopyPage(held, nil)
 	if err != nil {
+		return nil, err
+	}
+	if err := c.reserveFromLocked(copyPage, reserved); err != nil {
+		c.freePage(copyPage)
 		return nil, err
 	}
 	c.updateDirtyStateLocked(copyPage, offset, Dirty, true)
@@ -109,25 +122,44 @@ func (c *CowPages) splitAwaitingCleanLocked(slot PageOrMarkerRef[VmPage], offset
 
 // dirtyForStoreLocked makes the page in slot Dirty for a store: a Clean page
 // in place, an AwaitingClean one by D1's split. It returns the page now in
-// the slot.
+// the slot. The page that becomes Dirty takes its reservation first (D5),
+// from reserved where the caller took them up front, which fails with
+// ErrNoSpace where there is none.
 func (c *CowPages) dirtyForStoreLocked(ctx context.Context, slot PageOrMarkerRef[VmPage], offset uint64,
-	deferred *DeferredOps) (*VmPage, error) {
+	deferred *DeferredOps, reserved *[]ReferenceValue) (*VmPage, error) {
 	page := slot.Get().Page()
 	switch page.dirtyState {
 	case Dirty:
 		return page, nil
 	case Clean:
+		if err := c.reserveFromLocked(page, reserved); err != nil {
+			return nil, err
+		}
 		c.updateDirtyStateLocked(page, offset, Dirty, false)
 		return page, nil
 	}
 	assert(page.dirtyState == AwaitingClean, "the page is AwaitingClean")
 	if sim.Bug(ctx, bugDirtyAwaitingCleanInPlace) {
 		// Zircon's rule: Dirty in place, in the page the checkpoint holds.
-		// The page is already in the dirty queue.
+		// The page is already in the dirty queue, and keeps its reservation.
 		page.dirtyState = Dirty
 		return page, nil
 	}
-	return c.splitAwaitingCleanLocked(slot, offset, deferred)
+	return c.splitAwaitingCleanLocked(slot, offset, deferred, reserved)
+}
+
+// reserveFromLocked is reserveLocked, taking the reservation from reserved
+// where the caller took some up front.
+func (c *CowPages) reserveFromLocked(page *VmPage, reserved *[]ReferenceValue) error {
+	if !c.node.reserves() || page.reserved {
+		return nil
+	}
+	if reserved != nil && len(*reserved) > 0 {
+		page.setReservation((*reserved)[0])
+		*reserved = (*reserved)[1:]
+		return nil
+	}
+	return c.reserveLocked(page)
 }
 
 // prepareForWriteLocked makes a run of pages from r's start ready to write,
@@ -163,7 +195,7 @@ func (c *CowPages) prepareForWriteLocked(ctx context.Context, r CowRange, pageRe
 			assert(page.dirtyState != Untracked, "the page is dirty tracked")
 			assert(page.object == c && page.pageOffset == off, "the page is the object's")
 			// Zircon stops at a loaned page; loaned pages are not ported.
-			if _, err := c.dirtyForStoreLocked(ctx, p, off, deferred); err != nil {
+			if _, err := c.dirtyForStoreLocked(ctx, p, off, deferred, nil); err != nil {
 				storeErr = err
 				return ErrStop
 			}
@@ -315,8 +347,9 @@ func (c *CowPages) DirtyPages(ctx context.Context, r CowRange, allocList *[]*VmP
 		return ErrBadState
 	}
 	// Markers and zero intervals need zero pages forked to be dirtied. Count
-	// them.
-	var zeroPagesCount uint64
+	// them. D5: count too the pages and spilled pages not Dirty, which with
+	// the zero pages are what take a reservation.
+	var zeroPagesCount, notDirtyCount uint64
 	intervalStart := start
 	unmatchedIntervalStart := false
 	foundPageOrGap := false
@@ -324,6 +357,16 @@ func (c *CowPages) DirtyPages(ctx context.Context, r CowRange, allocList *[]*VmP
 		foundPageOrGap = true
 		if p.IsMarker() {
 			zeroPagesCount++
+			return nil
+		}
+		if p.IsPage() && p.Page().dirtyState != Dirty {
+			notDirtyCount++
+			return nil
+		}
+		if p.IsReference() {
+			if _, state := unpackReferenceMetadata(c.node.compression.GetMetadata(p.Reference())); state != Dirty {
+				notDirtyCount++
+			}
 			return nil
 		}
 		if p.IsIntervalZero() {
@@ -356,6 +399,23 @@ func (c *CowPages) DirtyPages(ctx context.Context, r CowRange, allocList *[]*VmP
 	if unmatchedIntervalStart || !foundPageOrGap {
 		assert(foundPageOrGap || intervalStart == start, "the range is in one interval")
 		zeroPagesCount += (end - intervalStart) / ps
+	}
+	// D5: the reservations are taken up front too, as the pages are, so the
+	// range is dirtied whole or not at all. What is left over goes back.
+	var reserved []ReferenceValue
+	defer func() {
+		for _, ref := range reserved {
+			c.node.compression.Free(ref)
+		}
+	}()
+	if c.node.reserves() {
+		for range zeroPagesCount + notDirtyCount {
+			ref, ok := c.node.compression.Reserve()
+			if !ok {
+				return ErrNoSpace
+			}
+			reserved = append(reserved, ref)
+		}
 	}
 	if zeroPagesCount > 0 {
 		// Allocate the pages up front, keeping any from an earlier call.
@@ -430,7 +490,7 @@ func (c *CowPages) DirtyPages(ctx context.Context, r CowRange, allocList *[]*VmP
 		if _, state := unpackReferenceMetadata(c.node.compression.GetMetadata(p.Get().Reference())); state == Dirty {
 			return nil
 		}
-		if err := c.replaceReferenceWithPageLocked(p, off); err != nil {
+		if err := c.replaceReferenceWithPageLocked(ctx, p, off); err != nil {
 			decompressErr = err
 			return ErrStop
 		}
@@ -450,7 +510,7 @@ func (c *CowPages) DirtyPages(ctx context.Context, r CowRange, allocList *[]*VmP
 		return false
 	}, func(p *PageOrMarker[VmPage], off uint64) error {
 		assert(p.IsPage(), "the slot holds a page")
-		if _, err := c.dirtyForStoreLocked(ctx, PageOrMarkerRef[VmPage]{slot: p}, off, deferred); err != nil {
+		if _, err := c.dirtyForStoreLocked(ctx, PageOrMarkerRef[VmPage]{slot: p}, off, deferred, &reserved); err != nil {
 			storeErr = err
 			return ErrStop
 		}
@@ -719,10 +779,12 @@ func (c *CowPages) WritebackEndLocked(r CowRange) error {
 }
 
 // abandonAwaitingCleanLocked makes an AwaitingClean page of an abandoned
-// writeback Dirty again (D4). It stays in the dirty queue.
+// writeback Dirty again (D4). It stays in the dirty queue, and keeps the
+// reservation the checkpoint held its bytes in as its own (D5).
 func (c *CowPages) abandonAwaitingCleanLocked(page *VmPage) {
 	assert(page.dirtyState == AwaitingClean, "the page is AwaitingClean")
 	assert(c.node.queues.DebugPageIsPagerBackedDirty(page), "the page is in the dirty queue")
+	assert(!c.node.reserves() || page.reserved, "the page holds its reservation")
 	page.dirtyState = Dirty
 }
 
@@ -773,7 +835,7 @@ func (c *CowPages) WritebackAbandonLocked(ctx context.Context, r CowRange, defer
 // the AwaitingClean page or zero interval in it. It is what an upload reads,
 // which D1 keeps the bytes of the pause. An offset no writeback holds is
 // ErrBadState. offset is page rounded and buf whole pages.
-func (c *CowPages) ReadWritebackLocked(offset uint64, buf []byte) error {
+func (c *CowPages) ReadWritebackLocked(ctx context.Context, offset uint64, buf []byte) error {
 	ps := c.pageSize()
 	assert(c.isPageRounded(offset), "the offset is page rounded")
 	assert(c.isPageRounded(uint64(len(buf))), "the buffer is whole pages")
@@ -786,7 +848,7 @@ func (c *CowPages) ReadWritebackLocked(offset uint64, buf []byte) error {
 		if held := c.held.LookupMutable(off); held.Valid() && !held.Get().IsEmpty() {
 			if held.Get().IsReference() {
 				// D2: the checkpoint's copy was spilled.
-				if err := c.replaceReferenceWithPageLocked(held, off); err != nil {
+				if err := c.replaceReferenceWithPageLocked(ctx, held, off); err != nil {
 					return err
 				}
 			}
@@ -810,7 +872,7 @@ func (c *CowPages) ReadWritebackLocked(offset uint64, buf []byte) error {
 			if state != AwaitingClean {
 				return ErrBadState
 			}
-			if err := c.replaceReferenceWithPageLocked(slot, off); err != nil {
+			if err := c.replaceReferenceWithPageLocked(ctx, slot, off); err != nil {
 				return err
 			}
 		}

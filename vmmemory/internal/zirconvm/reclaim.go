@@ -4,6 +4,8 @@
 
 package zirconvm
 
+import "context"
+
 // Reclamation splits pages a pager backs from anonymous pages, as the pager
 // splits named pages from the overlay: a Clean page a pager backs is evicted
 // and read again, an anonymous page is compressed. D2 departs from Zircon,
@@ -11,7 +13,8 @@ package zirconvm
 // pager backs: here such a page is compressed, as an anonymous page is, and
 // so is a page a checkpoint holds beside the page list (D1). RAM is
 // checkpointed only on request, so its dirty set is bounded by what can be
-// spilled, not by a writeback (plan: departures).
+// spilled, not by a writeback (plan: departures). Such a page is compressed
+// into the reservation it holds (D5), which becomes its reference.
 
 // referenceDirtyShift is where D2 keeps a spilled page's dirty state in its
 // reference's metadata, above the share count Zircon keeps there. Only a
@@ -118,7 +121,7 @@ func (c *CowPages) ReclaimRangeForEviction(offset, length uint64, action Evictio
 // compressed, with the compressor's temporary reference in its slot. An
 // anonymous page is Zircon's case; a page of an object a pager backs that is
 // not Clean, or one a checkpoint holds, is D2's.
-func (c *CowPages) reclaimPageForCompression(page *VmPage, offset uint64, compressor *Compressor) (ReclaimSuccess, ReclaimFailure) {
+func (c *CowPages) reclaimPageForCompression(ctx context.Context, page *VmPage, offset uint64, compressor *Compressor) (ReclaimSuccess, ReclaimFailure) {
 	assert(compressor != nil, "there is a compressor")
 	assert(c.canDecommitZeroPages(), "the object decommits zero pages")
 	pq := c.node.queues
@@ -160,7 +163,7 @@ func (c *CowPages) reclaimPageForCompression(page *VmPage, offset uint64, compre
 	}
 	// The page is ours, unchanging, and the object holds the temporary
 	// reference: compress with no lock held.
-	compressor.Compress()
+	compressor.Compress(ctx)
 	compressionFailed := false
 	func() {
 		c.lock.Lock()
@@ -181,6 +184,11 @@ func (c *CowPages) reclaimPageForCompression(page *VmPage, offset uint64, compre
 				// The compressor copied any change to the metadata to the
 				// new reference.
 				oldRef = PageOrMarkerRef[VmPage]{slot: slot}.SwapReferenceForReference(result.Ref)
+				if page.reserved {
+					// D5: the page was compressed into its reservation, which
+					// the slot holds from here, so the page goes without it.
+					assert(page.takeReservation() == result.Ref, "the page was compressed into its reservation")
+				}
 				c.reclamationEventCount++
 				reclaimed = true
 			case CompressFailed:
@@ -286,11 +294,11 @@ func (c *CowPages) lookupReclaimableLocked(page *VmPage, offset uint64) (*PageOr
 // when with a compressor it is compressed (D2). An anonymous object
 // compresses with compressor, which must have just been armed. On a failure
 // the page is touched, so it stops being a candidate.
-func (c *CowPages) ReclaimPage(page *VmPage, offset uint64, action EvictionAction, compressor *Compressor) (ReclaimSuccess, ReclaimFailure) {
+func (c *CowPages) ReclaimPage(ctx context.Context, page *VmPage, offset uint64, action EvictionAction, compressor *Compressor) (ReclaimSuccess, ReclaimFailure) {
 	if c.canEvict() {
 		// D2: a page not Clean, or one a checkpoint holds, is spilled.
 		if compressor != nil && c.pageIsDirtyForReclaim(page, offset) {
-			return c.reclaimPageForCompression(page, offset, compressor)
+			return c.reclaimPageForCompression(ctx, page, offset, compressor)
 		}
 		// Evict in node aligned batches.
 		evictionLength := uint64(NodePages) * c.pageSize()
@@ -298,7 +306,7 @@ func (c *CowPages) ReclaimPage(page *VmPage, offset uint64, action EvictionActio
 		return c.ReclaimRangeForEviction(offset, evictionLength, action)
 	}
 	if compressor != nil && c.pageSource == nil {
-		return c.reclaimPageForCompression(page, offset, compressor)
+		return c.reclaimPageForCompression(ctx, page, offset, compressor)
 	}
 	// Zircon discards a discardable object here; discardable objects are
 	// not ported. No other way: touch the page so it stops being a

@@ -101,7 +101,7 @@ func TestAStoreIntoAPageACheckpointHoldsGetsADirtyCopy(t *testing.T) {
 		expect(t, "the old mapping is gone", mapped, false)
 		// The upload reads the pause's bytes; the guest reads its store.
 		held := make([]byte, ps)
-		mustNotFail(t, "read the writeback", vmo.ReadWriteback(held, 0))
+		mustNotFail(t, "read the writeback", vmo.ReadWriteback(env.ctx, held, 0))
 		expect(t, "the writeback holds the pause", bytes.Equal(held, pattern(ps, 'A')), true)
 		expect(t, "the guest reads its store", bytes.Equal(readPage(t, env, vmo, 0), pattern(ps, 'B')), true)
 		expectRanges(t, "dirty", dirtyRanges(t, env, vmo), [][3]uint64{{0, 1, 0}})
@@ -110,7 +110,7 @@ func TestAStoreIntoAPageACheckpointHoldsGetsADirtyCopy(t *testing.T) {
 		expect(t, "the checkpoint's page was freed", env.pmm.out, pagesOut)
 		expect(t, "the store is still dirty", vmo.DebugGetPage(0).dirtyState, Dirty)
 		expectRanges(t, "dirty after the end", dirtyRanges(t, env, vmo), [][3]uint64{{0, 1, 0}})
-		expect(t, "nothing held", vmo.ReadWriteback(held, 0), ErrBadState)
+		expect(t, "nothing held", vmo.ReadWriteback(env.ctx, held, 0), ErrBadState)
 	})
 }
 
@@ -131,7 +131,7 @@ func TestAPagerAgreedStoreIntoAPageACheckpointHoldsGetsADirtyCopy(t *testing.T) 
 		expect(t, "the second is awaiting clean", pages[1].dirtyState, AwaitingClean)
 		mustNotFail(t, "store", vmo.Write(env.ctx, pattern(ps, 'B'), 0))
 		held := make([]byte, 2*ps)
-		mustNotFail(t, "read the writeback", vmo.ReadWriteback(held, 0))
+		mustNotFail(t, "read the writeback", vmo.ReadWriteback(env.ctx, held, 0))
 		expect(t, "the writeback holds the pause", bytes.Equal(held, pattern(2*ps, 'A')), true)
 		mustNotFail(t, "end", vmo.WritebackEnd(0, 2*ps))
 		expect(t, "the first is dirty", vmo.DebugGetPage(0).dirtyState, Dirty)
@@ -152,14 +152,14 @@ func TestStoresIntoAZeroIntervalACheckpointHoldsLeaveItsZeros(t *testing.T) {
 		mustNotFail(t, "store into the middle", vmo.Write(env.ctx, pattern(ps, 'B'), ps))
 		mustNotFail(t, "store to its right", vmo.Write(env.ctx, pattern(ps, 'C'), 2*ps))
 		held := make([]byte, 4*ps)
-		mustNotFail(t, "read the writeback", vmo.ReadWriteback(held, 0))
+		mustNotFail(t, "read the writeback", vmo.ReadWriteback(env.ctx, held, 0))
 		expect(t, "the writeback holds zeros", allZero(held), true)
 		expect(t, "the guest reads its first store", bytes.Equal(readPage(t, env, vmo, ps), pattern(ps, 'B')), true)
 		expect(t, "the guest reads its second store", bytes.Equal(readPage(t, env, vmo, 2*ps), pattern(ps, 'C')), true)
 		mustNotFail(t, "end", vmo.WritebackEnd(0, 4*ps))
 		// The zeros landed; the stores are still to be written.
 		expectRanges(t, "dirty after the end", dirtyRanges(t, env, vmo), [][3]uint64{{1, 2, 0}})
-		expect(t, "nothing held", vmo.ReadWriteback(held[:ps], 0), ErrBadState)
+		expect(t, "nothing held", vmo.ReadWriteback(env.ctx, held[:ps], 0), ErrBadState)
 	})
 }
 
@@ -197,7 +197,7 @@ func TestAnAbandonedWritebackMakesEveryPageDirtyAgain(t *testing.T) {
 		// Nothing is held, and everything is dirty for the next writeback.
 		held := make([]byte, ps)
 		for _, off := range []uint64{0, ps, 2 * ps} {
-			expect(t, "nothing held", vmo.ReadWriteback(held, off), ErrBadState)
+			expect(t, "nothing held", vmo.ReadWriteback(env.ctx, held, off), ErrBadState)
 		}
 		expectRanges(t, "dirty", dirtyRanges(t, env, vmo), [][3]uint64{{0, 2, 0}, {2, 1, 1}})
 		// The next writeback takes the zeros again, and ends with them clean.
@@ -230,7 +230,7 @@ func TestADirtyPageIsSpilledAndKeepsItsDirtyState(t *testing.T) {
 		expectRanges(t, "still dirty", dirtyRanges(t, env, vmo), [][3]uint64{{0, 1, 0}})
 		mustNotFail(t, "begin", vmo.WritebackBegin(0, ps, false))
 		held := make([]byte, ps)
-		mustNotFail(t, "read the writeback", vmo.ReadWriteback(held, 0))
+		mustNotFail(t, "read the writeback", vmo.ReadWriteback(env.ctx, held, 0))
 		expect(t, "the writeback reads the spilled page", bytes.Equal(held, pattern(ps, 'A')), true)
 		back := vmo.DebugGetPage(0)
 		expect(t, "the writeback read it back awaiting clean", back.dirtyState, AwaitingClean)
@@ -263,7 +263,7 @@ func TestADirtyPageOfZerosSpillsToADirtyZeroInterval(t *testing.T) {
 		second := vmo.DebugGetPage(ps)
 		expect(t, "spilled the second", compressPage(t, env, vmo.DebugGetCowPages(), second, ps), uint64(1))
 		held := make([]byte, 2*ps)
-		mustNotFail(t, "read the writeback", vmo.ReadWriteback(held, 0))
+		mustNotFail(t, "read the writeback", vmo.ReadWriteback(env.ctx, held, 0))
 		expect(t, "zeros held", allZero(held), true)
 		mustNotFail(t, "end", vmo.WritebackEnd(0, 2*ps))
 		expectRanges(t, "clean", dirtyRanges(t, env, vmo), nil)
@@ -286,7 +286,7 @@ func TestAPageACheckpointHoldsIsSpilledAndReadBack(t *testing.T) {
 		expect(t, "the checkpoint's page spilled", compressPage(t, env, vmo.DebugGetCowPages(), paused, 0), uint64(1))
 		expect(t, "the guest's page is untouched", vmo.DebugGetCowPages().DebugIsPage(0), true)
 		held := make([]byte, ps)
-		mustNotFail(t, "read the writeback", vmo.ReadWriteback(held, 0))
+		mustNotFail(t, "read the writeback", vmo.ReadWriteback(env.ctx, held, 0))
 		expect(t, "the pause's bytes", bytes.Equal(held, pattern(ps, 'A')), true)
 		pagesOut := env.pmm.out
 		mustNotFail(t, "end", vmo.WritebackEnd(0, ps))
@@ -454,14 +454,14 @@ func TestEndingPartOfAWritebackFreesOnlyWhatItHeldThere(t *testing.T) {
 		mustNotFail(t, "end the middle zeros", vmo.WritebackEnd(4*ps, 2*ps))
 		expect(t, "the middle page's copy was freed", env.pmm.out, pagesOut-1)
 		held := make([]byte, ps)
-		mustNotFail(t, "read the first", vmo.ReadWriteback(held, 0))
+		mustNotFail(t, "read the first", vmo.ReadWriteback(env.ctx, held, 0))
 		expect(t, "the first held", bytes.Equal(held, pattern(ps, 'A')), true)
-		mustNotFail(t, "read the third", vmo.ReadWriteback(held, 2*ps))
+		mustNotFail(t, "read the third", vmo.ReadWriteback(env.ctx, held, 2*ps))
 		expect(t, "the third held", bytes.Equal(held, pattern(ps, 'C')), true)
-		expect(t, "the middle landed", vmo.ReadWriteback(held, ps), ErrBadState)
-		mustNotFail(t, "read the zeros before", vmo.ReadWriteback(held, 3*ps))
+		expect(t, "the middle landed", vmo.ReadWriteback(env.ctx, held, ps), ErrBadState)
+		mustNotFail(t, "read the zeros before", vmo.ReadWriteback(env.ctx, held, 3*ps))
 		expect(t, "zeros held before", allZero(held), true)
-		mustNotFail(t, "read the zeros after", vmo.ReadWriteback(held, 6*ps))
+		mustNotFail(t, "read the zeros after", vmo.ReadWriteback(env.ctx, held, 6*ps))
 		expect(t, "zeros held after", allZero(held), true)
 		expect(t, "the middle zeros landed", vmo.DebugGetCowPages().held.IsOffsetInZeroInterval(5*ps), false)
 		// The rest ends.
@@ -491,13 +491,13 @@ func TestAWritebacksCallsActOnTheirRangeAlone(t *testing.T) {
 		mustNotFail(t, "store after the pause", vmo.Write(env.ctx, pattern(3*ps, 'B'), ps))
 		mustNotFail(t, "end the second", vmo.WritebackEnd(ps, ps))
 		held := make([]byte, ps)
-		expect(t, "the second's copy was freed", vmo.ReadWriteback(held, ps), ErrBadState)
-		mustNotFail(t, "the third is held", vmo.ReadWriteback(held, 2*ps))
-		mustNotFail(t, "the fourth is held", vmo.ReadWriteback(held, 3*ps))
+		expect(t, "the second's copy was freed", vmo.ReadWriteback(env.ctx, held, ps), ErrBadState)
+		mustNotFail(t, "the third is held", vmo.ReadWriteback(env.ctx, held, 2*ps))
+		mustNotFail(t, "the fourth is held", vmo.ReadWriteback(env.ctx, held, 3*ps))
 		mapping.commitAndMap(false)
 		mustNotFail(t, "abandon the third", vmo.WritebackAbandon(env.ctx, 2*ps, ps))
-		expect(t, "the third's copy was freed", vmo.ReadWriteback(held, 2*ps), ErrBadState)
-		mustNotFail(t, "the fourth is still held", vmo.ReadWriteback(held, 3*ps))
+		expect(t, "the third's copy was freed", vmo.ReadWriteback(env.ctx, held, 2*ps), ErrBadState)
+		mustNotFail(t, "the fourth is still held", vmo.ReadWriteback(env.ctx, held, 3*ps))
 		expect(t, "the fourth holds the pause", bytes.Equal(held, pattern(ps, 'A')), true)
 		for i, want := range []bool{true, true, false, true} {
 			_, _, mapped := mapping.query(uint64(i) * ps)
@@ -506,14 +506,14 @@ func TestAWritebacksCallsActOnTheirRangeAlone(t *testing.T) {
 		// Every page writable again: the first, still AwaitingClean, gets a
 		// copy and is held too.
 		mapping.commitAndMap(true)
-		mustNotFail(t, "the first is held", vmo.ReadWriteback(held, 0))
+		mustNotFail(t, "the first is held", vmo.ReadWriteback(env.ctx, held, 0))
 		mustNotFail(t, "begin the third again", vmo.WritebackBegin(2*ps, ps, false))
 		for i, want := range []bool{true, true, false, true} {
 			_, writable, _ := mapping.query(uint64(i) * ps)
 			expect(t, "writable outside the begin", writable, want)
 		}
-		mustNotFail(t, "the first is held still", vmo.ReadWriteback(held, 0))
-		mustNotFail(t, "the fourth is held still", vmo.ReadWriteback(held, 3*ps))
+		mustNotFail(t, "the first is held still", vmo.ReadWriteback(env.ctx, held, 0))
+		mustNotFail(t, "the fourth is held still", vmo.ReadWriteback(env.ctx, held, 3*ps))
 	})
 }
 
@@ -559,5 +559,125 @@ func TestEndingAWritebackCleansOnlyTheZerosItTook(t *testing.T) {
 		mustNotFail(t, "zero the third untracked", vmo.ZeroRangeUntracked(env.ctx, 2*ps, ps))
 		expectRanges(t, "nothing dirty", dirtyRanges(t, env, vmo), nil)
 		expect(t, "zeros read", allZero(readPage(t, env, vmo, 2*ps)), true)
+	})
+}
+
+// reservationsTaken is how many reservations of the case's spill are held.
+func reservationsTaken(env *vmoEnv) int { return testSpillPages - env.storage.Available() }
+
+// reservationOf is the reservation a page holds, failing the case where it
+// holds none.
+func reservationOf(t *testing.T, what string, page *VmPage) ReferenceValue {
+	t.Helper()
+	ref, reserved := page.DebugReservation()
+	expect(t, what+" holds a reservation", reserved, true)
+	return ref
+}
+
+// D5 with D4: an abandoned writeback gives each page made Dirty again a
+// reservation of its own: the reservation the checkpoint held its bytes in,
+// whether the page is resident or spilled. A page the guest copied away from
+// keeps the copy's, and the checkpoint's goes back.
+func TestAnAbandonedWritebackGivesEachPageItsOwnReservation(t *testing.T) {
+	forEachVmoPageSize(t, func(t *testing.T, env *vmoEnv) {
+		ps := env.ps
+		vmo, _ := makeCommittedPagerVmo(t, env, 3, false)
+		for i, b := range []byte{'A', 'B', 'C'} {
+			mustNotFail(t, "store", vmo.Write(env.ctx, pattern(ps, b), uint64(i)*ps))
+		}
+		first, second, third := vmo.DebugGetPage(0), vmo.DebugGetPage(ps), vmo.DebugGetPage(2*ps)
+		firstRef := reservationOf(t, "the first", first)
+		secondRef := reservationOf(t, "the second", second)
+		thirdRef := reservationOf(t, "the third", third)
+		// The third is spilled into its reservation.
+		expect(t, "spilled", compressPage(t, env, vmo.DebugGetCowPages(), third, 2*ps), uint64(1))
+		expect(t, "three taken", reservationsTaken(env), 3)
+		mustNotFail(t, "begin", vmo.WritebackBegin(0, 3*ps, false))
+		// A store into the second after the pause gets a copy, with a
+		// reservation of its own (D1).
+		mustNotFail(t, "store after the pause", vmo.Write(env.ctx, pattern(ps, 'D'), ps))
+		secondCopy := vmo.DebugGetPage(ps)
+		copyRef := reservationOf(t, "the second's copy", secondCopy)
+		expect(t, "the copy's is not the checkpoint's", copyRef != secondRef, true)
+		expect(t, "four taken", reservationsTaken(env), 4)
+		mustNotFail(t, "abandon", vmo.WritebackAbandon(env.ctx, 0, 3*ps))
+		expect(t, "the first is dirty", first.dirtyState, Dirty)
+		expect(t, "with the reservation it had", reservationOf(t, "the first", first), firstRef)
+		expect(t, "the second's copy is dirty", secondCopy.dirtyState, Dirty)
+		expect(t, "with its own", reservationOf(t, "the second's copy", secondCopy), copyRef)
+		expect(t, "the checkpoint's copy of the second went back", reservationsTaken(env), 3)
+		// The third is read back dirty, holding the reservation it was
+		// spilled into.
+		expect(t, "the third's bytes", bytes.Equal(readPage(t, env, vmo, 2*ps), pattern(ps, 'C')), true)
+		back := vmo.DebugGetPage(2 * ps)
+		expect(t, "the third is dirty", back.dirtyState, Dirty)
+		expect(t, "with the reservation it was spilled into", reservationOf(t, "the third", back), thirdRef)
+		expect(t, "still three taken", reservationsTaken(env), 3)
+		expectRanges(t, "dirty", dirtyRanges(t, env, vmo), [][3]uint64{{0, 3, 0}})
+	})
+}
+
+// D5: a page spilled and read back goes on holding the one reservation, and
+// a writeback that ends gives it back.
+func TestADirtyPageHoldsOneReservationUntilItIsClean(t *testing.T) {
+	forEachVmoPageSize(t, func(t *testing.T, env *vmoEnv) {
+		ps := env.ps
+		vmo, _ := makeCommittedPagerVmo(t, env, 1, false)
+		page := vmo.DebugGetPage(0)
+		_, reserved := page.DebugReservation()
+		expect(t, "a clean page holds none", reserved, false)
+		mustNotFail(t, "store", vmo.Write(env.ctx, pattern(ps, 'A'), 0))
+		ref := reservationOf(t, "the dirty page", page)
+		expect(t, "one taken", reservationsTaken(env), 1)
+		expect(t, "spilled", compressPage(t, env, vmo.DebugGetCowPages(), page, 0), uint64(1))
+		expect(t, "into its reservation", env.storage.Holds(ref), true)
+		expect(t, "still one", reservationsTaken(env), 1)
+		expect(t, "read back", bytes.Equal(readPage(t, env, vmo, 0), pattern(ps, 'A')), true)
+		back := vmo.DebugGetPage(0)
+		expect(t, "the same reservation", reservationOf(t, "the page read back", back), ref)
+		expect(t, "holding no bytes", env.storage.Holds(ref), false)
+		mustNotFail(t, "begin", vmo.WritebackBegin(0, ps, false))
+		expect(t, "the checkpoint holds it", reservationOf(t, "the paused page", back), ref)
+		mustNotFail(t, "end", vmo.WritebackEnd(0, ps))
+		_, reserved = back.DebugReservation()
+		expect(t, "a clean page holds none", reserved, false)
+		expect(t, "none taken", reservationsTaken(env), 0)
+	})
+}
+
+// D5: a store with no reservation left is refused, and the page stays clean.
+func TestAStoreWithNoReservationLeftIsRefused(t *testing.T) {
+	forEachVmoPageSize(t, func(t *testing.T, env *vmoEnv) {
+		ps := env.ps
+		vmo, _ := makeCommittedPagerVmo(t, env, 1, false)
+		for env.storage.Available() > 0 {
+			env.storage.Reserve()
+		}
+		expect(t, "the store", vmo.Write(env.ctx, pattern(ps, 'A'), 0), ErrNoSpace)
+		expect(t, "the page stays clean", vmo.DebugGetPage(0).dirtyState, Clean)
+		// A write into zeros, which copies the zero page, is refused too.
+		zeros := makeUncommittedPagerVmo(t, env, 1, false)
+		mustNotFail(t, "zero", zeros.ZeroRange(env.ctx, 0, ps))
+		expect(t, "the store into zeros", zeros.Write(env.ctx, pattern(ps, 'Z'), 0), ErrNoSpace)
+		expect(t, "zeros still", allZero(readPage(t, env, zeros, 0)), true)
+	})
+}
+
+// D5: the pager's agreement to dirty a range takes every reservation it needs
+// up front, so a range there are too few for is not dirtied at all.
+func TestAnAgreementThereAreTooFewReservationsForDirtiesNothing(t *testing.T) {
+	forEachVmoPageSize(t, func(t *testing.T, env *vmoEnv) {
+		ps := env.ps
+		vmo, _ := makeCommittedPagerVmo(t, env, 2, true)
+		for env.storage.Available() > 1 {
+			env.storage.Reserve()
+		}
+		expect(t, "the agreement", vmo.DirtyPages(env.ctx, 0, 2*ps), ErrNoSpace)
+		expect(t, "the first clean", vmo.DebugGetPage(0).dirtyState, Clean)
+		expect(t, "the second clean", vmo.DebugGetPage(ps).dirtyState, Clean)
+		expect(t, "the one left is left", env.storage.Available(), 1)
+		mustNotFail(t, "agree to one", vmo.DirtyPages(env.ctx, ps, ps))
+		expect(t, "the second dirty", vmo.DebugGetPage(ps).dirtyState, Dirty)
+		expect(t, "none left", env.storage.Available(), 0)
 	})
 }

@@ -30,10 +30,35 @@ type VmPage struct {
 	// dirtyState is the page's VmCowPages::DirtyState.
 	dirtyState DirtyState
 
+	// reservation is the slot of the node's compression storage the page
+	// holds while it is Dirty or AwaitingClean, and reserved whether it holds
+	// one. Zircon has no such field. D5: a page takes its slot before it is
+	// dirty, so its spill writes there and never needs room (compression.go).
+	reservation ReferenceValue
+	reserved    bool
+
 	// Zircon's pin_count and loaned state are not kept. Pinning is for DMA and
 	// loaned pages are for contiguous memory; neither ports (plan: Which
 	// Zircon tests port).
 }
+
+// setReservation gives the page a reservation. It holds none.
+func (p *VmPage) setReservation(ref ReferenceValue) {
+	assert(!p.reserved, "the page holds no reservation yet")
+	p.reservation, p.reserved = ref, true
+}
+
+// takeReservation takes the page's reservation away, for whoever holds its
+// bytes next.
+func (p *VmPage) takeReservation() ReferenceValue {
+	assert(p.reserved, "the page holds a reservation")
+	ref := p.reservation
+	p.reservation, p.reserved = ReferenceValue{}, false
+	return ref
+}
+
+// DebugReservation is the page's reservation, and whether it holds one.
+func (p *VmPage) DebugReservation() (ReferenceValue, bool) { return p.reservation, p.reserved }
 
 // QueueNode is the page's part the page queues own.
 func (p *VmPage) QueueNode() *PageQueueNode[*VmPage, *CowPages] { return &p.PageQueueNode }
@@ -130,9 +155,22 @@ func NewNode(pmm Pmm, pageSize uint64, compression *Compression) *Node {
 // the node the Freer a splice list of its pages frees through.
 func (n *Node) FreePage(p *VmPage) {
 	assert(p.queue == nil, "a freed page is in no queue")
+	n.releaseReservation(p)
 	initializeVmPage(p)
 	n.pmm.FreePage(p)
 }
+
+// releaseReservation gives back the reservation of a page that is going
+// (D5): its bytes are nobody's any more.
+func (n *Node) releaseReservation(p *VmPage) {
+	if p.reserved {
+		n.compression.Free(p.takeReservation())
+	}
+}
+
+// reserves reports whether the node's pages hold reservations while they are
+// dirty, which they do wherever there is a storage to spill them to (D5).
+func (n *Node) reserves() bool { return n.compression != nil }
 
 // FreeReference frees a compressed reference to the node's compression.
 func (n *Node) FreeReference(ref ReferenceValue) {
