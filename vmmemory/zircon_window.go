@@ -132,12 +132,22 @@ func (p *zplan) unlock() {
 		h.putFree(at)
 	}
 	p.provisional = provisionalRun{}
+	found := ""
 	for _, page := range p.locked {
+		if f := h.probe.stable(context.Background(), h, frameOf(page), "unlock"); f != "" && found == "" {
+			found = f
+		}
 		frameOf(page).mu.Unlock()
 	}
 	p.locked = nil
 	h.signal()
 	h.mu.Unlock()
+	if found == "" {
+		found = h.probe.take()
+	}
+	if found != "" {
+		panic(found)
+	}
 }
 
 // release takes page off the pages the plan holds the lock of, for its

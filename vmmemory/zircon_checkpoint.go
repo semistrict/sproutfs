@@ -669,6 +669,14 @@ func (z *zirconRegion) reshareBatch(ctx context.Context, copies []*zbinding, equ
 func (z *zirconRegion) dropCopy(ctx context.Context, held *zbinding, page, origin *zirconvm.VmPage, guest *zbinding) error {
 	h := z.region.host
 	ps := h.pageSize
+	if guest != nil {
+		// The one place the pager hands a guest back an older page on
+		// purpose: the audit checks the bytes here rather than trusting the
+		// comparison that chose this page.
+		if found := h.probe.reshared(ctx, h, frameOf(page), frameOf(origin)); found != "" {
+			panic(found)
+		}
+	}
 	h.mu.Lock()
 	if guest != nil {
 		z.host.unaliasLocked(guest)
@@ -700,6 +708,7 @@ func (z *zirconRegion) dropCopy(ctx context.Context, held *zbinding, page, origi
 // retireFromCheckpointLocked ends b's dirty epoch: its bytes are the volume's
 // now, or its origin's. Caller holds z.mu.
 func (z *zirconRegion) retireFromCheckpointLocked(b *zbinding) {
+	z.region.host.probe.retired(b)
 	z.uncoldLocked(b)
 	b.checkpoint, b.dirty, b.origin = nil, false, nil
 	delete(z.dirtySet, b.index)
@@ -1092,6 +1101,9 @@ func (z *zirconRegion) abandonCopies(ctx context.Context, batch []*zbinding) err
 			z.mu.Lock()
 			z.restoreFromCheckpointLocked(b, held)
 			z.mu.Unlock()
+			// An abandoned checkpoint gives the page straight back: the guest
+			// may store into it again, and into these very bytes.
+			h.probe.granted(b, probeFrame(page), nil)
 			if h.measuring() {
 				z.region.unsealSums(b.index, held)
 			}

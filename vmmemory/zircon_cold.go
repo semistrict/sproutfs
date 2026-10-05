@@ -241,6 +241,7 @@ func (z *zirconRegion) forgetOrigin(b *zbinding, origin *zirconvm.VmPage) {
 // admitted under, for the caller to give back. A region left with no dirty
 // page holds no unpublished write, so its loss window ends too.
 func (z *zirconRegion) endDirty(b *zbinding) reservation {
+	z.region.host.probe.retired(b)
 	z.mu.Lock()
 	defer z.mu.Unlock()
 	z.uncoldLocked(b)
@@ -544,6 +545,11 @@ func (z *zirconRegion) giveBackCopy(ctx context.Context, b *zbinding, origin, pa
 func (z *zirconRegion) shareOrigin(b *zbinding, page, origin *zirconvm.VmPage) error {
 	h := z.region.host
 	ps := h.pageSize
+	// The pager hands a guest back an older page on purpose here, as the
+	// settle does, so the audit compares the bytes itself.
+	if found := h.probe.reshared(context.Background(), h, frameOf(page), frameOf(origin)); found != "" {
+		panic(found)
+	}
 	h.mu.Lock()
 	z.host.unaliasLocked(b)
 	z.host.aliasLocked(b, origin)
@@ -584,6 +590,9 @@ func (z *zirconRegion) giveBackSpilled(ctx context.Context, b *zbinding, origin 
 	if !slices.Equal(buffers.first, buffers.second) {
 		z.forgetOrigin(b, origin)
 		return false, nil
+	}
+	if found := h.probe.resharedSpilled(ctx, h, b, buffers.second, frameOf(origin)); found != "" {
+		panic(found)
 	}
 	h.mu.Lock()
 	z.host.aliasLocked(b, origin)

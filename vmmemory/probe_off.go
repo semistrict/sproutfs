@@ -11,12 +11,14 @@ import "context"
 // the empty one and keep nothing.
 type probeState struct{}
 
-func (probeState) stable(context.Context, *Host, *resident, string) string      { return "" }
-func (probeState) bind(*Host, *binding, *resident) string                       { return "" }
-func (probeState) granted(*binding, *resident, *resident)                       {}
-func (probeState) retired(*binding)                                             {}
-func (probeState) reshared(context.Context, *Host, *resident, *resident) string { return "" }
-func (probeState) resharedSpilled(context.Context, *Host, *binding, []byte, *resident) string {
+func (probeState) stable(context.Context, *Host, probePage, string) string      { return "" }
+func (probeState) bind(*Host, probeBinding, probePage) string                   { return "" }
+func (probeState) granted(probeBinding, probePage, probePage)                   {}
+func (probeState) retired(probeBinding)                                         {}
+func (probeState) reshared(context.Context, *Host, probePage, probePage) string { return "" }
+func (probeState) keep(string)                                                  {}
+func (probeState) take() string                                                 { return "" }
+func (probeState) resharedSpilled(context.Context, *Host, probeBinding, []byte, probePage) string {
 	return ""
 }
 

@@ -261,6 +261,9 @@ func (z *zirconRegion) refault(ctx context.Context, b *zbinding) (bool, error) {
 		z.host.aliasLocked(held, frame)
 	}
 	h.mu.Unlock()
+	// The refaulted page holds the guest's own current bytes: the newest
+	// generation of them, not a step back.
+	h.probe.granted(b, frameOf(frame), nil)
 	z.host.node.PageQueues().MarkAccessed(frame)
 	writable := held == nil
 	z.setMapped(b.index, b.index+1, true)

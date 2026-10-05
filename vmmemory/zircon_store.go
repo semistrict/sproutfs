@@ -434,6 +434,9 @@ func (z *zirconRegion) bindDirtyRun(first uint64, frames []*zirconvm.VmPage, res
 	// change to the runs a seal reads rather than one per page.
 	z.dirtyRuns.add(first, first+uint64(len(frames)))
 	z.mu.Unlock()
+	for k, b := range bindings {
+		h.probe.granted(b, frameOf(frames[k]), nil)
+	}
 	h.mu.Lock()
 	for k, b := range bindings {
 		if b.page != nil {
@@ -559,6 +562,7 @@ func (z *zirconRegion) takePrivate(ctx context.Context, index uint64, frame *zir
 	b.checkpoint, b.spill, b.dirty, b.zero, b.ahead, b.origin = nil, spill, true, false, false, origin
 	z.noteDirtyLocked(b)
 	z.mu.Unlock()
+	h.probe.granted(b, frameOf(frame), probeFrame(origin))
 	if h.measuring() {
 		if err := z.region.noteCopiedAt(ctx, index, frameOf(frame).fileSlot); err != nil {
 			return err
@@ -595,6 +599,11 @@ func (z *zirconRegion) dirtyInPlace(ctx context.Context, index uint64, spill res
 	b.checkpoint, b.spill, b.dirty, b.ahead, b.origin = nil, spill, true, false, nil
 	z.noteDirtyLocked(b)
 	z.mu.Unlock()
+	h := z.region.host
+	h.mu.Lock()
+	page := b.page
+	h.mu.Unlock()
+	h.probe.granted(b, probeFrame(page), nil)
 	return nil
 }
 

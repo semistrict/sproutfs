@@ -61,14 +61,14 @@ import (
 // wherever the pager hands something over.
 type probeState struct {
 	mu   sync.Mutex
-	sums map[*resident]uint32
+	sums map[probePage]uint32
 	// generation is the age of the bytes a page holds: higher is newer. A page
 	// the pager has never copied from and never made writable has none, and is
 	// not compared — nothing is known about how old it is.
-	generation map[*resident]uint64
+	generation map[probePage]uint64
 	// writable is the newest generation each binding was last given the right
 	// to store into. Installing anything older into it is a lost write.
-	writable map[*binding]uint64
+	writable map[probeBinding]uint64
 	// pending is a page installed into memory a guest still owns that the pager
 	// never went on to date as newer. Every path that gives a guest a page of
 	// its own — a copy, a refault, an abandoned checkpoint — dates it in the
@@ -77,8 +77,11 @@ type probeState struct {
 	// guest had already stored into. It is reported at that binding's next
 	// transition, because there is nothing at the install itself to tell the
 	// two apart.
-	pending map[*binding]*resident
+	pending map[probeBinding]probePage
 	counter uint64
+	// found is a finding a check made where it could not fail at once, which
+	// the next point that holds nothing reports (take).
+	found string
 }
 
 // Every check returns what it found rather than panicking where it found it.
@@ -95,19 +98,23 @@ type probeState struct {
 // file's descriptor, so its bytes can change without the pager writing them,
 // and the pager's own defence is what finds that: the digest of the upload's
 // read, compared when another region inherits the page (ErrTampered).
-func (p *probeState) stable(ctx context.Context, h *Host, pg *resident, where string) string {
-	if pg == nil || !pg.published() || pg.slot < 0 || pg.file.owner != nil {
+func (p *probeState) stable(ctx context.Context, h *Host, pg probePage, where string) string {
+	if pg == nil || pg.probeAbsent() || !pg.probePublished() {
+		return ""
+	}
+	at := pg.probeSlot()
+	if at.slot < 0 || at.file.owner != nil {
 		return ""
 	}
 	buf := make([]byte, h.pageSize)
-	if err := pg.file.Read(ctx, pg.slot, buf); err != nil {
+	if err := at.file.Read(ctx, at.slot, buf); err != nil {
 		return ""
 	}
 	sum := crc32.ChecksumIEEE(buf)
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.sums == nil {
-		p.sums = make(map[*resident]uint32)
+		p.sums = make(map[probePage]uint32)
 	}
 	previous, seen := p.sums[pg]
 	if !seen {
@@ -115,8 +122,8 @@ func (p *probeState) stable(ctx context.Context, h *Host, pg *resident, where st
 		return ""
 	}
 	if previous != sum {
-		return fmt.Sprintf("probe %s: published page %+v in slot %d changed its bytes",
-			where, pg.key.id, pg.slot)
+		return fmt.Sprintf("probe %s: published page %s in slot %d changed its bytes",
+			where, pg.probeName(), at.slot)
 	}
 	return ""
 }
@@ -128,13 +135,11 @@ func (p *probeState) stable(ctx context.Context, h *Host, pg *resident, where st
 // machines that inherit the identity map the page instead of reading it, so
 // more than one memory region reaching it is the sharing working. Caller holds the
 // host lock.
-func (p *probeState) bind(h *Host, b *binding, pg *resident) string {
-	if pg.private && pg.key == (pageKey{}) {
-		for other := range pg.aliases.all() {
-			if other.memoryRegion != b.memoryRegion {
-				return fmt.Sprintf("probe bind: unnamed private slot %d is reached from two memory regions, pages %d and %d",
-					pg.slot, other.index, b.index)
-			}
+func (p *probeState) bind(h *Host, b probeBinding, pg probePage) string {
+	if pg.probeUnnamed() {
+		if other, found := pg.probeOther(b.probeRegion()); found {
+			return fmt.Sprintf("probe bind: unnamed private slot %d is reached from two memory regions, pages %d and %d",
+				pg.probeSlot().slot, other, b.probeIndex())
 		}
 	}
 	p.mu.Lock()
@@ -147,17 +152,17 @@ func (p *probeState) bind(h *Host, b *binding, pg *resident) string {
 		if held < given {
 			return fmt.Sprintf("probe bind: page %d of memory region %p is being given generation %d in slot %d, "+
 				"older than generation %d it was last given writable — a lost write",
-				b.index, b.memoryRegion, held, pg.slot, given)
+				b.probeIndex(), b.probeRegion(), held, pg.probeSlot().slot, given)
 		}
 		return ""
 	}
 	if stale, waiting := p.pending[b]; waiting && stale != pg {
 		return fmt.Sprintf("probe bind: page %d of memory region %p was given slot %d from outside its own "+
 			"store path while it owned generation %d, and now takes slot %d — a lost write",
-			b.index, b.memoryRegion, stale.slot, given, pg.slot)
+			b.probeIndex(), b.probeRegion(), stale.probeSlot().slot, given, pg.probeSlot().slot)
 	}
 	if p.pending == nil {
-		p.pending = make(map[*binding]*resident)
+		p.pending = make(map[probeBinding]probePage)
 	}
 	p.pending[b] = pg
 	return ""
@@ -166,17 +171,17 @@ func (p *probeState) bind(h *Host, b *binding, pg *resident) string {
 // granted records that the pager has just made pg this binding's own memory to
 // store into. origin, where there is one, is the page pg was copied from, which
 // is dated here too so that re-sharing it later is recognisably a step back.
-func (p *probeState) granted(b *binding, pg, origin *resident) {
-	if pg == nil {
+func (p *probeState) granted(b probeBinding, pg, origin probePage) {
+	if pg == nil || pg.probeAbsent() {
 		return
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.generation == nil {
-		p.generation = make(map[*resident]uint64)
-		p.writable = make(map[*binding]uint64)
+		p.generation = make(map[probePage]uint64)
+		p.writable = make(map[probeBinding]uint64)
 	}
-	if origin != nil {
+	if origin != nil && !origin.probeAbsent() {
 		if _, dated := p.generation[origin]; !dated {
 			p.counter++
 			p.generation[origin] = p.counter
@@ -191,7 +196,7 @@ func (p *probeState) granted(b *binding, pg, origin *resident) {
 // retired records that a binding's private epoch has ended: the volume holds
 // its bytes, so the pager owes that guest nothing newer and any page it is
 // given from here is chosen by identity rather than by age.
-func (p *probeState) retired(b *binding) {
+func (p *probeState) retired(b probeBinding) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	delete(p.writable, b)
@@ -205,16 +210,20 @@ func (p *probeState) retired(b *binding) {
 // guest's mapping already revoked. Once they are equal the origin inherits the
 // copy's generation, so the guest is not being handed anything older and any
 // other path that would is still caught.
-func (p *probeState) reshared(ctx context.Context, h *Host, copied, origin *resident) string {
-	if copied == nil || origin == nil || copied.slot < 0 || origin.slot < 0 {
+func (p *probeState) reshared(ctx context.Context, h *Host, copied, origin probePage) string {
+	if copied == nil || origin == nil || copied.probeAbsent() || origin.probeAbsent() {
+		return ""
+	}
+	from, to := copied.probeSlot(), origin.probeSlot()
+	if from.slot < 0 || to.slot < 0 {
 		return ""
 	}
 	was := make([]byte, h.pageSize)
 	now := make([]byte, h.pageSize)
-	if err := copied.file.Read(ctx, copied.slot, was); err != nil {
+	if err := from.file.Read(ctx, from.slot, was); err != nil {
 		return ""
 	}
-	if err := origin.file.Read(ctx, origin.slot, now); err != nil {
+	if err := to.file.Read(ctx, to.slot, now); err != nil {
 		return ""
 	}
 	if !bytes.Equal(was, now) {
@@ -222,9 +231,9 @@ func (p *probeState) reshared(ctx context.Context, h *Host, copied, origin *resi
 		for at < len(was) && was[at] == now[at] {
 			at++
 		}
-		return fmt.Sprintf("probe reshared: the settle is re-sharing slot %d onto origin %+v in slot %d, "+
+		return fmt.Sprintf("probe reshared: the settle is re-sharing slot %d onto origin %s in slot %d, "+
 			"but they differ from byte %d (%#x against %#x) — a lost write",
-			copied.slot, origin.key.id, origin.slot, at, was[at], now[at])
+			from.slot, origin.probeName(), to.slot, at, was[at], now[at])
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -237,17 +246,21 @@ func (p *probeState) reshared(ctx context.Context, h *Host, copied, origin *resi
 // resharedSpilled is reshared for a copy the pager spilled, whose bytes were
 // read back from the spill rather than from a page: once they are the origin's,
 // the origin inherits the generation b was last given writable.
-func (p *probeState) resharedSpilled(ctx context.Context, h *Host, b *binding, copied []byte, origin *resident) string {
-	if origin == nil || origin.slot < 0 {
+func (p *probeState) resharedSpilled(ctx context.Context, h *Host, b probeBinding, copied []byte, origin probePage) string {
+	if origin == nil || origin.probeAbsent() {
+		return ""
+	}
+	to := origin.probeSlot()
+	if to.slot < 0 {
 		return ""
 	}
 	now := make([]byte, h.pageSize)
-	if err := origin.file.Read(ctx, origin.slot, now); err != nil {
+	if err := to.file.Read(ctx, to.slot, now); err != nil {
 		return ""
 	}
 	if !bytes.Equal(copied, now) {
-		return fmt.Sprintf("probe reshared: a spilled copy of page %d is going back to origin %+v in slot %d, "+
-			"but they differ — a lost write", b.index, origin.key.id, origin.slot)
+		return fmt.Sprintf("probe reshared: a spilled copy of page %d is going back to origin %s in slot %d, "+
+			"but they differ — a lost write", b.probeIndex(), origin.probeName(), to.slot)
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -255,6 +268,29 @@ func (p *probeState) resharedSpilled(ctx context.Context, h *Host, b *binding, c
 		p.generation[origin] = p.writable[b]
 	}
 	return ""
+}
+
+// keep records a finding a check made where the pager could not fail at
+// once, holding locks a panic would leave held: the first is kept, for take.
+func (p *probeState) keep(found string) {
+	if found == "" {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.found == "" {
+		p.found = found
+	}
+}
+
+// take reports the finding keep recorded, once, at a point that holds
+// nothing.
+func (p *probeState) take() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	found := p.found
+	p.found = ""
+	return found
 }
 
 // The ring is what the pager did to one page, in order. A guest that dies on a

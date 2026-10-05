@@ -43,8 +43,8 @@ var pageSizes = []int{checkpoint.PageSize4KiB, checkpoint.PageSize2MiB}
 var suiteArena vmmemory.ArenaMode
 
 // suiteCore is the core the fixtures build their pagers in, which
-// SPROUTFS_PAGER_CORE names. The whole suite runs in the current core, and the
-// tests the zircon core serves run in it too (scripts/pager-core-zircon.json).
+// SPROUTFS_PAGER_CORE names. just check runs the whole suite in each core
+// (scripts/test-pager-core.py).
 var suiteCore vmmemory.Core
 
 // TestMain runs the whole suite once per page. A failure names the page and the

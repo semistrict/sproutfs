@@ -141,6 +141,9 @@ func (r *MemoryRegion) PressMappings() { r.pressed.Store(true) }
 // memory regions have all released what they held has none. It also reports a
 // slot two pages claim, and page queues that hold other than the slots held.
 func (h *Host) Unreachable() []string {
+	if z := h.zircon; z != nil {
+		return z.unreachable()
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	var found []string
@@ -157,6 +160,46 @@ func (h *Host) Unreachable() []string {
 		}
 		found = append(found, fmt.Sprintf("slot %d key %+v private %t replacing %d dropped %t indexed %t free %t",
 			pg.slot, pg.key.id, pg.private, pg.replacing, pg.dropped, h.clean[pg.key] == pg, pg.slot >= 0 && pg.file.slots.IsFree(pg.slot)))
+	}
+	for _, f := range h.files {
+		for slot, entry := range f.leases {
+			if !claimed[fileSlot{f, slot}] {
+				found = append(found, fmt.Sprintf("slot %d is held for no page, in an extent %t", slot, entry.extent != nil))
+			}
+		}
+	}
+	if held := h.heldLocked(); listed != held {
+		found = append(found, fmt.Sprintf("%d pages are listed and %d slots held", listed, held))
+	}
+	return found
+}
+
+// unreachable is Unreachable under the zircon core: every page of an object
+// that no memory region maps and that is not idle either, a slot two pages
+// claim, and queues that hold other than the slots held. A temporary root's
+// pages name frames their parents' layers hold, and are not counted twice.
+func (z *zirconHost) unreachable() []string {
+	h := z.host
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var found []string
+	claimed := map[fileSlot]bool{}
+	listed := 0
+	for p := range z.node.PageQueues().Pages() {
+		if isLent(p) {
+			continue
+		}
+		f := frameOf(p)
+		listed++
+		if claimed[f.fileSlot] {
+			found = append(found, fmt.Sprintf("slot %d is claimed twice", f.slot))
+		}
+		claimed[f.fileSlot] = true
+		if f.aliases.len() > 0 || f.idle {
+			continue
+		}
+		found = append(found, fmt.Sprintf("slot %d in a layer %t replacing %d free %t",
+			f.slot, f.layer != nil, f.replacing, f.slot >= 0 && f.file.slots.IsFree(f.slot)))
 	}
 	for _, f := range h.files {
 		for slot, entry := range f.leases {

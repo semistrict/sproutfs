@@ -22,8 +22,8 @@ campaign is a schedule, a fault set and an invariant set over the deployment's
 - the determinism rule below;
 - `gofmt`, `go build` and `go vet` for Linux and macOS;
 - `go test ./...`;
-- the tests `scripts/pager-core-zircon.json` lists, under the zircon pager
-  core in both arena modes (see [the pager cores](#the-pager-cores));
+- the suites that build pagers again under the zircon pager core, in both
+  arena modes (see [the pager cores](#the-pager-cores));
 - `buf lint` and `shellcheck`;
 - the Rust crate's `fmt`, `clippy` and unit tests;
 - the TLA+ specs, model-checked with TLC (see [Model checking](#model-checking)).
@@ -3867,22 +3867,20 @@ which `SPROUTFS_PAGER_CORE` names: `current`, the default, or `zircon`. Every
 suite builds its pagers in the core the variable names (`internal/testcore`),
 as it builds them in the arena mode `SPROUTFS_ARENA` names.
 
-The zircon core serves a growing part of what the current one does.
-`scripts/pager-core-zircon.json` lists, per package, the tests that pass under
-it, and `just check-zircon-core` runs them under it in both arena modes. A
-listed test that fails, or that does not exist, fails the check. Each step of
-the port adds the tests of what it moved:
+The zircon core serves everything the current one does, so `just
+check-zircon-core` runs the suites that build pagers (`vmmemory`, `host`,
+`vmmigrate`, `internal/simtest` and `vmmachine`) under it in both arena modes,
+as `check-go` runs them under the current core. `--survey` runs each test of a
+package alone under it instead and says which pass, which is what finding the
+tests a change to the core broke needs:
 
 ```sh
 just check-zircon-core
+python3 scripts/test-pager-core.py --survey vmmemory
 SPROUTFS_PAGER_CORE=zircon go test ./vmmemory -run '^TestAPrivatePageIsPlacedAtItsOwnOffsetInItsRangesExtent$' -count=1
 ```
 
-A guard in `scripts/mutation/guards.json` whose behaviour the zircon core has
-too names both cores, `"cores": ["current", "zircon"]`, and `check-guards`
-must kill it under each. Every Buggify site, probe, guard and controlled point
-on a path the zircon core serves exists there under the same name. The guards
-of the fault policy and `pager-zero-new-page` name both; the last is killed by
-`TestEveryPageAFaultReadsOrAStoreCopiesHoldsItsBytes`, because the scheduled
-world that killed it before checkpoints, which the zircon core does not serve
-yet.
+`check-guards` runs every guard in `scripts/mutation/guards.json` under both
+cores and must kill it under each; an entry may narrow that with `"cores"`.
+Every Buggify site, probe, guard and controlled point exists in both cores
+under the same name.

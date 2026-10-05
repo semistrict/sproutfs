@@ -14,9 +14,9 @@ does not count as a kill. --repeat runs the guarded tests that many times, and
 every run must fail. An entry with a "goos" runs only on that system, and one
 with "root" only as root: its tests skip themselves anywhere else.
 
-An entry runs under the pager core its "cores" name, current where it names
-none. While the zircon core is ported beside the current one, a guard whose
-behaviour lives in both names both, and must be killed under each.
+An entry runs under each pager core, current and zircon, while the zircon core
+runs beside the current one, and must be killed under each; one whose "cores"
+names fewer runs under those alone.
 """
 
 import argparse
@@ -99,7 +99,7 @@ def check(guards, root, logs, repeat, jobs, timeout):
 
 def cores(guard):
     """The pager cores a guard is checked under."""
-    return guard.get("cores", ["current"])
+    return guard.get("cores", ["current", "zircon"])
 
 
 def main():

@@ -1,7 +1,7 @@
 // Package testcore is the pager core a test suite builds its pagers in. A
 // suite runs in one core at a time, which SPROUTFS_PAGER_CORE names as a
-// deployment does: current, the default, or zircon. just check runs the tests
-// the zircon core serves under it too (scripts/pager-core-zircon.json).
+// deployment does: current, the default, or zircon. just check runs the
+// suites that build pagers under each (scripts/test-pager-core.py).
 package testcore
 
 import (

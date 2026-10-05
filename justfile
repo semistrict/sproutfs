@@ -46,10 +46,9 @@ check-go:
     go test ./...
     SPROUTFS_ARENA=shared go test ./vmmemory/... ./host/... ./vmmigrate/... ./internal/simtest/... ./vmmachine/...
 
-# check-zircon-core runs the tests scripts/pager-core-zircon.json lists under
-# the zircon pager core, in both arena modes, while that core is ported beside
-# the current one (plans/zircon-pager-port-2026-10-05.md). A listed test that
-# fails or does not exist fails it.
+# check-zircon-core runs the suites that build pagers under the zircon pager
+# core, in both arena modes, while that core runs beside the current one
+# (plans/zircon-pager-port-2026-10-05.md).
 check-zircon-core:
     python3 scripts/test-pager-core.py
 

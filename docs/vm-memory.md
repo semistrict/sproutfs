@@ -2845,11 +2845,9 @@ scripts/test-firecracker-lima.sh
 ```
 
 Every suite builds its pagers in the core `SPROUTFS_PAGER_CORE` names,
-`current` when it is unset (`internal/testcore`). The tests the zircon core
-serves are listed in `scripts/pager-core-zircon.json`, and `just check` runs
-them again under `SPROUTFS_PAGER_CORE=zircon` in both arena modes
-(`scripts/test-pager-core.py`); a listed test that fails or does not exist
-fails the check.
+`current` when it is unset (`internal/testcore`), and `just check` runs the
+suites that build pagers again under `SPROUTFS_PAGER_CORE=zircon` in both
+arena modes (`scripts/test-pager-core.py`).
 
 Every suite builds its pagers in the arena mode `SPROUTFS_ARENA` names,
 `isolated` when it is unset, and is run in both: `just check` runs the Go

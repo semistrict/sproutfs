@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/semistrict/sproutfs/control"
+	"github.com/semistrict/sproutfs/vmmemory/internal/zirconvm"
 )
 
 // slotArena is an arena file of fixed pages held in memory, which is all the
@@ -149,5 +150,42 @@ func TestTheProbeRemembersOnePageAtATimePerGuest(t *testing.T) {
 	}
 	if len(p.generation) != 200 {
 		t.Fatalf("the probe dated %d pages, want the two hundred it was told about", len(p.generation))
+	}
+}
+
+// The zircon core hands the audit its own pages and bindings: a frame a
+// region's layer holds is that region's unnamed state, and a root's frame is a
+// published page. A guest given a frame to store into is never handed an older
+// one back.
+func TestTheProbeRefusesAnOlderPageUnderTheZirconCore(t *testing.T) {
+	var p probeState
+	b := &zbinding{index: 7}
+	origin := &zframe{fileSlot: fileSlot{slot: 1}}
+	copied := &zframe{fileSlot: fileSlot{slot: 2}, layer: &zirconRegion{}}
+	p.granted(b, copied, origin)
+	if found := p.bind(nil, b, copied); found != "" {
+		t.Fatalf("re-installing the frame the guest holds was reported as %q", found)
+	}
+	found := p.bind(nil, b, origin)
+	wantFinding(t, found, "a lost write")
+	wantFinding(t, found, "page 7")
+	p.retired(b)
+	if found := p.bind(nil, b, origin); found != "" {
+		t.Fatalf("a retired binding was still owed something newer: %q", found)
+	}
+}
+
+// Under the zircon core a page of one region's layer reached from another is
+// a guest writing into another's memory, unless a fork point lends it, which
+// is the sharing working.
+func TestTheProbeAllowsTwoRegionsToShareALentFrame(t *testing.T) {
+	var p probeState
+	parent, child := &zirconRegion{}, &zirconRegion{}
+	shared := &zframe{fileSlot: fileSlot{slot: 1}, layer: parent}
+	shared.aliases.add(&zbinding{region: parent, index: 7})
+	wantFinding(t, p.bind(nil, &zbinding{region: child, index: 7}, shared), "reached from two memory regions")
+	shared.lent = zirconvm.NewFramePage(zlent{frame: shared})
+	if found := p.bind(nil, &zbinding{region: child, index: 7}, shared); found != "" {
+		t.Fatalf("a fork point's lent frame was reported as %q", found)
 	}
 }

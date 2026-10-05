@@ -84,6 +84,7 @@ func (p *zplan) publishPrivate(ctx context.Context, page uint64, data []byte) er
 	}
 	z.host.aliasLocked(b, frame)
 	h.mu.Unlock()
+	h.probe.granted(b, frameOf(frame), nil)
 	p.pages[i], p.fresh[i], p.private[i] = frame, true, true
 	return nil
 }

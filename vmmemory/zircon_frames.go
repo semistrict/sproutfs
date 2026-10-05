@@ -176,11 +176,26 @@ func (z *zirconHost) lockPage(ctx context.Context, p *zirconvm.VmPage) error {
 // unlockPage gives a page's lock back and wakes whatever waits for a page to
 // be free, as Host.unlock does.
 func (z *zirconHost) unlockPage(p *zirconvm.VmPage) {
-	frameOf(p).mu.Unlock()
 	h := z.host
+	found := h.probe.stable(context.Background(), h, frameOf(p), "unlock")
+	frameOf(p).mu.Unlock()
 	h.mu.Lock()
 	h.signal()
 	h.mu.Unlock()
+	if found == "" {
+		found = h.probe.take()
+	}
+	if found != "" {
+		panic(found)
+	}
+}
+
+// probeFrame is a page as the probe build's audit sees it, nil for none.
+func probeFrame(p *zirconvm.VmPage) probePage {
+	if p == nil {
+		return nil
+	}
+	return frameOf(p)
 }
 
 // lockedPage is the page b names, locked, nil where it names none: Host.current
@@ -480,6 +495,9 @@ type zbinding struct {
 // of it, is one page of the arena. Caller holds h.mu.
 func (z *zirconHost) aliasLocked(b *zbinding, p *zirconvm.VmPage) {
 	f := frameOf(p)
+	// The probe build's audit of what a guest is handed; what it finds is
+	// reported once nothing is held (unlockPage).
+	z.host.probe.keep(z.host.probe.bind(z.host, b, f))
 	z.notIdleLocked(f)
 	counted := f.mappedBy(b.region)
 	if f.aliases.add(b) && !counted {
