@@ -1,10 +1,11 @@
 ---
 id: TASK-92.8
 title: 'Zircon port step 8: faults and prefetches as page requests'
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-05 05:09'
-updated_date: '2026-10-05 07:06'
+updated_date: '2026-10-05 09:01'
 labels:
   - pager
   - zircon-port
@@ -33,8 +34,24 @@ Step 8 of the plan. Zircon asks its pager for missing pages with page requests t
 - [ ] #5 Every test in vmmemory, host, vmmigrate and internal/simtest passes unchanged in both arena modes
 <!-- AC:END -->
 
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Complete zirconvm/pagesource.go in place: a query of the outstanding requests a range meets (the pager here is in the caller's process and asks before it sends), with the departure marked.
+2. Port object/pager_proxy.cc and object/include/object/pager_proxy.h as zirconvm/pagerproxy.go: the provider of a source whose pager is in this process. No port: the fault or prefetch that sends a request answers it on a goroutine of its own. Tests for both.
+3. vmmemory: a page source per identity root (checkpoint, volume) while a prefetch reads it, keyed under the host lock, and one per memory region. A prefetch sends READ requests on the roots of its pages; overlapping ones batch (the later prefetch leaves those pages to the earlier). A fault meeting a prefetch makes a READ request that waits on the prefetch's; the prefetch's supply or failure wakes every waiter it covers. A fault's own reads are READ requests on its region's source, so a prefetch does not see them, as today (TestAPrefetchedPageAnotherLoadMadeResidentFirstIsDropped).
+4. Delete Host.inflight, prefetch.done and the per-identity in-flight map; keep the bound, pressure cancel, policy, probes, sites, guards and Admit points in place.
+5. Docs: vm-memory.md (package layout, prefetch, reading forwards), testing.md if it names the mechanism.
+6. Verify: whole suite both arena modes, host, vmmigrate, internal/simtest, vmmachine; check-guards; campaign replay; race on vmmemory and zirconvm; benchmarks before/after 10 runs alternating; Gremlins on changed zirconvm files; just check.
+<!-- SECTION:PLAN:END -->
+
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
 TASK-92.9 ported PageSource, PageRequest and MultiPageRequest into vmmemory/internal/zirconvm/pagesource.go ahead of this step, with a PageProvider interface and no early wake. This step adds PagerProxy as a goroutine and wires faults and prefetches.
+
+Design. zirconvm/pagesource.go is completed in place: AppendOutstanding is the one addition, marked as a departure (the pager is in its callers' process and asks which pages a request already sent reads). zirconvm/pagerproxy.go ports object/pager_proxy.cc and its header: the provider keeps the requests it holds (Holds) and Zircon's wait counters; no port or packet queue, because the fault or prefetch that sends a request answers it on a goroutine of its own (the faulting page's read goroutine, the prefetch's goroutine; a page read alone, a run and a store's copy read are answered on the fault's goroutine, which waits on nothing else). vmmemory/pagerequests.go: a page source per identity root (checkpoint, volume) while a prefetch reads it (Host.roots, under Host.mu, which serializes every send and answer of a root's requests), and one per memory region (MemoryRegion.reads) for a fault's own reads.
+Decision: a fault's own reads go to its memory region's source, not to the root's, so prefetches do not see them. That keeps TestAPrefetchedPageAnotherLoadMadeResidentFirstIsDropped and the duplicate probe as they are (AC 5 and AC 2): the test says a fault's own read is not in flight for prefetches to see. Batching on the roots is prefetch with prefetch (the later leaves those pages to the earlier) and fault waiting on prefetch (the fault's READ request waits on the prefetch's; the prefetch's supply, or failure when its read fails, wakes every waiter at once).
+Deleted: Host.inflight (the per-identity map of prefetches), prefetch.done, and the select on the faulting read's done channel; the fault now waits on its page's request. The prefetch's cancel for pressure stays its context; its read then fails and it fails its requests' range, which is Zircon's failure of a range rather than CancelRequest, because waiters must wake. The bug pager-fault-waits-for-its-prefetch now waits on the prefetch's requests.
+Validation so far: vmmemory, host, vmmigrate, internal/simtest, vmmachine pass in both arena modes; the eight prefetch guards killed in each of 2 runs; campaign tests pass three times.
 <!-- SECTION:NOTES:END -->

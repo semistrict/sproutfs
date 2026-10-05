@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/semistrict/sproutfs/platform/sim"
+	"github.com/semistrict/sproutfs/vmmemory/internal/zirconvm"
 )
 
 // A fault reads its window one of three ways, decided before it plans
@@ -180,17 +181,15 @@ func (p *windowPlan) readFirst(ctx context.Context, index uint64) error {
 	if pf := p.splitPrefetch(ctx, index, into); pf != nil {
 		pf.begin()
 		if sim.Bug(ctx, "pager-fault-waits-for-its-prefetch") {
-			// The bug installs the page only once the rest of its run is in.
-			if err := r.withoutMemoryRegion(ctx, func() error {
-				select {
-				case <-pf.done:
-					return nil
-				case <-ctx.Done():
-					return context.Cause(ctx)
+			// The bug installs the page only once the rest of its run is in:
+			// it waits on the prefetch's requests.
+			if waiter := pf.waiter(); waiter != nil {
+				if err := r.withoutMemoryRegion(ctx, func() error {
+					return waiter.wait(ctx, r.host)
+				}); err != nil {
+					read.abandon()
+					return err
 				}
-			}); err != nil {
-				read.abandon()
-				return err
 			}
 		}
 	}
@@ -347,20 +346,25 @@ func (p *windowPlan) takeRun(ctx context.Context, index uint64, own bool) error 
 }
 
 // faultRead is the faulting page's backing read, under way on a task of its
-// own while the fault plans the rest of its window.
+// own while the fault plans the rest of its window. It answers the READ
+// request the fault sent for its page, which the fault waits on.
 type faultRead struct {
 	host        *Host
 	page        uint64
+	sent        sentRead
 	buffer      *[]byte
 	unpublished []bool
 	err         error
-	done        chan struct{}
-	cancel      context.CancelCauseFunc
+	// done is closed when the read's goroutine has ended, after which its
+	// buffer and its request may go back.
+	done   chan struct{}
+	cancel context.CancelCauseFunc
 }
 
-// beginFaulting starts the read of the faulting page where the plan reserved a
-// slot for it, and returns nil where the page needs no read: it is bound to a
-// resident page, or reads as zeros.
+// beginFaulting sends the READ request of the faulting page and starts the
+// read that answers it, where the plan reserved a slot for the page. It
+// returns nil where the page needs no read: it is bound to a resident page,
+// or reads as zeros.
 func (p *windowPlan) beginFaulting(ctx context.Context, index uint64) *faultRead {
 	if p.reserved[index-p.start].slot < 0 {
 		return nil
@@ -371,39 +375,38 @@ func (p *windowPlan) beginFaulting(ctx context.Context, index uint64) *faultRead
 	// nothing another task does changes its name, so a controlled run
 	// orders it the same way whatever order its faults began in.
 	readCtx, cancel := context.WithCancelCause(sim.WithTask(ctx, fmt.Sprintf("fault-read-%d", index)))
-	read := &faultRead{host: h, page: index, buffer: h.takeWindow(1), done: make(chan struct{}), cancel: cancel}
+	read := &faultRead{host: h, page: index, sent: r.sendRead(index, 1), buffer: h.takeWindow(1),
+		done: make(chan struct{}), cancel: cancel}
 	go func() {
 		defer close(read.done)
 		// In a controlled run the read begins when the run chooses, not
 		// beside whatever the fault plans next.
-		if read.err = sim.Admit(readCtx, "vmmemory/fault-read"); read.err != nil {
-			return
+		if read.err = sim.Admit(readCtx, "vmmemory/fault-read"); read.err == nil {
+			read.unpublished, read.err = r.readRun(readCtx, index, []bool{true}, *read.buffer, &h.loadLatency)
 		}
-		read.unpublished, read.err = r.readRun(readCtx, index, []bool{true}, *read.buffer, &h.loadLatency)
+		r.answer(read.sent, read.err)
 	}()
 	return read
 }
 
-// land waits for the read, with the memory region given up as a backing read
-// gives it up, and publishes the page into the slot the plan reserved for it.
-// A nil read has nothing to land.
+// land waits for the page's request, with the memory region given up as a
+// backing read gives it up, and publishes the page into the slot the plan
+// reserved for it. A nil read has nothing to land.
 func (read *faultRead) land(ctx context.Context, p *windowPlan) error {
 	if read == nil {
 		return nil
 	}
-	defer read.cancel(nil)
-	defer read.host.putWindow(read.buffer)
+	defer read.release()
 	r := p.memoryRegion
 	err := r.withoutMemoryRegion(ctx, func() error {
-		select {
-		case <-read.done:
-		case <-ctx.Done():
+		if status := read.sent.request.Wait(ctx); status != nil && !zirconvm.IsValidInternalFailureCode(status) {
+			// The fault is cancelled, and so is its request; the read ends
+			// with it.
 			read.cancel(context.Cause(ctx))
-			<-read.done
 			return context.Cause(ctx)
 		}
-		// The read's goroutine ended at an instant of its own; in a controlled
-		// run the fault goes on when the run chooses.
+		// The request was answered at an instant of the read's own; in a
+		// controlled run the fault goes on when the run chooses.
 		if err := sim.Admit(ctx, "vmmemory/fault-read-landed"); err != nil {
 			return err
 		}
@@ -415,15 +418,22 @@ func (read *faultRead) land(ctx context.Context, p *windowPlan) error {
 	return p.publishRead(ctx, read.page, []bool{true}, *read.buffer, read.unpublished)
 }
 
-// abandon ends a read the fault no longer wants and waits for it, so its
-// buffer is free to go back.
+// abandon ends a read the fault no longer wants.
 func (read *faultRead) abandon() {
 	if read == nil {
 		return
 	}
 	read.cancel(errReadAbandoned)
+	read.release()
+}
+
+// release waits for the read's goroutine to end, and gives its buffer and its
+// request back.
+func (read *faultRead) release() {
+	read.cancel(nil)
 	<-read.done
 	read.host.putWindow(read.buffer)
+	read.host.requests.Put(read.sent.request)
 }
 
 // errReadAbandoned is what a faulting page's read is cancelled with when the

@@ -433,6 +433,7 @@ func (p *windowPlan) survey(except uint64, prefetched bool) survey {
 	bindings := r.lookupBindings(p.start, p.end)
 	files := p.fileFinder()
 	h.mu.Lock()
+	reading := h.readingIn(p.start, p.end)
 	for at, b := range bindings {
 		page := p.start + uint64(at)
 		if page == except || p.pages[at] != nil || p.zeros[at] || p.reserved[at].slot >= 0 || !eligibleLocked(b) {
@@ -456,7 +457,7 @@ func (p *windowPlan) survey(except uint64, prefetched bool) survey {
 			if !prefetched {
 				found.into[at] = p.file
 			}
-		case h.inflight[id] != nil:
+		case reading.of(id):
 			// A page a prefetch is reading is that prefetch's to bring in.
 		case !prefetched || !p.unpublished(page):
 			found.into[at] = files.of(id)

@@ -40,6 +40,9 @@ type MemoryRegion struct {
 	// history is the windows of this memory region's latest faults, which
 	// tell a guest reading forwards from one reading at random.
 	history faultHistory
+	// reads is the page source the READ requests of this memory region's
+	// faults go to. See pagerequests.go.
+	reads   *requestSource
 	host    *Host
 	backing Backing
 	// kind is what this memory region is to its guest, RAM or PMEM. Nothing about a
@@ -240,7 +243,7 @@ func (h *Host) admit(ctx context.Context, memoryRegion MemoryRegionBacking, mapp
 		return nil, err
 	}
 	_, peer := backing.(UnpublishedLoader)
-	r := &MemoryRegion{live: ctxsync.NewRWMutex(), mu: ctxsync.NewRWMutex(), endMu: ctxsync.NewMutex(), protectMu: ctxsync.NewRWMutex(), filesMu: ctxsync.NewMutex(), ended: make(chan struct{}), coldCopied: make(chan struct{}, 1), host: h, backing: backing, kind: memoryRegion.Kind, peer: peer, mapping: mapping, tenant: memoryRegion.Tenant, pageCount: int(count), pages: zirconvm.NewPageList[binding](h.pageSize), dirtyRuns: newPageRuns(h.pageSize), readAheadPages: h.cfg.ReadAheadPages}
+	r := &MemoryRegion{live: ctxsync.NewRWMutex(), mu: ctxsync.NewRWMutex(), endMu: ctxsync.NewMutex(), protectMu: ctxsync.NewRWMutex(), filesMu: ctxsync.NewMutex(), ended: make(chan struct{}), coldCopied: make(chan struct{}, 1), host: h, backing: backing, kind: memoryRegion.Kind, peer: peer, mapping: mapping, tenant: memoryRegion.Tenant, pageCount: int(count), pages: zirconvm.NewPageList[binding](h.pageSize), dirtyRuns: newPageRuns(h.pageSize), readAheadPages: h.cfg.ReadAheadPages, reads: newRequestSource()}
 	if h.isolated() {
 		if err := h.newFiles(ctx, r); err != nil {
 			h.mu.Lock()
@@ -583,13 +586,18 @@ func (r *MemoryRegion) reclaimWith(ctx context.Context, take func() (fileSlot, e
 // leaves it nil; a test installs one to end that page's dirty epoch there.
 var reclaimSeam func(index uint64)
 
-// loadWindow is the plan's backing read, taken outside the memory region lock.
+// loadWindow is a fault's backing read of the pages dst covers from offset,
+// taken outside the memory region lock, which answers a READ request of its
+// own (pagerequests.go).
 func (r *MemoryRegion) loadWindow(ctx context.Context, offset uint64, dst []byte) ([]bool, error) {
 	var unpublished []bool
+	ps := r.host.pageSize
 	err := r.withoutMemoryRegion(ctx, func() error {
-		var err error
-		unpublished, err = r.loadBacking(ctx, offset, dst)
-		return err
+		return r.requested(offset/ps, uint64(len(dst))/ps, func() error {
+			var err error
+			unpublished, err = r.loadBacking(ctx, offset, dst)
+			return err
+		})
 	})
 	if err != nil {
 		return nil, err
@@ -600,7 +608,8 @@ func (r *MemoryRegion) loadWindow(ctx context.Context, offset uint64, dst []byte
 // loadRun is one fault's whole backing read, taken outside the memory region lock: the
 // pages of [first, first+len(wanted)) that wanted marks, into dst, which covers
 // the run whole. The pages it leaves out are the ones this memory region already holds
-// — nothing is read for them and the bytes of dst they cover are untouched.
+// — nothing is read for them and the bytes of dst they cover are untouched. It
+// answers a READ request of the run (pagerequests.go).
 //
 // A backing that can be asked for part of a range is asked once, so what the
 // run costs is what the volume makes of it. Every other backing is read one
@@ -610,9 +619,11 @@ func (r *MemoryRegion) loadWindow(ctx context.Context, offset uint64, dst []byte
 func (r *MemoryRegion) loadRun(ctx context.Context, first uint64, wanted []bool, dst []byte) ([]bool, error) {
 	var unpublished []bool
 	err := r.withoutMemoryRegion(ctx, func() error {
-		var err error
-		unpublished, err = r.readRun(ctx, first, wanted, dst, &r.host.loadLatency)
-		return err
+		return r.requested(first, uint64(len(wanted)), func() error {
+			var err error
+			unpublished, err = r.readRun(ctx, first, wanted, dst, &r.host.loadLatency)
+			return err
+		})
 	})
 	if err != nil {
 		return nil, err
@@ -674,9 +685,11 @@ func (r *MemoryRegion) readForCopy(ctx context.Context, b *binding, pg *resident
 		return false, r.host.read(ctx, b, pg, dst)
 	}
 	err = r.withoutMemoryRegion(ctx, func() error {
-		fetched, err := r.loadBacking(ctx, b.index*r.host.pageSize, dst)
-		unpublished = len(fetched) > 0 && fetched[0]
-		return err
+		return r.requested(b.index, 1, func() error {
+			fetched, err := r.loadBacking(ctx, b.index*r.host.pageSize, dst)
+			unpublished = len(fetched) > 0 && fetched[0]
+			return err
+		})
 	})
 	return unpublished, err
 }
@@ -777,6 +790,8 @@ func (r *MemoryRegion) Detach(ctx context.Context) error {
 	h.signal()
 	h.mu.Unlock()
 	r.closed = true
+	// No fault reads after this, so its source has no request to end.
+	r.reads.source.Close()
 	r.pages = zirconvm.NewPageList[binding](h.pageSize)
 	r.dirtyBindings = nil
 	r.dirtyRuns = newPageRuns(h.pageSize)
