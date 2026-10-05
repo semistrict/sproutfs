@@ -389,6 +389,9 @@ func (r *MemoryRegion) allocateNear(ctx context.Context, f *arenaFile, index uin
 // buggified allocation cannot wait on a victim that will not come.
 func (h *Host) allocate(ctx context.Context, r *MemoryRegion, f *arenaFile, place func() int, preferEviction bool) (fileSlot, error) {
 	req := &evictionRequest{region: r, preferEviction: preferEviction}
+	if place == nil {
+		req.file = f
+	}
 	for {
 		h.mu.Lock()
 		if h.err != nil {
@@ -418,11 +421,14 @@ func (h *Host) allocate(ctx context.Context, r *MemoryRegion, f *arenaFile, plac
 			capacityBlocked = true
 		}
 		h.mu.Unlock()
+		if allocateSeam != nil {
+			allocateSeam()
+		}
 		evicted, err := h.evictOne(ctx, req)
 		if err != nil {
 			return fileSlot{}, err
 		}
-		if evicted {
+		if evicted || req.freed {
 			continue
 		}
 		if req.prefetches {
@@ -462,6 +468,10 @@ func (h *Host) allocate(ctx context.Context, r *MemoryRegion, f *arenaFile, plac
 		}
 	}
 }
+
+// allocateSeam runs between an allocation's look for a free slot and its
+// eviction step, so a test can put another goroutine's work in that moment.
+var allocateSeam func()
 
 // fairLocked reports whether evicting pg to make room for a page of r leaves
 // every other protected memory region its pages. Caller holds h.mu.

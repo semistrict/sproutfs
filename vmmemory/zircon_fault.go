@@ -627,6 +627,11 @@ func (z *zirconHost) allocate(ctx context.Context, f *arenaFile, place func() in
 		// waits on its pages. See prefetch.go.
 		holding := !sim.Bug(ctx, "pager-prefetch-ignores-pressure") && z.cancelPrefetchesLocked(ctx)
 		h.mu.Unlock()
+		// The look and the prefetches it waits for were read under one hold
+		// of the lock, so slots given back after it wake changed at once.
+		if allocateSeam != nil {
+			allocateSeam()
+		}
 		if z.takeIdle() {
 			continue
 		}

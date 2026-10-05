@@ -55,6 +55,12 @@ type evictionRequest struct {
 	// prefetches reports prefetches holding slots that come back as their
 	// reads end.
 	prefetches bool
+	// file is the file the slot is for, where a free slot of it ends the
+	// allocation's need, and nil where the placement rule decides the slot.
+	// freed reports that one came free after the allocation looked and before
+	// the step did: the allocation takes it rather than evict.
+	file  *arenaFile
+	freed bool
 }
 
 // newPagerEvictor is h's evictor, enabled. It compresses: a memory region's
@@ -75,7 +81,7 @@ func (h *Host) freePages() uint64 {
 // evictOne evicts one page for req by the evictor's synchronous path, and
 // reports whether any page was evicted while it ran, by it or beside it.
 func (h *Host) evictOne(ctx context.Context, req *evictionRequest) (bool, error) {
-	req.changed, req.busy, req.prefetches = nil, false, false
+	req.changed, req.busy, req.prefetches, req.freed = nil, false, false, false
 	result, err := h.evictor.EvictSynchronous(ctx, req, h.pageSize, 0,
 		zirconvm.IncludeNewest, zirconvm.NoPrint, zirconvm.Other)
 	return result.Counts.Total() > 0, err
@@ -118,6 +124,16 @@ func (h *Host) reclaimStep(ctx context.Context, req *evictionRequest, _ bool, _ 
 			h.mu.Unlock()
 			return zirconvm.ReclaimAttempt{}, false, nil
 		}
+	}
+	// A slot can come free between the allocation's look and this step: a
+	// cancelled prefetch gives its slots back and settles in that moment,
+	// and the step above then finds no prefetch to wait for. The allocation
+	// takes the free slot rather than evict a page a guest maps.
+	if !req.preferEviction && req.file != nil && h.freeLocked(req.file) > 0 &&
+		!sim.Bug(ctx, "pager-evict-past-a-freed-slot") {
+		req.freed = true
+		h.mu.Unlock()
+		return zirconvm.ReclaimAttempt{}, false, nil
 	}
 	pg := h.peekVictimLocked(req)
 	req.changed = h.changed
