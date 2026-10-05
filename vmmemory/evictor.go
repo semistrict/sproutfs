@@ -56,7 +56,8 @@ type evictionRequest struct {
 	// reads end.
 	prefetches bool
 	// file is the file the slot is for, where a free slot of it ends the
-	// allocation's need, and nil where the placement rule decides the slot.
+	// allocation's need: nil where the placement rule decides the slot, or
+	// where the look found a free slot the budget refused.
 	// freed reports that one came free after the allocation looked and before
 	// the step did: the allocation takes it rather than evict.
 	file  *arenaFile

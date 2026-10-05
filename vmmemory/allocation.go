@@ -389,9 +389,6 @@ func (r *MemoryRegion) allocateNear(ctx context.Context, f *arenaFile, index uin
 // buggified allocation cannot wait on a victim that will not come.
 func (h *Host) allocate(ctx context.Context, r *MemoryRegion, f *arenaFile, place func() int, preferEviction bool) (fileSlot, error) {
 	req := &evictionRequest{region: r, preferEviction: preferEviction}
-	if place == nil {
-		req.file = f
-	}
 	for {
 		h.mu.Lock()
 		if h.err != nil {
@@ -419,6 +416,13 @@ func (h *Host) allocate(ctx context.Context, r *MemoryRegion, f *arenaFile, plac
 			return fileSlot{f, slot}, nil
 		} else if slot >= 0 {
 			capacityBlocked = true
+		}
+		// A slot that comes free before the eviction step ends the need only
+		// where the look found none: one the budget refused needs a page of
+		// the budget, which only an eviction gives back.
+		req.file = nil
+		if place == nil && !capacityBlocked {
+			req.file = f
 		}
 		h.mu.Unlock()
 		if allocateSeam != nil {
