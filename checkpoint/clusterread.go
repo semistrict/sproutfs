@@ -16,6 +16,7 @@ import (
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/rank"
+	"github.com/semistrict/sproutfs/resource"
 	"github.com/semistrict/sproutfs/stripe"
 )
 
@@ -261,14 +262,15 @@ type clusterReader struct {
 
 	hedge *hedger
 	marks downMarks
+	// running counts the work reads have started that has not ended: every
+	// window read, request and read of the store past a bound, whether or not
+	// its caller still waits on it. lingering counts the reads that hear
+	// their last answers behind their callers.
+	running, lingering tally
 
 	mu     sync.Mutex
 	closed bool
-	// lingering counts the reads that hear their last answers behind their
-	// callers, and quiet is closed and replaced each time it falls to zero.
-	lingering int
-	quiet     chan struct{}
-	stats     ReadStats
+	stats  ReadStats
 	// tokens is the store hedge's bucket, in twentieths of a read.
 	tokens int
 	// hits counts the disk tier's hits, which the HEAD check samples.
@@ -293,7 +295,6 @@ func newClusterReader(ctx context.Context, shared *cluster, filler *filler, peer
 		// requests does: a reader with no history may still hedge its first
 		// reads.
 		cancel: cancel, tokens: storeHedgeMax * storeHedgeEarn, hedge: newHedger(settings.hedgeFloor)}
-	r.quiet = make(chan struct{})
 	r.marks = downMarks{reader: r, marks: make(map[rank.Identity]*downMark)}
 	filler.down = r.marks.isDown
 	return r
@@ -320,34 +321,31 @@ func (r *clusterReader) spawn(work func(context.Context)) bool {
 	return true
 }
 
-// behind counts reads that go on hearing answers behind their callers.
-func (r *clusterReader) behind(change int) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.lingering += change
-	if r.lingering == 0 {
-		close(r.quiet)
-		r.quiet = make(chan struct{})
+// start runs one piece of a read's work under spawn, counted in running until
+// it returns. It reports false once the reads have closed, and runs nothing.
+func (r *clusterReader) start(work func(context.Context)) bool {
+	r.running.add(1)
+	if r.spawn(func(life context.Context) {
+		defer r.running.add(-1)
+		work(life)
+	}) {
+		return true
 	}
+	r.running.add(-1)
+	return false
 }
 
 // settle returns once no read is hearing answers behind its caller, and so
 // every repair a read will make has been handed to the fills.
-func (r *clusterReader) settle(ctx context.Context) error {
-	for {
-		r.mu.Lock()
-		lingering, quiet := r.lingering, r.quiet
-		r.mu.Unlock()
-		if lingering == 0 {
-			return nil
-		}
-		select {
-		case <-quiet:
-		case <-ctx.Done():
-			return context.Cause(ctx)
-		}
-	}
-}
+func (r *clusterReader) settle(ctx context.Context) error { return r.lingering.wait(ctx) }
+
+// idle returns once nothing the reads started is still running: every
+// request has been answered or has timed out, every read of the store past a
+// bound has returned, and every read whose caller went on without it has
+// ended. A read whose caller has its pages, from the store or by giving up,
+// leaves its requests to run out under the reads' life, and they go on
+// loading the holders' disks and the network after it.
+func (r *clusterReader) idle(ctx context.Context) error { return r.running.wait(ctx) }
 
 // count changes the stats under the lock.
 func (r *clusterReader) count(change func(stats *ReadStats)) {
@@ -459,7 +457,7 @@ func (r *clusterReader) read(ctx context.Context, codecs *blob.Codecs, wants []c
 	finished := make([]bool, len(groups))
 	refills := make([][]envelope, len(groups))
 	for at, g := range groups {
-		if !r.spawn(func(context.Context) { results <- windowResult{group: at, out: r.readWindow(ctx, codecs, g)} }) {
+		if !r.start(func(context.Context) { results <- windowResult{group: at, out: r.readWindow(ctx, codecs, g)} }) {
 			results <- windowResult{group: at, out: windowOut{data: make([][]byte, len(g.wants))}}
 		}
 	}
@@ -499,10 +497,12 @@ func (r *clusterReader) read(ctx context.Context, codecs *blob.Codecs, wants []c
 			}
 			hedged = make(chan hedgeResult, 1)
 			ats := slices.Clone(hedging)
-			go func() {
+			if !r.start(func(context.Context) {
 				data, err := hedge(hedgeCtx, ats)
 				hedged <- hedgeResult{data: data, err: err}
-			}()
+			}) {
+				hedged <- hedgeResult{err: resource.ErrClosed}
+			}
 		case result := <-hedged:
 			hedged = nil
 			if result.err != nil {
@@ -900,9 +900,9 @@ func (w *windowRead) run(ctx context.Context) {
 		// The read has its pages. Whether a rank lacks a stripe no rank
 		// holds is known only once every rank has answered, and the rest
 		// answer behind the read rather than in front of it.
-		r.behind(1)
-		handedOver = r.spawn(func(life context.Context) {
-			defer r.behind(-1)
+		r.lingering.add(1)
+		handedOver = r.start(func(life context.Context) {
+			defer r.lingering.add(-1)
 			defer w.finish()
 			w.hearRest(life)
 			w.repair(life)
@@ -910,7 +910,7 @@ func (w *windowRead) run(ctx context.Context) {
 		if handedOver {
 			return
 		}
-		r.behind(-1)
+		r.lingering.add(-1)
 	}
 	w.repair(ctx)
 }
@@ -1014,7 +1014,13 @@ func (w *windowRead) ask(ctx context.Context, cache rank.Cache) {
 	read := peer.StripeRead{Window: w.window, Pages: w.pages, Code: w.code, MaxBytes: w.maxBytes(cache)}
 	route, routed := w.m.Route(cache.Identity)
 	prefetch := Prefetching(ctx) && !r.bug("cluster-prefetch-in-stripe-class")
-	if !r.spawn(func(life context.Context) {
+	start := r.start
+	if r.bug("cluster-idle-before-requests-end") {
+		// The guard runs the request uncounted, so the reads are idle while
+		// requests a read left behind still run.
+		start = r.spawn
+	}
+	if !start(func(life context.Context) {
 		answer := stripeAnswer{cache: cache}
 		if prefetch {
 			life = WithPrefetch(life)

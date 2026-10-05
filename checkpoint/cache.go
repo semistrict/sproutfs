@@ -491,6 +491,21 @@ func (c *Cache) SettleFills(ctx context.Context) error {
 	return c.filler.settle(ctx)
 }
 
+// SettleReads returns once nothing the cache's reads of the cluster started
+// still runs: every request has been answered or has timed out, every read of
+// the store past a bound has returned, and every read whose caller went on
+// without it has ended. A read that the store answered first, or whose caller
+// gave up on it, leaves its requests running behind it, loading the holders'
+// disks and the network; this is what a run that measures one batch of reads
+// after another waits on between them. It returns at once for a cache that
+// reads no cluster.
+func (c *Cache) SettleReads(ctx context.Context) error {
+	if c.reader == nil {
+		return nil
+	}
+	return c.reader.idle(ctx)
+}
+
 // fill hands envelopes of kind to the cluster, each window inside the
 // cluster share to its ranks, and returns at once. It does nothing for a
 // cache that fills nothing, and leaves every window outside the share alone.

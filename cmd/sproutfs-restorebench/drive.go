@@ -487,7 +487,9 @@ type readResult struct {
 
 // readCase reads one case: every node's memory tiers and the kernel's page
 // cache dropped, then the reader's reads, with the lost node's peer server
-// closed part way through when lose says and started again after.
+// closed part way through when lose says and started again after, and then
+// what the reads left running and the fills they handed over settled, so the
+// case counts all it did and the next begins on a quiet cluster.
 func readCase(ctx context.Context, nodes []controller, config driveConfig, request readRequest,
 	lose bool) (readResult, error) {
 	for _, n := range nodes {
@@ -523,6 +525,13 @@ func readCase(ctx context.Context, nodes []controller, config driveConfig, reque
 		if _, err := nodes[config.lost].back(ctx, struct{}{}); err != nil {
 			return readResult{}, err
 		}
+	}
+	// A read the store answered first, or one its caller gave up on, leaves
+	// requests running on the cluster behind it. They are this case's, and
+	// they would slow the next case's reads by however far they had got when
+	// it began.
+	if _, err := nodes[1].settle(ctx, struct{}{}); err != nil {
+		return readResult{}, err
 	}
 	after, err := statsOf(ctx, nodes)
 	if err != nil {
