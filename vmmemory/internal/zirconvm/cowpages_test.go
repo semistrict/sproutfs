@@ -1139,3 +1139,42 @@ func TestZeroingAChildPastItsParentsEndZeroesWhatItSaw(t *testing.T) {
 		expect(t, "the parent unchanged", bytes.Equal(readPage(t, env, parent, ps), pattern(ps, 'P')), true)
 	})
 }
+
+// A store that forks the zero page unmaps the zero page from the object's
+// mappings, and a store that copies a parent's page unmaps that page from
+// the clones that saw it through the object.
+func TestAStoreUnmapsThePageItReplaces(t *testing.T) {
+	forEachVmoPageSize(t, func(t *testing.T, env *vmoEnv) {
+		ps := env.ps
+		anon, err := CreateObjectPaged(env.node, ps)
+		mustNotFail(t, "create", err)
+		anonMap := newTestMapping(t, env, anon)
+		defer anonMap.unmap()
+		anonMap.fault(0, false)
+		zero, _, _ := anonMap.query(0)
+		expect(t, "the zero page mapped", zero, env.node.pmm.ZeroPage())
+		mustNotFail(t, "store", anon.Write(env.ctx, []byte{1}, 0))
+		_, _, mapped := anonMap.query(0)
+		expect(t, "the zero page unmapped", mapped, false)
+
+		root, err := CreateObjectPaged(env.node, 2*ps)
+		mustNotFail(t, "create the root", err)
+		mustNotFail(t, "write the root", root.Write(env.ctx, pattern(2*ps, 'R'), 0))
+		child, err := root.CreateClone(SnapshotOnWrite, 0, 2*ps)
+		mustNotFail(t, "clone", err)
+		mustNotFail(t, "write the child's second", child.Write(env.ctx, pattern(ps, 'C'), ps))
+		grandchild, err := child.CreateClone(SnapshotOnWrite, 0, 2*ps)
+		mustNotFail(t, "clone the child", err)
+		expect(t, "hangs from the child", grandchild.DebugGetCowPages().DebugGetParent(), child.DebugGetCowPages())
+		grandMap := newTestMapping(t, env, grandchild)
+		defer grandMap.unmap()
+		grandMap.fault(0, false)
+		seen, _, _ := grandMap.query(0)
+		expect(t, "the root's page mapped", seen, root.DebugGetPage(0))
+		mustNotFail(t, "store into the child's first", child.Write(env.ctx, []byte{'X'}, 0))
+		_, _, mapped = grandMap.query(0)
+		expect(t, "the root's page unmapped from the grandchild", mapped, false)
+		got := readPage(t, env, grandchild, 0)
+		expect(t, "the grandchild reads the child's copy", got[0], byte('X'))
+	})
+}
