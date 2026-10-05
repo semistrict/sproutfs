@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-05 05:10'
-updated_date: '2026-10-05 07:06'
+updated_date: '2026-10-05 07:38'
 labels:
   - pager
   - zircon-port
@@ -28,10 +28,10 @@ Step 9 of the plan. The heart of the port, built and tested alone before anythin
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The region layer and identity roots are ported from vm_cow_pages.cc and vm_object_paged.cc, with each departure D1 to D4 marked in the code beside the line it changes
-- [ ] #2 The 33 VMO cases the plan lists run as Go tests in synctest bubbles; a case whose expectation a departure changes says which in its comment
+- [x] #1 The region layer and identity roots are ported from vm_cow_pages.cc and vm_object_paged.cc, with each departure D1 to D4 marked in the code beside the line it changes
+- [x] #2 The 33 VMO cases the plan lists run as Go tests in synctest bubbles; a case whose expectation a departure changes says which in its comment
 - [ ] #3 A test shows a store into an AwaitingClean page leaves the checkpoint the bytes of the pause and gives the store a Dirty copy, and a test shows an abandoned writeback makes every page Dirty again with its own reservation
-- [ ] #4 Nothing outside the package uses it yet, and just check passes
+- [x] #4 Nothing outside the package uses it yet, and just check passes
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -62,4 +62,14 @@ Decisions:
 - Known gap: a region's mapping of a root's page is not revoked when the root evicts it; step 12's alias set does that.
 - Guards zircon-dirty-awaiting-clean-in-place (D1) and zircon-abandon-leaves-awaiting-clean (D4) in scripts/mutation/guards.json; killed 3 of 3 runs each.
 - AC #3's "with its own reservation": reservations are not at this layer; they come with step 6 (D5, the reference storage). The abandon test shows every page Dirty again with its own page.
+
+Found while testing survivors: Zircon's ZeroPagesLocked, for a node without parent content markers, takes a gap as zero when the whole gap does not see the parent, so a gap across the parent limit left its first part showing the parent. The port reaches that path in anonymous trees too and now sends any gap that starts below the parent limit to the per-offset walk (commented beside the line in dirty.go; TestZeroingAChildPastItsParentsEndZeroesWhatItSaw). readWriteInternal and unmapAndFreePagesLocked no longer return counts no caller uses. Merged main (step 4's pagelist map) and resolved guards.json.
+
+Gremlins on the eleven production files (--suite full, --file each): first run 801 killed, 257 alive, 188 not covered, 37 timed out; after the survivor tests 885 killed, 178 alive, 181 not covered, 33 timed out. Survivors left: assert bounds, range-change lengths past the object end that no mapping sees, queue counters (step 5/6), page source request lists (step 8), resize/pinning-only paths. Validation: go test ./vmmemory/internal/zirconvm (race and -count=3 -shuffle=on) passes; check-guards.py kills both zircon- guards in 3 of 3 runs; just check.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Ported VmCowPages and VmObjectPaged into vmmemory/internal/zirconvm, standalone: lookup cursor, supply, take, dirty states and writeback with D1-D4, zero intervals, reclaim with D2, snapshot-on-write clones, and identity roots a region's layer falls through to. Parts of steps 5, 6 and 8 that VmCowPages calls are ported alongside. 33 VMO cases plus 47 cases of our own, each at 4 KiB and 2 MiB in synctest bubbles. Guards zircon-dirty-awaiting-clean-in-place and zircon-abandon-leaves-awaiting-clean are killed every run. Gremlins: 885 killed, 178 alive, 181 not covered, 33 timed out. just check passes. AC #3 is left open: its 'own reservation' needs step 6's reference storage; the abandon itself is tested.
+<!-- SECTION:FINAL_SUMMARY:END -->

@@ -3485,6 +3485,21 @@ already is. The 30 not covered are the constants of a slot's bit layout,
 which no test run reaches, the branches for an offset past the list's end inside an
 interval, which cannot happen, and the list's own checks failing.
 
+Step 9 added the region's layer and the parts of the queues, the compression
+and the page source it calls. Run with `--file` on each of its eleven
+production files, the first full run killed 801, left 257 alive, 188 not
+covered and 37 timed out. Tests of what the survivors changed brought it to
+885 killed, 178 alive, 181 not covered and 33 timed out. They cover the range
+ends of protect, end and abandon, a D1 copy with no page, agreements and
+zeroing that wake only their range, readable lookups through clones, clone
+parents, range changes reaching clones at their offsets, and a region's store
+unmapping its root's page. One survivor was a bug Zircon shares: zeroing a
+child over its parent limit left the parent showing; the port departs there.
+Most survivors left are asserts' bounds, the lengths of range changes past an
+object's end, which no mapping sees, the queue counters of steps 5 and 6, and
+the page source's request lists, which step 8 tests. The resize and pinning
+paths that would reach the rest are not ported.
+
 After a substantial change that spans packages, or periodically before a
 release, run `--all --integration` with the full suite. This is intentionally an
 occasional campaign. The changed-package command above is the ordinary
