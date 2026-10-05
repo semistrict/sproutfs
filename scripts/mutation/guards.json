@@ -790,6 +790,12 @@
     "purpose": "Keep a page rebuilt under k = 1 as a view of its peer's reply buffer, which the next reply is read into."
   },
   {
+    "id": "cluster-idle-before-requests-end",
+    "package": "checkpoint",
+    "run": "^TestSettlingReadsWaitsOutTheRequestsOfAReadTheStoreAnswered$",
+    "purpose": "Leave a read's requests out of what settling the reads waits for, so the requests of a read the store answered first still run after it, into the next batch of reads."
+  },
+  {
     "id": "fill-parts-in-any-order",
     "package": "checkpoint",
     "run": "^TestAPublicationHandsItsPartsOverInTheirOrder$",

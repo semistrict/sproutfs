@@ -319,9 +319,13 @@ func (n *node) settleHotTiers(ctx context.Context) error {
 	return nil
 }
 
-// settle returns once the fills of the cluster and of the hot tiers handed
-// over so far are done or dropped.
+// settle returns once the reads of the cluster have nothing left running, not
+// even the requests of a read the store answered first, and the fills of the
+// cluster and of the hot tiers handed over so far are done or dropped.
 func (n *node) settle(ctx context.Context, _ struct{}) (struct{}, error) {
+	if err := n.cache.SettleReads(ctx); err != nil {
+		return struct{}{}, err
+	}
 	if err := n.cache.SettleFills(ctx); err != nil {
 		return struct{}{}, err
 	}

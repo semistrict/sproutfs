@@ -570,6 +570,60 @@ func TestStoreReadsPastTheBoundStayWithinTheirBucket(t *testing.T) {
 	})
 }
 
+// Settling the reads waits out the requests of a read the store answered
+// first. The page's table is in the reader's memory, and every peer of the
+// 4+2 reader then stalls. The read of a page asks four holders besides
+// itself, a fifth after the delay, and the store once its bound has passed;
+// the store answers and the read's caller goes on, while the five requests
+// are still in flight. Settling returns only once each has timed out, a
+// second after it was sent.
+func TestSettlingReadsWaitsOutTheRequestsOfAReadTheStoreAnswered(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const timeout = time.Second
+		c := newFillCluster(t, fillConfig{hosts: 6, code: rank.Code{K: 4, M: 2}, share: 100, runtime: latencyRuntime,
+			memory: 64 << 20, cache: func(_ int, cache *checkpoint.CacheConfig) {
+				cache.ClusterStripeTimeout = timeout
+			}})
+		ref, m := c.filled(t, 1, "vm", []uint64{0, 1})
+		reader := c.hosts[0]
+		// The first read dials every connection and keeps the table.
+		c.read(t, reader, ref, m, 0)
+		for _, h := range c.hosts[1:] {
+			c.runtime.Network().HoldBoth(platform.Address(reader.name), h.address, time.Now().Add(time.Hour))
+		}
+		index, err := reader.store.Open(c.ctx(t), ref)
+		if err != nil {
+			t.Fatal(err)
+		}
+		before := reader.cache.Stats().Read
+		began := time.Now()
+		// The caller is done with the read once it returns, as a fault is.
+		ctx, cancel := context.WithCancel(c.ctx(t))
+		got := make([]byte, checkpoint.PageSize2MiB)
+		err = reader.store.Read(ctx, index, "root", checkpoint.PageSize2MiB, got)
+		cancel()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(got, m.contents["root"][checkpoint.PageSize2MiB:2*checkpoint.PageSize2MiB]) {
+			t.Fatal("page 1 differs from the model")
+		}
+		returned := reader.cache.Stats().Read
+		if err := reader.cache.SettleReads(c.ctx(t)); err != nil {
+			t.Fatal(err)
+		}
+		settled := reader.cache.Stats().Read
+		requests, hedges := settled.Requests-before.Requests, settled.StoreHedgesWon-before.StoreHedgesWon
+		if requests != 5 || hedges != 1 || returned.Timeouts != before.Timeouts ||
+			settled.Timeouts-before.Timeouts != requests || time.Since(began) <= timeout {
+			t.Fatalf("a read the store answered made %d requests and %d reads of the store; %d had timed out when "+
+				"it returned and %d when the reads settled %v after it began; want 5 and 1, none and all five, "+
+				"past the timeout of %v", requests, hedges, returned.Timeouts-before.Timeouts,
+				settled.Timeouts-before.Timeouts, time.Since(began), timeout)
+		}
+	})
+}
+
 // A prefetch's reads of the cluster are background work. With every peer of
 // a 4+2 reader slow, so every read waits past its delay and its bound, a
 // prefetch asks no second request, reads the store as a hedge never, and
