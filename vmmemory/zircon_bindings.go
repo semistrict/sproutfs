@@ -95,7 +95,7 @@ func (z *zirconRegion) eligibleBinding(b *zbinding) bool {
 	h.mu.Unlock()
 	z.mu.Lock()
 	defer z.mu.Unlock()
-	return page == nil && !b.mapped && !b.zero && !b.inZeroRun
+	return page == nil && !b.mapped && !b.zero && !b.inZeroRun && !b.dirty && b.checkpoint == nil
 }
 
 // eligibleIn is eligible of every page of [first, last) by its binding, under
@@ -138,7 +138,7 @@ func (z *zirconRegion) repeated(index uint64, write bool) bool {
 	if zero {
 		return !write
 	}
-	return b != nil && b.mapped && (!write || b.dirty)
+	return b != nil && b.mapped && (!write || b.writable())
 }
 
 // mapped reports whether the region maps a page, to a page or to zero.
@@ -156,7 +156,9 @@ func (z *zirconRegion) setMapped(first, last uint64, mapped bool) {
 	z.mu.Lock()
 	defer z.mu.Unlock()
 	for page := first; page < last; page++ {
-		z.bindingLocked(page).mapped = mapped
+		b := z.bindingLocked(page)
+		b.mapped = mapped
+		z.noteSealableLocked(b)
 	}
 }
 
@@ -212,6 +214,9 @@ func (z *zirconRegion) unmapRuns(runs []MapRun) {
 			}
 			continue
 		}
-		z.eachBoundLocked(first, last, func(b *zbinding) { b.mapped = false })
+		z.eachBoundLocked(first, last, func(b *zbinding) {
+			b.mapped = false
+			z.noteSealableLocked(b)
+		})
 	}
 }

@@ -1,9 +1,11 @@
 ---
 id: TASK-92.12
 title: 'Zircon port step 12: checkpoints and the rest in the new core'
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-05 05:10'
+updated_date: '2026-10-05 14:21'
 labels:
   - pager
   - zircon-port
@@ -31,3 +33,20 @@ Step 12 of the plan. Everything else of the old core runs on the new one: the se
 - [ ] #4 The seal pause issues only range protections, shown by the seal pause tests, and the walk runs after the vCPUs resume
 - [ ] #5 The hostile, race and isolation Linux suites pass under the new core on GCE
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+Split into green commits along the plan's lines, merging main between them.
+1. Checkpoints: seal (D3: the pause protects the runs of the dirty set; the walk behind it, with the region held, makes the resident pages of the set AwaitingClean in the region's layer), the checkpoint's copies as detached bindings beside the layer that own the reservations, D1 split of a store into an AwaitingClean page with the pager's own copy (zirconvm SplitAwaitingClean), settle, retire (WritebackEnd, then each page taken out of the layer and supplied to the identity root of the checkpoint that published it; a page the volume holds no object for is dropped), abandon (D4, WritebackAbandon), discard, read dirty, Share as a temporary identity root of lent pages, the loss window and pressure over the region's dirty set. zirconvm gains RemovePage and SplitAwaitingClean (marked departures: a frame's bytes are the pager's to move).
+2. Eviction of mapped pages: a lock per frame as the current core's per resident, the evictor's synchronous path over the node's queues with the fair share, revocation across the alias set, D2 spill into the binding's reservation and refault, cold copies pinned in the zero-fork queue, give-back.
+3. Isolation over frames: reach, moves into the shared file with the digest check, fork files for lent pages, endFork.
+4. Serving and handoff (ReadResident, Resident, Unpublished, Handoff), peer (UnpublishedLoader) backings, the probe build's audit over both cores.
+5. The list grows to the whole suite; check-zircon-core runs the vmmemory, host, vmmigrate and simtest suites under the zircon core in both arena modes; guards gain cores [current, zircon] where they live on these paths; GCE hostile/race/isolation suites under the zircon core; benchmarks both cores; Gremlins on the new files; go test -race.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Commit 1, checkpoints and eviction of mapped pages (they did not split cleanly: the walk joins a page an eviction holds, and the checkpoint tests need both). The zircon core keeps the current core's binding semantics beside the layer: a guest binding and a detached checkpoint copy per sealed page, a dirty set and sealable runs per region, and a lock per frame (zframe.mu) as the current core keeps one per resident page, taken outside every object lock. Seal = pause protects dirtyRuns (D3), walk aliases each copy to the page and WritebackBegin on each run the layer holds. D1 store = the pager copies the bytes and zirconvm SplitAwaitingClean installs its copy. Retire = WritebackEnd and the page moved (RemovePage + supply) into the identity root of its published identity; a hole is given back once checked zeros. Abandon = WritebackAbandon (D4). Settle, Share (a temporary identity root of zlent pages naming the parent's frames, wired so no eviction peeks them), read dirty, the loss window and pressure over the dirty set. Eviction: Host.reclaimStep dispatches to the zircon core, which peeks the node's queues with the fair share; the node ages Dirty and AwaitingClean pages in the reclaim queues (zirconvm Node.AgeDirtyPages, D2's queue); evictPage revokes every alias, writes the page to its bindings' reservations, takes it out of its object (RemovePage) and frees its slot; a spilled page refaults from its reservation, AwaitingClean again where it shares the copy. zirconvm gains RemovePage, HeldPageLocked, SplitAwaitingClean and AgeDirtyPages, each with a departures test. Plans lock the frames they map until their commands land; a population waits for them in identity order. Replacement is the current core's counter (zframe.replacing). scripts/test-pager-core.py gained --survey and --grow. List 111 -> 221 vmmemory tests; just check passes.
+<!-- SECTION:NOTES:END -->

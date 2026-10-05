@@ -760,3 +760,95 @@ func TestASpliceListIsReusedAndASuppliedPagesBacklinkNamesItsObject(t *testing.T
 		expect(t, "a page in no queue has no backlink", ok, false)
 	})
 }
+
+// D1 for a pager that copies its own pages: the copy it made becomes the
+// Dirty page, and the checkpoint keeps the page of its pause beside the page
+// list until its writeback ends. Only an AwaitingClean page is split.
+func TestAPagersOwnCopySplitsAPageACheckpointHolds(t *testing.T) {
+	forEachVmoPageSize(t, func(t *testing.T, env *vmoEnv) {
+		ps := env.ps
+		vmo, pages := makeCommittedPagerVmo(t, env, 2, true)
+		mustNotFail(t, "dirty", vmo.DirtyPages(env.ctx, 0, 2*ps))
+		mustNotFail(t, "store the pause's bytes", vmo.Write(env.ctx, pattern(2*ps, 'A'), 0))
+		copied, err := env.pmm.AllocPage()
+		mustNotFail(t, "allocate the copy", err)
+		expect(t, "a Dirty page is not split", vmo.SplitAwaitingClean(0, copied), ErrBadState)
+		mustNotFail(t, "begin", vmo.WritebackBegin(0, ps, false))
+		copy(copied.data, pattern(ps, 'B'))
+		mustNotFail(t, "split", vmo.SplitAwaitingClean(0, copied))
+		expect(t, "the copy is the page", vmo.DebugGetPage(0), copied)
+		expect(t, "the copy is dirty", copied.dirtyState, Dirty)
+		expect(t, "the checkpoint's page is unchanged", pages[0].dirtyState, AwaitingClean)
+		expect(t, "the checkpoint holds it", vmo.CowPages().HeldPageLocked(0), pages[0])
+		held := make([]byte, ps)
+		mustNotFail(t, "read the writeback", vmo.ReadWriteback(env.ctx, held, 0))
+		expect(t, "the writeback holds the pause", bytes.Equal(held, pattern(ps, 'A')), true)
+		expect(t, "the guest reads the copy", bytes.Equal(readPage(t, env, vmo, 0), pattern(ps, 'B')), true)
+		pagesOut := env.pmm.out
+		mustNotFail(t, "end", vmo.WritebackEnd(0, ps))
+		expect(t, "the checkpoint's page was freed", env.pmm.out, pagesOut-1)
+		expect(t, "nothing is held", vmo.CowPages().HeldPageLocked(0) == nil, true)
+		expect(t, "the copy is still dirty", copied.dirtyState, Dirty)
+	})
+}
+
+// D2's queue: on a node that spills its dirty pages, a Dirty or AwaitingClean
+// page ages in the reclaim queues beside the Clean ones, and an access makes
+// it the newest, so the pager's evictor takes pages in the order accesses
+// touched them, whatever their state. The object still evicts only a Clean
+// page itself.
+func TestADirtyPageAgesWithTheCleanOnesWhereTheNodeSpillsDirtyPages(t *testing.T) {
+	forEachVmoPageSize(t, func(t *testing.T, env *vmoEnv) {
+		ps := env.ps
+		env.node = NewNode(env.pmm, ps, env.compression)
+		env.node.AgeDirtyPages()
+		pq := env.node.PageQueues()
+		vmo, pages := makeCommittedPagerVmo(t, env, 2, true)
+		mustNotFail(t, "dirty", vmo.DirtyPages(env.ctx, 0, ps))
+		expect(t, "the dirty page is in no dirty queue", pq.DebugPageIsPagerBackedDirty(pages[0]), false)
+		reclaim, _ := pq.DebugPageIsReclaim(pages[0])
+		expect(t, "the dirty page ages", reclaim, true)
+		mustNotFail(t, "begin", vmo.WritebackBegin(0, ps, false))
+		reclaim, _ = pq.DebugPageIsReclaim(pages[0])
+		expect(t, "the awaiting clean page ages", reclaim, true)
+		pq.RotateReclaimQueues()
+		pq.MarkAccessed(pages[0])
+		_, age := pq.DebugPageIsReclaim(pages[0])
+		_, cleanAge := pq.DebugPageIsReclaim(pages[1])
+		expect(t, "the accessed dirty page is newer than the clean one", age < cleanAge, true)
+		success, failure := vmo.CowPages().ReclaimRangeForEviction(0, ps, IgnoreHint)
+		expect(t, "the object evicts no awaiting clean page", success.NumPages, uint64(0))
+		expect(t, "and says why", failure, ReclaimOther)
+	})
+}
+
+// A pager takes a page out of an object to move its bytes itself: from the
+// page list, or from what a checkpoint holds beside it, whatever its state,
+// and out of the page queues, without freeing it.
+func TestAPagerTakesAPageOutOfAnObjectWithoutFreeingIt(t *testing.T) {
+	forEachVmoPageSize(t, func(t *testing.T, env *vmoEnv) {
+		ps := env.ps
+		vmo, pages := makeCommittedPagerVmo(t, env, 2, true)
+		mustNotFail(t, "dirty", vmo.DirtyPages(env.ctx, 0, 2*ps))
+		mustNotFail(t, "begin", vmo.WritebackBegin(0, 2*ps, false))
+		copied, err := env.pmm.AllocPage()
+		mustNotFail(t, "allocate the copy", err)
+		mustNotFail(t, "split", vmo.SplitAwaitingClean(0, copied))
+		pagesOut := env.pmm.out
+		expect(t, "a page not at the offset", vmo.RemovePage(ps, pages[0]), false)
+		expect(t, "the held page", vmo.RemovePage(0, pages[0]), true)
+		expect(t, "nothing is held", vmo.CowPages().HeldPageLocked(0) == nil, true)
+		expect(t, "the copy stays", vmo.DebugGetPage(0), copied)
+		expect(t, "the page list's page", vmo.RemovePage(ps, pages[1]), true)
+		expect(t, "the offset is empty", vmo.DebugGetPage(ps) == nil, true)
+		for i, page := range pages {
+			_, queued := env.node.PageQueues().Backlink(page)
+			expect(t, "page "+string(rune('0'+i))+" is in no queue", queued, false)
+			expect(t, "page "+string(rune('0'+i))+" is untracked", page.dirtyState, Untracked)
+			_, reserved := page.DebugReservation()
+			expect(t, "page "+string(rune('0'+i))+" holds no reservation", reserved, false)
+		}
+		expect(t, "nothing was freed", env.pmm.out, pagesOut)
+		expect(t, "taken twice", vmo.RemovePage(ps, pages[1]), false)
+	})
+}

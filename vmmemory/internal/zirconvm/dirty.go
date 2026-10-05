@@ -75,8 +75,9 @@ func (c *CowPages) updateDirtyStateLocked(page *VmPage, offset uint64, state Dir
 		// becomes AwaitingClean. Zircon also asserts it is not pinned.
 		assert(!isPendingAdd, "a new page does not start AwaitingClean")
 		assert(page.dirtyState == Dirty, "only a Dirty page begins a writeback")
-		// The page stays in the dirty queue until its writeback ends.
-		assert(c.node.queues.DebugPageIsPagerBackedDirty(page), "the page is in the dirty queue")
+		// The page stays in the dirty queue until its writeback ends, or in
+		// the reclaim queues where the node spills dirty pages (D2).
+		assert(c.node.dirtyAges || c.node.queues.DebugPageIsPagerBackedDirty(page), "the page is in the dirty queue")
 		// D5: the checkpoint holds the page's bytes in its reservation.
 		assert(!c.node.reserves() || page.reserved, "an AwaitingClean page holds its reservation")
 	default:
@@ -96,14 +97,20 @@ func (c *CowPages) updateDirtyStateLocked(page *VmPage, offset uint64, state Dir
 // the same offset. Mappings of the offset, which map the checkpoint's page
 // read-only, are revoked so the next fault maps the copy. The copy is
 // returned. The checkpoint's page keeps its reservation, and the copy takes
-// one of its own (D5).
+// one of its own (D5). copied is the copy where the pager made it already
+// (SplitAwaitingClean), nil where it is made here.
 func (c *CowPages) splitAwaitingCleanLocked(slot PageOrMarkerRef[VmPage], offset uint64,
-	deferred *DeferredOps, reserved *[]ReferenceValue) (*VmPage, error) {
+	deferred *DeferredOps, reserved *[]ReferenceValue, copied *VmPage) (*VmPage, error) {
 	held := slot.Get().Page()
 	assert(held.dirtyState == AwaitingClean, "the page is AwaitingClean")
-	copyPage, err := c.allocateCopyPage(held, nil)
-	if err != nil {
-		return nil, err
+	copyPage := copied
+	if copyPage == nil {
+		var err error
+		if copyPage, err = c.allocateCopyPage(held, nil); err != nil {
+			return nil, err
+		}
+	} else {
+		initializeVmPage(copyPage)
 	}
 	if err := c.reserveFromLocked(copyPage, reserved); err != nil {
 		c.freePage(copyPage)
@@ -145,7 +152,33 @@ func (c *CowPages) dirtyForStoreLocked(ctx context.Context, slot PageOrMarkerRef
 		page.dirtyState = Dirty
 		return page, nil
 	}
-	return c.splitAwaitingCleanLocked(slot, offset, deferred, reserved)
+	return c.splitAwaitingCleanLocked(slot, offset, deferred, reserved, nil)
+}
+
+// SplitAwaitingClean is D1's split for a store whose copy the pager made: a
+// page at a frame has no bytes in this process (NewFramePage), so the pager
+// whose Pmm made the AwaitingClean page at offset copies its bytes into
+// copied itself, and copied becomes the Dirty page at offset while the
+// AwaitingClean page goes to what the checkpoint holds beside the page list.
+// It is not Zircon's, whose split is a store's that copies here
+// (splitAwaitingCleanLocked). Anything but an AwaitingClean page at offset is
+// ErrBadState, and copied is then still the caller's.
+func (o *ObjectPaged) SplitAwaitingClean(offset uint64, copied *VmPage) error {
+	c := o.cowPages
+	deferred := NewDeferredOps(c)
+	defer deferred.Finish()
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	if !c.isPageRounded(offset) || !(CowRange{offset, c.pageSize()}).IsBoundedBy(c.size) {
+		return ErrOutOfRange
+	}
+	assert(c.pageSourceType() == UserPager, "a user pager backs the object")
+	slot := c.pageList.LookupMutable(offset)
+	if !slot.Valid() || !slot.Get().IsPage() || slot.Get().Page().dirtyState != AwaitingClean {
+		return ErrBadState
+	}
+	_, err := c.splitAwaitingCleanLocked(slot, offset, deferred, nil, copied)
+	return err
 }
 
 // reserveFromLocked is reserveLocked, taking the reservation from reserved
@@ -784,7 +817,7 @@ func (c *CowPages) WritebackEndLocked(r CowRange) error {
 // reservation the checkpoint held its bytes in as its own (D5).
 func (c *CowPages) abandonAwaitingCleanLocked(page *VmPage) {
 	assert(page.dirtyState == AwaitingClean, "the page is AwaitingClean")
-	assert(c.node.queues.DebugPageIsPagerBackedDirty(page), "the page is in the dirty queue")
+	assert(c.node.dirtyAges || c.node.queues.DebugPageIsPagerBackedDirty(page), "the page is in the dirty queue")
 	assert(!c.node.reserves() || page.reserved, "the page holds its reservation")
 	page.dirtyState = Dirty
 }

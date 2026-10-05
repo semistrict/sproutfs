@@ -751,9 +751,10 @@ func (c *CowPages) setNotPinnedLocked(page *VmPage, offset uint64) {
 	if c.pageSourceType() == UserPager {
 		assert(page.dirtyState != Untracked, "a page a pager backs is dirty tracked")
 		// Only Clean pages age in the reclaim queues, since only they can be
-		// evicted. Zircon puts them in the high priority queue for a high
-		// priority object; high priority is not ported.
-		if page.dirtyState == Clean {
+		// evicted, unless the node spills its dirty pages (D2). Zircon puts
+		// them in the high priority queue for a high priority object; high
+		// priority is not ported.
+		if page.dirtyState == Clean || c.node.dirtyAges {
 			pq.SetReclaim(page, c, offset)
 		} else {
 			pq.SetPagerBackedDirty(page, c, offset)
@@ -775,7 +776,7 @@ func (c *CowPages) moveToNotPinnedLocked(page *VmPage, offset uint64) {
 	pq := c.node.queues
 	if c.pageSourceType() == UserPager {
 		assert(page.dirtyState != Untracked, "a page a pager backs is dirty tracked")
-		if page.dirtyState == Clean {
+		if page.dirtyState == Clean || c.node.dirtyAges {
 			pq.MoveToReclaim(page)
 		} else {
 			pq.MoveToPagerBackedDirty(page)
@@ -1333,6 +1334,53 @@ func (c *CowPages) DebugGetPageLocked(offset uint64) *VmPage {
 // none: a lookup of its own page list, not of what reads there. The pager
 // looks up an identity root's pages with it, a root having no parent.
 func (c *CowPages) PageLocked(offset uint64) *VmPage { return c.DebugGetPageLocked(offset) }
+
+// HeldPageLocked is the page a checkpoint holds at offset beside the page
+// list (D1), nil where it holds none there.
+func (c *CowPages) HeldPageLocked(offset uint64) *VmPage {
+	assert(c.isPageRounded(offset), "the offset is page rounded")
+	p := c.held.Lookup(offset)
+	if p != nil && p.IsPage() {
+		return p.Page()
+	}
+	return nil
+}
+
+// RemovePageLocked takes page out of the object at offset, from the page
+// list or from what a checkpoint holds beside it (D1), and out of the page
+// queues, whatever its dirty state, without freeing it, and reports whether
+// it was there. It is not Zircon's. A page at a frame has no bytes in this
+// process (NewFramePage), so the pager whose Pmm made it moves its bytes
+// itself: it spills a page it evicts, compares one it settles and moves one
+// it retires into an identity root by taking it out here, and then gives it
+// back or supplies it elsewhere. Its offset is left empty, as an eviction
+// leaves it: a READ of it is the pager's to answer.
+func (c *CowPages) RemovePageLocked(offset uint64, page *VmPage) bool {
+	assert(c.isPageRounded(offset), "the offset is page rounded")
+	if slot := c.pageList.Lookup(offset); slot != nil && slot.IsPage() && slot.Page() == page {
+		taken := c.pageList.RemoveContent(offset)
+		assert(taken.Page() == page, "the page was taken")
+		c.decrementPopulated(1)
+	} else if slot := c.held.Lookup(offset); slot != nil && slot.IsPage() && slot.Page() == page {
+		taken := c.held.RemoveContent(offset)
+		assert(taken.Page() == page, "the page was taken")
+	} else {
+		return false
+	}
+	c.node.queues.Remove(page)
+	// Its bytes are the pager's to put somewhere now, and so is any
+	// reservation they were held in (D5).
+	c.node.releaseReservation(page)
+	page.dirtyState = Untracked
+	return true
+}
+
+// RemovePage is RemovePageLocked, taking the object's lock.
+func (o *ObjectPaged) RemovePage(offset uint64, page *VmPage) bool {
+	o.lock().Lock()
+	defer o.lock().Unlock()
+	return o.cowPages.RemovePageLocked(offset, page)
+}
 
 // DebugGetParent is the object's parent, for tests.
 func (c *CowPages) DebugGetParent() *CowPages {

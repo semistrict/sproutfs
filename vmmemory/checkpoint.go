@@ -71,8 +71,12 @@ type MemoryRegionCheckpoint struct {
 	// pages to children on this host in. Both are guarded by mu.
 	digests map[uint64]digest
 	fork    *arenaFile
-	done    chan struct{}
-	err     error // read only after done is closed
+	// copies is the set under the zircon core, in ascending page order: the
+	// checkpoint's copy of each page, beside the region's layer. Guarded by
+	// mu, as pages is.
+	copies []*zbinding
+	done   chan struct{}
+	err    error // read only after done is closed
 }
 
 func (c *MemoryRegionCheckpoint) finish(err error) {
@@ -406,6 +410,9 @@ func (r *MemoryRegion) unprotect(ctx context.Context, runs []PageRun) error {
 // pager page is a store page, so these are the store pages a checkpoint
 // republishes.
 func (c *MemoryRegionCheckpoint) DirtyPages() []uint64 {
+	if z := c.zircon(); z != nil {
+		return z.dirtyPages(c)
+	}
 	held := c.sealedPages()
 	pages := make([]uint64, 0, len(held))
 	for _, held := range held {
@@ -443,6 +450,9 @@ func (c *MemoryRegionCheckpoint) UnpublishedAge() time.Duration {
 // inherits it reads the page through its own backing, which reaches these same
 // pages through the seal.
 func (c *MemoryRegionCheckpoint) Share(ctx context.Context, ref control.Ref, volume string) error {
+	if z := c.zircon(); z != nil {
+		return z.share(ctx, c, ref, volume)
+	}
 	h := c.memoryRegion.host
 	if err := c.memoryRegion.inTenant(ref); err != nil {
 		return err
@@ -473,6 +483,9 @@ func (c *MemoryRegionCheckpoint) Share(ctx context.Context, ref control.Ref, vol
 // memory region's: the guest goes on faulting and storing while a checkpoint reads its
 // checkpoint.
 func (c *MemoryRegionCheckpoint) ReadDirty(ctx context.Context, page uint64, dst []byte) error {
+	if z := c.zircon(); z != nil {
+		return z.readDirty(ctx, c, page, dst)
+	}
 	h := c.memoryRegion.host
 	if uint64(len(dst)) != h.pageSize {
 		return ErrRange
@@ -552,9 +565,6 @@ func (c *MemoryRegionCheckpoint) Retire(ctx context.Context, published bool) err
 // Guest stores never waited for the seal: with copy-on-write, what it holds back
 // is the memory region's next checkpoint, not the guest.
 func (r *MemoryRegion) Unseal(ctx context.Context) error {
-	if z := r.zircon; z != nil {
-		return z.unseal(ctx)
-	}
 	return r.endSeal(ctx, nil, false)
 }
 
@@ -568,6 +578,9 @@ func (r *MemoryRegion) Unseal(ctx context.Context) error {
 // up first, with neither the memory region nor any page held. A page already retired
 // is skipped, so a repeated call finishes what a failed one left.
 func (r *MemoryRegion) endSeal(ctx context.Context, checkpoint *MemoryRegionCheckpoint, published bool) error {
+	if z := r.zircon; z != nil {
+		return z.endSeal(ctx, checkpoint, published)
+	}
 	// The walk gives the memory region up between batches, so what keeps the
 	// checkpoint this memory region's for the whole of it is the lifetime lock and one
 	// end at a time.

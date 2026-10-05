@@ -95,6 +95,9 @@ func evictPastAFreeSlot(ctx context.Context) bool {
 // compresses, and every level takes a mapped page in the end, since an
 // allocation short of a slot has nowhere else to get one.
 func (h *Host) reclaimStep(ctx context.Context, req *evictionRequest, _ bool, _ zirconvm.EvictionLevel) (zirconvm.ReclaimAttempt, bool, error) {
+	if z := h.zircon; z != nil {
+		return z.reclaimStep(ctx, req)
+	}
 	h.mu.Lock()
 	if h.err != nil {
 		err := h.err

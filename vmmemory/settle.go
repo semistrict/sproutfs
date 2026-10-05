@@ -37,6 +37,9 @@ import (
 // the set this checkpoint will list, so what a settle leaves does not depend on
 // the order they finish in.
 func (c *MemoryRegionCheckpoint) Settle(ctx context.Context) (int, error) {
+	if z := c.zircon(); z != nil {
+		return z.settle(ctx, c)
+	}
 	r := c.memoryRegion
 	// The bindings must stay in existence for the whole walk, which is what a
 	// fault holds the memory region live for; nothing wider is taken, so a seal, a

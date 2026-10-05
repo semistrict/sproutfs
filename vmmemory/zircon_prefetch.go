@@ -369,6 +369,9 @@ func (pf *zprefetch) landRun(ctx context.Context, pages []prefetchPage, frames [
 	root := z.host.root(rootOf(pages[0].key))
 	if err := z.host.supply(ctx, root.object, pages[0].key.id.Page, frames); err != nil {
 		slog.WarnContext(ctx, "vmmemory: supplying a prefetch's pages failed", "pages", len(frames), "error", err)
+		for _, frame := range frames {
+			frameOf(frame).mu.Unlock()
+		}
 		return nil
 	}
 	var landed []prefetchPage
@@ -392,6 +395,11 @@ func (pf *zprefetch) landRun(ctx context.Context, pages []prefetchPage, frames [
 	}
 	h.mu.Unlock()
 	lock.Unlock()
+	// The frames were held from their making; a landed one is idle in its
+	// root now, and one the supply gave back is gone.
+	for _, frame := range frames {
+		frameOf(frame).mu.Unlock()
+	}
 	return landed
 }
 
@@ -490,7 +498,7 @@ func (p *zplan) bindLanded(page prefetchPage) bool {
 	lock.Lock()
 	defer lock.Unlock()
 	found := root.pages.PageLocked(page.key.id.Page * z.region.host.pageSize)
-	if found == nil {
+	if found == nil || !p.hold(found) {
 		return false
 	}
 	z.host.node.PageQueues().MarkAccessed(found)

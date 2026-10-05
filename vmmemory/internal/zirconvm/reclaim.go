@@ -74,7 +74,7 @@ func (c *CowPages) ReclaimRangeForEviction(offset, length uint64, action Evictio
 		// ported. Only a Clean page can be evicted; a Dirty one is in the
 		// dirty queue already.
 		if page.dirtyState != Clean {
-			assert(pq.DebugPageIsPagerBackedDirty(page), "a page not Clean is in the dirty queue")
+			assert(c.node.dirtyAges || pq.DebugPageIsPagerBackedDirty(page), "a page not Clean is in the dirty queue")
 			return false
 		}
 		// Not one hinted always needed, unless told to ignore the hint. It

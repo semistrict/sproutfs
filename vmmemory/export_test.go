@@ -92,6 +92,13 @@ func HoldHostLock(h *Host) (release func()) {
 // BindingsHeld reports whether something holds a memory region's binding map
 // lock at this moment.
 func BindingsHeld(r *MemoryRegion) bool {
+	if z := r.zircon; z != nil {
+		if z.mu.TryLock() {
+			z.mu.Unlock()
+			return false
+		}
+		return true
+	}
 	if r.bindingsMu.TryLock() {
 		r.bindingsMu.Unlock()
 		return false

@@ -164,7 +164,19 @@ type Node struct {
 	pageSize    uint64
 	queues      *VmPageQueues
 	compression *Compression
+	// dirtyAges is AgeDirtyPages.
+	dirtyAges bool
 }
+
+// AgeDirtyPages puts the node's Dirty and AwaitingClean pages of objects a
+// pager backs in the reclaim queues, beside its Clean ones, where Zircon keeps
+// them in the dirty queue, which does not age. It is D2's queue: such a page
+// can be spilled here, so an evictor takes it in the order accesses touched
+// it, whatever its state. The node's objects then evict it themselves no
+// more than Zircon's do (ReclaimRangeForEviction takes only Clean pages): it
+// is the pager whose Pmm made the page that spills it. It is set before any
+// page is queued.
+func (n *Node) AgeDirtyPages() { n.dirtyAges = true }
 
 // NewNode is a node over pmm, whose pages are pageSize bytes, with its own
 // page queues. compression may be nil: Zircon's Pmm::Node().

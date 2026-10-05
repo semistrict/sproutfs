@@ -2,6 +2,7 @@ package vmmemory
 
 import (
 	"context"
+	"sort"
 )
 
 // populate is MemoryRegion.Populate over the zircon core: it maps the pages
@@ -27,7 +28,7 @@ func (z *zirconRegion) populate(ctx context.Context) error {
 		return err
 	}
 	h.mu.Lock()
-	available := z.host.rootPages > 0 || h.zeroMemoryRegions > 0
+	available := z.host.rootPages > 0 || h.zeroMemoryRegions > 0 || z.host.lendsLocked()
 	h.mu.Unlock()
 	r.mu.Unlock()
 	if !available {
@@ -104,28 +105,41 @@ func (p *zplan) bindResidents(ctx context.Context, budget *populationBudget) err
 		}
 		candidates = append(candidates, candidate{page: page, key: pageKey{id: extent.Identity}})
 	}
-	slots := z.host.residentSlots(candidates)
+	slots, named := z.host.residentSlots(candidates)
 	var kept []candidate
-	for _, run := range affordRuns(groupResidentRuns(candidates, slots, nil, runs), budget, uint64(z.region.populationRun())) {
+	for _, run := range affordRuns(groupResidentRuns(candidates, slots, named, runs), budget, uint64(z.region.populationRun())) {
 		if run.zero {
 			p.markZeros(run.first, run.last)
 			continue
 		}
 		kept = append(kept, candidates[run.from:run.to]...)
 	}
+	// Every population takes the pages' locks in the same order of
+	// identities, as the current core's does.
+	sort.Slice(kept, func(i, j int) bool {
+		if kept[i].key == kept[j].key {
+			return kept[i].page < kept[j].page
+		}
+		return identityLess(kept[i].key.id, kept[j].key.id)
+	})
 	for _, item := range kept {
-		p.take(item.page, item.key)
+		if _, err := p.take(ctx, item.page, item.key); err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
 // residentSlots is the slot of the page each candidate's root holds, or slot
 // -1, read once with each root's lock held for each run of candidates of one
-// root. Nothing here decides what a page holds: a page given up before it is
-// taken is a command and a fault more, never a page.
-func (z *zirconHost) residentSlots(candidates []candidate) []fileSlot {
+// root, and whether a fork point lends it: the parent's own dirty state, which
+// this populate is the only moment a child can map, so its runs take the
+// budget first. Nothing here decides what a page holds: a page given up
+// before it is taken is a command and a fault more, never a page.
+func (z *zirconHost) residentSlots(candidates []candidate) ([]fileSlot, []bool) {
 	ps := z.host.pageSize
 	slots := make([]fileSlot, len(candidates))
+	named := make([]bool, len(candidates))
 	for at := 0; at < len(candidates); {
 		key := rootOf(candidates[at].key)
 		h := z.host
@@ -141,10 +155,16 @@ func (z *zirconHost) residentSlots(candidates []candidate) []fileSlot {
 		}
 		if root != nil {
 			root.slotsOf(candidates[at:at+run], slots[at:at+run], ps)
+			h.mu.Lock()
+			lent := root.lent != nil
+			h.mu.Unlock()
+			for i := at; i < at+run; i++ {
+				named[i] = lent && slots[i].slot >= 0
+			}
 		}
 		at += run
 	}
-	return slots
+	return slots, named
 }
 
 // slotsOf sets the slot of the page the root holds for each candidate, all of
@@ -159,4 +179,15 @@ func (root *identityRoot) slotsOf(candidates []candidate, slots []fileSlot, page
 			slots[i] = frameOf(found).fileSlot
 		}
 	}
+}
+
+// lendsLocked reports a fork point lending pages under a temporary identity
+// root. Caller holds h.mu.
+func (z *zirconHost) lendsLocked() bool {
+	for _, root := range z.roots {
+		if len(root.lentPages) > 0 {
+			return true
+		}
+	}
+	return false
 }

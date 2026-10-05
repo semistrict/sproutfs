@@ -55,14 +55,75 @@ def run(binary, directory, tests, arena, timeout):
     return missing, output
 
 
+def build(root, package, logs, race):
+    """Builds one package's test binary into logs and reports its path."""
+    binary = logs / (package.replace("/", "-") + ".test")
+    result = subprocess.run(["go", "test", "-c"] + (["-race"] if race else []) + ["-o", str(binary), "./" + package],
+                            cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    if result.returncode != 0:
+        sys.exit(f"building {package} failed:\n{result.stdout.decode(errors='replace')}")
+    return binary
+
+
+def survey(root, packages, jobs, timeout, race, grow):
+    """Runs every top-level test of each package alone under the zircon core,
+    in both arena modes, and prints which pass. It is how the list grows: a
+    test that passes in both modes may be listed, and with grow it is."""
+    logs = Path(tempfile.mkdtemp(prefix="pager-core-survey-"))
+    work = []
+    for package in packages:
+        binary = build(root, package, logs, race)
+        listing = subprocess.run([str(binary), "-test.list", ".*"], cwd=root / package,
+                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=True)
+        for name in listing.stdout.decode().split():
+            if re.fullmatch(r"(Test|Example)\w*", name):
+                work.extend((package, binary, name, arena) for arena in ARENAS)
+
+    def one(job):
+        package, binary, name, arena = job
+        missing, output = run(binary, root / package, [name], arena, timeout)
+        if missing:
+            (logs / f"{package.replace('/', '-')}.{name}.{arena}.log").write_text(output)
+        return package, name, arena, not missing
+
+    results = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
+        for package, name, arena, passed in pool.map(one, work):
+            results.setdefault((package, name), {})[arena] = passed
+    for (package, name), arenas in sorted(results.items()):
+        state = "pass" if all(arenas.values()) else "FAIL " + ",".join(a for a, ok in arenas.items() if not ok)
+        print(f"{state:22} {package} {name}")
+    failed = sum(1 for arenas in results.values() if not all(arenas.values()))
+    print(f"{len(results) - failed} of {len(results)} tests pass under the zircon core; logs of the rest in {logs}")
+    if grow:
+        path = root / "scripts/pager-core-zircon.json"
+        listed = json.loads(path.read_text())
+        entries = {entry["package"]: entry for entry in listed}
+        for (package, name), arenas in sorted(results.items()):
+            if all(arenas.values()):
+                entry = entries.setdefault(package, {"package": package, "tests": []})
+                if name not in entry["tests"]:
+                    entry["tests"].append(name)
+        for entry in entries.values():
+            entry["tests"].sort()
+        path.write_text(json.dumps(sorted(entries.values(), key=lambda e: e["package"]), indent=2) + "\n")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 2) // 2))
     parser.add_argument("--timeout", type=int, default=600, help="seconds per test process")
     parser.add_argument("--race", action="store_true", help="build the test binaries with the race detector")
+    parser.add_argument("--survey", action="append", metavar="PACKAGE",
+                        help="run every test of PACKAGE alone under the zircon core and report which pass")
+    parser.add_argument("--grow", action="store_true",
+                        help="with --survey, list every test that passed in both arena modes")
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
+    if args.survey:
+        survey(root, args.survey, args.jobs, args.timeout, args.race, args.grow)
+        return
     listed = json.loads((root / "scripts/pager-core-zircon.json").read_text())
     packages = {}
     for entry in listed:
@@ -78,12 +139,7 @@ def main():
     logs = Path(tempfile.mkdtemp(prefix="pager-core-"))
     binaries = {}
     for package in sorted(packages):
-        binary = logs / (package.replace("/", "-") + ".test")
-        build = subprocess.run(["go", "test", "-c"] + (["-race"] if args.race else []) + ["-o", str(binary), "./" + package],
-                               cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        if build.returncode != 0:
-            sys.exit(f"building {package} failed:\n{build.stdout.decode(errors='replace')}")
-        binaries[package] = binary
+        binaries[package] = build(root, package, logs, args.race)
 
     def one(job):
         package, arena = job

@@ -37,6 +37,10 @@ type zplan struct {
 	writable      []bool
 	observedZeros bool
 	installed     installedRuns
+	// locked is every page the plan holds the lock of: each page it maps,
+	// from the moment it takes it until the plan is unlocked, which is after
+	// its commands landed, so no eviction takes a page between the two.
+	locked []*zirconvm.VmPage
 	// request is the READ request the faulting page's lookup sent, which
 	// this plan's read answers, nil where it sent none. One the plan has
 	// not answered when it is unlocked is failed, so whatever waits on it
@@ -122,8 +126,36 @@ func (p *zplan) unlock() {
 		h.putFree(at)
 	}
 	p.provisional = provisionalRun{}
+	for _, page := range p.locked {
+		frameOf(page).mu.Unlock()
+	}
+	p.locked = nil
 	h.signal()
 	h.mu.Unlock()
+}
+
+// release takes page off the pages the plan holds the lock of, for its
+// caller to hold.
+func (p *zplan) release(page *zirconvm.VmPage) {
+	for i, held := range p.locked {
+		if held == page {
+			p.locked = append(p.locked[:i], p.locked[i+1:]...)
+			return
+		}
+	}
+	panic("vmmemory: a plan gave up a page it does not hold")
+}
+
+// hold takes the lock of a page the plan is about to take, which it holds
+// until it is unlocked, and reports false where something else holds it, an
+// eviction most likely, and the plan leaves the page alone. It is called
+// under the page's object lock, so it never waits.
+func (p *zplan) hold(page *zirconvm.VmPage) bool {
+	if !frameOf(page).mu.TryLock() {
+		return false
+	}
+	p.locked = append(p.locked, page)
+	return true
 }
 
 func (p *zplan) reserve(page uint64, at fileSlot) {
@@ -201,31 +233,48 @@ func (p *zplan) markZeros(first, last uint64) {
 func (p *zplan) eligible(page uint64) bool { return p.z.eligible(page) }
 
 // take binds page to the page its root holds under key, where it holds one,
-// and reports it. The page is looked up, marked accessed and bound under its
-// root's lock, so no idle drop takes it between the three.
-func (p *zplan) take(page uint64, key pageKey) *zirconvm.VmPage {
+// and reports it. It waits for the page's lock, which it takes with no
+// object lock held, and binds the page only where its root still holds it
+// then, under its root's lock, so no idle drop takes it between the two. A
+// population takes pages in one order of identities, so two that wait on each
+// other's pages cannot both be waiting.
+func (p *zplan) take(ctx context.Context, page uint64, key pageKey) (*zirconvm.VmPage, error) {
 	z := p.z
 	h := z.region.host
 	root := z.host.root(rootOf(key))
+	offset := key.id.Page * h.pageSize
 	lock := root.pages.Lock()
-	lock.Lock()
-	found := root.pages.PageLocked(key.id.Page * h.pageSize)
-	if found != nil {
-		z.host.node.PageQueues().MarkAccessed(found)
-		if page != p.store {
-			z.bind(page, found)
+	for {
+		lock.Lock()
+		found := root.pages.PageLocked(offset)
+		lock.Unlock()
+		if found == nil {
+			return nil, nil
 		}
+		if err := z.host.lockPage(ctx, found); err != nil {
+			return nil, err
+		}
+		lock.Lock()
+		still := root.pages.PageLocked(offset) == found
+		if still {
+			z.host.node.PageQueues().MarkAccessed(found)
+			if page != p.store {
+				z.bind(page, found)
+			}
+		}
+		lock.Unlock()
+		if !still {
+			z.host.unlockPage(found)
+			continue
+		}
+		p.locked = append(p.locked, found)
+		h.mu.Lock()
+		h.stats.IdentityHits++
+		h.mu.Unlock()
+		p.pages[page-p.start] = found
+		p.fresh[page-p.start] = true
+		return found, nil
 	}
-	lock.Unlock()
-	if found == nil {
-		return nil
-	}
-	h.mu.Lock()
-	h.stats.IdentityHits++
-	h.mu.Unlock()
-	p.pages[page-p.start] = found
-	p.fresh[page-p.start] = true
-	return found
 }
 
 // zsurvey is survey over the zircon core.
@@ -318,7 +367,7 @@ func (p *zplan) takeRootRun(first, last uint64, eligible []bool) []bool {
 			continue
 		}
 		found := root.pages.PageLocked(page * h.pageSize)
-		if found == nil {
+		if found == nil || !p.hold(found) {
 			continue
 		}
 		z.host.node.PageQueues().MarkAccessed(found)
@@ -617,7 +666,7 @@ func (p *zplan) supplyRun(ctx context.Context, page uint64, id pageKey, shared b
 		object, pages = root.object, root.pages
 	} else {
 		for _, frame := range frames {
-			frameOf(frame).own = true
+			frameOf(frame).layer = z
 		}
 	}
 	if err := z.host.supply(ctx, object, page, frames); err != nil {
@@ -642,16 +691,21 @@ func (p *zplan) supplyRun(ctx context.Context, page uint64, id pageKey, shared b
 			p.fresh[i] = false
 			continue
 		}
-		z.host.node.PageQueues().MarkAccessed(found)
 		if found == frames[q-page] {
+			// The frame read here, which the plan holds from its making.
+			p.locked = append(p.locked, found)
 			if shared {
 				h.mu.Lock()
 				z.host.adoptLocked(found)
 				h.mu.Unlock()
 			}
-		} else {
+		} else if p.hold(found) {
 			hits++
+		} else {
+			p.fresh[i] = false
+			continue
 		}
+		z.host.node.PageQueues().MarkAccessed(found)
 		// A store's own page is bound too, unmapped: it is what the store
 		// copies from, and the binding keeps it from an idle drop until the
 		// copy replaces it.
@@ -676,6 +730,14 @@ func (p *zplan) install(ctx context.Context) (bool, error) {
 	r := z.region
 	h := r.host
 	var runs, writable []MapRun
+	// Whether the region's own page is mapped writable is decided now, with
+	// the page held: a seal taken while the plan read gave the region up
+	// makes it the checkpoint's, read-only.
+	for i, pg := range p.pages {
+		if pg != nil && frameOf(pg).layer == z {
+			p.writable[i] = z.writable(p.start + uint64(i))
+		}
+	}
 	for page := p.start; page < p.end; {
 		i := page - p.start
 		pg := p.pages[i]

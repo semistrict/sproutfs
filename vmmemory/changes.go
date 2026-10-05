@@ -29,7 +29,8 @@ type changeSums struct{ sums []uint64 }
 type changes struct {
 	mu     sync.Mutex
 	byPage map[uint64]changeSums
-	byHeld map[*binding]changeSums
+	// byHeld is keyed by the checkpoint's copy, a *binding or a *zbinding.
+	byHeld map[any]changeSums
 }
 
 // measuring reports a pager that counts changed blocks.
@@ -51,7 +52,12 @@ func (h *Host) blockSums(ctx context.Context, at fileSlot) ([]uint64, error) {
 // noteCopied records what a page held as it became private: the bytes of the
 // resident page it now owns, before the guest can store into them.
 func (r *MemoryRegion) noteCopied(ctx context.Context, index uint64, pg *resident) error {
-	sums, err := r.host.blockSums(ctx, pg.fileSlot)
+	return r.noteCopiedAt(ctx, index, pg.fileSlot)
+}
+
+// noteCopiedAt is noteCopied of the page at a slot.
+func (r *MemoryRegion) noteCopiedAt(ctx context.Context, index uint64, at fileSlot) error {
+	sums, err := r.host.blockSums(ctx, at)
 	if err != nil {
 		return err
 	}
@@ -73,7 +79,7 @@ func (r *MemoryRegion) noteSums(index uint64, sums changeSums) {
 
 // sealSums hands a page's sums to the checkpoint copy a seal made of it: the
 // next store copies away from that copy and records sums of its own.
-func (r *MemoryRegion) sealSums(index uint64, held *binding) {
+func (r *MemoryRegion) sealSums(index uint64, held any) {
 	r.changes.mu.Lock()
 	defer r.changes.mu.Unlock()
 	sums, ok := r.changes.byPage[index]
@@ -82,13 +88,13 @@ func (r *MemoryRegion) sealSums(index uint64, held *binding) {
 	}
 	delete(r.changes.byPage, index)
 	if r.changes.byHeld == nil {
-		r.changes.byHeld = make(map[*binding]changeSums)
+		r.changes.byHeld = make(map[any]changeSums)
 	}
 	r.changes.byHeld[held] = sums
 }
 
 // unsealSums gives an abandoned checkpoint's sums back to the page.
-func (r *MemoryRegion) unsealSums(index uint64, held *binding) {
+func (r *MemoryRegion) unsealSums(index uint64, held any) {
 	r.changes.mu.Lock()
 	defer r.changes.mu.Unlock()
 	sums, ok := r.changes.byHeld[held]
@@ -104,7 +110,7 @@ func (r *MemoryRegion) unsealSums(index uint64, held *binding) {
 
 // takeSums is the sums a checkpoint's copy was sealed with, which the settle
 // consumes.
-func (r *MemoryRegion) takeSums(held *binding) (changeSums, bool) {
+func (r *MemoryRegion) takeSums(held any) (changeSums, bool) {
 	r.changes.mu.Lock()
 	defer r.changes.mu.Unlock()
 	sums, ok := r.changes.byHeld[held]
@@ -129,6 +135,37 @@ func (s *settler) changedBlocks(ctx context.Context, c *MemoryRegionCheckpoint, 
 	}
 	defer h.unlock(pg)
 	now, err := h.blockSums(ctx, pg.fileSlot)
+	if err != nil {
+		return 0, false, err
+	}
+	zero := h.zeroBlockSum()
+	changed := 0
+	for i, sum := range now {
+		before := zero
+		if was.sums != nil {
+			before = was.sums[i]
+		}
+		if sum != before {
+			changed++
+		}
+	}
+	return changed, true, nil
+}
+
+// changedBlocks is settler.changedBlocks over the zircon core.
+func (z *zirconRegion) changedBlocks(ctx context.Context, held *zbinding) (int, bool, error) {
+	r := z.region
+	h := r.host
+	was, ok := r.takeSums(held)
+	if !ok {
+		return 0, false, nil
+	}
+	page, err := z.host.lockedPage(ctx, held)
+	if err != nil || page == nil {
+		return 0, false, err
+	}
+	defer z.host.unlockPage(page)
+	now, err := h.blockSums(ctx, frameOf(page).fileSlot)
 	if err != nil {
 		return 0, false, err
 	}

@@ -81,8 +81,6 @@ func TestTheZirconCoreRefusesWhatItDoesNotServeYet(t *testing.T) {
 		if got := access(t, r, m, 2, false)[0]; got != 3 {
 			t.Fatalf("page 2 reads %d under the zircon core, want 3", got)
 		}
-		err = r.Seal(ctx)
-		wantRefused(t, "seal", err, "the zircon core does not seal a memory region yet")
 		_, err = r.Unpublished()
 		wantRefused(t, "unpublished", err, "the zircon core does not list unpublished pages yet")
 		_, err = r.Handoff(ctx)
