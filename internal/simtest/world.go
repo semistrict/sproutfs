@@ -186,6 +186,10 @@ type World struct {
 	members    map[string]membership.Host
 	code       rank.Code
 	membership *membership.Store
+	// membershipBehind reports that the last step of the membership failed,
+	// so the object is behind what members asks for. A real orchestrator
+	// steps again on its interval; Settle steps again at the next step.
+	membershipBehind bool
 	// cloud is the network disks a world with shards keeps them on, control
 	// the controller that carries the membership out on them, and leaving
 	// each host taken out of the membership while it still runs, by index.
@@ -716,6 +720,7 @@ func (w *World) Unlist(ctx context.Context, index int) {
 // host that is down keeping its place, one step a generation as an
 // orchestrator does, and has every host that is up read it. A read that fails
 // leaves a host with the generation it held, until a peer names a newer one.
+// A step that fails leaves the membership behind, and Settle takes it again.
 func (w *World) settleMembership(ctx context.Context) {
 	w.mu.Lock()
 	want := membership.Want{Code: w.code}
@@ -727,12 +732,18 @@ func (w *World) settleMembership(ctx context.Context) {
 		_, changed, err := w.membership.Reconcile(ctx, want)
 		if err != nil {
 			w.logf("orchestrator: a step of the membership: %v", err)
+			w.mu.Lock()
+			w.membershipBehind = true
+			w.mu.Unlock()
 			return
 		}
 		if !changed {
 			break
 		}
 	}
+	w.mu.Lock()
+	w.membershipBehind = false
+	w.mu.Unlock()
 	for index, other := range w.hosts {
 		if running := w.up(index); running != nil {
 			if err := running.RefreshMembership(ctx); err != nil {
@@ -2712,6 +2723,12 @@ func (w *World) lostBeforeRoot(ctx context.Context, source, destination *hostSta
 // what a host loop would do.
 func (w *World) Settle(ctx context.Context) error {
 	errs := []error{w.givenUpEnded(false)}
+	w.mu.Lock()
+	behind := w.membershipBehind
+	w.mu.Unlock()
+	if behind {
+		w.settleMembership(ctx)
+	}
 	// In identity order rather than the map's: what this world does must come
 	// from the seed and not from where Go happened to put a key.
 	for _, id := range slices.Sorted(maps.Keys(w.orphans)) {

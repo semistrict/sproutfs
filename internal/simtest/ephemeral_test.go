@@ -70,7 +70,7 @@ func storeEphemeral(t *testing.T, world *simtest.World, id string, value byte) {
 // and every root, which may not address a segment of one.
 func checkNothingEphemeralPublished(t *testing.T, ctx context.Context, runtime *sim.Runtime, prefix string) {
 	t.Helper()
-	if err := volume.CheckDeployment(context.WithoutCancel(ctx), runtime.ObjectStore(), newPrefix(t, prefix),
+	if err := checkDeployment(ctx, runtime, newPrefix(t, prefix),
 		volume.AllowSupersededEpoch, volume.AllowUnpublishedIndex,
 		volume.AllowUnreferencedCheckpoint, volume.AllowUnrecordedVM); err != nil {
 		t.Fatal(err)

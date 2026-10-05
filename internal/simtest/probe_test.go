@@ -40,15 +40,13 @@ var registeredProbes = []string{
 }
 
 // unreachedProbes are the registered probes no campaign in this repository
-// reaches. The store either answers or fails outright here, so no conditional
-// write ever loses its reply and is reconciled by its writer's nonce.
+// reaches. None today: the campaigns now lose a conditional write's reply, and
+// its writer reconciles it by its nonce.
 //
 // The list is asserted in both directions. A probe on it that starts firing is
 // a campaign that grew coverage and a line to delete here; a probe off it that
 // stops firing is coverage lost.
-var unreachedProbes = []string{
-	control.ProbeReplyReconciled,
-}
+var unreachedProbes = []string{}
 
 // probeSeeds are the seeds of the generated schedule the probe campaign runs.
 // The first twenty-five reach every registered probe but one: none of them
@@ -70,10 +68,13 @@ func seedsThrough(last uint64) []uint64 {
 // the membership's (TestConcurrentWritersNeverLoseAnUpdateOrGoBack, and the
 // read campaign in checkpoint for the protocol), and the page cache disk's,
 // its stripes', its fills', its reads of the cluster and its pulls (the disk,
-// stripe, fill, read and pull campaigns in checkpoint).
+// stripe, fill, read and pull campaigns in checkpoint), the bounded store
+// requests' (platform/bounded's tests), and the pager's prefetches (the
+// prefetch campaign in vmmemory).
 func elsewhere(name string) bool {
 	for _, prefix := range []string{"peer/", "membership/", "checkpoint/disk-", "checkpoint/fill-",
-		"checkpoint/keep-", "checkpoint/cluster-", "checkpoint/presence-", "checkpoint/pull-"} {
+		"checkpoint/keep-", "checkpoint/cluster-", "checkpoint/presence-", "checkpoint/pull-", "bounded/",
+		"vmmemory/prefetch-"} {
 		if strings.HasPrefix(name, prefix) && !slices.Contains(registeredProbes, name) {
 			return true
 		}
