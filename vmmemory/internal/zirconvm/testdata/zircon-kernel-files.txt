@@ -1,0 +1,2643 @@
+# Every file under zircon/kernel at fuchsia 90e54e090540aaac37a81494884f4b8a68bc269c,
+# with the copyright lines of its header, tab-separated. Written by
+# scripts/zircon-sources.py; do not edit.
+BUILD.gn	Copyright 2019 The Fuchsia Authors
+LICENSE	Copyright 2016 The Fuchsia Authors	Copyright (c) 2008-2015 Travis Geiselbrecht
+METADATA.textproto
+OWNERS
+README.fuchsia
+README.md
+arch/BUILD.gn	Copyright 2026 The Fuchsia Authors
+arch/arch_ffi.cc	Copyright 2026 The Fuchsia Authors
+arch/arm64/BUILD.gn	Copyright 2019 The Fuchsia Authors
+arch/arm64/METADATA.textproto
+arch/arm64/OWNERS
+arch/arm64/arch.cc	Copyright 2016 The Fuchsia Authors	Copyright (c) 2014-2016 Travis Geiselbrecht
+arch/arm64/arm64_ffi.cc	Copyright 2026 The Fuchsia Authors
+arch/arm64/asid_allocator.cc	Copyright 2020 The Fuchsia Authors
+arch/arm64/asid_allocator.h	Copyright 2020 The Fuchsia Authors
+arch/arm64/asid_allocator_tests.cc	Copyright 2026 The Fuchsia Authors
+arch/arm64/asm.S	Copyright 2016 The Fuchsia Authors	Copyright (c) 2014 Travis Geiselbrecht
+arch/arm64/cache-ops.S	Copyright 2016 The Fuchsia Authors	Copyright (c) 2014, Google Inc. All rights reserved
+arch/arm64/code-patches/BUILD.gn	Copyright 2021 The Fuchsia Authors
+arch/arm64/code-patches/code-patches.cc	Copyright 2021 The Fuchsia Authors
+arch/arm64/code-patches/include/arch/code-patches/case-id.h	Copyright 2021 The Fuchsia Authors
+arch/arm64/coresight.cc	Copyright 2020 The Fuchsia Authors
+arch/arm64/crashlog.cc	Copyright 2023 The Fuchsia Authors
+arch/arm64/dap.cc	Copyright 2019 The Fuchsia Authors
+arch/arm64/debugger.cc	Copyright 2016 The Fuchsia Authors
+arch/arm64/exceptions.S	Copyright 2016 The Fuchsia Authors	Copyright (c) 2014 Travis Geiselbrecht
+arch/arm64/exceptions_c.cc	Copyright 2016 The Fuchsia Authors	Copyright (c) 2014 Travis Geiselbrecht
+arch/arm64/feature.cc	Copyright 2017 The Fuchsia Authors
+arch/arm64/fpu.cc	Copyright 2016 The Fuchsia Authors	Copyright (c) 2015 Google Inc. All rights reserved
+arch/arm64/handoff.cc	Copyright 2025 The Fuchsia Authors
+arch/arm64/hypervisor/BUILD.gn	Copyright 2019 The Fuchsia Authors
+arch/arm64/hypervisor/el2.S	Copyright 2017 The Fuchsia Authors
+arch/arm64/hypervisor/el2_cpu_state.cc	Copyright 2017 The Fuchsia Authors
+arch/arm64/hypervisor/el2_cpu_state_priv.h	Copyright 2017 The Fuchsia Authors
+arch/arm64/hypervisor/gic/el2.S	Copyright 2017 The Fuchsia Authors
+arch/arm64/hypervisor/gic/gicv2.cc	Copyright 2018 The Fuchsia Authors
+arch/arm64/hypervisor/gic/gicv3.cc	Copyright 2018 The Fuchsia Authors
+arch/arm64/hypervisor/guest.cc	Copyright 2017 The Fuchsia Authors
+arch/arm64/hypervisor/vcpu.cc	Copyright 2017 The Fuchsia Authors
+arch/arm64/hypervisor/vmexit.cc	Copyright 2017 The Fuchsia Authors
+arch/arm64/hypervisor/vmexit_priv.h	Copyright 2017 The Fuchsia Authors
+arch/arm64/include/arch/arch_interrupt.h	Copyright 2020 The Fuchsia Authors
+arch/arm64/include/arch/arch_ops.h	Copyright 2016 The Fuchsia Authors	Copyright (c) 2008-2014 Travis Geiselbrecht
+arch/arm64/include/arch/arch_perfmon.h	Copyright 2019 The Fuchsia Authors
+arch/arm64/include/arch/arch_thread.h	Copyright 2016 The Fuchsia Authors	Copyright (c) 2014 Travis Geiselbrecht
+arch/arm64/include/arch/arm64.h	Copyright 2016 The Fuchsia Authors	Copyright (c) 2014 Travis Geiselbrecht
+arch/arm64/include/arch/arm64/asm.h	Copyright 2019 The Fuchsia Authors
+arch/arm64/include/arch/arm64/dap.h	Copyright 2021 The Fuchsia Authors
+arch/arm64/include/arch/arm64/feature.h	Copyright 2017 The Fuchsia Authors
+arch/arm64/include/arch/arm64/hypervisor/el2_state.h	Copyright 2017 The Fuchsia Authors
+arch/arm64/include/arch/arm64/hypervisor/gic/el2.h	Copyright 2017 The Fuchsia Authors
+arch/arm64/include/arch/arm64/hypervisor/gic/gicv2.h	Copyright 2018 The Fuchsia Authors
+arch/arm64/include/arch/arm64/hypervisor/gic/gicv3.h	Copyright 2018 The Fuchsia Authors
+arch/arm64/include/arch/arm64/interrupt.h	Copyright 2017 The Fuchsia Authors
+arch/arm64/include/arch/arm64/mmu.h	Copyright 2016 The Fuchsia Authors	Copyright (c) 2014 Google Inc. All rights reserved
+arch/arm64/include/arch/arm64/mp.h	Copyright 2016 The Fuchsia Authors
+arch/arm64/include/arch/arm64/perf_mon.h	Copyright 2018 The Fuchsia Authors
+arch/arm64/include/arch/arm64/periphmap.h	Copyright 2018 The Fuchsia Authors
+arch/arm64/include/arch/arm64/registers.h	Copyright 2018 The Fuchsia Authors
+arch/arm64/include/arch/arm64/smccc.h	Copyright 2018 The Fuchsia Authors
+arch/arm64/include/arch/arm64/uarch.h	Copyright 2020 The Fuchsia Authors
+arch/arm64/include/arch/asm_macros.h	Copyright 2016 The Fuchsia Authors	Copyright (c) 2014 Travis Geiselbrecht
+arch/arm64/include/arch/aspace.h	Copyright 2016 The Fuchsia Authors	Copyright (c) 2015-2016 Travis Geiselbrecht
+arch/arm64/include/arch/crashlog_regs.h	Copyright 2023 The Fuchsia Authors
+arch/arm64/include/arch/current_thread.h	Copyright 2016 The Fuchsia Authors
+arch/arm64/include/arch/defines.h	Copyright 2016 The Fuchsia Authors	Copyright (c) 2008 Travis Geiselbrecht
+arch/arm64/include/arch/hypervisor.h	Copyright 2017 The Fuchsia Authors
+arch/arm64/include/arch/kernel_aspace.h	Copyright 2020 The Fuchsia Authors
+arch/arm64/include/arch/regs.h	Copyright 2020 The Fuchsia Authors
+arch/arm64/include/arch/restricted.h	Copyright 2021 The Fuchsia Authors
+arch/arm64/include/arch/vm.h	Copyright 2020 The Fuchsia Authors
+arch/arm64/mexec.S	Copyright 2017 The Fuchsia Authors
+arch/arm64/mmu.cc	Copyright 2016 The Fuchsia Authors	Copyright (c) 2014 Google Inc. All rights reserved
+arch/arm64/mmu_tests.cc	Copyright 2021 The Fuchsia Authors
+arch/arm64/mp.cc	Copyright 2016 The Fuchsia Authors	Copyright (c) 2014 Travis Geiselbrecht
+arch/arm64/perf_mon.cc	Copyright 2018 The Fuchsia Authors
+arch/arm64/periphmap.cc	Copyright 2018 The Fuchsia Authors
+arch/arm64/phys/BUILD.gn	Copyright 2020 The Fuchsia Authors
+arch/arm64/phys/OWNERS
+arch/arm64/phys/address-space.cc	Copyright 2021 The Fuchsia Authors
+arch/arm64/phys/arch-boot-zbi.cc	Copyright 2023 The Fuchsia Authors
+arch/arm64/phys/arch-handoff-prep.cc	Copyright 2021 The Fuchsia Authors
+arch/arm64/phys/arch-on-physload-handoff.cc	Copyright 2023 The Fuchsia Authors
+arch/arm64/phys/arch-physload.cc	Copyright 2025 The Fuchsia Authors
+arch/arm64/phys/boot-shim/BUILD.gn	Copyright 2023 The Fuchsia Authors
+arch/arm64/phys/boot-shim/linux-arm64-boot-shim.cc	Copyright 2023 The Fuchsia Authors
+arch/arm64/phys/efi/BUILD.gn	Copyright 2022 The Fuchsia Authors
+arch/arm64/phys/efi/efi-arch-setup.cc	Copyright 2022 The Fuchsia Authors
+arch/arm64/phys/exception.S	Copyright 2021 The Fuchsia Authors>
+arch/arm64/phys/gen-arch-phys-info-asm.cc	Copyright 2023 The Fuchsia Authors
+arch/arm64/phys/include/phys/arch/address-space.h	Copyright 2023 The Fuchsia Authors
+arch/arm64/phys/include/phys/arch/arch-allocation.h	Copyright 2022 The Fuchsia Authors
+arch/arm64/phys/include/phys/arch/arch-handoff.h	Copyright 2021 The Fuchsia Authors
+arch/arm64/phys/include/phys/arch/arch-phys-info.h	Copyright 2023 The Fuchsia Authors
+arch/arm64/phys/include/phys/arch/early-boot.h	Copyright 2025 The Fuchsia Authors
+arch/arm64/phys/include/phys/arch/heap.h	Copyright 2025 The Fuchsia Authors
+arch/arm64/phys/include/phys/arch/zbi.h	Copyright 2023 The Fuchsia Authors
+arch/arm64/phys/linuxboot-header.S	Copyright 2021 The Fuchsia Authors
+arch/arm64/phys/phys.gni	Copyright 2020 The Fuchsia Authors
+arch/arm64/phys/psci.S	Copyright 2021 The Fuchsia Authors
+arch/arm64/phys/psci.cc	Copyright 2021 The Fuchsia Authors
+arch/arm64/phys/psci.h	Copyright 2021 The Fuchsia Authors
+arch/arm64/phys/regs.h	Copyright 2021 The Fuchsia Authors
+arch/arm64/phys/reset.cc	Copyright 2021 The Fuchsia Authors
+arch/arm64/phys/setup.cc	Copyright 2021 The Fuchsia Authors
+arch/arm64/phys/smccc.h	Copyright 2024 The Fuchsia Authors
+arch/arm64/phys/start.S
+arch/arm64/registers.cc	Copyright 2018 The Fuchsia Authors
+arch/arm64/restricted.cc	Copyright 2023 The Fuchsia Authors
+arch/arm64/secondary.S	Copyright 2016 The Fuchsia Authors
+arch/arm64/smccc.S	Copyright 2018 The Fuchsia Authors
+arch/arm64/smccc.h	Copyright 2024 The Fuchsia Authors
+arch/arm64/spinlock.cc	Copyright 2017 The Fuchsia Authors
+arch/arm64/src/mod.rs
+arch/arm64/sysreg.cc	Copyright 2017 The Fuchsia Authors
+arch/arm64/thread.cc	Copyright 2016 The Fuchsia Authors	Copyright (c) 2008 Travis Geiselbrecht
+arch/arm64/uarch.cc	Copyright 2020 The Fuchsia Authors
+arch/arm64/user-copy/BUILD.gn
+arch/arm64/user-copy/README.md
+arch/arm64/user-copy/user-copy-asm.h
+arch/arm64/user-copy/user-copy-bench.cc
+arch/arm64/user-copy/user-copy-from-user.S
+arch/arm64/user-copy/user-copy-tests.cc
+arch/arm64/user-copy/user-copy-to-user.S
+arch/arm64/user-copy/user-copy.S
+arch/arm64/user-copy/user-copy.cc
+arch/arm64/user-copy/user-copy.h
+arch/arm64/uspace_entry.S	Copyright 2016 The Fuchsia Authors
+arch/riscv64/BUILD.gn	Copyright 2023 The Fuchsia Authors
+arch/riscv64/asid_allocator.cc	Copyright 2023 The Fuchsia Authors
+arch/riscv64/asid_allocator.h	Copyright 2023 The Fuchsia Authors
+arch/riscv64/code-patches/BUILD.gn
+arch/riscv64/code-patches/code-patches.cc
+arch/riscv64/code-patches/include/arch/code-patches/case-id.h
+arch/riscv64/crashlog.cc	Copyright 2023 The Fuchsia Authors
+arch/riscv64/debugger.cc	Copyright 2023 The Fuchsia Authors
+arch/riscv64/exceptions.S	Copyright 2023 The Fuchsia Authors
+arch/riscv64/exceptions.cc	Copyright 2023 The Fuchsia Authors
+arch/riscv64/fpu_asm.S	Copyright 2023 The Fuchsia Authors
+arch/riscv64/handoff.cc	Copyright 2025 The Fuchsia Authors
+arch/riscv64/hypervisor/BUILD.gn
+arch/riscv64/include/arch/arch_interrupt.h
+arch/riscv64/include/arch/arch_ops.h
+arch/riscv64/include/arch/arch_thread.h
+arch/riscv64/include/arch/aspace.h
+arch/riscv64/include/arch/crashlog_regs.h
+arch/riscv64/include/arch/current_thread.h
+arch/riscv64/include/arch/defines.h
+arch/riscv64/include/arch/hypervisor.h
+arch/riscv64/include/arch/kernel_aspace.h
+arch/riscv64/include/arch/regs.h
+arch/riscv64/include/arch/restricted.h
+arch/riscv64/include/arch/riscv64.h
+arch/riscv64/include/arch/riscv64/feature.h
+arch/riscv64/include/arch/riscv64/fpu.h
+arch/riscv64/include/arch/riscv64/mmu.h
+arch/riscv64/include/arch/riscv64/mp.h
+arch/riscv64/include/arch/riscv64/riscv64_ffi.h
+arch/riscv64/include/arch/riscv64/sbi.h
+arch/riscv64/include/arch/riscv64/timer.h
+arch/riscv64/include/arch/riscv64/user_copy.h
+arch/riscv64/include/arch/riscv64/vector.h
+arch/riscv64/include/arch/vm.h
+arch/riscv64/mexec-stub.S	Copyright 2026 The Fuchsia Authors
+arch/riscv64/mmu.cc	Copyright 2023 The Fuchsia Authors
+arch/riscv64/mp.cc	Copyright 2023 The Fuchsia Authors
+arch/riscv64/phys/BUILD.gn
+arch/riscv64/phys/OWNERS
+arch/riscv64/phys/address-space.cc
+arch/riscv64/phys/arch-boot-zbi.cc
+arch/riscv64/phys/arch-handoff-prep.cc
+arch/riscv64/phys/arch-on-physload-handoff.cc	Copyright 2023 The Fuchsia Authors
+arch/riscv64/phys/arch-physload.cc
+arch/riscv64/phys/boot-shim/BUILD.gn
+arch/riscv64/phys/boot-shim/linux-riscv64-boot-shim.cc
+arch/riscv64/phys/efi/BUILD.gn
+arch/riscv64/phys/efi/efi-arch-setup.cc
+arch/riscv64/phys/exception.S
+arch/riscv64/phys/exception.cc
+arch/riscv64/phys/gen-arch-phys-info-asm.cc
+arch/riscv64/phys/include/phys/arch/address-space.h
+arch/riscv64/phys/include/phys/arch/arch-allocation.h
+arch/riscv64/phys/include/phys/arch/arch-handoff.h
+arch/riscv64/phys/include/phys/arch/arch-phys-info.h
+arch/riscv64/phys/include/phys/arch/early-boot.h
+arch/riscv64/phys/include/phys/arch/heap.h
+arch/riscv64/phys/include/phys/arch/zbi.h
+arch/riscv64/phys/linuxboot-header.S
+arch/riscv64/phys/phys.gni
+arch/riscv64/phys/reset.cc
+arch/riscv64/phys/riscv64.h
+arch/riscv64/phys/setup.cc
+arch/riscv64/phys/start.S
+arch/riscv64/riscv64_context_switch.S	Copyright 2023 The Fuchsia Authors
+arch/riscv64/riscv64_ffi.cc	Copyright 2023 The Fuchsia Authors
+arch/riscv64/riscv64_user_copy.S	Copyright 2023 The Fuchsia Authors
+arch/riscv64/sbi.cc	Copyright 2023 The Fuchsia Authors
+arch/riscv64/spinlock.cc	Copyright 2023 The Fuchsia Authors
+arch/riscv64/src/arch.rs	Copyright 2023 The Fuchsia Authors
+arch/riscv64/src/cache.rs	Copyright 2023 The Fuchsia Authors
+arch/riscv64/src/crashlog.rs	Copyright 2023 The Fuchsia Authors
+arch/riscv64/src/debugger.rs	Copyright 2023 The Fuchsia Authors
+arch/riscv64/src/exceptions.rs	Copyright 2023 The Fuchsia Authors
+arch/riscv64/src/feature.rs	Copyright 2023 The Fuchsia Authors
+arch/riscv64/src/fpu.rs	Copyright 2023 The Fuchsia Authors
+arch/riscv64/src/mod.rs	Copyright 2023 The Fuchsia Authors
+arch/riscv64/src/mp.rs	Copyright 2023 The Fuchsia Authors
+arch/riscv64/src/restricted.rs	Copyright 2023 The Fuchsia Authors
+arch/riscv64/src/sbi.rs	Copyright 2023 The Fuchsia Authors
+arch/riscv64/src/spinlock.rs	Copyright 2023 The Fuchsia Authors
+arch/riscv64/src/thread.rs	Copyright 2023 The Fuchsia Authors
+arch/riscv64/src/timer.rs	Copyright 2023 The Fuchsia Authors
+arch/riscv64/src/user_copy.rs	Copyright 2023 The Fuchsia Authors
+arch/riscv64/src/vector.rs	Copyright 2023 The Fuchsia Authors
+arch/riscv64/stvec.S	Copyright 2026 The Fuchsia Authors
+arch/riscv64/timer.cc	Copyright 2023 The Fuchsia Authors
+arch/riscv64/user-copy/BUILD.gn
+arch/riscv64/user_copy_c.cc	Copyright 2023 The Fuchsia Authors
+arch/riscv64/vector_asm.S	Copyright 2023 The Fuchsia Authors
+arch/src/api.rs	Copyright 2026 The Fuchsia Authors
+arch/src/mod.rs	Copyright 2026 The Fuchsia Authors
+arch/src/ops.rs
+arch/x86/BUILD.gn	Copyright 2019 The Fuchsia Authors
+arch/x86/METADATA.textproto
+arch/x86/OWNERS
+arch/x86/acpi.S	Copyright 2021 The Fuchsia Authors
+arch/x86/amd.cc	Copyright 2019 The Fuchsia Authors
+arch/x86/amd.h	Copyright 2019 The Fuchsia Authors
+arch/x86/arch.cc	Copyright 2016 The Fuchsia Authors	Copyright (c) 2009 Corey Tabaka	Copyright (c) 2015 Intel Corporation	Copyright (c) 2016 Travis Geiselbrecht
+arch/x86/asm.S	Copyright 2016 The Fuchsia Authors	Copyright (c) 2015 Travis Geiselbrecht
+arch/x86/bootstrap16.cc	Copyright 2016 The Fuchsia Authors
+arch/x86/cache.cc	Copyright 2016 The Fuchsia Authors	Copyright (c) 2009 Corey Tabaka
+arch/x86/code-patches/BUILD.gn
+arch/x86/code-patches/code-patches.cc
+arch/x86/code-patches/include/arch/code-patches/case-id.h
+arch/x86/cpuid/BUILD.gn
+arch/x86/cpuid/cpuid.cc
+arch/x86/cpuid/cpuid_test.cc
+arch/x86/cpuid/include/arch/x86/cpuid.h
+arch/x86/cpuid/include/arch/x86/cpuid_test_data.h
+arch/x86/crashlog.cc	Copyright 2023 The Fuchsia Authors
+arch/x86/debugger.cc	Copyright 2016 The Fuchsia Authors
+arch/x86/descriptor.cc	Copyright 2016 The Fuchsia Authors	Copyright (c) 2009 Corey Tabaka	Copyright (c) 2016 Travis Geiselbrecht
+arch/x86/exceptions.S	Copyright 2016 The Fuchsia Authors	Copyright (c) 2009 Corey Tabaka	Copyright (c) 2015 Intel Corporation	Copyright (c) 2016 Travis Geiselbrecht
+arch/x86/exceptions_c.cc	Copyright 2016 The Fuchsia Authors	Copyright (c) 2009 Corey Tabaka	Copyright (c) 2015 Intel Corporation
+arch/x86/feature.cc	Copyright 2016 The Fuchsia Authors
+arch/x86/gdt.S	Copyright 2016 The Fuchsia Authors	Copyright (c) 2009 Corey Tabaka	Copyright (c) 2015 Intel Corporation	Copyright (c) 2016 Travis Geiselbrecht
+arch/x86/handoff.cc	Copyright 2025 The Fuchsia Authors
+arch/x86/hwp.cc	Copyright 2017 The Fuchsia Authors	Copyright (c) 2016 Travis Geiselbrecht
+arch/x86/hwp_tests.cc	Copyright 2020 The Fuchsia Authors
+arch/x86/hypervisor/BUILD.gn
+arch/x86/hypervisor/guest.cc
+arch/x86/hypervisor/invalidate.cc
+arch/x86/hypervisor/pv.cc
+arch/x86/hypervisor/pv_priv.h
+arch/x86/hypervisor/vcpu.cc
+arch/x86/hypervisor/vcpu_priv.h
+arch/x86/hypervisor/vmexit.cc
+arch/x86/hypervisor/vmexit_priv.h
+arch/x86/hypervisor/vmx.S
+arch/x86/hypervisor/vmx_cpu_state.cc
+arch/x86/hypervisor/vmx_cpu_state_priv.h
+arch/x86/hypervisor/vmx_test.cc
+arch/x86/idle_states.cc	Copyright 2019 The Fuchsia Authors
+arch/x86/idle_states_test.cc	Copyright 2019 The Fuchsia Authors
+arch/x86/idt.cc	Copyright 2016 The Fuchsia Authors
+arch/x86/include/arch/arch_interrupt.h
+arch/x86/include/arch/arch_ops.h
+arch/x86/include/arch/arch_perfmon.h
+arch/x86/include/arch/arch_thread.h
+arch/x86/include/arch/asm_macros.h
+arch/x86/include/arch/aspace.h
+arch/x86/include/arch/crashlog_regs.h
+arch/x86/include/arch/current_thread.h
+arch/x86/include/arch/defines.h
+arch/x86/include/arch/hypervisor.h
+arch/x86/include/arch/kernel_aspace.h
+arch/x86/include/arch/regs.h
+arch/x86/include/arch/restricted.h
+arch/x86/include/arch/vm.h
+arch/x86/include/arch/x86.h
+arch/x86/include/arch/x86/acpi.h
+arch/x86/include/arch/x86/apic.h
+arch/x86/include/arch/x86/asm.h
+arch/x86/include/arch/x86/bootstrap16.h
+arch/x86/include/arch/x86/descriptor.h
+arch/x86/include/arch/x86/fake_msr_access.h
+arch/x86/include/arch/x86/feature.h
+arch/x86/include/arch/x86/gdt.h
+arch/x86/include/arch/x86/hwp.h
+arch/x86/include/arch/x86/hypervisor/invalidate.h
+arch/x86/include/arch/x86/hypervisor/vmx_state.h
+arch/x86/include/arch/x86/idle_states.h
+arch/x86/include/arch/x86/idt.h
+arch/x86/include/arch/x86/interrupts.h
+arch/x86/include/arch/x86/ioport.h
+arch/x86/include/arch/x86/mmu.h
+arch/x86/include/arch/x86/mmu_mem_types.h
+arch/x86/include/arch/x86/mp.h
+arch/x86/include/arch/x86/mwait_monitor.h
+arch/x86/include/arch/x86/platform_access.h
+arch/x86/include/arch/x86/pv.h
+arch/x86/include/arch/x86/registers.h
+arch/x86/include/arch/x86/suspend.h
+arch/x86/include/arch/x86/timer_freq.h
+arch/x86/intel.cc	Copyright 2019 The Fuchsia Authors
+arch/x86/ioport.cc	Copyright 2016 The Fuchsia Authors
+arch/x86/mexec.S	Copyright 2017 The Fuchsia Authors
+arch/x86/mmu.cc	Copyright 2016 The Fuchsia Authors
+arch/x86/mmu_mem_types.cc	Copyright 2016 The Fuchsia Authors
+arch/x86/mmu_tests.cc	Copyright 2016 The Fuchsia Authors
+arch/x86/mp.cc	Copyright 2016 The Fuchsia Authors	Copyright (c) 2016 Travis Geiselbrecht
+arch/x86/msr.cc	Copyright 2019 The Fuchsia Authors
+arch/x86/msr_bench.cc	Copyright 2022 The Fuchsia Authors
+arch/x86/ops.S	Copyright 2016 The Fuchsia Authors	Copyright (c) 2009 Corey Tabaka
+arch/x86/page_tables/BUILD.gn
+arch/x86/page_tables/include/arch/x86/page_tables/constants.h
+arch/x86/page_tables/include/arch/x86/page_tables/page_tables.h
+arch/x86/phys/BUILD.gn
+arch/x86/phys/OWNERS
+arch/x86/phys/address-space-32.cc
+arch/x86/phys/address-space-64.cc
+arch/x86/phys/address-space-install.cc
+arch/x86/phys/arch-boot-zbi-32.cc
+arch/x86/phys/arch-boot-zbi-64.cc
+arch/x86/phys/arch-handoff-prep.cc
+arch/x86/phys/arch-on-physload-handoff.cc
+arch/x86/phys/arch-physload.cc
+arch/x86/phys/boot-shim/BUILD.gn
+arch/x86/phys/boot-shim/depthcharge-multiboot-shim.cc
+arch/x86/phys/boot-shim/depthcharge-tests/BUILD.gn
+arch/x86/phys/boot-shim/depthcharge-tests/proper-zbi-test.cc
+arch/x86/phys/boot-shim/legacy-boot-shim-tests.cc
+arch/x86/phys/boot-shim/legacy-boot-shim.cc
+arch/x86/phys/boot-shim/legacy-boot-shim.h
+arch/x86/phys/boot-shim/legacy-mem-config-tests.cc
+arch/x86/phys/boot-shim/legacy-mem-config.cc
+arch/x86/phys/boot-shim/legacy-mem-config.h
+arch/x86/phys/boot-shim/linux-x86-boot-shim.cc
+arch/x86/phys/boot-shim/multiboot-shim.cc
+arch/x86/phys/boot-shim/stdout.cc
+arch/x86/phys/boot-shim/stdout.h
+arch/x86/phys/efi/BUILD.gn
+arch/x86/phys/efi/efi-arch-setup.cc
+arch/x86/phys/gdt.cc
+arch/x86/phys/gdt32.cc
+arch/x86/phys/ikconfig.gz
+arch/x86/phys/ikconfig.txt
+arch/x86/phys/include/phys/arch/address-space.h
+arch/x86/phys/include/phys/arch/arch-allocation.h
+arch/x86/phys/include/phys/arch/arch-handoff.h
+arch/x86/phys/include/phys/arch/early-boot.h
+arch/x86/phys/include/phys/arch/heap.h
+arch/x86/phys/include/phys/arch/zbi.h
+arch/x86/phys/legacy-boot.cc
+arch/x86/phys/legacy-boot.h
+arch/x86/phys/linuxbiboot.S
+arch/x86/phys/linuxbiboot32.py
+arch/x86/phys/linuxbiboot_executable.gni
+arch/x86/phys/linuxboot-asm-gen.cc
+arch/x86/phys/linuxboot-header.S
+arch/x86/phys/linuxboot-init.cc
+arch/x86/phys/linuxboot.h
+arch/x86/phys/linuxboot.ld
+arch/x86/phys/linuxboot32.ld
+arch/x86/phys/linuxboot64-header.S
+arch/x86/phys/multiboot-header.S
+arch/x86/phys/multiboot-init.cc
+arch/x86/phys/multiboot-start.S
+arch/x86/phys/multiboot.h
+arch/x86/phys/paging-test.cc
+arch/x86/phys/phys.gni
+arch/x86/phys/reset.cc
+arch/x86/phys/start.S
+arch/x86/phys/start32.S
+arch/x86/platform_tests.cc	Copyright 2019 The Fuchsia Authors
+arch/x86/registers.cc	Copyright 2016 The Fuchsia Authors
+arch/x86/restricted.cc	Copyright 2021 The Fuchsia Authors
+arch/x86/retpoline/BUILD.gn
+arch/x86/retpoline/basic.S
+arch/x86/retpoline/include/arch/x86/retpoline/selection.h
+arch/x86/retpoline/unsafe.S
+arch/x86/smp.cc	Copyright 2016 The Fuchsia Authors
+arch/x86/spinlock.cc	Copyright 2019 The Fuchsia Authors
+arch/x86/src/apic.rs
+arch/x86/src/fake_msr_access.rs
+arch/x86/src/feature.rs
+arch/x86/src/interrupts.rs
+arch/x86/src/ioapic.rs
+arch/x86/src/lapic.rs
+arch/x86/src/mod.rs
+arch/x86/src/platform_access.rs
+arch/x86/src/pv.rs
+arch/x86/src/registers.rs
+arch/x86/src/suspend.rs
+arch/x86/src/system_topology.rs
+arch/x86/src/x86.rs
+arch/x86/start.S	Copyright 2016 The Fuchsia Authors	Copyright (c) 2009 Corey Tabaka	Copyright (c) 2015 Intel Corporation	Copyright (c) 2016 Travis Geiselbrecht
+arch/x86/start16.S	Copyright 2016 The Fuchsia Authors
+arch/x86/syscall.S	Copyright 2016 The Fuchsia Authors	Copyright (c) 2016 Travis Geiselbrecht
+arch/x86/thread.cc	Copyright 2016 The Fuchsia Authors	Copyright (c) 2009 Corey Tabaka	Copyright (c) 2014 Travis Geiselbrecht	Copyright (c) 2015 Intel Corporation
+arch/x86/timer_freq.cc	Copyright 2017 The Fuchsia Authors
+arch/x86/user-copy/BUILD.gn
+arch/x86/user-copy/copy-tests.cc
+arch/x86/user-copy/include/arch/x86/user-copy/selection.h
+arch/x86/user-copy/selection-tests.cc
+arch/x86/user-copy/user-copy.S
+arch/x86/user-copy/user-copy.cc
+arch/x86/uspace_entry.S	Copyright 2016 The Fuchsia Authors
+big-kernel.py	Copyright 2023 The Fuchsia Authors
+bin/BUILD.gn
+bin/rustenv_path/BUILD.gn
+bin/rustenv_path/src/lib.rs
+debug-frame.S	Copyright 2020 The Fuchsia Authors
+debugcommands/BUILD.gn
+debugcommands/debugcommands.cc
+debugcommands/undefined-behavior.cc
+dev/BUILD.gn
+dev/clocks_and_pmic/moonflower/BUILD.gn
+dev/clocks_and_pmic/moonflower/include/dev/clocks_and_pmic/moonflower/init.h
+dev/clocks_and_pmic/moonflower/moonflower_alpha_pll.cc
+dev/clocks_and_pmic/moonflower/moonflower_alpha_pll.h
+dev/clocks_and_pmic/moonflower/moonflower_clock_defs.h
+dev/clocks_and_pmic/moonflower/moonflower_clocks_and_pmic.cc
+dev/clocks_and_pmic/moonflower/moonflower_qupv3_clock.cc
+dev/clocks_and_pmic/moonflower/moonflower_qupv3_clock.h
+dev/clocks_and_pmic/moonflower/moonflower_rcg_clock.cc
+dev/clocks_and_pmic/moonflower/moonflower_rcg_clock.h
+dev/coresight/BUILD.gn
+dev/coresight/README.md
+dev/coresight/component.cc
+dev/coresight/include/dev/coresight/component.h
+dev/coresight/include/dev/coresight/rom_table.h
+dev/coresight/rom_table.cc
+dev/coresight/tests/BUILD.gn
+dev/coresight/tests/rom_table_tests.cc
+dev/hdcp/amlogic_s912/BUILD.gn
+dev/hdcp/amlogic_s912/hdcp.cc
+dev/hdcp/amlogic_s912/include/dev/hdcp/amlogic_s912/init.h
+dev/hw_rng/BUILD.gn
+dev/hw_rng/amlogic_rng/BUILD.gn
+dev/hw_rng/amlogic_rng/amlogic-rng.cc
+dev/hw_rng/amlogic_rng/include/dev/hw_rng/amlogic_rng/init.h
+dev/hw_rng/debug.cc
+dev/hw_rng/hw_rng.cc
+dev/hw_rng/include/dev/hw_rng.h
+dev/hw_rng/intel_rng/BUILD.gn
+dev/hw_rng/intel_rng/intel-rng.cc
+dev/hw_rng/qcom_rng/BUILD.gn
+dev/hw_rng/qcom_rng/include/dev/hw_rng/qcom_rng/init.h
+dev/hw_rng/qcom_rng/qcom-rng.cc
+dev/hw_watchdog/generic32/BUILD.gn
+dev/hw_watchdog/generic32/generic32.rs
+dev/hw_watchdog/generic32/generic32_ffi.cc
+dev/hw_watchdog/generic32/include/dev/hw_watchdog/generic32/init.h
+dev/init.cc
+dev/interrupt/BUILD.gn
+dev/interrupt/gic/common/BUILD.gn
+dev/interrupt/gic/common/arm_gic_hw_interface.cc
+dev/interrupt/gic/common/include/dev/interrupt/arm_gic_common.h
+dev/interrupt/gic/common/include/dev/interrupt/arm_gic_hw_interface.h
+dev/interrupt/gic/v2/BUILD.gn
+dev/interrupt/gic/v2/arm_gicv2.cc
+dev/interrupt/gic/v2/arm_gicv2.h
+dev/interrupt/gic/v2/arm_gicv2_test.cc
+dev/interrupt/gic/v2/arm_gicv2m.cc
+dev/interrupt/gic/v2/arm_gicv2m_msi.cc
+dev/interrupt/gic/v2/include/dev/interrupt/arm_gicv2_init.h
+dev/interrupt/gic/v2/include/dev/interrupt/arm_gicv2_regs.h
+dev/interrupt/gic/v2/include/dev/interrupt/arm_gicv2m.h
+dev/interrupt/gic/v2/include/dev/interrupt/arm_gicv2m_msi.h
+dev/interrupt/gic/v3/BUILD.gn
+dev/interrupt/gic/v3/arm_gicv3.cc
+dev/interrupt/gic/v3/arm_gicv3_regs.h
+dev/interrupt/gic/v3/include/dev/interrupt/arm_gicv3_init.h
+dev/interrupt/include/dev/interrupt.h
+dev/interrupt/interrupt.rs
+dev/interrupt/plic/BUILD.gn
+dev/interrupt/plic/include/dev/interrupt/plic.h
+dev/interrupt/plic/plic.rs
+dev/iommu/BUILD.gn
+dev/iommu/arm_smmu/BUILD.gn
+dev/iommu/arm_smmu/README.md
+dev/iommu/arm_smmu/console.cc
+dev/iommu/arm_smmu/context_bank.cc
+dev/iommu/arm_smmu/device_aspace.cc
+dev/iommu/arm_smmu/include/dev/arm_smmu/bitmask.h
+dev/iommu/arm_smmu/include/dev/arm_smmu/constants.h
+dev/iommu/arm_smmu/include/dev/arm_smmu/context_bank.h
+dev/iommu/arm_smmu/include/dev/arm_smmu/device_aspace.h
+dev/iommu/arm_smmu/include/dev/arm_smmu/page_cache.h
+dev/iommu/arm_smmu/include/dev/arm_smmu/smmu.h
+dev/iommu/arm_smmu/include/dev/arm_smmu/smmu_bti.h
+dev/iommu/arm_smmu/include/dev/arm_smmu/smmu_mode.h
+dev/iommu/arm_smmu/include/dev/arm_smmu/smmu_pmt.h
+dev/iommu/arm_smmu/include/dev/arm_smmu/smmu_registers.h
+dev/iommu/arm_smmu/include/dev/arm_smmu/stream_match_reg_group.h
+dev/iommu/arm_smmu/include/dev/arm_smmu/translation_table_helper.h
+dev/iommu/arm_smmu/include/dev/arm_smmu/utils.h
+dev/iommu/arm_smmu/include/dev/arm_smmu/vmsav8_64.h
+dev/iommu/arm_smmu/smmu.cc
+dev/iommu/arm_smmu/smmu_bti.cc
+dev/iommu/arm_smmu/smmu_mode.cc
+dev/iommu/arm_smmu/smmu_pmt.cc
+dev/iommu/arm_smmu/stream_match_reg_group.cc
+dev/iommu/arm_smmu/tests/BUILD.gn
+dev/iommu/arm_smmu/tests/device_aspace_test.cc
+dev/iommu/arm_smmu/tests/mocks/include/ktl/limits.h
+dev/iommu/arm_smmu/tests/mocks/include/ktl/memory.h
+dev/iommu/arm_smmu/tests/mocks/include/ktl/optional.h
+dev/iommu/arm_smmu/tests/mocks/include/ktl/type_traits.h
+dev/iommu/arm_smmu/tests/mocks/include/ktl/unique_ptr.h
+dev/iommu/arm_smmu/tests/mocks/include/ktl/utility.h
+dev/iommu/arm_smmu/tests/mocks/include/lib/arch/cache.h
+dev/iommu/arm_smmu/tests/mocks/include/sys/types.h
+dev/iommu/arm_smmu/tests/mocks/include/vm/page.h
+dev/iommu/arm_smmu/tests/mocks/include/vm/physmap.h
+dev/iommu/arm_smmu/tests/mocks/include/vm/pinned_vm_object.h
+dev/iommu/arm_smmu/tests/mocks/include/vm/pmm.h
+dev/iommu/arm_smmu/tests/mocks/pmm.cc
+dev/iommu/arm_smmu/tests/page_cache_test.cc
+dev/iommu/arm_smmu/tests/smmu_mode_string_tests.cc
+dev/iommu/arm_smmu/translation_table_helper.cc
+dev/iommu/arm_smmu/utils.cc
+dev/iommu/bti.cc
+dev/iommu/bti_ffi.cc
+dev/iommu/include/dev/iommu/bti.h
+dev/iommu/include/dev/iommu/common.h
+dev/iommu/include/dev/iommu/iommu.h
+dev/iommu/include/dev/iommu/pmt.h
+dev/iommu/pmt_ffi.cc
+dev/iommu/stub/BUILD.gn
+dev/iommu/stub/include/dev/iommu/stub/stub.h
+dev/iommu/stub/include/dev/iommu/stub/stub_bti.h
+dev/iommu/stub/include/dev/iommu/stub/stub_pmt.h
+dev/iommu/stub/stub_bti.cc
+dev/iommu/stub/stub_iommu.cc
+dev/iommu/stub/stub_pmt.cc
+dev/pdev/clocks_and_pmic/BUILD.gn
+dev/pdev/clocks_and_pmic/clocks_and_pmic.cc
+dev/pdev/clocks_and_pmic/include/pdev/clocks_and_pmic.h
+dev/pdev/hw_watchdog/BUILD.gn
+dev/pdev/hw_watchdog/console.cc
+dev/pdev/hw_watchdog/watchdog.rs
+dev/pdev/interrupt/BUILD.gn
+dev/pdev/interrupt/console.rs
+dev/pdev/interrupt/include/pdev/interrupt.h
+dev/pdev/interrupt/interrupt.rs
+dev/pdev/power/BUILD.gn
+dev/pdev/power/console.rs
+dev/pdev/power/include/pdev/power.h
+dev/pdev/power/power.rs
+dev/pdev/power/power_ffi.cc
+dev/pdev/timer/BUILD.gn
+dev/pdev/timer/include/pdev/timer.h
+dev/pdev/timer/timer.cc
+dev/power/iris/BUILD.gn
+dev/power/iris/include/dev/power/iris/init.h
+dev/power/iris/iris.rs
+dev/power/iris/iris_ffi.cc
+dev/power/moonflower/BUILD.gn
+dev/power/moonflower/include/dev/power/moonflower/init.h
+dev/power/moonflower/include/dev/power/moonflower/moonflower_ffi.h
+dev/power/moonflower/moonflower.rs
+dev/power/moonflower/moonflower_ffi.cc
+dev/power/motmot/BUILD.gn
+dev/power/motmot/include/dev/power/motmot/init.h
+dev/power/motmot/include/dev/power/motmot/motmot_ffi.h
+dev/power/motmot/motmot.rs
+dev/power/motmot/motmot_ffi.cc
+dev/psci/BUILD.gn
+dev/psci/include/dev/psci.h
+dev/psci/psci-suspend.S
+dev/psci/psci.cc
+dev/timer/arm_generic/BUILD.gn
+dev/timer/arm_generic/arm_generic_timer.cc
+dev/timer/arm_generic/arm_generic_timer_tests.cc
+dev/timer/arm_generic/include/dev/timer/arm_generic.h
+dev/timer/armv7_mmio_timer/BUILD.gn
+dev/timer/armv7_mmio_timer/armv7_mmio_timer.cc
+dev/timer/armv7_mmio_timer/armv7_mmio_timer_debug.cc
+dev/timer/armv7_mmio_timer/include/dev/timer/armv7_mmio_timer.h
+dev/timer/armv7_mmio_timer/include/dev/timer/armv7_mmio_timer_registers.h
+git-version-string.sh	Copyright 2016 The Fuchsia Authors	Copyright (c) 2015 Travis Geiselbrecht
+hypervisor/BUILD.gn	Copyright 2019 The Fuchsia Authors
+hypervisor/aspace.cc	Copyright 2017 The Fuchsia Authors
+hypervisor/cpu.cc	Copyright 2017 The Fuchsia Authors
+hypervisor/hypervisor_unittest.cc	Copyright 2017 The Fuchsia Authors
+hypervisor/include/hypervisor/aspace.h	Copyright 2017 The Fuchsia Authors
+hypervisor/include/hypervisor/cpu.h	Copyright 2017 The Fuchsia Authors
+hypervisor/include/hypervisor/interrupt_tracker.h	Copyright 2017 The Fuchsia Authors
+hypervisor/include/hypervisor/ktrace.h	Copyright 2018 The Fuchsia Authors
+hypervisor/include/hypervisor/page.h	Copyright 2018 The Fuchsia Authors
+hypervisor/include/hypervisor/state_invalidator.h	Copyright 2017 The Fuchsia Authors
+hypervisor/include/hypervisor/trap_map.h	Copyright 2017 The Fuchsia Authors
+hypervisor/ktrace.cc	Copyright 2018 The Fuchsia Authors
+hypervisor/trap_map.cc	Copyright 2017 The Fuchsia Authors
+image/BUILD.gn
+image/README.md
+image/eng.lk_debug_level_0/BUILD.gn
+image/eng/BUILD.gn
+image/user/BUILD.gn
+image/userdebug/BUILD.gn
+include/align.h	Copyright 2020 The Fuchsia Authors
+include/arch.h	Copyright 2016 The Fuchsia Authors	Copyright (c) 2008-2014 Travis Geiselbrecht
+include/arch/crashlog.h	Copyright 2023 The Fuchsia Authors
+include/arch/debugger.h	Copyright 2016 The Fuchsia Authors
+include/arch/exception.h	Copyright 2016 The Fuchsia Authors
+include/arch/interrupt.h	Copyright 2020 The Fuchsia Authors
+include/arch/mp.h	Copyright 2016 The Fuchsia Authors	Copyright (c) 2014 Travis Geiselbrecht
+include/arch/mp_unplug_event.h	Copyright 2023 The Fuchsia Authors. All rights reserved.
+include/arch/ops.h	Copyright 2016 The Fuchsia Authors	Copyright (c) 2008-2014 Travis Geiselbrecht
+include/arch/quirks.h	Copyright 2020 The Fuchsia Authors
+include/arch/spinlock.h	Copyright 2016 The Fuchsia Authors	Copyright (c) 2014 Travis Geiselbrecht
+include/arch/thread.h	Copyright 2016 The Fuchsia Authors	Copyright (c) 2008 Travis Geiselbrecht
+include/arch/user_copy.h	Copyright 2016 The Fuchsia Authors
+include/asm.h	Copyright 2016 The Fuchsia Authors	Copyright (c) 2008-2013 Travis Geiselbrecht
+include/assert.h	Copyright 2016 The Fuchsia Authors	Copyright (c) 2008 Travis Geiselbrecht
+include/bits.h	Copyright 2016 The Fuchsia Authors	Copyright (c) 2008 Travis Geiselbrecht
+include/debug.h	Copyright 2016 The Fuchsia Authors	Copyright (c) 2008-2012 Travis Geiselbrecht
+include/dev/clocks_and_pmic.h	Copyright 2025 The Fuchsia Authors
+include/dev/hw_watchdog.h	Copyright 2020 The Fuchsia Authors
+include/dev/init.h	Copyright 2021 The Fuchsia Authors
+include/dev/power.h	Copyright 2017 The Fuchsia Authors
+include/dev/timer.h	Copyright 2023 The Fuchsia Authors
+include/endian.h	Copyright 2016 The Fuchsia Authors	Copyright (c) 2008-2014 Travis Geiselbrecht
+include/hidden.h	Copyright 2020 The Fuchsia Authors
+include/kernel/auto_preempt_disabler.h	Copyright 2019 The Fuchsia Authors
+include/kernel/brwlock.h	Copyright 2018 The Fuchsia Authors
+include/kernel/cpu.h	Copyright 2016 The Fuchsia Authors
+include/kernel/cpu_distance_map.h	Copyright 2020 The Fuchsia Authors
+include/kernel/cpu_search_set.h	Copyright 2020 The Fuchsia Authors
+include/kernel/deadline.h	Copyright 2018 The Fuchsia Authors
+include/kernel/dpc.h	Copyright 2016 The Fuchsia Authors
+include/kernel/event.h	Copyright 2016 The Fuchsia Authors	Copyright (c) 2008-2014 Travis Geiselbrecht
+include/kernel/event_ffi.h	Copyright 2026 The Fuchsia Authors
+include/kernel/event_limiter.h	Copyright 2020 The Fuchsia Authors
+include/kernel/ffi.h	Copyright 2026 The Fuchsia Authors
+include/kernel/idle_power_thread.h	Copyright 2023 The Fuchsia Authors
+include/kernel/init.h	Copyright 2017 The Fuchsia Authors
+include/kernel/interrupt.h	Copyright 2018 The Fuchsia Authors
+include/kernel/jtrace_config.h	Copyright 2021 The Fuchsia Authors. All rights reserved.
+include/kernel/koid.h	Copyright 2021 The Fuchsia Authors
+include/kernel/lazy_owned_wait_queue.h	Copyright 2026 The Fuchsia Authors
+include/kernel/lock_trace.h	Copyright 2022 The Fuchsia Authors
+include/kernel/lock_trace_config.h	Copyright 2023 The Fuchsia Authors
+include/kernel/lock_validation_guard.h	Copyright 2023 The Fuchsia Authors
+include/kernel/lockdep.h	Copyright 2018 The Fuchsia Authors
+include/kernel/loop_limiter.h	Copyright 2021 The Fuchsia Authors
+include/kernel/mp.h	Copyright 2016 The Fuchsia Authors	Copyright (c) 2014 Travis Geiselbrecht
+include/kernel/mutex.h	Copyright 2016 The Fuchsia Authors	Copyright (c) 2008-2014 Travis Geiselbrecht	Copyright (c) 2012 Shantanu Gupta
+include/kernel/null_lock.h	Copyright 2025 The Fuchsia Authors
+include/kernel/owned_wait_queue.h	Copyright 2018 The Fuchsia Authors
+include/kernel/owned_wait_queue_pool.h	Copyright 2026 The Fuchsia Authors
+include/kernel/percpu.h	Copyright 2017 The Fuchsia Authors
+include/kernel/persistent_ram.h	Copyright 2021 The Fuchsia Authors
+include/kernel/preempt_disabled_token.h	Copyright 2023 The Fuchsia Authors. All rights reserved.
+include/kernel/range_check.h	Copyright 2016 The Fuchsia Authors	Copyright (c) 2014 Travis Geiselbrecht
+include/kernel/recurring_callback.h	Copyright 2026 The Fuchsia Authors
+include/kernel/restricted.h	Copyright 2021 The Fuchsia Authors
+include/kernel/restricted_state.h	Copyright 2021 The Fuchsia Authors
+include/kernel/scheduler.h	Copyright 2018 The Fuchsia Authors
+include/kernel/scheduler_inline.h	Copyright 2022 The Fuchsia Authors
+include/kernel/scheduler_state.h	Copyright 2018 The Fuchsia Authors
+include/kernel/scheduler_tracing.h	Copyright 2025 The Fuchsia Authors
+include/kernel/semaphore.h	Copyright 2017 The Fuchsia Authors
+include/kernel/spin_tracing.h	Copyright 2022 The Fuchsia Authors
+include/kernel/spin_tracing_config.h	Copyright 2022 The Fuchsia Authors
+include/kernel/spin_tracing_storage.h	Copyright 2022 The Fuchsia Authors
+include/kernel/spinlock.h	Copyright 2016 The Fuchsia Authors	Copyright (c) 2014 Travis Geiselbrecht
+include/kernel/stats.h	Copyright 2017 The Fuchsia Authors
+include/kernel/task_runtime_stats.h	Copyright 2020 The Fuchsia Authors
+include/kernel/task_runtime_timers.h	Copyright 2021 The Fuchsia Authors
+include/kernel/thread.h	Copyright 2016 The Fuchsia Authors	Copyright (c) 2008-2015 Travis Geiselbrecht
+include/kernel/timer.h	Copyright 2016 The Fuchsia Authors	Copyright (c) 2008-2009 Travis Geiselbrecht
+include/kernel/topology.h	Copyright 2020 The Fuchsia Authors
+include/kernel/wait.h	Copyright 2016 The Fuchsia Authors	Copyright (c) 2008-2014 Travis Geiselbrecht
+include/kernel/wait_queue_internal.h	Copyright 2019 The Fuchsia Authors
+include/lib/flow_id.h	Copyright 2025 The Fuchsia Authors
+include/lib/ktrace.h	Copyright 2016 The Fuchsia Authors
+include/lib/relaxed_atomic.h	Copyright 2020 The Fuchsia Authors
+include/lk/main.h	Copyright 2016 The Fuchsia Authors
+include/platform.h	Copyright 2016 The Fuchsia Authors	Copyright (c) 2008 Travis Geiselbrecht
+include/platform/crashlog.h	Copyright 2020 The Fuchsia Authors
+include/platform/debug.h	Copyright 2016 The Fuchsia Authors	Copyright (c) 2008 Travis Geiselbrecht
+include/platform/efi.h	Copyright 2021 The Fuchsia Authors
+include/platform/efi_bootbyte.h	Copyright 2022 The Fuchsia Authors
+include/platform/efi_crashlog.h	Copyright 2021 The Fuchsia Authors
+include/platform/halt_helper.h	Copyright 2019 The Fuchsia Authors
+include/platform/halt_token.h	Copyright 2022 The Fuchsia Authors
+include/platform/mapped_crashlog.h	Copyright 2021 The Fuchsia Authors
+include/platform/timer.h	Copyright 2016 The Fuchsia Authors	Copyright (c) 2008 Travis Geiselbrecht
+include/pow2.h	Copyright 2016 The Fuchsia Authors	Copyright (c) 2008-2014 Travis Geiselbrecht
+include/sys/types.h	Copyright 2016 The Fuchsia Authors	Copyright (c) 2008-2012 Travis Geiselbrecht
+include/syscalls/syscalls.h	Copyright 2017 The Fuchsia Authors
+include/trace.h	Copyright 2016 The Fuchsia Authors	Copyright (c) 2008-2013 Travis Geiselbrecht
+kernel.ld	Copyright 2020 The Fuchsia Authors
+kernel/BUILD.gn	Copyright 2019 The Fuchsia Authors
+kernel/align.rs	Copyright 2026 The Fuchsia Authors
+kernel/bits.rs	Copyright 2026 The Fuchsia Authors
+kernel/brwlock.cc	Copyright 2018 The Fuchsia Authors
+kernel/cpu_distance_map.cc	Copyright 2021 The Fuchsia Authors
+kernel/cpu_search_set.cc	Copyright 2020 The Fuchsia Authors
+kernel/deadline.cc	Copyright 2018 The Fuchsia Authors
+kernel/deadline.rs	Copyright 2018 The Fuchsia Authors
+kernel/debug.cc	Copyright 2016 The Fuchsia Authors	Copyright (c) 2008-2014 Travis Geiselbrecht
+kernel/dpc.cc	Copyright 2016 The Fuchsia Authors
+kernel/event.cc	Copyright 2016 The Fuchsia Authors	Copyright (c) 2008-2014 Travis Geiselbrecht
+kernel/event.rs	Copyright 2026 The Fuchsia Authors
+kernel/event_ffi.cc	Copyright 2026 The Fuchsia Authors
+kernel/idle_power_thread.cc	Copyright 2023 The Fuchsia Authors
+kernel/init.cc	Copyright 2016 The Fuchsia Authors	Copyright (c) 2013 Travis Geiselbrecht
+kernel/intensive_thread_test.cc	Copyright 2016, 2018 The Fuchsia Authors	Copyright (c) 2008-2015 Travis Geiselbrecht
+kernel/koid.rs	Copyright 2026 The Fuchsia Authors
+kernel/koid_ffi.cc	Copyright 2026 The Fuchsia Authors
+kernel/lazy_owned_wait_queue.cc	Copyright 2026 The Fuchsia Authors
+kernel/mod.rs	Copyright 2026 The Fuchsia Authors
+kernel/mp.cc	Copyright 2016 The Fuchsia Authors	Copyright (c) 2014 Travis Geiselbrecht
+kernel/mp.rs	Copyright 2026 The Fuchsia Authors
+kernel/mp_ffi.cc	Copyright 2026 The Fuchsia Authors
+kernel/mutex.cc	Copyright 2016 The Fuchsia Authors	Copyright (c) 2008-2014 Travis Geiselbrecht	Copyright (c) 2012-2012 Shantanu Gupta
+kernel/mutex_tests.cc	Copyright 2019 The Fuchsia Authors
+kernel/owned_wait_queue.cc	Copyright 2018 The Fuchsia Authors
+kernel/owned_wait_queue.rs	Copyright 2026 The Fuchsia Authors
+kernel/owned_wait_queue_ffi.cc	Copyright 2026 The Fuchsia Authors
+kernel/owned_wait_queue_pool.cc	Copyright 2026 The Fuchsia Authors
+kernel/percpu.cc	Copyright 2017 The Fuchsia Authors
+kernel/percpu.rs	Copyright 2026 The Fuchsia Authors
+kernel/recurring_callback.cc	Copyright 2026 The Fuchsia Authors
+kernel/relaxed_atomic.rs	Copyright 2026 The Fuchsia Authors
+kernel/restricted.rs	Copyright 2026 The Fuchsia Authors. All rights reserved.
+kernel/restricted_ffi.cc	Copyright 2026 The Fuchsia Authors
+kernel/restricted_state.rs	Copyright 2026 The Fuchsia Authors
+kernel/rppm_ffi.cc	Copyright 2026 The Fuchsia Authors
+kernel/scheduler.cc	Copyright 2018 The Fuchsia Authors
+kernel/scheduler.rs	Copyright 2026 The Fuchsia Authors
+kernel/scheduler_ffi.cc	Copyright 2026 The Fuchsia Authors
+kernel/scheduler_pi.cc	Copyright 2022 The Fuchsia Authors
+kernel/scheduler_state.cc	Copyright 2020 The Fuchsia Authors
+kernel/scheduler_state.rs	Copyright 2026 The Fuchsia Authors
+kernel/semaphore.cc	Copyright 2017 The Fuchsia Authors
+kernel/semaphore_tests.cc	Copyright 2017 The Fuchsia Authors
+kernel/spinlock_tests.cc	Copyright 2020 The Fuchsia Authors
+kernel/stats.rs	Copyright 2026 The Fuchsia Authors
+kernel/stats_ffi.cc	Copyright 2026 The Fuchsia Authors
+kernel/task_runtime_stats.cc	Copyright 2021 The Fuchsia Authors	Copyright (c) 2008-2015 Travis Geiselbrecht
+kernel/thread.cc	Copyright 2016 The Fuchsia Authors	Copyright (c) 2008-2015 Travis Geiselbrecht
+kernel/thread.rs	Copyright 2026 The Fuchsia Authors
+kernel/thread_ffi.cc	Copyright 2026 The Fuchsia Authors
+kernel/thread_test.cc	Copyright 2016, 2018 The Fuchsia Authors	Copyright (c) 2008-2015 Travis Geiselbrecht
+kernel/timer.cc	Copyright 2016 The Fuchsia Authors	Copyright (c) 2008-2014 Travis Geiselbrecht
+kernel/timer.rs	Copyright 2026 The Fuchsia Authors
+kernel/timer_ffi.cc	Copyright 2026 The Fuchsia Authors
+kernel/types.rs	Copyright 2026 The Fuchsia Authors
+kernel/wait.cc	Copyright 2016 The Fuchsia Authors	Copyright (c) 2008-2015 Travis Geiselbrecht
+kernel_bindgen_crate.gni	Copyright 2026 The Fuchsia Authors. All rights reserved.
+kernel_executable.gni	Copyright 2026 The Fuchsia Authors
+kernel_image.gni	Copyright 2026 The Fuchsia Authors
+kernel_package.gni	Copyright 2021 The Fuchsia Authors
+kernel_rust_crate.gni	Copyright 2026 The Fuchsia Authors
+kernel_rust_mod.gni	Copyright 2026 The Fuchsia Authors
+kernel_shell_script.gni	Copyright 2023 The Fuchsia Authors
+kernel_switchset.gni	Copyright 2026 The Fuchsia Authors
+kernel_test_deps.gni	Copyright 2026 The Fuchsia Authors
+kernel_tests_enabled.gni	Copyright 2026 The Fuchsia Authors
+lib/BUILD.gn	Copyright 2025 The Fuchsia Authors
+lib/acpi_lite/BUILD.gn	Copyright 2020 The Fuchsia Authors
+lib/acpi_lite/acpi_lite.cc	Copyright 2020 The Fuchsia Authors
+lib/acpi_lite/acpi_lite_fuzztest.cc	Copyright 2020 The Fuchsia Authors
+lib/acpi_lite/acpi_lite_test.cc	Copyright 2020 The Fuchsia Authors
+lib/acpi_lite/apic.cc	Copyright 2020 The Fuchsia Authors
+lib/acpi_lite/apic_fuzztest.cc	Copyright 2020 The Fuchsia Authors
+lib/acpi_lite/apic_test.cc	Copyright 2020 The Fuchsia Authors
+lib/acpi_lite/binary_reader.h	Copyright 2020 The Fuchsia Authors
+lib/acpi_lite/binary_reader_test.cc	Copyright 2020 The Fuchsia Authors
+lib/acpi_lite/debug.h	Copyright 2020 The Fuchsia Authors
+lib/acpi_lite/debug_port.cc	Copyright 2020 The Fuchsia Authors
+lib/acpi_lite/debug_port_fuzztest.cc	Copyright 2020 The Fuchsia Authors
+lib/acpi_lite/debug_port_test.cc	Copyright 2020 The Fuchsia Authors
+lib/acpi_lite/include/lib/acpi_lite.h	Copyright 2020 The Fuchsia Authors
+lib/acpi_lite/include/lib/acpi_lite/apic.h	Copyright 2020 The Fuchsia Authors
+lib/acpi_lite/include/lib/acpi_lite/debug_port.h	Copyright 2020 The Fuchsia Authors
+lib/acpi_lite/include/lib/acpi_lite/internal.h	Copyright 2020 The Fuchsia Authors
+lib/acpi_lite/include/lib/acpi_lite/numa.h	Copyright 2020 The Fuchsia Authors
+lib/acpi_lite/include/lib/acpi_lite/structures.h	Copyright 2020 The Fuchsia Authors
+lib/acpi_lite/include/lib/acpi_lite/testing/test_data.h	Copyright 2020 The Fuchsia Authors
+lib/acpi_lite/include/lib/acpi_lite/testing/test_util.h	Copyright 2020 The Fuchsia Authors
+lib/acpi_lite/include/lib/acpi_lite/zircon.h	Copyright 2020 The Fuchsia Authors
+lib/acpi_lite/meta/acpi_lite_fuzztest.cml	Copyright 2022 The Fuchsia Authors. All rights reserved.
+lib/acpi_lite/meta/apic_fuzztest.cml	Copyright 2022 The Fuchsia Authors. All rights reserved.
+lib/acpi_lite/meta/debug_port_fuzztest.cml	Copyright 2022 The Fuchsia Authors. All rights reserved.
+lib/acpi_lite/meta/numa_fuzztest.cml	Copyright 2022 The Fuchsia Authors. All rights reserved.
+lib/acpi_lite/numa.cc	Copyright 2020 The Fuchsia Authors
+lib/acpi_lite/numa_fuzztest.cc	Copyright 2020 The Fuchsia Authors
+lib/acpi_lite/numa_test.cc	Copyright 2020 The Fuchsia Authors
+lib/acpi_lite/rust/BUILD.gn	Copyright 2026 The Fuchsia Authors
+lib/acpi_lite/rust/meta/acpi_lite_fuzztest_rust.cml	Copyright 2026 The Fuchsia Authors. All rights reserved.
+lib/acpi_lite/rust/meta/apic_fuzztest_rust.cml	Copyright 2026 The Fuchsia Authors. All rights reserved.
+lib/acpi_lite/rust/meta/debug_port_fuzztest_rust.cml	Copyright 2026 The Fuchsia Authors. All rights reserved.
+lib/acpi_lite/rust/meta/numa_fuzztest_rust.cml	Copyright 2026 The Fuchsia Authors. All rights reserved.
+lib/acpi_lite/rust/src/acpi_lite.rs	Copyright 2026 The Fuchsia Authors
+lib/acpi_lite/rust/src/apic.rs	Copyright 2026 The Fuchsia Authors
+lib/acpi_lite/rust/src/binary_reader.rs	Copyright 2026 The Fuchsia Authors
+lib/acpi_lite/rust/src/debug_port.rs	Copyright 2026 The Fuchsia Authors
+lib/acpi_lite/rust/src/fuzzers.rs	Copyright 2026 The Fuchsia Authors
+lib/acpi_lite/rust/src/lib.rs	Copyright 2026 The Fuchsia Authors
+lib/acpi_lite/rust/src/numa.rs	Copyright 2026 The Fuchsia Authors
+lib/acpi_lite/rust/src/structures.rs	Copyright 2026 The Fuchsia Authors
+lib/acpi_lite/rust/src/test_data.rs	Copyright 2026 The Fuchsia Authors
+lib/acpi_lite/rust/src/test_util.rs	Copyright 2026 The Fuchsia Authors
+lib/acpi_lite/rust/src/tests.rs	Copyright 2026 The Fuchsia Authors
+lib/acpi_lite/rust/src/tests/acpi_lite_tests.rs	Copyright 2026 The Fuchsia Authors
+lib/acpi_lite/rust/src/tests/apic_tests.rs	Copyright 2026 The Fuchsia Authors
+lib/acpi_lite/rust/src/tests/binary_reader_tests.rs	Copyright 2026 The Fuchsia Authors
+lib/acpi_lite/rust/src/tests/debug_port_tests.rs	Copyright 2026 The Fuchsia Authors
+lib/acpi_lite/rust/src/tests/numa_tests.rs	Copyright 2026 The Fuchsia Authors
+lib/acpi_lite/rust/zircon/BUILD.gn	Copyright 2026 The Fuchsia Authors. All rights reserved.
+lib/acpi_lite/rust/zircon/src/mod.rs	Copyright 2026 The Fuchsia Authors. All rights reserved.
+lib/acpi_lite/structures.cc	Copyright 2020 The Fuchsia Authors
+lib/acpi_lite/test_data.cc	Copyright 2020 The Fuchsia Authors
+lib/acpi_lite/zircon.cc	Copyright 2020 The Fuchsia Authors
+lib/acpi_lite/zircon_test.cc	Copyright 2020 The Fuchsia Authors
+lib/arch/BUILD.gn	Copyright 2020 The Fuchsia Authors
+lib/arch/METADATA.textproto
+lib/arch/OWNERS
+lib/arch/README.md
+lib/arch/arm/BUILD.gn	Copyright 2024 The Fuchsia Authors
+lib/arch/arm/include/lib/arch/asm.h	Copyright 2024 The Fuchsia Authors
+lib/arch/arm/include/lib/arch/intrin.h	Copyright 2024 The Fuchsia Authors
+lib/arch/arm/include/lib/arch/ticks.h	Copyright 2024 The Fuchsia Authors
+lib/arch/arm64/BUILD.gn	Copyright 2020 The Fuchsia Authors
+lib/arch/arm64/cache-ops.S	Copyright 2021 The Fuchsia Authors
+lib/arch/arm64/cache.cc	Copyright 2021 The Fuchsia Authors
+lib/arch/arm64/drop-el.S	Copyright 2024 The Fuchsia Authors
+lib/arch/arm64/include/lib/arch/arm64/exception-asm.h	Copyright 2021 The Fuchsia Authors
+lib/arch/arm64/include/lib/arch/asm.h	Copyright 2020 The Fuchsia Authors
+lib/arch/arm64/include/lib/arch/cache.h	Copyright 2021 The Fuchsia Authors
+lib/arch/arm64/include/lib/arch/internal/arch-backtrace.h	Copyright 2023 The Fuchsia Authors
+lib/arch/arm64/include/lib/arch/intrin.h	Copyright 2018 The Fuchsia Authors
+lib/arch/arm64/include/lib/arch/paging-traits.h	Copyright 2025 The Fuchsia Authors
+lib/arch/arm64/include/lib/arch/ticks.h	Copyright 2020 The Fuchsia Authors
+lib/arch/arm64/random.cc	Copyright 2021 The Fuchsia Authors
+lib/arch/arm64/shadow-call-stack.S	Copyright 2021 The Fuchsia Authors
+lib/arch/cpuid.cc	Copyright 2020 The Fuchsia Authors
+lib/arch/gen-arm64-feature-asm.cc	Copyright 2021 The Fuchsia Authors
+lib/arch/gen-arm64-system-asm.cc	Copyright 2021 The Fuchsia Authors
+lib/arch/gen-riscv64-system-asm.cc	Copyright 2023 The Fuchsia Authors
+lib/arch/gen-x86-cpuid-asm.cc	Copyright 2020 The Fuchsia Authors
+lib/arch/gen-x86-msr-asm.cc	Copyright 2020 The Fuchsia Authors
+lib/arch/host/BUILD.gn	Copyright 2020 The Fuchsia Authors
+lib/arch/host/include/lib/arch/intrin.h	Copyright 2020 The Fuchsia Authors
+lib/arch/host/include/lib/arch/paging-traits.h	Copyright 2025 The Fuchsia Authors
+lib/arch/host/include/lib/arch/ticks.h	Copyright 2022 The Fuchsia Authors
+lib/arch/include/lib/arch/arm64/cache.h	Copyright 2021 The Fuchsia Authors
+lib/arch/include/lib/arch/arm64/feature.h	Copyright 2021 The Fuchsia Authors. All rights reserved.
+lib/arch/include/lib/arch/arm64/memory.h	Copyright 2023 The Fuchsia Authors. All rights reserved.
+lib/arch/include/lib/arch/arm64/nop.h	Copyright 2020 The Fuchsia Authors
+lib/arch/include/lib/arch/arm64/paging-traits.h	Copyright 2023 The Fuchsia Authors
+lib/arch/include/lib/arch/arm64/smccc.h	Copyright 2021 The Fuchsia Authors. All rights reserved.
+lib/arch/include/lib/arch/arm64/system.h	Copyright 2021 The Fuchsia Authors. All rights reserved.
+lib/arch/include/lib/arch/asm.h	Copyright 2020 The Fuchsia Authors
+lib/arch/include/lib/arch/backtrace.h	Copyright 2023 The Fuchsia Authors
+lib/arch/include/lib/arch/hwreg.h	Copyright 2022 The Fuchsia Authors. All rights reserved.
+lib/arch/include/lib/arch/internal/asm.h	Copyright 2020 The Fuchsia Authors
+lib/arch/include/lib/arch/internal/bits.h	Copyright 2021 The Fuchsia Authors
+lib/arch/include/lib/arch/nop.h	Copyright 2020 The Fuchsia Authors
+lib/arch/include/lib/arch/paging.h	Copyright 2023 The Fuchsia Authors
+lib/arch/include/lib/arch/random.h	Copyright 2021 The Fuchsia Authors
+lib/arch/include/lib/arch/riscv64/feature.h	Copyright 2023 The Fuchsia Authors
+lib/arch/include/lib/arch/riscv64/nop.h	Copyright 2023 The Fuchsia Authors
+lib/arch/include/lib/arch/riscv64/paging-traits.h	Copyright 2023 The Fuchsia Authors
+lib/arch/include/lib/arch/riscv64/sbi.h	Copyright 2023 The Fuchsia Authors
+lib/arch/include/lib/arch/riscv64/system.h	Copyright 2023 The Fuchsia Authors
+lib/arch/include/lib/arch/sysreg.h	Copyright 2021 The Fuchsia Authors. All rights reserved.
+lib/arch/include/lib/arch/x86/apic-id.h	Copyright 2020 The Fuchsia Authors
+lib/arch/include/lib/arch/x86/bug.h	Copyright 2021 The Fuchsia Authors
+lib/arch/include/lib/arch/x86/cache.h	Copyright 2020 The Fuchsia Authors
+lib/arch/include/lib/arch/x86/cpuid.h	Copyright 2020 The Fuchsia Authors
+lib/arch/include/lib/arch/x86/descriptor.h	Copyright 2020 The Fuchsia Authors
+lib/arch/include/lib/arch/x86/extension.h	Copyright 2021 The Fuchsia Authors
+lib/arch/include/lib/arch/x86/feature.h	Copyright 2021 The Fuchsia Authors
+lib/arch/include/lib/arch/x86/interrupt.h	Copyright 2023 The Fuchsia Authors
+lib/arch/include/lib/arch/x86/msr.h	Copyright 2020 The Fuchsia Authors
+lib/arch/include/lib/arch/x86/nop.h	Copyright 2020 The Fuchsia Authors
+lib/arch/include/lib/arch/x86/paging-traits.h	Copyright 2023 The Fuchsia Authors
+lib/arch/include/lib/arch/x86/power.h	Copyright 2020 The Fuchsia Authors
+lib/arch/include/lib/arch/x86/speculation.h	Copyright 2021 The Fuchsia Authors
+lib/arch/include/lib/arch/x86/system.h	Copyright 2021 The Fuchsia Authors. All rights reserved.
+lib/arch/include/lib/arch/x86/trace.h	Copyright 2020 The Fuchsia Authors
+lib/arch/riscv64-features.cc	Copyright 2023 The Fuchsia Authors
+lib/arch/riscv64/BUILD.gn	Copyright 2023 The Fuchsia Authors
+lib/arch/riscv64/include/lib/arch/asm.h	Copyright 2023 The Fuchsia Authors
+lib/arch/riscv64/include/lib/arch/cache.h	Copyright 2023 The Fuchsia Authors
+lib/arch/riscv64/include/lib/arch/internal/arch-backtrace.h	Copyright 2023 The Fuchsia Authors
+lib/arch/riscv64/include/lib/arch/intrin.h	Copyright 2023 The Fuchsia Authors
+lib/arch/riscv64/include/lib/arch/paging-traits.h	Copyright 2025 The Fuchsia Authors
+lib/arch/riscv64/include/lib/arch/riscv64/exception-asm.h	Copyright 2023 The Fuchsia Authors
+lib/arch/riscv64/include/lib/arch/riscv64/sbi-call.h	Copyright 2023 The Fuchsia Authors
+lib/arch/riscv64/include/lib/arch/ticks.h	Copyright 2023 The Fuchsia Authors
+lib/arch/riscv64/random.cc	Copyright 2023 The Fuchsia Authors
+lib/arch/riscv64/shadow-call-stack.S	Copyright 2023 The Fuchsia Authors
+lib/arch/src/arm64/cache.rs	Copyright 2026 The Fuchsia Authors. All rights reserved.
+lib/arch/src/arm64/debug.rs	Copyright 2026 The Fuchsia Authors. All rights reserved.
+lib/arch/src/arm64/feature.rs	Copyright 2026 The Fuchsia Authors. All rights reserved.
+lib/arch/src/arm64/memory.rs	Copyright 2026 The Fuchsia Authors. All rights reserved.
+lib/arch/src/arm64/mod.rs	Copyright 2026 The Fuchsia Authors. All rights reserved.
+lib/arch/src/arm64/system.rs	Copyright 2026 The Fuchsia Authors. All rights reserved.
+lib/arch/src/lib.rs	Copyright 2026 The Fuchsia Authors. All rights reserved.
+lib/arch/src/riscv64/feature.rs	Copyright 2026 The Fuchsia Authors. All rights reserved.
+lib/arch/src/riscv64/mod.rs	Copyright 2026 The Fuchsia Authors. All rights reserved.
+lib/arch/src/riscv64/paging.rs	Copyright 2026 The Fuchsia Authors. All rights reserved.
+lib/arch/src/riscv64/system.rs	Copyright 2026 The Fuchsia Authors. All rights reserved.
+lib/arch/src/x86/apic_id.rs	Copyright 2026 The Fuchsia Authors. All rights reserved.
+lib/arch/src/x86/bug.rs	Copyright 2026 The Fuchsia Authors. All rights reserved.
+lib/arch/src/x86/cache.rs	Copyright 2026 The Fuchsia Authors. All rights reserved.
+lib/arch/src/x86/cpuid.rs	Copyright 2026 The Fuchsia Authors. All rights reserved.
+lib/arch/src/x86/extension.rs	Copyright 2026 The Fuchsia Authors. All rights reserved.
+lib/arch/src/x86/feature.rs	Copyright 2026 The Fuchsia Authors. All rights reserved.
+lib/arch/src/x86/intrin.rs	Copyright 2026 The Fuchsia Authors. All rights reserved.
+lib/arch/src/x86/mod.rs	Copyright 2026 The Fuchsia Authors. All rights reserved.
+lib/arch/src/x86/speculation.rs	Copyright 2026 The Fuchsia Authors. All rights reserved.
+lib/arch/src/x86/system.rs	Copyright 2026 The Fuchsia Authors. All rights reserved.
+lib/arch/test/BUILD.gn	Copyright 2020 The Fuchsia Authors
+lib/arch/test/arm64-smccc-tests.cc	Copyright 2024 The Fuchsia Authors. All rights reserved.
+lib/arch/test/arm64-system-tests.cc	Copyright 2021 The Fuchsia Authors. All rights reserved.
+lib/arch/test/asm-stack-sizes-test.S	Copyright 2025 The Fuchsia Authors. All rights reserved.
+lib/arch/test/asm-stack-sizes-test.py	Copyright 2025 The Fuchsia Authors. All rights reserved.
+lib/arch/test/bug-tests.cc	Copyright 2021 The Fuchsia Authors
+lib/arch/test/cpuid-basic-tests.cc	Copyright 2020 The Fuchsia Authors
+lib/arch/test/cpuid-corpus-tests.cc	Copyright 2020 The Fuchsia Authors
+lib/arch/test/fake-cpuid-tests.cc	Copyright 2020 The Fuchsia Authors
+lib/arch/test/fake-msr-tests.cc	Copyright 2020 The Fuchsia Authors
+lib/arch/test/nop-tests.cc	Copyright 2020 The Fuchsia Authors
+lib/arch/test/paging-tests.cc	Copyright 2023 The Fuchsia Authors
+lib/arch/test/power-tests.cc	Copyright 2020 The Fuchsia Authors
+lib/arch/test/random-tests.cc	Copyright 2021 The Fuchsia Authors
+lib/arch/test/riscv64-feature-tests.cc	Copyright 2023 The Fuchsia Authors
+lib/arch/test/speculation-tests.cc	Copyright 2021 The Fuchsia Authors
+lib/arch/testing/BUILD.gn	Copyright 2020 The Fuchsia Authors
+lib/arch/testing/data/cpuid/README.md
+lib/arch/testing/data/cpuid/amd-a10-7870k.inc	Copyright 2021 The Fuchsia Authors
+lib/arch/testing/data/cpuid/amd-ryzen-5-1500x.inc	Copyright 2021 The Fuchsia Authors
+lib/arch/testing/data/cpuid/amd-ryzen-7-1700.inc	Copyright 2021 The Fuchsia Authors
+lib/arch/testing/data/cpuid/amd-ryzen-7-2700x.inc	Copyright 2020 The Fuchsia Authors
+lib/arch/testing/data/cpuid/amd-ryzen-9-3950x-virtualbox-hyperv.inc	Copyright 2020 The Fuchsia Authors
+lib/arch/testing/data/cpuid/amd-ryzen-9-3950x-virtualbox-kvm.inc	Copyright 2020 The Fuchsia Authors
+lib/arch/testing/data/cpuid/amd-ryzen-9-3950x-vmware.inc	Copyright 2020 The Fuchsia Authors
+lib/arch/testing/data/cpuid/amd-ryzen-9-3950x-wsl2.inc	Copyright 2020 The Fuchsia Authors
+lib/arch/testing/data/cpuid/amd-ryzen-9-3950x.inc	Copyright 2020 The Fuchsia Authors
+lib/arch/testing/data/cpuid/amd-ryzen-threadripper-1950x.inc	Copyright 2020 The Fuchsia Authors
+lib/arch/testing/data/cpuid/amd-ryzen-threadripper-2970wx.inc	Copyright 2021 The Fuchsia Authors
+lib/arch/testing/data/cpuid/converter.py	Copyright 2020 The Fuchsia Authors
+lib/arch/testing/data/cpuid/intel-atom-330.inc	Copyright 2021 The Fuchsia Authors
+lib/arch/testing/data/cpuid/intel-atom-d510.inc	Copyright 2020 The Fuchsia Authors
+lib/arch/testing/data/cpuid/intel-atom-x5-z8350.inc	Copyright 2021 The Fuchsia Authors
+lib/arch/testing/data/cpuid/intel-celeron-3855u.inc	Copyright 2021 The Fuchsia Authors
+lib/arch/testing/data/cpuid/intel-core-i3-3240.inc	Copyright 2020 The Fuchsia Authors
+lib/arch/testing/data/cpuid/intel-core-i3-6100.inc	Copyright 2020 The Fuchsia Authors
+lib/arch/testing/data/cpuid/intel-core-i5-7300u.inc	Copyright 2021 The Fuchsia Authors
+lib/arch/testing/data/cpuid/intel-core-i7-2600k.inc	Copyright 2020 The Fuchsia Authors
+lib/arch/testing/data/cpuid/intel-core-i7-6500u.inc	Copyright 2021 The Fuchsia Authors
+lib/arch/testing/data/cpuid/intel-core-i7-6700k.inc	Copyright 2021 The Fuchsia Authors
+lib/arch/testing/data/cpuid/intel-core-m3-7y30.inc	Copyright 2021 The Fuchsia Authors
+lib/arch/testing/data/cpuid/intel-core2-6300.inc	Copyright 2020 The Fuchsia Authors
+lib/arch/testing/data/cpuid/intel-pentium-n4200.inc	Copyright 2021 The Fuchsia Authors
+lib/arch/testing/data/cpuid/intel-xeon-e5-2690-v3.inc	Copyright 2020 The Fuchsia Authors
+lib/arch/testing/data/cpuid/intel-xeon-e5-2690-v4.inc	Copyright 2020 The Fuchsia Authors
+lib/arch/testing/data/cpuid/intel-xeon-e5520.inc	Copyright 2020 The Fuchsia Authors
+lib/arch/testing/fake-cpuid.cc	Copyright 2020 The Fuchsia Authors
+lib/arch/testing/fake-msr.cc	Copyright 2020 The Fuchsia Authors
+lib/arch/testing/include/lib/arch/testing/x86/fake-cpuid.h	Copyright 2020 The Fuchsia Authors
+lib/arch/testing/include/lib/arch/testing/x86/fake-msr.h	Copyright 2020 The Fuchsia Authors
+lib/arch/x86/BUILD.gn	Copyright 2020 The Fuchsia Authors
+lib/arch/x86/boot-cpuid.S	Copyright 2020 The Fuchsia Authors
+lib/arch/x86/boot-cpuid.cc	Copyright 2020 The Fuchsia Authors
+lib/arch/x86/descriptor-regs.S	Copyright 2021 The Fuchsia Authors
+lib/arch/x86/include/lib/arch/asm.h	Copyright 2023 The Fuchsia Authors
+lib/arch/x86/include/lib/arch/cache.h	Copyright 2021 The Fuchsia Authors
+lib/arch/x86/include/lib/arch/internal/arch-backtrace.h	Copyright 2023 The Fuchsia Authors
+lib/arch/x86/include/lib/arch/intrin.h	Copyright 2017 The Fuchsia Authors
+lib/arch/x86/include/lib/arch/paging-traits.h	Copyright 2025 The Fuchsia Authors
+lib/arch/x86/include/lib/arch/ticks.h	Copyright 2020 The Fuchsia Authors
+lib/arch/x86/include/lib/arch/x86/boot-cpuid.h	Copyright 2020 The Fuchsia Authors
+lib/arch/x86/include/lib/arch/x86/descriptor-regs.h	Copyright 2021 The Fuchsia Authors
+lib/arch/x86/include/lib/arch/x86/standard-segments.h	Copyright 2021 The Fuchsia Authors
+lib/arch/x86/include/mm_malloc.h	Copyright 2026 The Fuchsia Authors
+lib/arch/x86/random.cc	Copyright 2021 The Fuchsia Authors
+lib/arch/x86/standard-segments.cc	Copyright 2021 The Fuchsia Authors
+lib/backtrace/BUILD.gn	Copyright 2020 The Fuchsia Authors
+lib/backtrace/backtrace.cc	Copyright 2021 The Fuchsia Authors
+lib/backtrace/include/lib/backtrace.h	Copyright 2021 The Fuchsia Authors
+lib/backtrace/include/lib/backtrace/cpu_context_exchange.h	Copyright 2021 The Fuchsia Authors
+lib/backtrace/include/lib/backtrace/global_cpu_context_exchange.h	Copyright 2021 The Fuchsia Authors
+lib/backtrace/tests/BUILD.gn	Copyright 2021 The Fuchsia Authors
+lib/backtrace/tests/backtrace_tests.cc	Copyright 2021 The Fuchsia Authors
+lib/backtrace/tests/cpu_context_exchange_tests.cc	Copyright 2021 The Fuchsia Authors
+lib/boot-options/BUILD.gn	Copyright 2020 The Fuchsia Authors
+lib/boot-options/OWNERS
+lib/boot-options/README.md
+lib/boot-options/boot-options.cc	Copyright 2020 The Fuchsia Authors
+lib/boot-options/console.cc	Copyright 2021 The Fuchsia Authors. All rights reserved.
+lib/boot-options/enum.h	Copyright 2020 The Fuchsia Authors
+lib/boot-options/include/lib/boot-options/arm64.h	Copyright 2021 The Fuchsia Authors
+lib/boot-options/include/lib/boot-options/arm64.inc	Copyright 2021 The Fuchsia Authors
+lib/boot-options/include/lib/boot-options/boot-options.h	Copyright 2020 The Fuchsia Authors
+lib/boot-options/include/lib/boot-options/options.inc	Copyright 2020 The Fuchsia Authors
+lib/boot-options/include/lib/boot-options/riscv64.h	Copyright 2023 The Fuchsia Authors
+lib/boot-options/include/lib/boot-options/riscv64.inc	Copyright 2023 The Fuchsia Authors
+lib/boot-options/include/lib/boot-options/test-options.inc	Copyright 2020 The Fuchsia Authors
+lib/boot-options/include/lib/boot-options/test-types.h	Copyright 2020 The Fuchsia Authors
+lib/boot-options/include/lib/boot-options/types.h	Copyright 2020 The Fuchsia Authors
+lib/boot-options/include/lib/boot-options/word-view.h	Copyright 2020 The Fuchsia Authors
+lib/boot-options/include/lib/boot-options/x86.h	Copyright 2020 The Fuchsia Authors
+lib/boot-options/include/lib/boot-options/x86.inc	Copyright 2020 The Fuchsia Authors
+lib/boot-options/markdown.py	Copyright 2020 The Fuchsia Authors
+lib/boot-options/postamble.md
+lib/boot-options/preamble.md
+lib/boot-options/tests/BUILD.gn	Copyright 2020 The Fuchsia Authors
+lib/boot-options/tests/fuzzer-dictionary.txt
+lib/boot-options/tests/fuzzer.cc	Copyright 2020 The Fuchsia Authors
+lib/boot-options/tests/kernel-tests.cc	Copyright 2020 The Fuchsia Authors
+lib/boot-options/tests/meta/boot-options-basic-fuzzer.cml	Copyright 2022 The Fuchsia Authors. All rights reserved.
+lib/boot-options/tests/meta/boot-options-tests.cml	Copyright 2022 The Fuchsia Authors. All rights reserved.
+lib/boot-options/tests/user-tests.cc	Copyright 2020 The Fuchsia Authors
+lib/boot-options/tool.cc	Copyright 2020 The Fuchsia Authors
+lib/boot-options/word-view.cc	Copyright 2020 The Fuchsia Authors
+lib/btree/BUILD.gn	Copyright 2025 The Fuchsia Authors
+lib/btree/btree.cc	Copyright 2025 The Fuchsia Authors
+lib/btree/include/lib/btree.h	Copyright 2026 The Fuchsia Authors
+lib/btree/include/lib/btree_node.h	Copyright 2026 The Fuchsia Authors
+lib/btree/include/lib/btree_util.h	Copyright 2026 The Fuchsia Authors
+lib/btree/tests/BUILD.gn	Copyright 2025 The Fuchsia Authors
+lib/btree/tests/btree_test.cc	Copyright 2026 The Fuchsia Authors
+lib/cbuf/BUILD.gn	Copyright 2019 The Fuchsia Authors
+lib/cbuf/cbuf.cc	Copyright 2016 The Fuchsia Authors	Copyright (c) 2008-2015 Travis Geiselbrecht
+lib/cbuf/cbuf_tests.cc	Copyright 2020 The Fuchsia Authors
+lib/cbuf/include/lib/cbuf.h	Copyright 2016 The Fuchsia Authors	Copyright (c) 2009-2013 Travis Geiselbrecht
+lib/cbuf/src/mod.rs	Copyright 2026 The Fuchsia Authors
+lib/code-patching/BUILD.gn	Copyright 2019 The Fuchsia Authors
+lib/code-patching/code-patching.cc	Copyright 2021 The Fuchsia Authors
+lib/code-patching/code-patching.gni	Copyright 2020 The Fuchsia Authors
+lib/code-patching/gen-case-id-asm.cc	Copyright 2023 The Fuchsia Authors
+lib/code-patching/hermetic-stub.py	Copyright 2021 The Fuchsia Authors
+lib/code-patching/include/lib/code-patching/asm.h	Copyright 2020 The Fuchsia Authors
+lib/code-patching/include/lib/code-patching/code-patches.h	Copyright 2021 The Fuchsia Authors
+lib/code-patching/include/lib/code-patching/code-patching.h	Copyright 2020 The Fuchsia Authors
+lib/code-patching/include/lib/code-patching/self-test.h	Copyright 2023 The Fuchsia Authors
+lib/code-patching/self-test.S	Copyright 2023 The Fuchsia Authors
+lib/console/BUILD.gn	Copyright 2019 The Fuchsia Authors
+lib/console/config.gni	Copyright 2026 The Fuchsia Authors
+lib/console/console_ffi.cc	Copyright 2026 The Fuchsia Authors
+lib/console/env.rs	Copyright 2026 The Fuchsia Authors
+lib/console/include/lib/console.h	Copyright 2016 The Fuchsia Authors	Copyright (c) 2008-2009 Travis Geiselbrecht
+lib/console/mod.rs	Copyright 2026 The Fuchsia Authors
+lib/console/tests/BUILD.gn	Copyright 2026 The Fuchsia Authors
+lib/console/tests/console_tests.cc	Copyright 2026 The Fuchsia Authors
+lib/console/tests/mod.rs	Copyright 2026 The Fuchsia Authors
+lib/control-region/BUILD.gn	Copyright 2025 The Fuchsia Authors
+lib/control-region/include/lib/control-region.h	Copyright 2025 The Fuchsia Authors. All rights reserved.
+lib/control-region/tests/BUILD.gn	Copyright 2025 The Fuchsia Authors
+lib/control-region/tests/control-region-tests.cc	Copyright 2025 The Fuchsia Authors
+lib/counters/BUILD.gn	Copyright 2019 The Fuchsia Authors
+lib/counters/bindgen.h	Copyright 2026 The Fuchsia Authors
+lib/counters/include/lib/counter-vmo-abi.h	Copyright 2019 The Fuchsia Authors
+lib/counters/include/lib/counters.h	Copyright 2017 The Fuchsia Authors
+lib/counters/src/lib.rs	Copyright 2026 The Fuchsia Authors
+lib/crashlog/BUILD.gn	Copyright 2019 The Fuchsia Authors
+lib/crashlog/crashlog.cc	Copyright 2018 The Fuchsia Authors
+lib/crashlog/include/lib/crashlog.h	Copyright 2018 The Fuchsia Authors
+lib/crashlog/include/lib/crashlog/panic_buffer.h	Copyright 2020 The Fuchsia Authors
+lib/crashlog/panic_buffer.cc	Copyright 2020 The Fuchsia Authors
+lib/crashlog/params.gni	Copyright 2021 The Fuchsia Authors
+lib/crashlog/test/BUILD.gn	Copyright 2020 The Fuchsia Authors
+lib/crashlog/test/crashlog-tests.cc	Copyright 2020 The Fuchsia Authors
+lib/crypto/BUILD.gn	Copyright 2019 The Fuchsia Authors
+lib/crypto/METADATA.textproto
+lib/crypto/OWNERS
+lib/crypto/boringssl/BUILD.gn	Copyright 2019 The Fuchsia Authors
+lib/crypto/boringssl/incs-and-stubs.cc	Copyright 2019 The Fuchsia Authors. All rights reserved.
+lib/crypto/boringssl/sys/types.h	Copyright 2021 The Fuchsia Authors. All rights reserved.
+lib/crypto/entropy/BUILD.gn	Copyright 2019 The Fuchsia Authors
+lib/crypto/entropy/collector.cc	Copyright 2017 The Fuchsia Authors
+lib/crypto/entropy/collector_unittest.cc	Copyright 2017 The Fuchsia Authors
+lib/crypto/entropy/hw_rng_collector.cc	Copyright 2017 The Fuchsia Authors
+lib/crypto/entropy/jitterentropy_collector.cc	Copyright 2017 The Fuchsia Authors
+lib/crypto/entropy/quality_test.cc	Copyright 2017 The Fuchsia Authors
+lib/crypto/entropy_pool.cc	Copyright 2021 The Fuchsia Authors
+lib/crypto/entropy_pool_test.cc	Copyright 2021 The Fuchsia Authors
+lib/crypto/global_prng.cc	Copyright 2016 The Fuchsia Authors
+lib/crypto/global_prng_unittest.cc	Copyright 2016 The Fuchsia Authors
+lib/crypto/include/lib/crypto/entropy/collector.h	Copyright 2017 The Fuchsia Authors
+lib/crypto/include/lib/crypto/entropy/hw_rng_collector.h	Copyright 2017 The Fuchsia Authors
+lib/crypto/include/lib/crypto/entropy/jitterentropy_collector.h	Copyright 2017 The Fuchsia Authors
+lib/crypto/include/lib/crypto/entropy/quality_test.h	Copyright 2017 The Fuchsia Authors
+lib/crypto/include/lib/crypto/entropy_pool.h	Copyright 2021 The Fuchsia Authors
+lib/crypto/include/lib/crypto/global_prng.h	Copyright 2016 The Fuchsia Authors
+lib/crypto/include/lib/crypto/prng.h	Copyright 2016 The Fuchsia Authors
+lib/crypto/prng.cc	Copyright 2016 The Fuchsia Authors
+lib/crypto/prng_unittest.cc	Copyright 2016 The Fuchsia Authors
+lib/cxxabi-dynamic-init/BUILD.gn	Copyright 2021 The Fuchsia Authors
+lib/cxxabi-dynamic-init/README.md
+lib/cxxabi-dynamic-init/cxxabi-dynamic-init.cc	Copyright 2021 The Fuchsia Authors
+lib/cxxabi-dynamic-init/include/lib/cxxabi-dynamic-init/cxxabi-dynamic-init.h	Copyright 2021 The Fuchsia Authors
+lib/cxxabi-dynamic-init/tests/BUILD.gn	Copyright 2021 The Fuchsia Authors
+lib/cxxabi-dynamic-init/tests/cxxabi-dynamic-init-tests.cc	Copyright 2021 The Fuchsia Authors
+lib/debug/BUILD.gn	Copyright 2026 The Fuchsia Authors
+lib/debug/src/dprintf.rs	Copyright 2026 The Fuchsia Authors
+lib/debug/src/lib.rs	Copyright 2026 The Fuchsia Authors
+lib/debug/src/ltrace.rs	Copyright 2026 The Fuchsia Authors
+lib/debuglog/BUILD.gn	Copyright 2019 The Fuchsia Authors
+lib/debuglog/debuglog.cc	Copyright 2016 The Fuchsia Authors
+lib/debuglog/debuglog.rs	Copyright 2026 The Fuchsia Authors
+lib/debuglog/debuglog_ffi.cc	Copyright 2026 The Fuchsia Authors
+lib/debuglog/debuglog_internal.h	Copyright 2020 The Fuchsia Authors
+lib/debuglog/debuglog_tests.cc	Copyright 2019 The Fuchsia Authors
+lib/debuglog/include/lib/debuglog.h	Copyright 2016 The Fuchsia Authors
+lib/debuglog/include/lib/debuglog_types.h	Copyright 2026 The Fuchsia Authors. All rights reserved.
+lib/devicetree/BUILD.gn	Copyright 2020 The Fuchsia Authors
+lib/devicetree/OWNERS
+lib/devicetree/alias-matcher.cc	Copyright 2020 The Fuchsia Authors
+lib/devicetree/devicetree-node-path.cc	Copyright 2022 The Fuchsia Authors
+lib/devicetree/devicetree.cc	Copyright 2020 The Fuchsia Authors
+lib/devicetree/include/lib/devicetree/devicetree.h	Copyright 2020 The Fuchsia Authors
+lib/devicetree/include/lib/devicetree/internal/devicetree.h	Copyright 2023 The Fuchsia Authors
+lib/devicetree/include/lib/devicetree/internal/matcher.h	Copyright 2023 The Fuchsia Authors
+lib/devicetree/include/lib/devicetree/matcher.h	Copyright 2023 The Fuchsia Authors
+lib/devicetree/testing/BUILD.gn	Copyright 2023 The Fuchsia Authors
+lib/devicetree/testing/data/BUILD.gn	Copyright 2023 The Fuchsia Authors
+lib/devicetree/testing/data/README.md
+lib/devicetree/testing/data/banana-pi-f3.dtb
+lib/devicetree/testing/data/banana-pi-f3.dts
+lib/devicetree/testing/data/crosvm-arm.dtb
+lib/devicetree/testing/data/crosvm-arm.dts
+lib/devicetree/testing/data/khadas-vim3.dtb
+lib/devicetree/testing/data/khadas-vim3.dts
+lib/devicetree/testing/data/muntjac.dtb
+lib/devicetree/testing/data/muntjac.dts
+lib/devicetree/testing/data/qemu-arm-gic2.dtb
+lib/devicetree/testing/data/qemu-arm-gic2.dts
+lib/devicetree/testing/data/qemu-arm-gic3.dtb
+lib/devicetree/testing/data/qemu-arm-gic3.dts
+lib/devicetree/testing/data/qemu-riscv.dtb
+lib/devicetree/testing/data/qemu-riscv.dts
+lib/devicetree/testing/data/sifive-hifive-unmatched.dtb
+lib/devicetree/testing/data/sifive-hifive-unmatched.dts
+lib/devicetree/testing/data/synthetic/README.md
+lib/devicetree/testing/data/synthetic/arm_gic2_no_msi.dts	Copyright 2023 The Fuchsia Authors. All rights reserved.
+lib/devicetree/testing/data/synthetic/arm_gic3_four_stride.dts	Copyright 2023 The Fuchsia Authors. All rights reserved.
+lib/devicetree/testing/data/synthetic/arm_gic3_stride.dts	Copyright 2023 The Fuchsia Authors. All rights reserved.
+lib/devicetree/testing/data/synthetic/arm_gic3_subsumed_stride.dts	Copyright 2023 The Fuchsia Authors. All rights reserved.
+lib/devicetree/testing/data/synthetic/arm_idle_states.dts	Copyright 2025 The Fuchsia Authors. All rights reserved.
+lib/devicetree/testing/data/synthetic/arm_idle_states_and_domain.dts	Copyright 2025 The Fuchsia Authors. All rights reserved.
+lib/devicetree/testing/data/synthetic/arm_idle_states_multiple.dts	Copyright 2025 The Fuchsia Authors. All rights reserved.
+lib/devicetree/testing/data/synthetic/arm_idle_states_multiple_with_invalid.dts	Copyright 2025 The Fuchsia Authors. All rights reserved.
+lib/devicetree/testing/data/synthetic/arm_qcom_rng.dts	Copyright 2025 The Fuchsia Authors. All rights reserved.
+lib/devicetree/testing/data/synthetic/arm_qcom_rng_configured.dts	Copyright 2025 The Fuchsia Authors. All rights reserved.
+lib/devicetree/testing/data/synthetic/arm_timer.dts	Copyright 2023 The Fuchsia Authors. All rights reserved.
+lib/devicetree/testing/data/synthetic/arm_timer_mmio.dts	Copyright 2025 The Fuchsia Authors. All rights reserved.
+lib/devicetree/testing/data/synthetic/arm_timer_mmio_invalid_frames.dts	Copyright 2025 The Fuchsia Authors. All rights reserved.
+lib/devicetree/testing/data/synthetic/arm_timer_mmio_no_frames.dts	Copyright 2025 The Fuchsia Authors. All rights reserved.
+lib/devicetree/testing/data/synthetic/arm_timer_mmio_no_frequency_override.dts	Copyright 2025 The Fuchsia Authors. All rights reserved.
+lib/devicetree/testing/data/synthetic/arm_timer_no_frequency_override.dts	Copyright 2023 The Fuchsia Authors. All rights reserved.
+lib/devicetree/testing/data/synthetic/chosen.dts	Copyright 2023 The Fuchsia Authors. All rights reserved.
+lib/devicetree/testing/data/synthetic/chosen_no_uart_interrupts.dts	Copyright 2026 The Fuchsia Authors. All rights reserved.
+lib/devicetree/testing/data/synthetic/chosen_unknown_intc.dts	Copyright 2023 The Fuchsia Authors. All rights reserved.
+lib/devicetree/testing/data/synthetic/chosen_with_console.dts	Copyright 2024 The Fuchsia Authors. All rights reserved.
+lib/devicetree/testing/data/synthetic/chosen_with_console_aml.dts	Copyright 2024 The Fuchsia Authors. All rights reserved.
+lib/devicetree/testing/data/synthetic/chosen_with_console_and_stdout_path.dts	Copyright 2024 The Fuchsia Authors. All rights reserved.
+lib/devicetree/testing/data/synthetic/chosen_with_kaslr_and_rng.dts	Copyright 2023 The Fuchsia Authors. All rights reserved.
+lib/devicetree/testing/data/synthetic/chosen_with_kaslr_only.dts	Copyright 2023 The Fuchsia Authors. All rights reserved.
+lib/devicetree/testing/data/synthetic/chosen_with_reg_offset.dts	Copyright 2023 The Fuchsia Authors. All rights reserved.
+lib/devicetree/testing/data/synthetic/chosen_with_rng_only.dts	Copyright 2023 The Fuchsia Authors. All rights reserved.
+lib/devicetree/testing/data/synthetic/chosen_with_serial_alias.dts	Copyright 2026 The Fuchsia Authors. All rights reserved.
+lib/devicetree/testing/data/synthetic/chosen_with_translation.dts	Copyright 2023 The Fuchsia Authors. All rights reserved.
+lib/devicetree/testing/data/synthetic/complex_no_properties.dts	Copyright 2020 The Fuchsia Authors. All rights reserved.
+lib/devicetree/testing/data/synthetic/complex_with_alias.dts	Copyright 2020 The Fuchsia Authors. All rights reserved.
+lib/devicetree/testing/data/synthetic/complex_with_alias_first.dts	Copyright 2020 The Fuchsia Authors. All rights reserved.
+lib/devicetree/testing/data/synthetic/cpus_arm.dts	Copyright 2023 The Fuchsia Authors. All rights reserved.
+lib/devicetree/testing/data/synthetic/cpus_arm_no_cpu_map.dts	Copyright 2023 The Fuchsia Authors. All rights reserved.
+lib/devicetree/testing/data/synthetic/cpus_arm_single_cell.dts	Copyright 2023 The Fuchsia Authors. All rights reserved.
+lib/devicetree/testing/data/synthetic/cpus_no_cpu_map_riscv.dts	Copyright 2023 The Fuchsia Authors. All rights reserved.
+lib/devicetree/testing/data/synthetic/cpus_riscv.dts	Copyright 2023 The Fuchsia Authors. All rights reserved.
+lib/devicetree/testing/data/synthetic/cpus_riscv_nested_clusters.dts	Copyright 2023 The Fuchsia Authors. All rights reserved.
+lib/devicetree/testing/data/synthetic/empty.dts	Copyright 2020 The Fuchsia Authors. All rights reserved.
+lib/devicetree/testing/data/synthetic/memory.dts	Copyright 2024 The Fuchsia Authors. All rights reserved.
+lib/devicetree/testing/data/synthetic/memory_complex.dts	Copyright 2021 The Fuchsia Authors. All rights reserved.
+lib/devicetree/testing/data/synthetic/memory_reservations.dts	Copyright 2021 The Fuchsia Authors. All rights reserved.
+lib/devicetree/testing/data/synthetic/plic_riscv.dts	Copyright 2024 The Fuchsia Authors. All rights reserved.
+lib/devicetree/testing/data/synthetic/psci-hvc.dts	Copyright 2024 The Fuchsia Authors. All rights reserved.
+lib/devicetree/testing/data/synthetic/psci-smc.dts	Copyright 2024 The Fuchsia Authors. All rights reserved.
+lib/devicetree/testing/data/synthetic/qcom_msm_watchdog.dts	Copyright 2024 The Fuchsia Authors. All rights reserved.
+lib/devicetree/testing/data/synthetic/qcom_msm_watchdog_multiple_regs.dts	Copyright 2024 The Fuchsia Authors. All rights reserved.
+lib/devicetree/testing/data/synthetic/ramoops.dts	Copyright 2024 The Fuchsia Authors. All rights reserved.
+lib/devicetree/testing/data/synthetic/reserved_memory.dts	Copyright 2024 The Fuchsia Authors. All rights reserved.
+lib/devicetree/testing/data/synthetic/serial_number.dts	Copyright 2025 The Fuchsia Authors. All rights reserved.
+lib/devicetree/testing/data/synthetic/serial_number_bootargs.dts	Copyright 2025 The Fuchsia Authors. All rights reserved.
+lib/devicetree/testing/data/synthetic/simple_with_properties.dts	Copyright 2020 The Fuchsia Authors. All rights reserved.
+lib/devicetree/testing/data/synthetic/simple_with_status.dts	Copyright 2025 The Fuchsia Authors. All rights reserved.
+lib/devicetree/testing/data/synthetic/smmu_bad_irq.dts	Copyright 2026 The Fuchsia Authors. All rights reserved.
+lib/devicetree/testing/data/synthetic/smmu_defaults.dts	Copyright 2026 The Fuchsia Authors. All rights reserved.
+lib/devicetree/testing/data/synthetic/smmu_multi.dts	Copyright 2026 The Fuchsia Authors. All rights reserved.
+lib/devicetree/testing/data/synthetic/smmu_overflow.dts	Copyright 2026 The Fuchsia Authors. All rights reserved.
+lib/devicetree/testing/data/synthetic/smmu_simple.dts	Copyright 2026 The Fuchsia Authors. All rights reserved.
+lib/devicetree/testing/data/vision-five-2.dtb
+lib/devicetree/testing/data/vision-five-2.dts
+lib/devicetree/testing/include/lib/devicetree/testing/loaded-dtb.h	Copyright 2023 The Fuchsia Authors
+lib/devicetree/testing/loaded-dtb.cc	Copyright 2023 The Fuchsia Authors
+lib/devicetree/tests/BUILD.gn	Copyright 2020 The Fuchsia Authors
+lib/devicetree/tests/devicetree-tests.cc	Copyright 2020 The Fuchsia Authors
+lib/devicetree/tests/matcher-tests.cc	Copyright 2020 The Fuchsia Authors
+lib/devicetree/tests/meta/devicetree-tests.cml	Copyright 2022 The Fuchsia Authors. All rights reserved.
+lib/devicetree/tests/node-path-tests.cc	Copyright 2022 The Fuchsia Authors
+lib/devicetree/tests/zbi-item-test.cc	Copyright 2020 The Fuchsia Authors
+lib/devicetree/tests/zbi-item-tool.cc	Copyright 2020 The Fuchsia Authors
+lib/devicetree/tests/zbi.h	Copyright 2020 The Fuchsia Authors
+lib/dump/BUILD.gn	Copyright 2025 The Fuchsia Authors
+lib/dump/dump.cc	Copyright 2025 The Fuchsia Authors
+lib/dump/include/lib/dump/depth_printer.h	Copyright 2025 The Fuchsia Authors
+lib/dump/tests/BUILD.gn	Copyright 2025 The Fuchsia Authors
+lib/dump/tests/depth_printer_tests.cc	Copyright 2025 The Fuchsia Authors
+lib/efi/BUILD.gn	Copyright 2019 The Fuchsia Authors
+lib/efi/METADATA.textproto
+lib/efi/OWNERS
+lib/efi/guids.c	Copyright 2016 The Fuchsia Authors. All rights reserved.
+lib/efi/include/efi/boot-services.h	Copyright 2016 The Fuchsia Authors
+lib/efi/include/efi/global-variable.h	Copyright 2022 The Fuchsia Authors. All rights reserved.
+lib/efi/include/efi/protocol/block-io.h	Copyright 2016 The Fuchsia Authors
+lib/efi/include/efi/protocol/device-path-to-text.h	Copyright 2016 The Fuchsia Authors
+lib/efi/include/efi/protocol/device-path.h	Copyright 2016 The Fuchsia Authors
+lib/efi/include/efi/protocol/disk-io.h	Copyright 2016 The Fuchsia Authors
+lib/efi/include/efi/protocol/driver-binding.h	Copyright 2016 The Fuchsia Authors
+lib/efi/include/efi/protocol/file.h	Copyright 2016 The Fuchsia Authors
+lib/efi/include/efi/protocol/graphics-output.h	Copyright 2016 The Fuchsia Authors
+lib/efi/include/efi/protocol/ip6.h	Copyright 2021 The Fuchsia Authors. All rights reserved.
+lib/efi/include/efi/protocol/loaded-image.h	Copyright 2016 The Fuchsia Authors
+lib/efi/include/efi/protocol/managed-network.h	Copyright 2016 The Fuchsia Authors
+lib/efi/include/efi/protocol/pci-root-bridge-io.h	Copyright 2016 The Fuchsia Authors
+lib/efi/include/efi/protocol/serial-io.h	Copyright 2020 The Fuchsia Authors
+lib/efi/include/efi/protocol/service-binding.h	Copyright 2021 The Fuchsia Authors. All rights reserved.
+lib/efi/include/efi/protocol/shell-parameters.h	Copyright 2022 The Fuchsia Authors
+lib/efi/include/efi/protocol/simple-file-system.h	Copyright 2016 The Fuchsia Authors
+lib/efi/include/efi/protocol/simple-network.h	Copyright 2016 The Fuchsia Authors
+lib/efi/include/efi/protocol/simple-text-input.h	Copyright 2016 The Fuchsia Authors
+lib/efi/include/efi/protocol/simple-text-output.h	Copyright 2016 The Fuchsia Authors
+lib/efi/include/efi/protocol/tcg2.h	Copyright 2022 The Fuchsia Authors. All rights reserved.
+lib/efi/include/efi/protocol/tcp6.h	Copyright 2021 The Fuchsia Authors. All rights reserved.
+lib/efi/include/efi/protocol/usb-io.h	Copyright 2016 The Fuchsia Authors
+lib/efi/include/efi/runtime-services.h	Copyright 2016 The Fuchsia Authors
+lib/efi/include/efi/system-table.h	Copyright 2016 The Fuchsia Authors
+lib/efi/include/efi/types.h	Copyright 2016 The Fuchsia Authors
+lib/efi/string/BUILD.gn	Copyright 2023 The Fuchsia Authors. All rights reserved.
+lib/efi/string/include/efi/string/string.h	Copyright 2023 The Fuchsia Authors. All rights reserved.
+lib/efi/string/string.cc	Copyright 2023 The Fuchsia Authors. All rights reserved.
+lib/efi/string/tests/BUILD.gn	Copyright 2023 The Fuchsia Authors. All rights reserved.
+lib/efi/string/tests/string_tests.cc	Copyright 2023 The Fuchsia Authors. All rights reserved.
+lib/efi/testing/BUILD.gn	Copyright 2021 The Fuchsia Authors. All rights reserved.
+lib/efi/testing/METADATA.textproto
+lib/efi/testing/OWNERS
+lib/efi/testing/efi_guid_test.cc	Copyright 2022 The Fuchsia Authors. All rights reserved.
+lib/efi/testing/fake_disk_io_protocol.cc	Copyright 2021 The Fuchsia Authors. All rights reserved.
+lib/efi/testing/fake_disk_io_protocol_test.cc	Copyright 2021 The Fuchsia Authors. All rights reserved.
+lib/efi/testing/fake_network_protocol.cc	Copyright 2023 The Fuchsia Authors. All rights reserved.
+lib/efi/testing/include/lib/efi/testing/fake_disk_io_protocol.h	Copyright 2021 The Fuchsia Authors. All rights reserved.
+lib/efi/testing/include/lib/efi/testing/fake_network_protocol.h	Copyright 2021 The Fuchsia Authors. All rights reserved.
+lib/efi/testing/include/lib/efi/testing/mock_file.h	Copyright 2022 The Fuchsia Authors. All rights reserved.
+lib/efi/testing/include/lib/efi/testing/mock_protocol_base.h	Copyright 2021 The Fuchsia Authors. All rights reserved.
+lib/efi/testing/include/lib/efi/testing/mock_serial_io.h	Copyright 2021 The Fuchsia Authors. All rights reserved.
+lib/efi/testing/include/lib/efi/testing/mock_service_binding.h	Copyright 2021 The Fuchsia Authors. All rights reserved.
+lib/efi/testing/include/lib/efi/testing/mock_simple_text_input.h	Copyright 2021 The Fuchsia Authors. All rights reserved.
+lib/efi/testing/include/lib/efi/testing/mock_simple_text_output.h	Copyright 2023 The Fuchsia Authors. All rights reserved.
+lib/efi/testing/include/lib/efi/testing/mock_tcp6.h	Copyright 2021 The Fuchsia Authors. All rights reserved.
+lib/efi/testing/include/lib/efi/testing/stdio_file_protocol.h	Copyright 2022 The Fuchsia Authors. All rights reserved.
+lib/efi/testing/include/lib/efi/testing/stub_boot_services.h	Copyright 2021 The Fuchsia Authors. All rights reserved.
+lib/efi/testing/include/lib/efi/testing/stub_runtime_services.h	Copyright 2022 The Fuchsia Authors. All rights reserved.
+lib/efi/testing/stdio_file_protocol.cc	Copyright 2022 The Fuchsia Authors. All rights reserved.
+lib/efi/testing/stub_boot_services.cc	Copyright 2021 The Fuchsia Authors. All rights reserved.
+lib/efi/testing/stub_boot_services_test.cc	Copyright 2021 The Fuchsia Authors. All rights reserved.
+lib/efi/testing/stub_runtime_services.cc	Copyright 2022 The Fuchsia Authors. All rights reserved.
+lib/efi/testing/stub_runtime_services_test.cc	Copyright 2022 The Fuchsia Authors. All rights reserved.
+lib/efi/variable/BUILD.gn	Copyright 2023 The Fuchsia Authors. All rights reserved.
+lib/efi/variable/include/efi/variable/variable.h	Copyright 2023 The Fuchsia Authors. All rights reserved.
+lib/efi/variable/include/efi/variable/variable_id.h	Copyright 2023 The Fuchsia Authors. All rights reserved.
+lib/efi/variable/tests/BUILD.gn	Copyright 2023 The Fuchsia Authors. All rights reserved.
+lib/efi/variable/tests/variable_id_tests.cc	Copyright 2023 The Fuchsia Authors. All rights reserved.
+lib/efi/variable/tests/variable_tests.cc	Copyright 2023 The Fuchsia Authors. All rights reserved.
+lib/efi/variable/variable.cc	Copyright 2023 The Fuchsia Authors. All rights reserved.
+lib/efi/variable/variable_id.cc	Copyright 2023 The Fuchsia Authors. All rights reserved.
+lib/fasttime/BUILD.gn	Copyright 2024 The Fuchsia Authors. All rights reserved.
+lib/fasttime/OWNERS
+lib/fasttime/include/lib/fasttime/clock.h	Copyright 2024 The Fuchsia Authors. All rights reserved.
+lib/fasttime/include/lib/fasttime/internal/abi.h	Copyright 2024 The Fuchsia Authors. All rights reserved.
+lib/fasttime/include/lib/fasttime/internal/time.h	Copyright 2024 The Fuchsia Authors. All rights reserved.
+lib/fasttime/include/lib/fasttime/time.h	Copyright 2024 The Fuchsia Authors. All rights reserved.
+lib/fasttime/tests/BUILD.gn	Copyright 2024 The Fuchsia Authors. All rights reserved.
+lib/fasttime/tests/fasttime_test.cc	Copyright 2024 The Fuchsia Authors. All rights reserved.
+lib/fasttime/tests/loadable/BUILD.gn	Copyright 2025 The Fuchsia Authors. All rights reserved.
+lib/fasttime/tests/loadable/loadable.cc	Copyright 2025 The Fuchsia Authors. All rights reserved.
+lib/fasttime/tests/meta/fasttime_unittests.cml	Copyright 2024 The Fuchsia Authors. All rights reserved.
+lib/fbl/BUILD.gn	Copyright 2019 The Fuchsia Authors
+lib/fbl/alloc-checker-new.cc	Copyright 2026 The Fuchsia Authors. All rights reserved.
+lib/fbl/arena.cc	Copyright 2016 The Fuchsia Authors
+lib/fbl/arena_tests.cc	Copyright 2016 The Fuchsia Authors
+lib/fbl/gparena_tests.cc	Copyright 2019 The Fuchsia Authors
+lib/fbl/include/fbl/arena.h	Copyright 2016 The Fuchsia Authors
+lib/fbl/include/fbl/gparena.h	Copyright 2019 The Fuchsia Authors
+lib/fbl/include/fbl/int_set.h	Copyright 2024 The Fuchsia Authors
+lib/fbl/include/fbl/name.h	Copyright 2017 The Fuchsia Authors
+lib/fbl/name_tests.cc	Copyright 2017 The Fuchsia Authors
+lib/fbl/tests/kernel.rs	Copyright 2026 The Fuchsia Authors
+lib/fixed_point/BUILD.gn	Copyright 2019 The Fuchsia Authors
+lib/fixed_point/include/lib/fixed_point.h	Copyright 2016 The Fuchsia Authors	Copyright (c) 2013, Google Inc. All rights reserved.
+lib/fixed_point/include/lib/fixed_point_debug.h	Copyright 2016 The Fuchsia Authors	Copyright (c) 2013, Google Inc. All rights reserved.
+lib/flow-id/BUILD.gn	Copyright 2026 The Fuchsia Authors
+lib/flow-id/src/lib.rs	Copyright 2026 The Fuchsia Authors
+lib/heap/BUILD.gn	Copyright 2019 The Fuchsia Authors
+lib/heap/cmpctmalloc/BUILD.gn	Copyright 2019 The Fuchsia Authors
+lib/heap/cmpctmalloc/cmpctmalloc.cc	Copyright 2016 The Fuchsia Authors	Copyright (c) 2015 Google, Inc. All rights reserved
+lib/heap/cmpctmalloc/include/lib/cmpctmalloc.h	Copyright 2016 The Fuchsia Authors	Copyright (c) 2015 Travis Geiselbrecht
+lib/heap/cmpctmalloc/tests/BUILD.gn	Copyright 2020 The Fuchsia Authors
+lib/heap/cmpctmalloc/tests/cmpctmalloc_test.cc	Copyright 2020 The Fuchsia Authors
+lib/heap/cmpctmalloc/tests/page_manager.cc	Copyright 2020 The Fuchsia Authors
+lib/heap/cmpctmalloc/tests/page_manager.h	Copyright 2020 The Fuchsia Authors
+lib/heap/cxx_allocator.cc	Copyright 2019 The Fuchsia Authors
+lib/heap/heap.rs	Copyright 2026 The Fuchsia Authors
+lib/heap/heap_ffi.cc	Copyright 2026 The Fuchsia Authors
+lib/heap/heap_wrapper.cc	Copyright 2016 The Fuchsia Authors	Copyright (c) 2008-2015 Travis Geiselbrecht
+lib/heap/include/lib/heap.h	Copyright 2016 The Fuchsia Authors	Copyright (c) 2008-2015 Travis Geiselbrecht
+lib/heap/include/lib/heap_ffi.h	Copyright 2026 The Fuchsia Authors
+lib/heap/include/lib/heap_internal.h	Copyright 2021 The Fuchsia Authors
+lib/heap/profile/BUILD.gn	Copyright 2024 The Fuchsia Authors
+lib/heap/profile/README.md
+lib/heap/profile/include/lib/heap_profile.h	Copyright 2024 The Fuchsia Authors
+lib/heap/profile/tests/BUILD.gn	Copyright 2024 The Fuchsia Authors
+lib/heap/profile/tests/heap_profile_test.cc	Copyright 2024 The Fuchsia Authors
+lib/id_allocator/BUILD.gn	Copyright 2023 The Fuchsia Authors
+lib/id_allocator/id_allocator_tests.cc	Copyright 2023 The Fuchsia Authors
+lib/id_allocator/include/lib/id_allocator.h	Copyright 2017 The Fuchsia Authors
+lib/id_allocator/src/lib.rs	Copyright 2026 The Fuchsia Authors
+lib/init/BUILD.gn	Copyright 2020 The Fuchsia Authors
+lib/init/include/lk/init.h	Copyright 2016 The Fuchsia Authors	Copyright (c) 2013-2015 Travis Geiselbrecht
+lib/init/src/lib.rs	Copyright 2026 The Fuchsia Authors
+lib/instrumentation/BUILD.gn	Copyright 2019 The Fuchsia Authors
+lib/instrumentation/METADATA.textproto
+lib/instrumentation/OWNERS
+lib/instrumentation/asan/BUILD.gn	Copyright 2020 The Fuchsia Authors
+lib/instrumentation/asan/README.md
+lib/instrumentation/asan/asan-init-arm64.cc	Copyright 2021 The Fuchsia Authors
+lib/instrumentation/asan/asan-init-x86.cc	Copyright 2020 The Fuchsia Authors
+lib/instrumentation/asan/asan-init.cc	Copyright 2020 The Fuchsia Authors
+lib/instrumentation/asan/asan-internal.h	Copyright 2020 The Fuchsia Authors
+lib/instrumentation/asan/asan-poisoning.cc	Copyright 2020 The Fuchsia Authors
+lib/instrumentation/asan/asan-stubs.cc	Copyright 2020 The Fuchsia Authors
+lib/instrumentation/include/lib/instrumentation/asan.h	Copyright 2020 The Fuchsia Authors
+lib/instrumentation/include/lib/instrumentation/debugdata.h	Copyright 2023 The Fuchsia Authors
+lib/instrumentation/include/lib/instrumentation/kernel-mapped-vmo.h	Copyright 2021 The Fuchsia Authors
+lib/instrumentation/include/lib/instrumentation/vmo.h	Copyright 2019 The Fuchsia Authors
+lib/instrumentation/kernel-mapped-vmo.cc	Copyright 2021 The Fuchsia Authors
+lib/instrumentation/memory-profile.cc	Copyright 2024 The Fuchsia Authors
+lib/instrumentation/private.h	Copyright 2021 The Fuchsia Authors
+lib/instrumentation/profile.cc	Copyright 2019 The Fuchsia Authors
+lib/instrumentation/sancov.cc	Copyright 2019 The Fuchsia Authors
+lib/instrumentation/test/BUILD.gn	Copyright 2020 The Fuchsia Authors
+lib/instrumentation/test/asan_tests.cc	Copyright 2020 The Fuchsia Authors
+lib/instrumentation/ubsan/BUILD.gn	Copyright 2023 The Fuchsia Authors
+lib/instrumentation/ubsan/runtime.cc	Copyright 2023 The Fuchsia Authors
+lib/instrumentation/vmo.cc	Copyright 2019 The Fuchsia Authors
+lib/io/BUILD.gn	Copyright 2019 The Fuchsia Authors
+lib/io/console.cc	Copyright 2016 The Fuchsia Authors	Copyright (c) 2008-2015 Travis Geiselbrecht
+lib/io/include/lib/io.h	Copyright 2016 The Fuchsia Authors	Copyright (c) 2008-2015 Travis Geiselbrecht
+lib/io/tests/BUILD.gn	Copyright 2021 The Fuchsia Authors
+lib/io/tests/io_tests.cc	Copyright 2021 The Fuchsia Authors
+lib/jtrace/BUILD.gn	Copyright 2021 The Fuchsia Authors
+lib/jtrace/include/lib/jtrace/jtrace.h	Copyright 2021 The Fuchsia Authors. All rights reserved.
+lib/jtrace/jtrace.cc	Copyright 2020 The Fuchsia Authors. All rights reserved.
+lib/jtrace/jtrace_internal.h	Copyright 2021 The Fuchsia Authors. All rights reserved.
+lib/jtrace/tests/BUILD.gn	Copyright 2021 The Fuchsia Authors
+lib/jtrace/tests/jtrace-tests.cc	Copyright 2021 The Fuchsia Authors
+lib/kconcurrent/BUILD.gn	Copyright 2021 The Fuchsia Authors
+lib/kconcurrent/chainlock_transaction.cc	Copyright 2024 The Fuchsia Authors. All rights reserved.
+lib/kconcurrent/docs/chainlock.md
+lib/kconcurrent/include/lib/kconcurrent/chainlock.h	Copyright 2023 The Fuchsia Authors. All rights reserved.
+lib/kconcurrent/include/lib/kconcurrent/chainlock_transaction.h	Copyright 2023 The Fuchsia Authors. All rights reserved.
+lib/kconcurrent/include/lib/kconcurrent/copy.h	Copyright 2021 The Fuchsia Authors. All rights reserved.
+lib/kconcurrent/include/lib/kconcurrent/seqlock.h	Copyright 2021 The Fuchsia Authors. All rights reserved.
+lib/kconcurrent/seqlock.cc	Copyright 2021 The Fuchsia Authors. All rights reserved.
+lib/kconcurrent/tests/BUILD.gn	Copyright 2021 The Fuchsia Authors
+lib/kconcurrent/tests/kconcurrent-tests.cc	Copyright 2021 The Fuchsia Authors. All rights reserved.
+lib/ksync/BUILD.gn	Copyright 2026 The Fuchsia Authors
+lib/ksync/bindings.cc	Copyright 2026 The Fuchsia Authors
+lib/ktl/BUILD.gn	Copyright 2020 The Fuchsia Authors
+lib/ktl/OWNERS
+lib/ktl/README.md
+lib/ktl/include-after/errno.h	Copyright 2020 The Fuchsia Authors
+lib/ktl/include-after/wchar.h	Copyright 2018 The Fuchsia Authors
+lib/ktl/include/__chrono/system_clock.h	Copyright 2023 The Fuchsia Authors
+lib/ktl/include/__config	Copyright 2022 The Fuchsia Authors
+lib/ktl/include/__config_site	Copyright 2021 The Fuchsia Authors
+lib/ktl/include/__configuration/platform.h	Copyright 2025 The Fuchsia Authors
+lib/ktl/include/__external_threading	Copyright 2020 The Fuchsia Authors
+lib/ktl/include/climits	Copyright 2022 The Fuchsia Authors
+lib/ktl/include/cmath	Copyright 2021 The Fuchsia Authors
+lib/ktl/include/cstdint	Copyright 2022 The Fuchsia Authors
+lib/ktl/include/cstdio	Copyright 2020 The Fuchsia Authors
+lib/ktl/include/cstdlib	Copyright 2018 The Fuchsia Authors
+lib/ktl/include/cwchar	Copyright 2020 The Fuchsia Authors
+lib/ktl/include/ktl/algorithm.h	Copyright 2020 The Fuchsia Authors
+lib/ktl/include/ktl/array.h	Copyright 2019 The Fuchsia Authors
+lib/ktl/include/ktl/atomic.h	Copyright 2019 The Fuchsia Authors
+lib/ktl/include/ktl/bit.h	Copyright 2021 The Fuchsia Authors
+lib/ktl/include/ktl/byte.h	Copyright 2020 The Fuchsia Authors
+lib/ktl/include/ktl/concepts.h	Copyright 2025 The Fuchsia Authors
+lib/ktl/include/ktl/declval.h	Copyright 2021 The Fuchsia Authors
+lib/ktl/include/ktl/enforce.h	Copyright 2021 The Fuchsia Authors
+lib/ktl/include/ktl/forward.h	Copyright 2018 The Fuchsia Authors
+lib/ktl/include/ktl/functional.h	Copyright 2023 The Fuchsia Authors
+lib/ktl/include/ktl/initializer_list.h	Copyright 2021 The Fuchsia Authors
+lib/ktl/include/ktl/inplace_vector.h	Copyright 2025 The Fuchsia Authors
+lib/ktl/include/ktl/iterator.h	Copyright 2020 The Fuchsia Authors
+lib/ktl/include/ktl/limits.h	Copyright 2019 The Fuchsia Authors
+lib/ktl/include/ktl/memory.h	Copyright 2024 The Fuchsia Authors
+lib/ktl/include/ktl/new.h	Copyright 2026 The Fuchsia Authors
+lib/ktl/include/ktl/numeric.h	Copyright 2023 The Fuchsia Authors
+lib/ktl/include/ktl/optional.h	Copyright 2020 The Fuchsia Authors
+lib/ktl/include/ktl/ranges.h	Copyright 2025 The Fuchsia Authors
+lib/ktl/include/ktl/ref.h	Copyright 2023 The Fuchsia Authors
+lib/ktl/include/ktl/source_location.h	Copyright 2025 The Fuchsia Authors
+lib/ktl/include/ktl/span.h	Copyright 2020 The Fuchsia Authors
+lib/ktl/include/ktl/string_view.h	Copyright 2020 The Fuchsia Authors
+lib/ktl/include/ktl/tuple.h	Copyright 2024 The Fuchsia Authors
+lib/ktl/include/ktl/type_traits.h	Copyright 2019 The Fuchsia Authors
+lib/ktl/include/ktl/unique_ptr.h	Copyright 2018 The Fuchsia Authors
+lib/ktl/include/ktl/utility.h	Copyright 2018 The Fuchsia Authors
+lib/ktl/include/ktl/variant.h	Copyright 2020 The Fuchsia Authors
+lib/ktl/include/limits	Copyright 2018 The Fuchsia Authors
+lib/ktl/include/time.h	Copyright 2020 The Fuchsia Authors
+lib/ktl/include/version	Copyright 2024 The Fuchsia Authors
+lib/ktl/include/wchar.h	Copyright 2023 The Fuchsia Authors
+lib/ktl/popcount.cc	Copyright 2019 The Fuchsia Authors
+lib/ktl/stub-new.cc	Copyright 2020 The Fuchsia Authors
+lib/ktrace/BUILD.gn	Copyright 2019 The Fuchsia Authors
+lib/ktrace/ktrace.cc	Copyright 2016 The Fuchsia Authors
+lib/ktrace/ktrace_ffi.cc	Copyright 2026 The Fuchsia Authors
+lib/ktrace/macro/BUILD.gn	Copyright 2026 The Fuchsia Authors
+lib/ktrace/macro/src/lib.rs	Copyright 2026 The Fuchsia Authors
+lib/ktrace/src/mod.rs	Copyright 2026 The Fuchsia Authors
+lib/ktrace/tests/BUILD.gn	Copyright 2021 The Fuchsia Authors
+lib/ktrace/tests/ktrace-tests.cc	Copyright 2025 The Fuchsia Authors
+lib/libc/BUILD.gn	Copyright 2019 The Fuchsia Authors
+lib/libc/OWNERS
+lib/libc/abort.cc	Copyright 2020 The Fuchsia Authors
+lib/libc/atomic.cc	Copyright 2019 The Fuchsia Authors
+lib/libc/atomic_tests.cc	Copyright 2019 The Fuchsia Authors
+lib/libc/ctype.cc	Copyright 2016 The Fuchsia Authors	Copyright (c) 2008 Travis Geiselbrecht
+lib/libc/cxa_atexit.cc	Copyright 2016 The Fuchsia Authors	Copyright (c) 2006 Travis Geiselbrecht
+lib/libc/cxa_pure_virtual.cc	Copyright 2016 The Fuchsia Authors
+lib/libc/fprintf.cc	Copyright 2016 The Fuchsia Authors	Copyright (c) 2008-2014 Travis Geiselbrecht
+lib/libc/fputs.cc	Copyright 2026 The Fuchsia Authors
+lib/libc/fwrite.cc	Copyright 2026 The Fuchsia Authors
+lib/libc/include-after/ctype.h	Copyright 2016 The Fuchsia Authors	Copyright (c) 2008 Travis Geiselbrecht
+lib/libc/include-after/limits.h	Copyright 2020 The Fuchsia Authors
+lib/libc/include/assert.h	Copyright 2020 The Fuchsia Authors
+lib/libc/include/inttypes.h	Copyright 2016 The Fuchsia Authors
+lib/libc/include/multi-file.h	Copyright 2022 The Fuchsia Authors
+lib/libc/include/stdint.h	Copyright 2016 The Fuchsia Authors
+lib/libc/include/stdio.h	Copyright 2020 The Fuchsia Authors
+lib/libc/include/stdlib.h	Copyright 2016 The Fuchsia Authors	Copyright (c) 2008-2014 Travis Geiselbrecht
+lib/libc/include/string-file.h	Copyright 2021 The Fuchsia Authors	Copyright (c) 2008 Travis Geiselbrecht
+lib/libc/include/string.h	Copyright 2016 The Fuchsia Authors	Copyright (c) 2008 Travis Geiselbrecht
+lib/libc/printf.cc	Copyright 2020 The Fuchsia Authors
+lib/libc/putc.cc	Copyright 2026 The Fuchsia Authors
+lib/libc/putchar.cc	Copyright 2026 The Fuchsia Authors
+lib/libc/puts.cc	Copyright 2026 The Fuchsia Authors
+lib/libc/rand.cc	Copyright 2016 The Fuchsia Authors	Copyright (c) 2008-2014 Travis Geiselbrecht
+lib/libc/snprintf.cc	Copyright 2020 The Fuchsia Authors
+lib/libc/string-file.cc	Copyright 2021 The Fuchsia Authors	Copyright (c) 2008 Travis Geiselbrecht
+lib/libc/string/BUILD.gn	Copyright 2019 The Fuchsia Authors
+lib/libc/string/arch/arm64/BUILD.gn	Copyright 2019 The Fuchsia Authors
+lib/libc/string/arch/arm64/memcpy.S	Copyright 2020 The Fuchsia Authors
+lib/libc/string/arch/arm64/memset.S	Copyright 2020 The Fuchsia Authors
+lib/libc/string/arch/riscv64/BUILD.gn	Copyright 2023 The Fuchsia Authors
+lib/libc/string/arch/x86/BUILD.gn	Copyright 2019 The Fuchsia Authors
+lib/libc/string/arch/x86/alternative-tests.cc	Copyright 2021 The Fuchsia Authors
+lib/libc/string/arch/x86/include/arch/x86/cstring/selection.h	Copyright 2021 The Fuchsia Authors
+lib/libc/string/arch/x86/memcpy-movsb.S	Copyright 2021 The Fuchsia Authors
+lib/libc/string/arch/x86/memcpy-movsq.S	Copyright 2021 The Fuchsia Authors
+lib/libc/string/arch/x86/memset-stosb.S	Copyright 2021 The Fuchsia Authors
+lib/libc/string/arch/x86/memset-stosq.S	Copyright 2021 The Fuchsia Authors
+lib/libc/string/arch/x86/selection-tests.cc	Copyright 2021 The Fuchsia Authors
+lib/libc/string/memchr.c	Copyright 2016 The Fuchsia Authors	Copyright 2001, Manuel J. Petit.	Copyright (c) 2008 Travis Geiselbrecht
+lib/libc/string/memcmp.c	Copyright 2016 The Fuchsia Authors	Copyright (c) 2008 Travis Geiselbrecht
+lib/libc/string/memcpy.c	Copyright 2016 The Fuchsia Authors	Copyright (c) 2008 Travis Geiselbrecht
+lib/libc/string/memmove.c	Copyright 2016 The Fuchsia Authors	Copyright (c) 2008 Travis Geiselbrecht
+lib/libc/string/memscan.c	Copyright 2016 The Fuchsia Authors	Copyright (c) 2008 Travis Geiselbrecht
+lib/libc/string/memset.c	Copyright 2016 The Fuchsia Authors	Copyright 2001, Travis Geiselbrecht	Copyright 2005, Michael Noisternig	Copyright (c) 2008 Travis Geiselbrecht
+lib/libc/string/strcat.c	Copyright 2016 The Fuchsia Authors	Copyright (c) 2008 Travis Geiselbrecht
+lib/libc/string/strchr.c	Copyright 2016 The Fuchsia Authors	Copyright (c) 2008 Travis Geiselbrecht
+lib/libc/string/strcmp.c	Copyright 2016 The Fuchsia Authors	Copyright (c) 2008 Travis Geiselbrecht
+lib/libc/string/strcoll.c	Copyright 2016 The Fuchsia Authors	Copyright (c) 2008 Travis Geiselbrecht
+lib/libc/string/strcpy.c	Copyright 2016 The Fuchsia Authors	Copyright (c) 2008 Travis Geiselbrecht
+lib/libc/string/strlcat.c	Copyright 2016 The Fuchsia Authors	Copyright 2002, Manuel J. Petit	Copyright (c) 2008 Travis Geiselbrecht
+lib/libc/string/strlcpy.c	Copyright 2016 The Fuchsia Authors	Copyright 2002, Manuel J. Petit	Copyright (c) 2008 Travis Geiselbrecht
+lib/libc/string/strlen.c	Copyright 2016 The Fuchsia Authors	Copyright (c) 2008 Travis Geiselbrecht
+lib/libc/string/strncat.c	Copyright 2016 The Fuchsia Authors	Copyright (c) 2008 Travis Geiselbrecht
+lib/libc/string/strncmp.c	Copyright 2016 The Fuchsia Authors	Copyright (c) 2008 Travis Geiselbrecht
+lib/libc/string/strncpy.c	Copyright 2016 The Fuchsia Authors	Copyright (c) 2008 Travis Geiselbrecht
+lib/libc/string/strnicmp.c	Copyright 2016 The Fuchsia Authors	Copyright (c) 2008 Travis Geiselbrecht
+lib/libc/string/strnlen.c	Copyright 2016 The Fuchsia Authors	Copyright (c) 2008 Travis Geiselbrecht
+lib/libc/string/strpbrk.c	Copyright 2016 The Fuchsia Authors	Copyright (c) 2008 Travis Geiselbrecht
+lib/libc/string/strrchr.c	Copyright 2016 The Fuchsia Authors	Copyright 2001, Manuel J. Petit	Copyright (c) 2008 Travis Geiselbrecht
+lib/libc/string/strspn.c	Copyright 2016 The Fuchsia Authors	Copyright (c) 2008 Travis Geiselbrecht
+lib/libc/string/strstr.c	Copyright 2016 The Fuchsia Authors	Copyright (c) 2008 Travis Geiselbrecht
+lib/libc/string/strtok.c	Copyright 2016 The Fuchsia Authors	Copyright (c) 2008 Travis Geiselbrecht
+lib/libc/string/strxfrm.c	Copyright 2016 The Fuchsia Authors	Copyright (c) 2008 Travis Geiselbrecht
+lib/libc/strtol.cc	Copyright (c) 1990 The Regents of the University of California.
+lib/libc/strtoul.cc	Copyright 2016 The Fuchsia Authors	Copyright (c) 2008 Travis Geiselbrecht
+lib/lockdep/BUILD.gn	Copyright 2019 The Fuchsia Authors
+lib/lockdep/lock_dep.cc	Copyright 2018 The Fuchsia Authors
+lib/lockup_detector/BUILD.gn	Copyright 2020 The Fuchsia Authors
+lib/lockup_detector/README.md
+lib/lockup_detector/diagnostics.cc	Copyright 2022 The Fuchsia Authors
+lib/lockup_detector/include/lib/lockup_detector.h	Copyright 2020 The Fuchsia Authors
+lib/lockup_detector/include/lib/lockup_detector/diagnostics.h	Copyright 2022 The Fuchsia Authors
+lib/lockup_detector/include/lib/lockup_detector/inline_impl.h	Copyright 2021 The Fuchsia Authors
+lib/lockup_detector/include/lib/lockup_detector/state.h	Copyright 2020 The Fuchsia Authors
+lib/lockup_detector/lockup_detector.cc	Copyright 2020 The Fuchsia Authors
+lib/lockup_detector/tests/BUILD.gn	Copyright 2020 The Fuchsia Authors
+lib/lockup_detector/tests/lockup_detector_tests.cc	Copyright 2020 The Fuchsia Authors
+lib/mmu_rcu/BUILD.gn	Copyright 2026 The Fuchsia Authors
+lib/mmu_rcu/include/lib/mmu_rcu/simple_generational_rcu.h	Copyright 2026 The Fuchsia Authors
+lib/mmu_rcu/models/README.md
+lib/mmu_rcu/models/simple_generational.cc	Copyright 2026 The Fuchsia Authors
+lib/mmu_rcu/src/mod.rs	Copyright 2026 The Fuchsia Authors
+lib/mmu_rcu/tests/BUILD.gn	Copyright 2026 The Fuchsia Authors
+lib/mmu_rcu/tests/simple_generational_tests.cc	Copyright 2026 The Fuchsia Authors
+lib/object-constants/BUILD.gn	Copyright 2026 The Fuchsia Authors
+lib/object-constants/include/lib/object-constants.h	Copyright 2026 The Fuchsia Authors
+lib/object_cache/BUILD.gn	Copyright 2020 The Fuchsia Authors
+lib/object_cache/include/lib/object_cache.h	Copyright 2020 The Fuchsia Authors
+lib/object_cache/object_cache.cc	Copyright 2021 The Fuchsia Authors
+lib/object_cache/tests/BUILD.gn	Copyright 2020 The Fuchsia Authors
+lib/object_cache/tests/object_cache_tests.cc	Copyright 2020 The Fuchsia Authors
+lib/page-map/BUILD.gn	Copyright 2026 The Fuchsia Authors
+lib/page-map/accessor.cc	Copyright 2026 The Fuchsia Authors
+lib/page-map/entry.cc	Copyright 2026 The Fuchsia Authors
+lib/page-map/include/lib/page-map.h	Copyright 2026 The Fuchsia Authors
+lib/page-map/include/lib/page-map/accessor.h	Copyright 2026 The Fuchsia Authors
+lib/page-map/include/lib/page-map/entry.h	Copyright 2026 The Fuchsia Authors
+lib/page-map/page-map.cc	Copyright 2026 The Fuchsia Authors
+lib/page-map/tests/BUILD.gn	Copyright 2026 The Fuchsia Authors
+lib/page-map/tests/page-map-tests.cc	Copyright 2026 The Fuchsia Authors
+lib/page/BUILD.gn	Copyright 2025 The Fuchsia Authors
+lib/page/gen-page-size-asm.cc	Copyright 2025 The Fuchsia Authors
+lib/page/include/lib/page/size.h	Copyright 2025 The Fuchsia Authors
+lib/page/src/lib.rs	Copyright 2026 The Fuchsia Authors
+lib/page_cache/BUILD.gn	Copyright 2020 The Fuchsia Authors
+lib/page_cache/include/lib/page_cache.h	Copyright 2021 The Fuchsia Authors
+lib/page_cache/include/lib/page_cache_ffi.h	Copyright 2026 The Fuchsia Authors
+lib/page_cache/page_cache.cc	Copyright 2021 The Fuchsia Authors
+lib/page_cache/page_cache.rs	Copyright 2026 The Fuchsia Authors
+lib/page_cache/page_cache_ffi.cc	Copyright 2026 The Fuchsia Authors
+lib/page_cache/tests/BUILD.gn	Copyright 2020 The Fuchsia Authors
+lib/page_cache/tests/page_cache_tests.cc	Copyright 2020 The Fuchsia Authors
+lib/percpu_writer/BUILD.gn	Copyright 2025 The Fuchsia Authors
+lib/percpu_writer/README.md
+lib/percpu_writer/allocator.cc	Copyright 2025 The Fuchsia Authors. All rights reserved.
+lib/percpu_writer/include/lib/percpu_writer/buffer.h	Copyright 2025 The Fuchsia Authors
+lib/percpu_writer/include/lib/percpu_writer/kernel_aspace_allocator.h	Copyright 2025 The Fuchsia Authors
+lib/percpu_writer/tests/BUILD.gn	Copyright 2025 The Fuchsia Authors
+lib/percpu_writer/tests/buffer_tests.cc	Copyright 2025 The Fuchsia Authors
+lib/perfmon/BUILD.gn	Copyright 2019 The Fuchsia Authors
+lib/perfmon/include/lib/perfmon.h	Copyright 2019 The Fuchsia Authors
+lib/perfmon/perfmon.cc	Copyright 2019 The Fuchsia Authors
+lib/persistent-debuglog/BUILD.gn	Copyright 2021 The Fuchsia Authors
+lib/persistent-debuglog/include/lib/persistent-debuglog.h	Copyright 2021 The Fuchsia Authors
+lib/persistent-debuglog/params.gni	Copyright 2021 The Fuchsia Authors
+lib/persistent-debuglog/persistent-debuglog-internal.h	Copyright 2021 The Fuchsia Authors
+lib/persistent-debuglog/persistent-debuglog.cc	Copyright 2021 The Fuchsia Authors
+lib/persistent-debuglog/persistent_debuglog.rs	Copyright 2026 The Fuchsia Authors
+lib/persistent-debuglog/persistent_debuglog_ffi.cc	Copyright 2026 The Fuchsia Authors
+lib/persistent-debuglog/tests/BUILD.gn	Copyright 2021 The Fuchsia Authors
+lib/persistent-debuglog/tests/persistent-debuglog-tests.cc	Copyright 2021 The Fuchsia Authors
+lib/pow2_range_allocator/BUILD.gn	Copyright 2019 The Fuchsia Authors
+lib/pow2_range_allocator/include/lib/pow2_range_allocator.h	Copyright 2016 The Fuchsia Authors	Copyright (c) 2016, Google, Inc. All rights reserved
+lib/pow2_range_allocator/pow2_range_allocator.cc	Copyright 2016 The Fuchsia Authors	Copyright (c) 2016, Google, Inc. All rights reserved
+lib/pow2_range_allocator/pow2_range_allocator_tests.cc	Copyright 2020 The Fuchsia Authors
+lib/pow2_range_allocator/src/lib.rs	Copyright 2016 The Fuchsia Authors	Copyright (c) 2016, Google, Inc. All rights reserved
+lib/pow2_range_allocator/tests/kernel.rs	Copyright 2020 The Fuchsia Authors
+lib/power-management/BUILD.gn	Copyright 2024 The Fuchsia Authors
+lib/power-management/OWNERS
+lib/power-management/bandwidth-reservation-cache-test.cc	Copyright 2025 The Fuchsia Authors
+lib/power-management/energy-model-test.cc	Copyright 2024 The Fuchsia Authors
+lib/power-management/energy-model.cc	Copyright 2024 The Fuchsia Authors
+lib/power-management/include/lib/power-management/bandwidth-reservation-cache.h	Copyright 2025 The Fuchsia Authors
+lib/power-management/include/lib/power-management/energy-model.h	Copyright 2024 The Fuchsia Authors
+lib/power-management/include/lib/power-management/pdev-power-level-controller.h	Copyright 2025 The Fuchsia Authors
+lib/power-management/include/lib/power-management/power-level-controller.h	Copyright 2024 The Fuchsia Authors
+lib/power-management/include/lib/power-management/power-state.h	Copyright 2024 The Fuchsia Authors
+lib/power-management/include/lib/power-management/types.h	Copyright 2025 The Fuchsia Authors
+lib/power-management/meta/power-management-unittests.cml	Copyright 2025 The Fuchsia Authors. All rights reserved.
+lib/power-management/pdev-power-level-controller.cc	Copyright 2025 The Fuchsia Authors
+lib/power-management/power-management-tests.cc	Copyright 2024 The Fuchsia Authors
+lib/power-management/power-state-test.cc	Copyright 2024 The Fuchsia Authors
+lib/power-management/power-state.cc	Copyright 2024 The Fuchsia Authors
+lib/power-management/test-helper.cc	Copyright 2024 The Fuchsia Authors
+lib/power-management/test-helper.h	Copyright 2024 The Fuchsia Authors
+lib/range_check/BUILD.gn	Copyright 2026 The Fuchsia Authors
+lib/range_check/src/lib.rs	Copyright 2026 The Fuchsia Authors
+lib/relaxed_atomic/BUILD.gn	Copyright 2026 The Fuchsia Authors
+lib/relaxed_atomic/lib.rs	Copyright 2026 The Fuchsia Authors
+lib/root_resource_filter/BUILD.gn	Copyright 2020 The Fuchsia Authors
+lib/root_resource_filter/include/lib/root_resource_filter.h	Copyright 2020 The Fuchsia Authors
+lib/root_resource_filter/root_resource_filter_ffi.cc	Copyright 2026 The Fuchsia Authors
+lib/root_resource_filter/root_resource_filter_ffi.h	Copyright 2026 The Fuchsia Authors
+lib/root_resource_filter/src/mod.rs	Copyright 2026 The Fuchsia Authors
+lib/rust/BUILD.gn	Copyright 2026 The Fuchsia Authors
+lib/rust/rust-custom-target.py	Copyright 2026 The Fuchsia Authors
+lib/rust/src/lib.rs	Copyright 2026 The Fuchsia Authors
+lib/sched/BUILD.gn	Copyright 2024 The Fuchsia Authors. All rights reserved.
+lib/sched/OWNERS
+lib/sched/README.md
+lib/sched/affine-tests.cc	Copyright 2024 The Fuchsia Authors
+lib/sched/include/lib/sched/affine.h	Copyright 2024 The Fuchsia Authors
+lib/sched/include/lib/sched/run-queue.h	Copyright 2024 The Fuchsia Authors. All rights reserved.
+lib/sched/include/lib/sched/thread-base.h	Copyright 2024 The Fuchsia Authors. All rights reserved.
+lib/sched/include/lib/sched/time.h	Copyright 2024 The Fuchsia Authors. All rights reserved.
+lib/sched/meta/run-queue-fuzzer.cml	Copyright 2024 The Fuchsia Authors. All rights reserved.
+lib/sched/run-queue-fuzzer.cc	Copyright 2024 The Fuchsia Authors. All rights reserved.
+lib/sched/run-queue-tests.cc	Copyright 2024 The Fuchsia Authors
+lib/sched/test-thread.h	Copyright 2024 The Fuchsia Authors
+lib/sched/thread-base-tests.cc	Copyright 2024 The Fuchsia Authors
+lib/special-sections/BUILD.gn	Copyright 2020 The Fuchsia Authors
+lib/special-sections/include/lib/special-sections/special-sections.h	Copyright 2020 The Fuchsia Authors
+lib/spsc_buffer/BUILD.gn	Copyright 2025 The Fuchsia Authors
+lib/spsc_buffer/OWNERS
+lib/spsc_buffer/include/lib/spsc_buffer/spsc_buffer.h	Copyright 2025 The Fuchsia Authors
+lib/spsc_buffer/src/lib.rs	Copyright 2026 The Fuchsia Authors
+lib/spsc_buffer/tests/BUILD.gn	Copyright 2025 The Fuchsia Authors
+lib/spsc_buffer/tests/spsc_ffi_helper.cc	Copyright 2026 The Fuchsia Authors
+lib/spsc_buffer/tests/spsc_test.cc	Copyright 2025 The Fuchsia Authors
+lib/stall/BUILD.gn	Copyright 2024 The Fuchsia Authors
+lib/stall/include/lib/stall.h	Copyright 2024 The Fuchsia Authors
+lib/stall/stall.cc	Copyright 2024 The Fuchsia Authors
+lib/stall/tests/BUILD.gn	Copyright 2024 The Fuchsia Authors
+lib/stall/tests/stall_test.cc	Copyright 2024 The Fuchsia Authors
+lib/suspend_wakeup_timer/BUILD.gn	Copyright 2025 The Fuchsia Authors
+lib/suspend_wakeup_timer/include/lib/suspend_wakeup_timer.h	Copyright 2025 The Fuchsia Authors
+lib/suspend_wakeup_timer/suspend_wakeup_timer.cc	Copyright 2025 The Fuchsia Authors
+lib/syscalls/BUILD.gn	Copyright 2019 The Fuchsia Authors
+lib/syscalls/bti.rs	Copyright 2026 The Fuchsia Authors
+lib/syscalls/channel.cc	Copyright 2016 The Fuchsia Authors
+lib/syscalls/clock.rs	Copyright 2026 The Fuchsia Authors
+lib/syscalls/counter.rs	Copyright 2026 The Fuchsia Authors
+lib/syscalls/cprng.rs	Copyright 2026 The Fuchsia Authors
+lib/syscalls/debug.rs	Copyright 2026 The Fuchsia Authors
+lib/syscalls/debuglog.rs	Copyright 2026 The Fuchsia Authors
+lib/syscalls/driver.cc	Copyright 2016 The Fuchsia Authors
+lib/syscalls/event.rs	Copyright 2026 The Fuchsia Authors
+lib/syscalls/exceptions.cc	Copyright 2016 The Fuchsia Authors
+lib/syscalls/fifo.rs	Copyright 2026 The Fuchsia Authors
+lib/syscalls/futex.cc	Copyright 2017 The Fuchsia Authors
+lib/syscalls/handle_ops.cc	Copyright 2016 The Fuchsia Authors
+lib/syscalls/hypervisor.cc	Copyright 2017 The Fuchsia Authors
+lib/syscalls/include/lib/syscalls/forward.h	Copyright 2016 The Fuchsia Authors
+lib/syscalls/include/lib/syscalls/safe-syscall-argument.h	Copyright 2021 The Fuchsia Authors
+lib/syscalls/iob.rs	Copyright 2026 The Fuchsia Authors
+lib/syscalls/iommu.rs	Copyright 2026 The Fuchsia Authors
+lib/syscalls/job.rs	Copyright 2026 The Fuchsia Authors
+lib/syscalls/macros/BUILD.gn	Copyright 2026 The Fuchsia Authors
+lib/syscalls/macros/src/lib.rs	Copyright 2026 The Fuchsia Authors
+lib/syscalls/membarrier.rs	Copyright 2026 The Fuchsia Authors
+lib/syscalls/membarrier_ffi.cc	Copyright 2026 The Fuchsia Authors
+lib/syscalls/membarrier_priv.h	Copyright 2026 The Fuchsia Authors
+lib/syscalls/mod.rs	Copyright 2026 The Fuchsia Authors
+lib/syscalls/msi.rs	Copyright 2026 The Fuchsia Authors
+lib/syscalls/nanosleep.rs	Copyright 2026 The Fuchsia Authors
+lib/syscalls/object.cc	Copyright 2016 The Fuchsia Authors
+lib/syscalls/object_info.rs	Copyright 2026 The Fuchsia Authors
+lib/syscalls/object_info_ffi.cc	Copyright 2026 The Fuchsia Authors
+lib/syscalls/object_info_priv.h	Copyright 2026 The Fuchsia Authors
+lib/syscalls/object_property.rs	Copyright 2026 The Fuchsia Authors
+lib/syscalls/object_property_ffi.cc	Copyright 2026 The Fuchsia Authors
+lib/syscalls/object_property_priv.h	Copyright 2026 The Fuchsia Authors
+lib/syscalls/object_wait.cc	Copyright 2016 The Fuchsia Authors
+lib/syscalls/object_wait.rs	Copyright 2026 The Fuchsia Authors
+lib/syscalls/pager.cc	Copyright 2018 The Fuchsia Authors
+lib/syscalls/pmt.rs	Copyright 2026 The Fuchsia Authors
+lib/syscalls/port.cc	Copyright 2016 The Fuchsia Authors
+lib/syscalls/process.rs	Copyright 2026 The Fuchsia Authors
+lib/syscalls/profile.rs	Copyright 2026 The Fuchsia Authors
+lib/syscalls/resource.rs	Copyright 2026 The Fuchsia Authors
+lib/syscalls/restricted.rs	Copyright 2026 The Fuchsia Authors
+lib/syscalls/sampler.rs	Copyright 2026 The Fuchsia Authors
+lib/syscalls/smc.rs	Copyright 2026 The Fuchsia Authors
+lib/syscalls/socket.rs	Copyright 2026 The Fuchsia Authors
+lib/syscalls/stream.rs	Copyright 2026 The Fuchsia Authors
+lib/syscalls/syscalls.cc	Copyright 2016 The Fuchsia Authors
+lib/syscalls/system.cc	Copyright 2017 The Fuchsia Authors
+lib/syscalls/system.rs	Copyright 2026 The Fuchsia Authors
+lib/syscalls/system_arm64.cc	Copyright 2017 The Fuchsia Authors
+lib/syscalls/system_ffi.cc	Copyright 2017 The Fuchsia Authors
+lib/syscalls/system_priv.h	Copyright 2017 The Fuchsia Authors
+lib/syscalls/system_riscv64.cc	Copyright 2023 The Fuchsia Authors
+lib/syscalls/system_x86.cc	Copyright 2017 The Fuchsia Authors
+lib/syscalls/task.rs	Copyright 2026 The Fuchsia Authors
+lib/syscalls/test.cc	Copyright 2016 The Fuchsia Authors
+lib/syscalls/test.rs	Copyright 2026 The Fuchsia Authors
+lib/syscalls/thread.rs	Copyright 2026 The Fuchsia Authors
+lib/syscalls/thread_ffi.cc	Copyright 2026 The Fuchsia Authors
+lib/syscalls/thread_priv.h	Copyright 2026 The Fuchsia Authors
+lib/syscalls/ticks.rs	Copyright 2026 The Fuchsia Authors
+lib/syscalls/timer.rs	Copyright 2026 The Fuchsia Authors
+lib/syscalls/vmar.cc	Copyright 2016 The Fuchsia Authors
+lib/syscalls/vmar.rs	Copyright 2026 The Fuchsia Authors
+lib/syscalls/vmo.rs	Copyright 2016 The Fuchsia Authors
+lib/thread-stack/BUILD.gn	Copyright 2025 The Fuchsia Authors
+lib/thread-stack/include/lib/thread-stack/abi.h	Copyright 2025 The Fuchsia Authors
+lib/thread_sampler/BUILD.gn	Copyright 2023 The Fuchsia Authors
+lib/thread_sampler/include/lib/thread_sampler/thread_sampler.h	Copyright 2023 The Fuchsia Authors
+lib/thread_sampler/tests/BUILD.gn	Copyright 2023 The Fuchsia Authors
+lib/thread_sampler/tests/thread_sampler_tests.cc	Copyright 2023 The Fuchsia Authors
+lib/thread_sampler/thread_sampler.cc	Copyright 2023 The Fuchsia Authors
+lib/topology/BUILD.gn	Copyright 2019 The Fuchsia Authors
+lib/topology/include/lib/system-topology.h	Copyright 2018 The Fuchsia Authors
+lib/topology/src/mod.rs	Copyright 2018 The Fuchsia Authors
+lib/topology/src/tests.rs	Copyright 2018 The Fuchsia Authors
+lib/topology/system-topology.cc	Copyright 2018 The Fuchsia Authors
+lib/topology/system-topology_test.cc	Copyright 2018 The Fuchsia Authors
+lib/unittest/BUILD.gn	Copyright 2019 The Fuchsia Authors
+lib/unittest/OWNERS
+lib/unittest/console.rs	Copyright 2026 The Fuchsia Authors
+lib/unittest/include/lib/unittest/unittest.h	Copyright 2016 The Fuchsia Authors	Copyright (c) 2013, Google, Inc. All rights reserved
+lib/unittest/include/lib/unittest/user_memory.h	Copyright 2018 The Fuchsia Authors
+lib/unittest/phys.cc	Copyright 2020 The Fuchsia Authors
+lib/unittest/src/lib.rs	Copyright 2026 The Fuchsia Authors
+lib/unittest/unittest-macro/BUILD.gn	Copyright 2026 The Fuchsia Authors
+lib/unittest/unittest-macro/src/lib.rs	Copyright 2026 The Fuchsia Authors
+lib/unittest/unittest-test.ld	Copyright 2026 The Fuchsia Authors
+lib/unittest/unittest.cc	Copyright 2016 The Fuchsia Authors	Copyright (c) 2013, Google, Inc. All rights reserved
+lib/unittest/user_memory.cc	Copyright 2018 The Fuchsia Authors
+lib/unittest/user_memory.rs	Copyright 2026 The Fuchsia Authors
+lib/unittest/user_memory_tests.cc	Copyright 2020 The Fuchsia Authors
+lib/user_copy/BUILD.gn	Copyright 2019 The Fuchsia Authors
+lib/user_copy/include/lib/user_copy/internal.h	Copyright 2016 The Fuchsia Authors
+lib/user_copy/include/lib/user_copy/user_iovec.h	Copyright 2020 The Fuchsia Authors
+lib/user_copy/include/lib/user_copy/user_ptr.h	Copyright 2016 The Fuchsia Authors
+lib/user_copy/internal.cc	Copyright 2020 The Fuchsia Authors
+lib/user_copy/src/mod.rs	Copyright 2026 The Fuchsia Authors
+lib/user_copy/src/user_iovec.rs	Copyright 2026 The Fuchsia Authors
+lib/user_copy/src/user_ptr.rs	Copyright 2026 The Fuchsia Authors
+lib/user_copy/src/user_string_view.rs	Copyright 2026 The Fuchsia Authors
+lib/user_copy/tests/kernel.rs	Copyright 2026 The Fuchsia Authors
+lib/user_copy/user_copy_tests.cc	Copyright 2019 The Fuchsia Authors
+lib/userabi/BUILD.gn	Copyright 2019 The Fuchsia Authors
+lib/userabi/elf.cc	Copyright 2025 The Fuchsia Authors
+lib/userabi/elf.h	Copyright 2025 The Fuchsia Authors
+lib/userabi/gen-rodso-code.sh	Copyright 2016 The Fuchsia Authors
+lib/userabi/gen-sysret-offsets.sh	Copyright 2022 The Fuchsia Authors
+lib/userabi/gen-vdso-valid-sysret.sh	Copyright 2017 The Fuchsia Authors
+lib/userabi/include/lib/userabi/userboot.h	Copyright 2019 The Fuchsia Authors
+lib/userabi/include/lib/userabi/vdso-arm64.h	Copyright 2022 The Fuchsia Authors
+lib/userabi/include/lib/userabi/vdso-constants.h	Copyright 2016 The Fuchsia Authors
+lib/userabi/include/lib/userabi/vdso.h	Copyright 2016 The Fuchsia Authors
+lib/userabi/resource.cc	Copyright 2016 The Fuchsia Authors
+lib/userabi/trivial-test-userboot/BUILD.gn	Copyright 2025 The Fuchsia Authors
+lib/userabi/trivial-test-userboot/trivial-test-userboot.cc	Copyright 2025 The Fuchsia Authors
+lib/userabi/userboot.cc	Copyright 2016 The Fuchsia Authors
+lib/userabi/userboot/BUILD.gn	Copyright 2019 The Fuchsia Authors
+lib/userabi/userboot/METADATA.textproto
+lib/userabi/userboot/OWNERS
+lib/userabi/userboot/README.md
+lib/userabi/userboot/integration_tests.cc	Copyright 2026 The Fuchsia Authors. All rights reserved.
+lib/userabi/userboot/main.rs	Copyright 2026 The Fuchsia Authors. All rights reserved.
+lib/userabi/userboot/meta/userboot_integration_tests.cml	Copyright 2026 The Fuchsia Authors. All rights reserved.
+lib/userabi/userboot/test_main.rs	Copyright 2026 The Fuchsia Authors. All rights reserved.
+lib/userabi/userboot/tests/BUILD.gn	Copyright 2022 The Fuchsia Authors. All rights reserved.
+lib/userabi/userboot/tests/bootfs-entries-test.cc	Copyright 2024 The Fuchsia Authors. All rights reserved.
+lib/userabi/userboot/tests/data-publisher/BUILD.gn	Copyright 2022 The Fuchsia Authors. All rights reserved.
+lib/userabi/userboot/tests/data-publisher/main.cc	Copyright 2022 The Fuchsia Authors. All rights reserved.
+lib/userabi/userboot/tests/data-publisher/published-data.h	Copyright 2024 The Fuchsia Authors. All rights reserved.
+lib/userabi/userboot/tests/helper.cc	Copyright 2022 The Fuchsia Authors. All rights reserved.
+lib/userabi/userboot/tests/helper.h	Copyright 2022 The Fuchsia Authors. All rights reserved.
+lib/userabi/userboot/tests/multiple-svc-test.cc	Copyright 2022 The Fuchsia Authors. All rights reserved.
+lib/userabi/userboot/tests/svc-test.cc	Copyright 2022 The Fuchsia Authors. All rights reserved.
+lib/userabi/vdso.cc	Copyright 2016 The Fuchsia Authors
+lib/userabi/vdso.rs	Copyright 2026 The Fuchsia Authors
+lib/userabi/vdso/BUILD.gn	Copyright 2019 The Fuchsia Authors
+lib/userabi/vdso/alternates.ld	Copyright 2018 The Fuchsia Authors. All rights reserved.
+lib/userabi/vdso/clock-common.h	Copyright 2024 The Fuchsia Authors. All rights reserved.
+lib/userabi/vdso/data-constants.h	Copyright 2024 The Fuchsia Authors. All rights reserved.
+lib/userabi/vdso/data-time-values.h	Copyright 2024 The Fuchsia Authors. All rights reserved.
+lib/userabi/vdso/data.S	Copyright 2017 The Fuchsia Authors. All rights reserved.
+lib/userabi/vdso/private.h	Copyright 2016 The Fuchsia Authors. All rights reserved.
+lib/userabi/vdso/syscall-entry.h	Copyright 2017 The Fuchsia Authors. All rights reserved.
+lib/userabi/vdso/syscall-wrappers.cc	Copyright 2020 The Fuchsia Authors. All rights reserved.
+lib/userabi/vdso/syscalls-arm64.S	Copyright 2016 The Fuchsia Authors. All rights reserved.
+lib/userabi/vdso/syscalls-riscv64.S	Copyright 2023 The Fuchsia Authors. All rights reserved.
+lib/userabi/vdso/syscalls-stubs.S	Copyright 2016 The Fuchsia Authors. All rights reserved.
+lib/userabi/vdso/syscalls-x86.S	Copyright 2016 The Fuchsia Authors. All rights reserved.
+lib/userabi/vdso/verify-abi.sh	Copyright 2021 The Fuchsia Authors
+lib/userabi/vdso/zircon-syscall-arm64.S	Copyright 2017 The Fuchsia Authors. All rights reserved.
+lib/userabi/vdso/zircon-syscall-riscv64.S	Copyright 2023 The Fuchsia Authors. All rights reserved.
+lib/userabi/vdso/zircon-syscall-x86.S	Copyright 2017 The Fuchsia Authors. All rights reserved.
+lib/userabi/vdso/zx_cache_flush.cc	Copyright 2017 The Fuchsia Authors. All rights reserved.
+lib/userabi/vdso/zx_channel_call.cc	Copyright 2017 The Fuchsia Authors. All rights reserved.
+lib/userabi/vdso/zx_clock_get_boot.cc	Copyright 2024 The Fuchsia Authors. All rights reserved.
+lib/userabi/vdso/zx_clock_get_details_mapped.cc	Copyright 2024 The Fuchsia Authors. All rights reserved.
+lib/userabi/vdso/zx_clock_get_monotonic.cc	Copyright 2019 The Fuchsia Authors. All rights reserved.
+lib/userabi/vdso/zx_clock_read_mapped.cc	Copyright 2024 The Fuchsia Authors. All rights reserved.
+lib/userabi/vdso/zx_cprng_draw.cc	Copyright 2018 The Fuchsia Authors. All rights reserved.
+lib/userabi/vdso/zx_deadline_after.cc	Copyright 2016 The Fuchsia Authors. All rights reserved.
+lib/userabi/vdso/zx_exception_get_string.cc	Copyright 2019 The Fuchsia Authors. All rights reserved.
+lib/userabi/vdso/zx_futex_wake_handle_close_thread_exit-arm64.S	Copyright 2017 The Fuchsia Authors. All rights reserved.
+lib/userabi/vdso/zx_futex_wake_handle_close_thread_exit-riscv64.S	Copyright 2023 The Fuchsia Authors. All rights reserved.
+lib/userabi/vdso/zx_futex_wake_handle_close_thread_exit-x86.S	Copyright 2017 The Fuchsia Authors. All rights reserved.
+lib/userabi/vdso/zx_handle_check_valid.cc	Copyright 2025 The Fuchsia Authors
+lib/userabi/vdso/zx_status_get_string.cc	Copyright 2016 The Fuchsia Authors. All rights reserved.
+lib/userabi/vdso/zx_system_get_dcache_line_size.cc	Copyright 2018 The Fuchsia Authors. All rights reserved.
+lib/userabi/vdso/zx_system_get_features.cc	Copyright 2018 The Fuchsia Authors. All rights reserved.
+lib/userabi/vdso/zx_system_get_num_cpus.cc	Copyright 2016 The Fuchsia Authors. All rights reserved.
+lib/userabi/vdso/zx_system_get_page_size.cc	Copyright 2021 The Fuchsia Authors. All rights reserved.
+lib/userabi/vdso/zx_system_get_physmem.cc	Copyright 2017 The Fuchsia Authors. All rights reserved.
+lib/userabi/vdso/zx_system_get_version_string.cc	Copyright 2020 The Fuchsia Authors. All rights reserved.
+lib/userabi/vdso/zx_thread_start.cc	Copyright 2026 The Fuchsia Authors. All rights reserved.
+lib/userabi/vdso/zx_ticks_get.cc	Copyright 2016 The Fuchsia Authors. All rights reserved.
+lib/userabi/vdso/zx_ticks_get_boot.cc	Copyright 2024 The Fuchsia Authors. All rights reserved.
+lib/userabi/vdso/zx_ticks_per_second.cc	Copyright 2016, 2017 The Fuchsia Authors. All rights reserved.
+lib/userabi/vdso/zx_vmar_unmap_handle_close_thread_exit-arm64.S	Copyright 2017 The Fuchsia Authors. All rights reserved.
+lib/userabi/vdso/zx_vmar_unmap_handle_close_thread_exit-riscv64.S	Copyright 2023 The Fuchsia Authors. All rights reserved.
+lib/userabi/vdso/zx_vmar_unmap_handle_close_thread_exit-x86.S	Copyright 2017 The Fuchsia Authors. All rights reserved.
+lib/virtual_alloc/BUILD.gn	Copyright 2021 The Fuchsia Authors
+lib/virtual_alloc/include/lib/virtual_alloc.h	Copyright 2021 The Fuchsia Authors
+lib/virtual_alloc/tests/BUILD.gn	Copyright 2021 The Fuchsia Authors
+lib/virtual_alloc/tests/virtual_alloc_tests.cc	Copyright 2020 The Fuchsia Authors
+lib/virtual_alloc/virtual_alloc.cc	Copyright 2021 The Fuchsia Authors
+lib/wake-vector/BUILD.gn	Copyright 2024 The Fuchsia Authors
+lib/wake-vector/include/lib/wake-vector.h	Copyright 2024 The Fuchsia Authors
+lib/wake-vector/wake-vector.cc	Copyright 2024 The Fuchsia Authors
+main.rs	Copyright 2026 The Fuchsia Authors
+object/BUILD.gn	Copyright 2019 The Fuchsia Authors
+object/METADATA.textproto
+object/OWNERS
+object/bti.rs	Copyright 2026 The Fuchsia Authors
+object/buffer_chain.rs	Copyright 2018 The Fuchsia Authors
+object/bus_transaction_initiator_dispatcher.cc	Copyright 2017 The Fuchsia Authors
+object/bus_transaction_initiator_dispatcher.rs	Copyright 2026 The Fuchsia Authors
+object/bus_transaction_initiator_dispatcher_ffi.cc	Copyright 2026 The Fuchsia Authors
+object/bus_transaction_initiator_dispatcher_ffi.rs	Copyright 2026 The Fuchsia Authors
+object/channel_dispatcher.cc	Copyright 2016 The Fuchsia Authors
+object/clock_dispatcher.cc	Copyright 2019 The Fuchsia Authors
+object/clock_dispatcher.rs	Copyright 2019 The Fuchsia Authors
+object/clock_dispatcher_ffi.cc	Copyright 2019 The Fuchsia Authors
+object/clock_dispatcher_ffi.rs	Copyright 2019 The Fuchsia Authors
+object/counter_dispatcher.cc	Copyright 2025 The Fuchsia Authors
+object/counter_dispatcher.rs	Copyright 2026 The Fuchsia Authors
+object/counter_dispatcher_ffi.cc	Copyright 2026 The Fuchsia Authors
+object/counter_dispatcher_ffi.rs	Copyright 2026 The Fuchsia Authors
+object/diagnostics.cc	Copyright 2016 The Fuchsia Authors
+object/dispatcher.cc	Copyright 2016 The Fuchsia Authors
+object/dispatcher.rs	Copyright 2026 The Fuchsia Authors
+object/dispatcher_ffi.cc	Copyright 2026 The Fuchsia Authors
+object/dispatcher_ffi.rs	Copyright 2026 The Fuchsia Authors
+object/event_dispatcher.cc	Copyright 2016 The Fuchsia Authors
+object/event_dispatcher.rs	Copyright 2026 The Fuchsia Authors
+object/event_dispatcher_ffi.cc	Copyright 2026 The Fuchsia Authors
+object/event_dispatcher_ffi.rs	Copyright 2026 The Fuchsia Authors
+object/event_pair_dispatcher.cc	Copyright 2016 The Fuchsia Authors
+object/event_pair_dispatcher.rs	Copyright 2026 The Fuchsia Authors
+object/event_pair_dispatcher_ffi.cc	Copyright 2026 The Fuchsia Authors
+object/event_pair_dispatcher_ffi.rs	Copyright 2026 The Fuchsia Authors
+object/exception.cc	Copyright 2016 The Fuchsia Authors
+object/exception_dispatcher.cc	Copyright 2019 The Fuchsia Authors
+object/exceptionate.cc	Copyright 2019 The Fuchsia Authors
+object/executor.cc	Copyright 2020 The Fuchsia Authors
+object/fifo_dispatcher.cc	Copyright 2017 The Fuchsia Authors
+object/fifo_dispatcher.rs	Copyright 2026 The Fuchsia Authors
+object/fifo_dispatcher_ffi.cc	Copyright 2026 The Fuchsia Authors
+object/fifo_dispatcher_ffi.rs	Copyright 2026 The Fuchsia Authors
+object/futex_context.cc	Copyright 2016 The Fuchsia Authors
+object/guest_dispatcher.cc	Copyright 2017 The Fuchsia Authors
+object/handle.cc	Copyright 2016 The Fuchsia Authors
+object/handle.rs	Copyright 2026 The Fuchsia Authors
+object/handle_table.cc	Copyright 2020 The Fuchsia Authors
+object/include/object/bus_transaction_initiator_dispatcher.h	Copyright 2017 The Fuchsia Authors
+object/include/object/channel_dispatcher.h	Copyright 2016 The Fuchsia Authors
+object/include/object/clock_dispatcher.h	Copyright 2019 The Fuchsia Authors
+object/include/object/counter_dispatcher.h	Copyright 2025 The Fuchsia Authors
+object/include/object/diagnostics.h	Copyright 2017 The Fuchsia Authors
+object/include/object/dispatcher.h	Copyright 2016 The Fuchsia Authors
+object/include/object/event_dispatcher.h	Copyright 2016 The Fuchsia Authors
+object/include/object/event_pair_dispatcher.h	Copyright 2016 The Fuchsia Authors
+object/include/object/exception_dispatcher.h	Copyright 2019 The Fuchsia Authors
+object/include/object/exceptionate.h	Copyright 2019 The Fuchsia Authors
+object/include/object/executor.h	Copyright 2020 The Fuchsia Authors
+object/include/object/fifo_dispatcher.h	Copyright 2017 The Fuchsia Authors
+object/include/object/futex_context.h	Copyright 2016 The Fuchsia Authors
+object/include/object/guest_dispatcher.h	Copyright 2017 The Fuchsia Authors
+object/include/object/handle.h	Copyright 2016 The Fuchsia Authors
+object/include/object/handle_table.h	Copyright 2020 The Fuchsia Authors
+object/include/object/interrupt_dispatcher.h	Copyright 2016 The Fuchsia Authors
+object/include/object/interrupt_event_dispatcher.h	Copyright 2016 The Fuchsia Authors
+object/include/object/io_buffer_dispatcher.h	Copyright 2022 The Fuchsia Authors
+object/include/object/io_buffer_shared_region_dispatcher.h	Copyright 2025 The Fuchsia Authors
+object/include/object/iommu_dispatcher.h	Copyright 2017 The Fuchsia Authors
+object/include/object/job_dispatcher.h	Copyright 2016 The Fuchsia Authors
+object/include/object/job_policy.h	Copyright 2018 The Fuchsia Authors
+object/include/object/log_dispatcher.h	Copyright 2016 The Fuchsia Authors
+object/include/object/memory_watchdog.h	Copyright 2020 The Fuchsia Authors
+object/include/object/message_packet.h	Copyright 2016 The Fuchsia Authors
+object/include/object/msi_allocation.h	Copyright 2020 The Fuchsia Authors
+object/include/object/msi_dispatcher.h	Copyright 2020 The Fuchsia Authors
+object/include/object/msi_interrupt_dispatcher.h	Copyright 2019 The Fuchsia Authors
+object/include/object/opaque_storage.h	Copyright 2026 The Fuchsia Authors
+object/include/object/pager_dispatcher.h	Copyright 2018 The Fuchsia Authors
+object/include/object/pager_proxy.h	Copyright 2021 The Fuchsia Authors
+object/include/object/pinned_memory_token_dispatcher.h	Copyright 2017 The Fuchsia Authors
+object/include/object/port_dispatcher.h	Copyright 2017 The Fuchsia Authors
+object/include/object/process_dispatcher.h	Copyright 2016 The Fuchsia Authors
+object/include/object/profile_dispatcher.h	Copyright 2018 The Fuchsia Authors
+object/include/object/resource.h	Copyright 2017 The Fuchsia Authors
+object/include/object/resource_dispatcher.h	Copyright 2016 The Fuchsia Authors
+object/include/object/root_job_observer.h	Copyright 2020 The Fuchsia Authors
+object/include/object/root_job_observer_ffi.h	Copyright 2020 The Fuchsia Authors
+object/include/object/sampler_dispatcher.h	Copyright 2026 The Fuchsia Authors
+object/include/object/shareable_process_state.h	Copyright 2022 The Fuchsia Authors
+object/include/object/signal_observer.h	Copyright 2020 The Fuchsia Authors
+object/include/object/socket_dispatcher.h	Copyright 2016 The Fuchsia Authors
+object/include/object/stream_dispatcher.h	Copyright 2026 The Fuchsia Authors
+object/include/object/suspend_token_dispatcher.h	Copyright 2018 The Fuchsia Authors
+object/include/object/thread_dispatcher.h	Copyright 2016 The Fuchsia Authors
+object/include/object/thread_state.h	Copyright 2018 The Fuchsia Authors
+object/include/object/timer_dispatcher.h	Copyright 2017 The Fuchsia Authors
+object/include/object/user_handles.h	Copyright 2019 The Fuchsia Authors
+object/include/object/vcpu_dispatcher.h	Copyright 2017 The Fuchsia Authors
+object/include/object/virtual_interrupt_dispatcher.h	Copyright 2018 The Fuchsia Authors
+object/include/object/vm_address_region_dispatcher.h	Copyright 2016 The Fuchsia Authors
+object/include/object/vm_address_region_dispatcher_ffi.h	Copyright 2026 The Fuchsia Authors
+object/include/object/vm_object_dispatcher.h	Copyright 2016 The Fuchsia Authors
+object/include/object/wait_signal_observer.h	Copyright 2020 The Fuchsia Authors
+object/interrupt_dispatcher.cc	Copyright 2016 The Fuchsia Authors
+object/interrupt_event_dispatcher.cc	Copyright 2016 The Fuchsia Authors
+object/io_buffer_dispatcher.cc	Copyright 2022 The Fuchsia Authors
+object/io_buffer_dispatcher.rs	Copyright 2026 The Fuchsia Authors
+object/io_buffer_dispatcher_ffi.cc	Copyright 2026 The Fuchsia Authors
+object/io_buffer_dispatcher_ffi.rs	Copyright 2026 The Fuchsia Authors
+object/io_buffer_shared_region_dispatcher.cc	Copyright 2025 The Fuchsia Authors
+object/io_buffer_shared_region_dispatcher.rs	Copyright 2026 The Fuchsia Authors
+object/iommu.rs	Copyright 2026 The Fuchsia Authors
+object/iommu_dispatcher.cc	Copyright 2017 The Fuchsia Authors
+object/iommu_dispatcher.rs	Copyright 2026 The Fuchsia Authors
+object/iommu_dispatcher_ffi.cc	Copyright 2026 The Fuchsia Authors
+object/iommu_dispatcher_ffi.rs	Copyright 2026 The Fuchsia Authors
+object/job_dispatcher.cc	Copyright 2016 The Fuchsia Authors
+object/job_dispatcher.rs	Copyright 2026 The Fuchsia Authors
+object/job_dispatcher_ffi.cc	Copyright 2026 The Fuchsia Authors
+object/job_dispatcher_ffi.rs	Copyright 2026 The Fuchsia Authors
+object/job_policy.cc	Copyright 2018 The Fuchsia Authors
+object/job_policy.rs	Copyright 2018 The Fuchsia Authors
+object/job_policy_ffi.rs	Copyright 2026 The Fuchsia Authors
+object/log_dispatcher.cc	Copyright 2016 The Fuchsia Authors
+object/log_dispatcher.rs	Copyright 2026 The Fuchsia Authors
+object/log_dispatcher_ffi.cc	Copyright 2026 The Fuchsia Authors
+object/log_dispatcher_ffi.rs	Copyright 2026 The Fuchsia Authors
+object/mbuf.rs	Copyright 2026 The Fuchsia Authors
+object/memory_watchdog.cc	Copyright 2020 The Fuchsia Authors
+object/message_packet.rs	Copyright 2016 The Fuchsia Authors
+object/msi_allocation.rs	Copyright 2026 The Fuchsia Authors
+object/msi_allocation_ffi.cc	Copyright 2026 The Fuchsia Authors
+object/msi_dispatcher.cc	Copyright 2020 The Fuchsia Authors
+object/msi_dispatcher.rs	Copyright 2026 The Fuchsia Authors
+object/msi_dispatcher_ffi.cc	Copyright 2026 The Fuchsia Authors
+object/msi_dispatcher_ffi.rs	Copyright 2026 The Fuchsia Authors
+object/msi_interrupt_dispatcher.cc	Copyright 2019 The Fuchsia Authors
+object/msi_interrupt_dispatcher.rs	Copyright 2026 The Fuchsia Authors
+object/msi_interrupt_dispatcher_ffi.rs	Copyright 2026 The Fuchsia Authors
+object/object.rs	Copyright 2026 The Fuchsia Authors
+object/pager_dispatcher.cc	Copyright 2018 The Fuchsia Authors
+object/pager_proxy.cc	Copyright 2021 The Fuchsia Authors
+object/pinned_memory_token_dispatcher.cc	Copyright 2017 The Fuchsia Authors
+object/pinned_memory_token_dispatcher.rs	Copyright 2026 The Fuchsia Authors
+object/pinned_memory_token_dispatcher_ffi.cc	Copyright 2026 The Fuchsia Authors
+object/pinned_memory_token_dispatcher_ffi.rs	Copyright 2026 The Fuchsia Authors
+object/pmt.rs	Copyright 2026 The Fuchsia Authors
+object/port_dispatcher.cc	Copyright 2017 The Fuchsia Authors
+object/process_dispatcher.cc	Copyright 2016 The Fuchsia Authors
+object/process_dispatcher.rs	Copyright 2026 The Fuchsia Authors
+object/process_dispatcher_ffi.cc	Copyright 2026 The Fuchsia Authors
+object/process_dispatcher_ffi.rs	Copyright 2026 The Fuchsia Authors
+object/profile_dispatcher.cc	Copyright 2018 The Fuchsia Authors
+object/profile_dispatcher.rs	Copyright 2026 The Fuchsia Authors
+object/profile_dispatcher_ffi.cc	Copyright 2018 The Fuchsia Authors
+object/profile_dispatcher_ffi.rs	Copyright 2026 The Fuchsia Authors
+object/resource.cc	Copyright 2017 The Fuchsia Authors
+object/resource.rs	Copyright 2026 The Fuchsia Authors
+object/resource_dispatcher.cc	Copyright 2016 The Fuchsia Authors
+object/resource_dispatcher.rs	Copyright 2026 The Fuchsia Authors
+object/resource_dispatcher_ffi.cc	Copyright 2026 The Fuchsia Authors
+object/resource_dispatcher_ffi.rs	Copyright 2026 The Fuchsia Authors
+object/resource_ffi.rs	Copyright 2026 The Fuchsia Authors
+object/root_job_observer.cc	Copyright 2020 The Fuchsia Authors
+object/root_job_observer.rs	Copyright 2020 The Fuchsia Authors
+object/root_job_observer_ffi.cc	Copyright 2020 The Fuchsia Authors
+object/root_job_observer_ffi.rs	Copyright 2020 The Fuchsia Authors
+object/sampler_dispatcher.cc	Copyright 2026 The Fuchsia Authors
+object/sampler_dispatcher.rs	Copyright 2026 The Fuchsia Authors
+object/sampler_dispatcher_ffi.cc	Copyright 2026 The Fuchsia Authors
+object/sampler_dispatcher_ffi.rs	Copyright 2026 The Fuchsia Authors
+object/singleton.cc	Copyright 2016 The Fuchsia Authors
+object/socket_dispatcher.cc	Copyright 2016 The Fuchsia Authors
+object/socket_dispatcher.rs	Copyright 2026 The Fuchsia Authors
+object/socket_dispatcher_ffi.cc	Copyright 2026 The Fuchsia Authors
+object/socket_dispatcher_ffi.rs	Copyright 2026 The Fuchsia Authors
+object/stream_dispatcher.cc	Copyright 2026 The Fuchsia Authors
+object/stream_dispatcher.rs	Copyright 2026 The Fuchsia Authors
+object/stream_dispatcher_ffi.cc	Copyright 2026 The Fuchsia Authors
+object/stream_dispatcher_ffi.rs	Copyright 2026 The Fuchsia Authors
+object/suspend_token_dispatcher.cc	Copyright 2018 The Fuchsia Authors
+object/suspend_token_dispatcher.rs	Copyright 2026 The Fuchsia Authors
+object/suspend_token_dispatcher_ffi.cc	Copyright 2026 The Fuchsia Authors
+object/suspend_token_dispatcher_ffi.rs	Copyright 2026 The Fuchsia Authors
+object/test/exceptionate_tests.cc	Copyright 2019 The Fuchsia Authors
+object/test/fake_dispatcher.h	Copyright 2024 The Fuchsia Authors
+object/test/handle_tests.cc	Copyright 2019 The Fuchsia Authors
+object/test/interrupt_event_dispatcher_tests.cc	Copyright 2019 The Fuchsia Authors
+object/test/job_dispatcher_tests.cc	Copyright 2019 The Fuchsia Authors
+object/test/job_policy_tests.cc	Copyright 2018 The Fuchsia Authors
+object/test/msi_object_tests.cc	Copyright 2020 The Fuchsia Authors
+object/test/shareable_process_state_tests.cc	Copyright 2022 The Fuchsia Authors
+object/test/state_tracker_tests.cc	Copyright 2017 The Fuchsia Authors
+object/thread_dispatcher.cc	Copyright 2016 The Fuchsia Authors
+object/thread_dispatcher.rs	Copyright 2026 The Fuchsia Authors
+object/thread_dispatcher_ffi.cc	Copyright 2026 The Fuchsia Authors
+object/thread_dispatcher_ffi.rs	Copyright 2026 The Fuchsia Authors
+object/timer_dispatcher.cc	Copyright 2017 The Fuchsia Authors
+object/timer_dispatcher.rs	Copyright 2026 The Fuchsia Authors
+object/timer_dispatcher_ffi.rs	Copyright 2026 The Fuchsia Authors
+object/user_handles.cc	Copyright 2019 The Fuchsia Authors
+object/vcpu_dispatcher.cc	Copyright 2017 The Fuchsia Authors
+object/virtual_interrupt_dispatcher.cc	Copyright 2016 The Fuchsia Authors
+object/vm_address_region_dispatcher.cc	Copyright 2016 The Fuchsia Authors
+object/vm_address_region_dispatcher.rs	Copyright 2026 The Fuchsia Authors
+object/vm_address_region_dispatcher_ffi.cc	Copyright 2026 The Fuchsia Authors
+object/vm_address_region_dispatcher_ffi.rs	Copyright 2026 The Fuchsia Authors
+object/vm_object_dispatcher.cc	Copyright 2016 The Fuchsia Authors
+object/vm_object_dispatcher.rs	Copyright 2026 The Fuchsia Authors
+object/vm_object_dispatcher_ffi.rs	Copyright 2026 The Fuchsia Authors
+object/wait_signal_observer.cc	Copyright 2020 The Fuchsia Authors
+object/wait_signal_observer.rs	Copyright 2026 The Fuchsia Authors
+params.gni	Copyright 2019 The Fuchsia Authors
+phys/BUILD.gn
+phys/METADATA.textproto
+phys/OWNERS
+phys/README.md
+phys/acpi.cc
+phys/address-space-map.cc
+phys/address-space.cc
+phys/allocation-init.cc
+phys/allocation.cc
+phys/boot-options.cc
+phys/boot-shim/BUILD.gn
+phys/boot-shim/debugdata-boot-shim-test.cc
+phys/boot-shim/devicetree-dump-boot-shim.cc
+phys/boot-shim/devicetree.cc
+phys/boot-shim/devicetree.gni
+phys/boot-shim/efi-boot-shim.cc
+phys/boot-shim/include/phys/boot-shim/devicetree.h
+phys/boot-shim/zbi-boot-shim.cc
+phys/boot-zbi.cc
+phys/cfi-runtime.cc
+phys/devicetree_boot_test.gni
+phys/efi/BUILD.gn
+phys/efi/README.md
+phys/efi/allocation.cc
+phys/efi/efi-boot-zbi.cc
+phys/efi/efi-main.cc
+phys/efi/efi-zbi.cc
+phys/efi/efi_executable.gni
+phys/efi/efi_shell_test.gni
+phys/efi/efi_test.gni
+phys/efi/fat_filesystem.gni
+phys/efi/file.cc
+phys/efi/include/phys/address-space.h
+phys/efi/include/phys/efi/efi-boot-zbi.h
+phys/efi/include/phys/efi/file.h
+phys/efi/include/phys/efi/main.h
+phys/efi/include/phys/efi/page-size.h
+phys/efi/include/phys/efi/protocol.h
+phys/efi/mkfatfs/BUILD.gn
+phys/efi/mkfatfs/src/main.rs
+phys/efi/protocol-tests.cc
+phys/efi/protocol.cc
+phys/efi/stdout.cc
+phys/efi/toolchain.gni
+phys/elf-image-mapinto.cc
+phys/elf-image-self-vmos.cc
+phys/elf-image-vmos.cc
+phys/elf-image.cc
+phys/exception.cc
+phys/fixed-address-boot-zbi.cc
+phys/handoff-entropy.cc
+phys/handoff-entropy.h
+phys/handoff-prep-version.cc
+phys/handoff-prep-vm.cc
+phys/handoff-prep-zbi.cc
+phys/handoff-prep.cc
+phys/handoff-prep.h
+phys/include/phys/acpi.h
+phys/include/phys/address-space.h
+phys/include/phys/allocation.h
+phys/include/phys/boot-constants.h
+phys/include/phys/boot-options.h
+phys/include/phys/boot-zbi.h
+phys/include/phys/early-boot.h
+phys/include/phys/elf-image.h
+phys/include/phys/exception.h
+phys/include/phys/fixed-address-boot-zbi.h
+phys/include/phys/handoff-ptr.h
+phys/include/phys/handoff.h
+phys/include/phys/kernel-package.h
+phys/include/phys/main.h
+phys/include/phys/new.h
+phys/include/phys/stack.h
+phys/include/phys/stdio.h
+phys/include/phys/symbolize.h
+phys/include/phys/uart-console.h
+phys/include/phys/uart.h
+phys/include/phys/zbi.h
+phys/include/phys/zbitl-allocation.h
+phys/include/phys/zircon-abi-spec.h
+phys/kernel-elf-interp.sh
+phys/kernel-package.cc
+phys/kernel_elf_binary.gni
+phys/kernel_elf_image.gni
+phys/kernel_elf_interp.gni
+phys/lib/BUILD.gn
+phys/lib/boot-shim/BUILD.gn
+phys/lib/boot-shim/acpi-tests.cc
+phys/lib/boot-shim/acpi.cc
+phys/lib/boot-shim/boot-properties-test.cc
+phys/lib/boot-shim/boot-properties.cc
+phys/lib/boot-shim/boot-shim-tests.cc
+phys/lib/boot-shim/boot-shim.cc
+phys/lib/boot-shim/cmdline.cc
+phys/lib/boot-shim/debugdata-tests.cc
+phys/lib/boot-shim/debugdata.cc
+phys/lib/boot-shim/devicetree-arm-cpu-topology-item-test.cc
+phys/lib/boot-shim/devicetree-arm-gic-item-test.cc
+phys/lib/boot-shim/devicetree-arm-gic-item.cc
+phys/lib/boot-shim/devicetree-arm-psci-cpu-suspend-item-test.cc
+phys/lib/boot-shim/devicetree-arm-psci-cpu-suspend-item.cc
+phys/lib/boot-shim/devicetree-arm-psci-item-test.cc
+phys/lib/boot-shim/devicetree-arm-psci-item.cc
+phys/lib/boot-shim/devicetree-arm-qcom-rng-item-test.cc
+phys/lib/boot-shim/devicetree-arm-qcom-rng-item.cc
+phys/lib/boot-shim/devicetree-arm-smmu-item-test.cc
+phys/lib/boot-shim/devicetree-arm-smmu-item.cc
+phys/lib/boot-shim/devicetree-arm-timer-item-test.cc
+phys/lib/boot-shim/devicetree-arm-timer-item.cc
+phys/lib/boot-shim/devicetree-arm-timer-mmio-item-test.cc
+phys/lib/boot-shim/devicetree-arm-timer-mmio-item.cc
+phys/lib/boot-shim/devicetree-boot-shim-tests.cc
+phys/lib/boot-shim/devicetree-chosen-matcher-test.cc
+phys/lib/boot-shim/devicetree-chosen-matcher.cc
+phys/lib/boot-shim/devicetree-cpu-topology-item.cc
+phys/lib/boot-shim/devicetree-generic-watchdog-item-test.cc
+phys/lib/boot-shim/devicetree-irq-resolver.cc
+phys/lib/boot-shim/devicetree-memory-matcher-test.cc
+phys/lib/boot-shim/devicetree-memory-matcher.cc
+phys/lib/boot-shim/devicetree-riscv-cpu-topology-item-test.cc
+phys/lib/boot-shim/devicetree-riscv-cpu-topology-item.cc
+phys/lib/boot-shim/devicetree-riscv-plic-item-test.cc
+phys/lib/boot-shim/devicetree-riscv-plic-item.cc
+phys/lib/boot-shim/devicetree-riscv-timer-item-test.cc
+phys/lib/boot-shim/devicetree-riscv-timer-item.cc
+phys/lib/boot-shim/devicetree-secure-entropy-item-test.cc
+phys/lib/boot-shim/devicetree-secure-entropy-item.cc
+phys/lib/boot-shim/devicetree-serial-number-item-test.cc
+phys/lib/boot-shim/devicetree-serial-number-item.cc
+phys/lib/boot-shim/devicetree-test-fixture.cc
+phys/lib/boot-shim/efi-boot-shim-tests.cc
+phys/lib/boot-shim/efi-boot-shim.cc
+phys/lib/boot-shim/efi-tests.cc
+phys/lib/boot-shim/efi.cc
+phys/lib/boot-shim/include/lib/boot-shim/acpi.h
+phys/lib/boot-shim/include/lib/boot-shim/boot-properties.h
+phys/lib/boot-shim/include/lib/boot-shim/boot-shim.h
+phys/lib/boot-shim/include/lib/boot-shim/debugdata.h
+phys/lib/boot-shim/include/lib/boot-shim/devicetree-boot-shim.h
+phys/lib/boot-shim/include/lib/boot-shim/devicetree.h
+phys/lib/boot-shim/include/lib/boot-shim/efi-boot-shim.h
+phys/lib/boot-shim/include/lib/boot-shim/efi.h
+phys/lib/boot-shim/include/lib/boot-shim/item-base.h
+phys/lib/boot-shim/include/lib/boot-shim/pool-mem-config.h
+phys/lib/boot-shim/include/lib/boot-shim/reboot-reason.h
+phys/lib/boot-shim/include/lib/boot-shim/test-serial-number.h
+phys/lib/boot-shim/include/lib/boot-shim/testing/devicetree-test-fixture.h
+phys/lib/boot-shim/include/lib/boot-shim/testing/test-helper.h
+phys/lib/boot-shim/include/lib/boot-shim/tty.h
+phys/lib/boot-shim/include/lib/boot-shim/uart.h
+phys/lib/boot-shim/include/lib/boot-shim/watchdog.h
+phys/lib/boot-shim/pool-mem-config-tests.cc
+phys/lib/boot-shim/pool-mem-config.cc
+phys/lib/boot-shim/reboot-reason-test.cc
+phys/lib/boot-shim/reboot-reason.cc
+phys/lib/boot-shim/test-helper.cc
+phys/lib/boot-shim/test-serial-number-tests.cc
+phys/lib/boot-shim/test-serial-number.cc
+phys/lib/boot-shim/tty-tests.cc
+phys/lib/boot-shim/tty.cc
+phys/lib/boot-shim/uart-tests.cc
+phys/lib/linux-boot-config/BUILD.gn
+phys/lib/linux-boot-config/include/lib/linux-boot-config/linux-boot-config.h
+phys/lib/linux-boot-config/linux-boot-config-tests.cc
+phys/lib/linux-boot-config/linux-boot-config.cc
+phys/lib/memalloc/BUILD.gn
+phys/lib/memalloc/algorithm-test.cc
+phys/lib/memalloc/algorithm.cc
+phys/lib/memalloc/algorithm.h
+phys/lib/memalloc/find-fuzzer.cc
+phys/lib/memalloc/include/lib/memalloc/pool-mem-config.h
+phys/lib/memalloc/include/lib/memalloc/pool.h
+phys/lib/memalloc/include/lib/memalloc/range.h
+phys/lib/memalloc/include/lib/memalloc/testing/range.h
+phys/lib/memalloc/meta/find-fuzzer.cml
+phys/lib/memalloc/meta/pool-fuzzer.cml
+phys/lib/memalloc/pool-fuzzer.cc
+phys/lib/memalloc/pool-mem-config-test.cc
+phys/lib/memalloc/pool-test.cc
+phys/lib/memalloc/pool.cc
+phys/lib/memalloc/range-test.cc
+phys/lib/memalloc/range.cc
+phys/lib/memalloc/test.h
+phys/linuxboot-pic.ld
+phys/log.cc
+phys/log.h
+phys/main-symbolize-cfi.cc
+phys/main-symbolize.cc
+phys/panic.cc
+phys/phys-elf-module.ld
+phys/phys-end.ld
+phys/phys.ld
+phys/phys_executable.gni
+phys/physboot.cc
+phys/physboot.h
+phys/physload-module.cc
+phys/physload.cc
+phys/physload.h
+phys/physload_module.gni
+phys/qemu.gni
+phys/qemu_kernel_test.gni
+phys/raw-header.S
+phys/self-relocation.cc
+phys/shim_executable.gni
+phys/stack.cc
+phys/stdio.cc
+phys/symbolize.cc
+phys/test/BUILD.gn
+phys/test/asm-backtrace.S
+phys/test/backtrace-test.cc
+phys/test/boot-zbi-load-test.cc
+phys/test/chain-load-test.cc
+phys/test/code-patching/BUILD.gn
+phys/test/code-patching/add-one.S
+phys/test/code-patching/elf-code-patching-test.cc
+phys/test/code-patching/multiply_by_ten.S
+phys/test/code-patching/multiply_by_two.S
+phys/test/code-patching/self-code-patching-test.cc
+phys/test/code-patching/test.h
+phys/test/debugdata-propagation/BUILD.gn
+phys/test/debugdata-propagation/debugdata-info.h
+phys/test/debugdata-propagation/debugdata-provider.cc
+phys/test/debugdata-propagation/debugdata-test.cc
+phys/test/decompress-test.cc
+phys/test/devicetree-test-main.cc
+phys/test/efi-test-main.cc
+phys/test/elf-loading/BUILD.gn
+phys/test/elf-loading/basic-test.cc
+phys/test/elf-loading/get-int.cc
+phys/test/elf-loading/get-int.h
+phys/test/elf-loading/virtual-address-test.cc
+phys/test/handoff-entropy-test.cc
+phys/test/hello-world-test.cc
+phys/test/linux-boot-config/BUILD.gn
+phys/test/linux-boot-config/add_boot_config.py
+phys/test/linux-boot-config/boot-config-test.cc
+phys/test/linux-boot-config/devicetree-linux-boot-config.cc
+phys/test/linux-boot-config/linux-boot-config.h
+phys/test/linux-boot-config/testdata/empty.txt
+phys/test/linux-boot-config/testdata/valid.txt
+phys/test/linux-boot-config/zbi-boot-config-test.cc
+phys/test/phys-exception-test.cc
+phys/test/phys-memory-test.cc
+phys/test/phys-unittest.h
+phys/test/phys-unittests.cc
+phys/test/phys-unittests.h
+phys/test/phys_zbi_test.gni
+phys/test/physboot-hello-world-test.cc
+phys/test/physload-handoff-test.cc
+phys/test/physload-test-main.cc
+phys/test/physload-test-main.h
+phys/test/physload_binary_test.gni
+phys/test/qemu-test-main.cc
+phys/test/stack-tests.cc
+phys/test/test-main.h
+phys/test/trampoline-boot-test.cc
+phys/test/turducken-test.cc
+phys/test/turducken.cc
+phys/test/turducken.h
+phys/test/turducken_zbi_test.gni
+phys/test/zbi-test-main.cc
+phys/uart-console.cc
+phys/ubsan-runtime.cc
+phys/zbi-header.S
+phys/zbi-header.ld
+phys/zbi-init-memory.cc
+phys/zbi-main.cc
+phys/zbi-memory.cc
+phys/zbi_executable.gni
+phys/zbitl-allocation.cc
+platform/BUILD.gn
+platform/debug.cc
+platform/debug.rs
+platform/debug_ffi.cc
+platform/efi-private.h
+platform/efi.cc
+platform/efi_bootbyte.cc
+platform/efi_crashlog.cc
+platform/efi_test.cc
+platform/generic-arm/BUILD.gn
+platform/generic-arm/dev-init.cc
+platform/generic-arm/efi.cc
+platform/generic-arm/platform.cc
+platform/generic-arm/uart.cc
+platform/generic-riscv64/BUILD.gn
+platform/generic-riscv64/dev-init.cc
+platform/generic-riscv64/platform.cc
+platform/generic-riscv64/timer.cc
+platform/halt_helper.cc
+platform/halt_token.rs
+platform/include/platform/mexec.h
+platform/include/platform/uart.h
+platform/mapped_crashlog.cc
+platform/mexec.cc
+platform/pc/BUILD.gn
+platform/pc/METADATA.textproto
+platform/pc/OWNERS
+platform/pc/acpi.rs
+platform/pc/cmos_bootbyte.rs
+platform/pc/dev-init.cc
+platform/pc/efi_expected.cc
+platform/pc/hpet.rs
+platform/pc/include/platform/pc.h
+platform/pc/include/platform/pc/bootbyte.h
+platform/pc/include/platform/pc/hpet.h
+platform/pc/include/platform/pc/keyboard.h
+platform/pc/include/platform/pc/memory.h
+platform/pc/include/platform/pc/smbios.h
+platform/pc/include/platform/pc/timer.h
+platform/pc/interrupt_manager.rs
+platform/pc/interrupts.rs
+platform/pc/keyboard.rs
+platform/pc/memory.cc
+platform/pc/mod.rs
+platform/pc/pic.rs
+platform/pc/platform.cc
+platform/pc/power.cc
+platform/pc/smbios.cc
+platform/pc/smbios.rs
+platform/pc/timer.cc
+platform/pc/uart.cc
+platform/platform.rs
+platform/power.cc
+platform/power.rs
+platform/power_ffi.cc
+platform/suspend_cpu_tests.cc
+platform/timer.rs
+platform/timer_ffi.cc
+scripts/arm-esr.py
+scripts/dis.py
+scripts/validate-kernel-symbols.py
+scripts/vmzircon-gdb.py
+switch/BUILD.gn
+switch/set/lk_debug_level_0/BUILD.gn
+switch/set/lk_debug_level_2/BUILD.gn
+switch/set/static-checks/BUILD.gn
+tests/BUILD.gn
+tests/abi_type_validator.cc
+tests/alloc_checker_tests.cc
+tests/arch_rs_tests.cc
+tests/arch_rs_tests.rs
+tests/benchmarks.cc
+tests/brwlock_tests.cc
+tests/cache_tests.cc
+tests/clock_tests.cc
+tests/cpu_search_tests.cc
+tests/cpu_tests.cc
+tests/dpc_tests.cc
+tests/event_tests.cc
+tests/fibo.cc
+tests/heap_tests.cc
+tests/interrupt_disable_tests.cc
+tests/job_tests.cc
+tests/kstack_tests.cc
+tests/ksync_tests.cc
+tests/lazy_owned_wait_queue_tests.cc
+tests/lock_dep_tests.cc
+tests/loop_limiter_tests.cc
+tests/mem_tests.cc
+tests/mmu_tests.cc
+tests/mp_hotplug_tests.cc
+tests/mp_tests.cc
+tests/multi_file_tests.cc
+tests/mutex_spin_time_tests.cc
+tests/owned_wait_queue_topology.cc
+tests/pi_tests.cc
+tests/popcount.cc
+tests/port_tests.cc
+tests/pow2_tests.cc
+tests/preempt_disable_tests.cc
+tests/printf_tests.cc
+tests/range_check_tests.cc
+tests/relaxed_atomic_tests.cc
+tests/relocation_tests.cc
+tests/rustlang-support/BUILD.gn
+tests/rustlang-support/OWNERS
+tests/rustlang-support/rust-tests.cc
+tests/rustlang-support/src/lib.rs
+tests/rustlang-support/test_dep_priv_mod.rs
+tests/rustlang-support/test_dep_pub_mod.rs
+tests/rustlang-support/test_dep_was_renamed_mod.rs	Copyright 2026 The Fuchsia Authors. All rights reserved.
+tests/rustlang-support/test_lib/BUILD.gn
+tests/rustlang-support/test_lib/src/lib.rs
+tests/rustlang-support/test_macro/BUILD.gn
+tests/rustlang-support/test_macro/src/lib.rs
+tests/rustlang-support/test_mod.rs
+tests/rustlang-support/test_submod.rs
+tests/scheduler_state_tests.cc
+tests/sleep_tests.cc
+tests/spinner.cc
+tests/string_file_tests.cc
+tests/string_tests.cc
+tests/string_view_tests.cc
+tests/sync_ipi_tests.cc
+tests/tests.cc
+tests/tests.h
+tests/thread_dispatcher_tests.cc
+tests/timer_tests.cc
+tests/uart_tests.cc
+tests/unittest_tests.cc
+tests/unused_rust.rs
+tests/userboot_tests.cc
+tests/variant_tests.cc
+tests/wait_queue_ordering_tests.cc
+tests/zbitl_tests.cc
+top/BUILD.gn
+top/debug.cc
+top/debug.rs
+top/handoff.cc
+top/handoff_ffi.cc
+top/init.rs
+top/main.cc
+top/mod.rs
+top/rust_panic.rs
+top/version.cc
+vm/BUILD.gn	Copyright 2019 The Fuchsia Authors
+vm/METADATA.textproto
+vm/OWNERS
+vm/anonymous_page_request.cc	Copyright 2022 The Fuchsia Authors
+vm/arch_vm_aspace.rs	Copyright 2026 The Fuchsia Authors
+vm/arch_vm_aspace_ffi.cc	Copyright 2026 The Fuchsia Authors
+vm/attribution.rs	Copyright 2026 The Fuchsia Authors
+vm/attribution_ffi.cc	Copyright 2026 The Fuchsia Authors
+vm/compression.cc	Copyright 2022 The Fuchsia Authors
+vm/compression.rs	Copyright 2026 The Fuchsia Authors
+vm/compression_ffi.cc	Copyright 2026 The Fuchsia Authors
+vm/compressor.cc	Copyright 2022 The Fuchsia Authors
+vm/compressor.rs	Copyright 2026 The Fuchsia Authors
+vm/compressor_ffi.cc	Copyright 2026 The Fuchsia Authors
+vm/continuous_attribution_tracker.rs	Copyright 2026 The Fuchsia Authors. All rights reserved.
+vm/debug_compressor.cc	Copyright 2022 The Fuchsia Authors
+vm/debug_compressor.rs	Copyright 2026 The Fuchsia Authors
+vm/discardable_vmo_tracker.cc	Copyright 2022 The Fuchsia Authors
+vm/discardable_vmo_tracker.rs	Copyright 2026 The Fuchsia Authors
+vm/discardable_vmo_tracker_ffi.cc	Copyright 2026 The Fuchsia Authors
+vm/evictor.cc	Copyright 2021 The Fuchsia Authors
+vm/evictor.rs	Copyright 2026 The Fuchsia Authors
+vm/evictor_ffi.cc	Copyright 2026 The Fuchsia Authors
+vm/fault.rs	Copyright 2026 The Fuchsia Authors
+vm/include/vm/anonymous_page_request.h	Copyright 2022 The Fuchsia Authors
+vm/include/vm/arch_vm_aspace.h	Copyright 2017 The Fuchsia Authors
+vm/include/vm/attribution.h	Copyright 2024 The Fuchsia Authors
+vm/include/vm/attribution_ffi.h	Copyright 2026 The Fuchsia Authors
+vm/include/vm/compression.h	Copyright 2022 The Fuchsia Authors
+vm/include/vm/compression_ffi.h	Copyright 2026 The Fuchsia Authors
+vm/include/vm/compressor.h	Copyright 2022 The Fuchsia Authors
+vm/include/vm/compressor_ffi.h	Copyright 2026 The Fuchsia Authors
+vm/include/vm/continuous_attribution_tracker.h	Copyright 2026 The Fuchsia Authors. All rights reserved.
+vm/include/vm/debug_compressor.h	Copyright 2022 The Fuchsia Authors
+vm/include/vm/discardable_vmo_tracker.h	Copyright 2022 The Fuchsia Authors
+vm/include/vm/discardable_vmo_tracker_ffi.h	Copyright 2026 The Fuchsia Authors
+vm/include/vm/evictor.h	Copyright 2021 The Fuchsia Authors
+vm/include/vm/evictor_ffi.h	Copyright 2026 The Fuchsia Authors
+vm/include/vm/fault.h	Copyright 2016 The Fuchsia Authors	Copyright (c) 2014 Travis Geiselbrecht
+vm/include/vm/handoff-end.h	Copyright 2025 The Fuchsia Authors
+vm/include/vm/init.h	Copyright 2017 The Fuchsia Authors
+vm/include/vm/kstack.h	Copyright 2018 The Fuchsia Authors
+vm/include/vm/lz4_compressor.h	Copyright 2023 The Fuchsia Authors
+vm/include/vm/mapping_cursor.h	Copyright 2023 The Fuchsia Authors
+vm/include/vm/memory_stats.h	Copyright 2025 The Fuchsia Authors
+vm/include/vm/page.h	Copyright 2016 The Fuchsia Authors	Copyright (c) 2014 Travis Geiselbrecht
+vm/include/vm/page_ffi.h	Copyright 2026 The Fuchsia Authors
+vm/include/vm/page_queues.h	Copyright 2020 The Fuchsia Authors
+vm/include/vm/page_queues_ffi.h	Copyright 2026 The Fuchsia Authors
+vm/include/vm/page_slab_allocator.h	Copyright 2025 The Fuchsia Authors
+vm/include/vm/page_source.h	Copyright 2018 The Fuchsia Authors
+vm/include/vm/page_source_ffi.h	Copyright 2026 The Fuchsia Authors
+vm/include/vm/page_state.h	Copyright 2019 The Fuchsia Authors
+vm/include/vm/physical_page_borrowing_config.h	Copyright 2021 The Fuchsia Authors
+vm/include/vm/physical_page_provider.h	Copyright 2021 The Fuchsia Authors
+vm/include/vm/physmap.h	Copyright 2017 The Fuchsia Authors	Copyright (c) 2014 Travis Geiselbrecht
+vm/include/vm/physmap_ffi.h	Copyright 2026 The Fuchsia Authors
+vm/include/vm/pinned_vm_object.h	Copyright 2018 The Fuchsia Authors
+vm/include/vm/pmm.h	Copyright 2017 The Fuchsia Authors	Copyright (c) 2014 Travis Geiselbrecht
+vm/include/vm/pmm_arena.h	Copyright 2016 The Fuchsia Authors
+vm/include/vm/pmm_checker.h	Copyright 2020 The Fuchsia Authors
+vm/include/vm/pmm_checker_ffi.h	Copyright 2026 The Fuchsia Authors
+vm/include/vm/pmm_ffi.h	Copyright 2026 The Fuchsia Authors
+vm/include/vm/pmm_node.h	Copyright 2018 The Fuchsia Authors
+vm/include/vm/pmm_node_ffi.h	Copyright 2026 The Fuchsia Authors
+vm/include/vm/scanner.h	Copyright 2019 The Fuchsia Authors
+vm/include/vm/scanner_ffi.h	Copyright 2026 The Fuchsia Authors
+vm/include/vm/slot_page_storage.h	Copyright 2025 The Fuchsia Authors
+vm/include/vm/stream_size_manager.h	Copyright 2022 The Fuchsia Authors
+vm/include/vm/vm.h	Copyright 2016 The Fuchsia Authors	Copyright (c) 2014 Travis Geiselbrecht
+vm/include/vm/vm_address_region.h	Copyright 2016 The Fuchsia Authors
+vm/include/vm/vm_address_region_enumerator.h	Copyright 2022 The Fuchsia Authors
+vm/include/vm/vm_address_region_observer.h	Copyright 2023 The Fuchsia Authors
+vm/include/vm/vm_aspace.h	Copyright 2016 The Fuchsia Authors
+vm/include/vm/vm_aspace_ffi.h	Copyright 2026 The Fuchsia Authors
+vm/include/vm/vm_constants.h	Copyright 2026 The Fuchsia Authors
+vm/include/vm/vm_cow_pages.h	Copyright 2020 The Fuchsia Authors
+vm/include/vm/vm_cow_pages_ffi.h	Copyright 2026 The Fuchsia Authors
+vm/include/vm/vm_mapping_observer.h	Copyright 2025 The Fuchsia Authors
+vm/include/vm/vm_object.h	Copyright 2016 The Fuchsia Authors
+vm/include/vm/vm_object_ffi.h	Copyright 2026 The Fuchsia Authors
+vm/include/vm/vm_object_paged.h	Copyright 2016 The Fuchsia Authors
+vm/include/vm/vm_object_paged_ffi.h	Copyright 2026 The Fuchsia Authors
+vm/include/vm/vm_object_physical.h	Copyright 2016 The Fuchsia Authors
+vm/include/vm/vm_page_list.h	Copyright 2016 The Fuchsia Authors
+vm/include/vm/vm_page_list_ffi.h	Copyright 2026 The Fuchsia Authors
+vm/kstack.cc	Copyright 2018 The Fuchsia Authors
+vm/lz4_compressor.cc	Copyright 2023 The Fuchsia Authors
+vm/mem_command.cc	Copyright 2024 The Fuchsia Authors
+vm/memory_stats.cc	Copyright 2025 The Fuchsia Authors
+vm/mod.rs	Copyright 2026 The Fuchsia Authors
+vm/page.cc	Copyright 2016 The Fuchsia Authors	Copyright (c) 2014 Travis Geiselbrecht
+vm/page.rs	Copyright 2026 The Fuchsia Authors
+vm/page_queues.cc	Copyright 2020 The Fuchsia Authors
+vm/page_queues.rs	Copyright 2026 The Fuchsia Authors
+vm/page_queues_ffi.cc	Copyright 2026 The Fuchsia Authors
+vm/page_slab_allocator.rs	Copyright 2026 The Fuchsia Authors
+vm/page_source.cc	Copyright 2018 The Fuchsia Authors
+vm/page_source.rs	Copyright 2026 The Fuchsia Authors
+vm/page_source_ffi.cc	Copyright 2026 The Fuchsia Authors
+vm/page_state.cc	Copyright 2021 The Fuchsia Authors
+vm/page_state.rs	Copyright 2026 The Fuchsia Authors
+vm/phys/BUILD.gn	Copyright 2024 The Fuchsia Authors
+vm/phys/arena-selection-tests.cc	Copyright 2024 The Fuchsia Authors
+vm/phys/include/vm/phys/arena.h	Copyright 2024 The Fuchsia Authors
+vm/physical_page_borrowing_config.cc	Copyright 2021 The Fuchsia Authors
+vm/physical_page_borrowing_config.rs	Copyright 2026 The Fuchsia Authors
+vm/physical_page_provider.cc	Copyright 2021 The Fuchsia Authors
+vm/physmap.rs	Copyright 2026 The Fuchsia Authors
+vm/physmap_ffi.cc	Copyright 2026 The Fuchsia Authors
+vm/pinned_vm_object.cc	Copyright 2018 The Fuchsia Authors
+vm/pinned_vm_object.rs	Copyright 2026 The Fuchsia Authors
+vm/pmm.cc	Copyright 2016 The Fuchsia Authors	Copyright (c) 2014 Travis Geiselbrecht
+vm/pmm.rs	Copyright 2026 The Fuchsia Authors
+vm/pmm_arena.cc	Copyright 2016 The Fuchsia Authors
+vm/pmm_arena.rs	Copyright 2026 The Fuchsia Authors
+vm/pmm_checker.cc	Copyright 2020 The Fuchsia Authors
+vm/pmm_checker.rs	Copyright 2026 The Fuchsia Authors
+vm/pmm_checker_ffi.cc	Copyright 2026 The Fuchsia Authors
+vm/pmm_ffi.cc	Copyright 2026 The Fuchsia Authors
+vm/pmm_node.cc	Copyright 2018 The Fuchsia Authors
+vm/pmm_node.rs	Copyright 2026 The Fuchsia Authors
+vm/ppb_command.cc	Copyright 2021 The Fuchsia Authors
+vm/scanner.cc	Copyright 2019 The Fuchsia Authors
+vm/scanner.rs	Copyright 2026 The Fuchsia Authors
+vm/scanner_ffi.cc	Copyright 2026 The Fuchsia Authors
+vm/slot_page_storage.cc	Copyright 2025 The Fuchsia Authors
+vm/stream_size_manager.cc	Copyright 2022 The Fuchsia Authors
+vm/stream_size_manager.rs	Copyright 2026 The Fuchsia Authors
+vm/unittests/aspace_unittest.cc	Copyright 2020 The Fuchsia Authors
+vm/unittests/aspace_unittest.rs	Copyright 2026 The Fuchsia Authors
+vm/unittests/compression_unittest.cc	Copyright 2023 The Fuchsia Authors
+vm/unittests/continuous_attribution_unittest.cc	Copyright 2026 The Fuchsia Authors. All rights reserved.
+vm/unittests/continuous_attribution_unittest.rs	Copyright 2026 The Fuchsia Authors. All rights reserved.
+vm/unittests/evictor_unittest.cc	Copyright 2021 The Fuchsia Authors
+vm/unittests/mod.rs	Copyright 2026 The Fuchsia Authors. All rights reserved.
+vm/unittests/page_queues_unittest.cc	Copyright 2026 The Fuchsia Authors
+vm/unittests/pmm_unittest.cc	Copyright 2020 The Fuchsia Authors
+vm/unittests/slab_unittest.cc	Copyright 2025 The Fuchsia Authors
+vm/unittests/slab_unittest.rs	Copyright 2026 The Fuchsia Authors
+vm/unittests/test_helper.cc	Copyright 2020 The Fuchsia Authors
+vm/unittests/test_helper.h	Copyright 2020 The Fuchsia Authors
+vm/unittests/test_helper.rs	Copyright 2026 The Fuchsia Authors
+vm/unittests/test_helper_ffi.cc	Copyright 2026 The Fuchsia Authors
+vm/unittests/test_helper_ffi.h	Copyright 2026 The Fuchsia Authors
+vm/unittests/vmo_unittest.cc	Copyright 2020 The Fuchsia Authors
+vm/unittests/vmo_unittest.rs	Copyright 2026 The Fuchsia Authors
+vm/unittests/vmpl_unittest.cc	Copyright 2020 The Fuchsia Authors
+vm/unittests/vmpl_unittest.rs	Copyright 2026 The Fuchsia Authors
+vm/vm.cc	Copyright 2016 The Fuchsia Authors	Copyright (c) 2014 Travis Geiselbrecht
+vm/vm.rs	Copyright 2026 The Fuchsia Authors
+vm/vm_address_region.cc	Copyright 2016 The Fuchsia Authors
+vm/vm_address_region.rs	Copyright 2026 The Fuchsia Authors
+vm/vm_address_region_or_mapping.cc	Copyright 2016 The Fuchsia Authors
+vm/vm_aspace.cc	Copyright 2016 The Fuchsia Authors
+vm/vm_aspace.rs	Copyright 2026 The Fuchsia Authors
+vm/vm_aspace_ffi.cc	Copyright 2026 The Fuchsia Authors
+vm/vm_cow_pages.cc	Copyright 2020 The Fuchsia Authors
+vm/vm_cow_pages.rs	Copyright 2026 The Fuchsia Authors
+vm/vm_cow_pages_ffi.cc	Copyright 2026 The Fuchsia Authors
+vm/vm_mapping.cc	Copyright 2016 The Fuchsia Authors
+vm/vm_mapping.rs	Copyright 2026 The Fuchsia Authors
+vm/vm_object.cc	Copyright 2016 The Fuchsia Authors
+vm/vm_object.rs	Copyright 2026 The Fuchsia Authors
+vm/vm_object_ffi.cc	Copyright 2026 The Fuchsia Authors
+vm/vm_object_paged.cc	Copyright 2016 The Fuchsia Authors
+vm/vm_object_paged.rs	Copyright 2026 The Fuchsia Authors
+vm/vm_object_paged_ffi.cc	Copyright 2026 The Fuchsia Authors
+vm/vm_object_paged_ffi.rs	Copyright 2026 The Fuchsia Authors
+vm/vm_object_physical.cc	Copyright 2016 The Fuchsia Authors
+vm/vm_object_physical.rs	Copyright 2026 The Fuchsia Authors
+vm/vm_page_list.cc	Copyright 2016 The Fuchsia Authors
+vm/vm_page_list.rs	Copyright 2026 The Fuchsia Authors
+vm/vm_page_list_ffi.cc	Copyright 2026 The Fuchsia Authors
+vm/vm_priv.h	Copyright 2016 The Fuchsia Authors	Copyright (c) 2014 Travis Geiselbrecht
+vm/vmm.cc	Copyright 2016 The Fuchsia Authors	Copyright (c) 2014 Travis Geiselbrecht
+vm/vmm.rs	Copyright 2026 The Fuchsia Authors

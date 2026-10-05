@@ -97,27 +97,23 @@ type allowance struct {
 // finding is one reading the rule objects to.
 type finding struct {
 	// key is the file and the thing read, which is what the allowlist is keyed
-	// by; line is where, and complaint says what to do instead.
+	// by; file and line are where, and complaint says what to do instead.
 	key       string
+	file      string
 	line      int
 	complaint string
 }
 
 func TestProductionCodeDrawsTimeAndRandomnessFromTheInjectedPorts(t *testing.T) {
-	root := repoRoot(t)
 	seen := map[string]int{}
-	for _, dir := range checked {
-		walk(t, root, dir, func(relative string, file *ast.File, fset *token.FileSet) {
-			for _, found := range scan(relative, file, fset) {
-				seen[found.key]++
-				entry, listed := allowed[found.key]
-				if listed && seen[found.key] <= entry.count {
-					continue
-				}
-				t.Errorf("%s:%d: %s\n\tif it cannot be, allow it in internal/testdeterminism with the reason",
-					relative, found.line, found.complaint)
-			}
-		})
+	for _, found := range check(t, repoRoot(t)) {
+		seen[found.key]++
+		entry, listed := allowed[found.key]
+		if listed && seen[found.key] <= entry.count {
+			continue
+		}
+		t.Errorf("%s:%d: %s\n\tif it cannot be, allow it in internal/testdeterminism with the reason",
+			found.file, found.line, found.complaint)
 	}
 	// An allowance nothing needs any more is a justification for a call site
 	// that is gone, which is exactly the note that later gets copied onto a new
@@ -182,6 +178,48 @@ func TestTheRuleRejectsEachKindOfStrayReading(t *testing.T) {
 	}
 }
 
+// The pager's port of Zircon's page layer sits two levels below vmmemory and
+// decides which pages are resident and which are dirty, so the rule reaches it
+// as it reaches the rest of the pager. This runs the rule as it is configured
+// over a tree holding one stray reading there.
+func TestTheRuleReachesThePortOfZircon(t *testing.T) {
+	root := t.TempDir()
+	for _, dir := range checked {
+		if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	port := filepath.Join(root, "vmmemory", "internal", "zirconvm")
+	if err := os.MkdirAll(port, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	source := "package zirconvm\nimport \"time\"\nfunc f() { _ = time.Now() }\n"
+	if err := os.WriteFile(filepath.Join(port, "pagelist.go"), []byte(source), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var keys []string
+	for _, found := range check(t, root) {
+		keys = append(keys, found.key)
+	}
+	want := []string{"vmmemory/internal/zirconvm/pagelist.go:time.Now"}
+	if fmt.Sprint(keys) != fmt.Sprint(want) {
+		t.Errorf("the rule found %v, want %v", keys, want)
+	}
+}
+
+// check is every reading the rule objects to in the checked directories under
+// root, before the allowlist is applied.
+func check(t *testing.T, root string) []finding {
+	t.Helper()
+	var findings []finding
+	for _, dir := range checked {
+		walk(t, root, dir, func(relative string, file *ast.File, fset *token.FileSet) {
+			findings = append(findings, scan(relative, file, fset)...)
+		})
+	}
+	return findings
+}
+
 // scan reports every forbidden import and call in one parsed file, in source
 // order.
 func scan(relative string, file *ast.File, fset *token.FileSet) []finding {
@@ -194,6 +232,7 @@ func scan(relative string, file *ast.File, fset *token.FileSet) []finding {
 		if replacement, forbidden := forbiddenImports[name]; forbidden {
 			findings = append(findings, finding{
 				key:       relative + ":import " + name,
+				file:      relative,
 				line:      fset.Position(spec.Pos()).Line,
 				complaint: "imports " + name + "; draw from " + replacement + " instead",
 			})
@@ -210,6 +249,7 @@ func scan(relative string, file *ast.File, fset *token.FileSet) []finding {
 		}
 		findings = append(findings, finding{
 			key:       relative + ":" + name,
+			file:      relative,
 			line:      fset.Position(call.Pos()).Line,
 			complaint: "calls " + name + "; take it from the injected platform.Clock instead",
 		})

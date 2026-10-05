@@ -244,7 +244,10 @@ byte afterwards. Every page it touched must be the parent's page again.
 `time.NewTimer`, `time.NewTicker`, `time.Tick`, `time.AfterFunc` and
 `ctxsync.Sleep` in the non-test code of
 `{volume,checkpoint,control,vmmigrate,host,vmmemory,internal/handover,resource,rank,membership,stripe}`. This includes
-the Linux-only files that this machine does not build. A stray wall-clock read
+the Linux-only files that this machine does not build, and every directory
+below these. So the port of Zircon's page layer in `vmmemory/internal/zirconvm`
+is held to it, which `TestTheRuleReachesThePortOfZircon` shows with a stray
+`time.Now` there. A stray wall-clock read
 decides how long a hold lives. A stray `math/rand` call decides which VM
 checkpoints first. If a run cannot reproduce either, its seed reports nothing
 useful.
