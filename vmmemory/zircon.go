@@ -303,10 +303,6 @@ func (z *zirconHost) settlePrefetches(ctx context.Context) error {
 // The operations this core does not serve yet. Each refuses, naming itself,
 // and changes nothing.
 
-func (z *zirconRegion) giveBackColdCopies(context.Context) (int, error) {
-	return 0, unsupported(CoreZircon, "give cold copies back")
-}
-
 // The loss window over the zircon core: one timestamp per region, the
 // oldest write it holds that no checkpoint covers, which a seal hands to its
 // checkpoint and an abandoned checkpoint hands back, as losswindow.go keeps

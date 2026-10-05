@@ -473,10 +473,20 @@ func (p *zreplacement) done() {
 	}
 	h.signal()
 	h.mu.Unlock()
+	p.pages, p.guests = nil, nil
+}
+
+// unlock gives back the locks of the pages the store made, once the guest's
+// access to them has completed.
+func (p *zreplacement) unlock() {
 	for _, page := range p.made {
 		frameOf(page).mu.Unlock()
 	}
-	p.pages, p.guests, p.made = nil, nil, nil
+	p.made = nil
+	h := p.z.region.host
+	h.mu.Lock()
+	h.signal()
+	h.mu.Unlock()
 }
 
 // revoke takes the guest's mappings of the held pages away, which a store
@@ -635,6 +645,17 @@ func (z *zirconRegion) copyOnWrite(ctx context.Context, index uint64, spill *res
 	if src != nil && frameOf(src).layer == nil {
 		origin = src
 	}
+	// A store trap's copy of a root's page is cold, which pins the page it
+	// was copied from, here, while that page is still held: see cold.go.
+	marked := false
+	if unmapped && origin != nil {
+		z.host.pin(origin, b)
+		defer func() {
+			if !marked {
+				z.host.unpin(origin, b)
+			}
+		}()
+	}
 	data := make([]byte, h.pageSize)
 	err = z.readForCopy(ctx, index, src, held, data)
 	if src != nil {
@@ -662,6 +683,7 @@ func (z *zirconRegion) copyOnWrite(ctx context.Context, index uint64, spill *res
 	frameOf(frame).layer = z
 	// The copy is held from its making until the store's command lands.
 	replaced := &zreplacement{z: z}
+	defer replaced.unlock()
 	replaced.keep(frame)
 	if err := context.Cause(ctx); err != nil {
 		// The session the store serves ended while it copied. The copy is
@@ -709,6 +731,9 @@ func (z *zirconRegion) copyOnWrite(ctx context.Context, index uint64, spill *res
 	replaced.done()
 	if err := r.resolvePages(ctx, first, count, true); err != nil {
 		return false, r.fail(err)
+	}
+	if unmapped && origin != nil {
+		marked = z.markCold(b, origin)
 	}
 	return false, nil
 }
@@ -1009,6 +1034,7 @@ func (z *zirconRegion) makeWhole(ctx context.Context, index uint64) (bool, error
 	last := min(first+span, uint64(r.pageCount))
 	before := z.privatePages(first, last)
 	replaced := &zreplacement{z: z}
+	defer replaced.unlock()
 	if err := z.takeShared(ctx, first, index, last, replaced); err != nil {
 		return false, errors.Join(err, replaced.revoke(ctx))
 	}

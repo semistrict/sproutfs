@@ -85,8 +85,6 @@ func TestTheZirconCoreRefusesWhatItDoesNotServeYet(t *testing.T) {
 		wantRefused(t, "unpublished", err, "the zircon core does not list unpublished pages yet")
 		_, err = r.Handoff(ctx)
 		wantRefused(t, "handoff", err, "the zircon core does not hand a memory region off yet")
-		_, err = r.GiveBackColdCopies(ctx)
-		wantRefused(t, "give back", err, "the zircon core does not give cold copies back yet")
 		clear(m.pages)
 		if err := r.Detach(ctx); err != nil {
 			t.Fatal(err)

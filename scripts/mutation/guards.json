@@ -105,19 +105,31 @@
     "id": "pager-forget-spill",
     "package": "vmmemory",
     "run": "^TestASpilledPageFaultsBackWhatTheGuestStored$",
-    "purpose": "Forget that evicted private bytes exist in scratch storage. Its test spills a page the guest stored into, twice, and faults it back each time."
+    "purpose": "Forget that evicted private bytes exist in scratch storage. Its test spills a page the guest stored into, twice, and faults it back each time.",
+    "cores": [
+      "current",
+      "zircon"
+    ]
   },
   {
     "id": "spill-sparse",
     "package": "vmmemory",
     "run": "^TestASpillSucceedsOnADiskFilledFromOutside$",
-    "purpose": "Leave a pager's spill file sparse instead of allocating its whole extent. Another writer then fills the filesystem, and the guest's next spill fails for want of space."
+    "purpose": "Leave a pager's spill file sparse instead of allocating its whole extent. Another writer then fills the filesystem, and the guest's next spill fails for want of space.",
+    "cores": [
+      "current",
+      "zircon"
+    ]
   },
   {
     "id": "pager-give-back-changed-copy",
     "package": "vmmemory",
     "run": "^TestAColdCopyTheGuestStoredIntoIsKept$",
-    "purpose": "Give back a cold copy the guest stored into, as though it still held its origin's bytes."
+    "purpose": "Give back a cold copy the guest stored into, as though it still held its origin's bytes.",
+    "cores": [
+      "current",
+      "zircon"
+    ]
   },
   {
     "id": "pager-read-the-run-first",

@@ -318,11 +318,3 @@ func (z *zirconHost) dropAliasesLocked(f *zframe) {
 		}
 	}
 }
-
-// giveBackVictim is Host.giveBackVictim over the zircon core: a victim that
-// is a cold copy the guest has not changed goes back to its origin rather
-// than to the spill. No copy of this core is cold until its store path marks
-// them so.
-func (z *zirconHost) giveBackVictim(context.Context, *zirconvm.VmPage) (bool, error) {
-	return false, nil
-}

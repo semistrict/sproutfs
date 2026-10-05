@@ -54,6 +54,9 @@ import (
 // givingBack is one give-back pass over the pages that pages lists, which it
 // calls once the memory region is known to be live.
 func (r *MemoryRegion) givingBack(ctx context.Context, pages func() []uint64) (int, error) {
+	if z := r.zircon; z != nil {
+		return z.givingBack(ctx, pages)
+	}
 	if err := r.live.RLock(ctx); err != nil {
 		return 0, err
 	}

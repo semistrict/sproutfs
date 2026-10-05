@@ -217,6 +217,9 @@ func (h *Host) moveCold(from, to *resident) {
 // takeColdCopies is the cold copies recorded since it was last called, in page
 // order. A session's worker takes them and gives them back coldCopyAge later.
 func (r *MemoryRegion) takeColdCopies() []uint64 {
+	if z := r.zircon; z != nil {
+		return z.takeColdCopies()
+	}
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
 	pages := slices.Sorted(maps.Keys(r.coldCopies))

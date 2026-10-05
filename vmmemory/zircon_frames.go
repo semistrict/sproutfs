@@ -203,6 +203,10 @@ func (z *zirconHost) releaseFrame(p *zirconvm.VmPage) {
 	if mapped {
 		panic("vmmemory: the zircon core freed a page a memory region maps")
 	}
+	// Nothing the pager takes under pressure is pinned, so a page going here
+	// is going for a reason of its own, and a cold copy of it has nothing left
+	// to be compared with.
+	z.dropCold(p)
 	if err := f.file.Release(context.Background(), f.slot); err != nil {
 		slog.Warn("vmmemory: giving a page's slot back failed", "slot", f.slot, "error", err)
 		h.mu.Lock()
