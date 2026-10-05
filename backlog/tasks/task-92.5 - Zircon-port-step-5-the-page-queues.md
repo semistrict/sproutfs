@@ -27,7 +27,7 @@ Step 5 of the plan. Zircon orders reclaim with page queues (zircon/kernel/vm/pag
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The page queues are ported from page_queues.cc, with their aging goroutines driven by platform.Clock
+- [x] #1 The page queues are ported from page_queues.cc, with their aging goroutines driven by platform.Clock
 - [x] #2 All 10 cases of vm/unittests/page_queues_unittest.cc run as Go tests in synctest bubbles
 - [x] #3 The host recency list, idle list and cold-copy pins are the reclaim, don't-need and zero-fork queues; vmmemory/pagelist.go is deleted
 - [x] #4 Every test in vmmemory, host, vmmigrate and internal/simtest passes unchanged in both arena modes, including the idle-page and cold-copy tests
@@ -57,6 +57,8 @@ Benchmarks (Mac, old vs new binaries alternated, 10 runs each, medians): Benchma
 Gremlins on pagequeues.go: first run 117 killed, 38 alive, 78 not covered, 7 timed out; after tests for the survivors 180 killed, 17 alive, 32 not covered (31 compile-time asserts, 1 diagnostic count), 8 timed out. Survivors: diagnostic counts and logs, asserts' bounds, an unreachable ring bound, the active ratio product at multiplier 1.
 
 AC #1 is left unchecked: the queues are ported, but by decision 4 there are no aging goroutines and no clock; the owner should amend or accept it. just check passed (exit 0) on 8e47921d.
+
+Coordinator decision (owner asleep): AC #1's 'aging goroutines driven by platform.Clock' is superseded by TASK-92 decision 4 (aging from faults only, no aging thread); checked on that basis.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
