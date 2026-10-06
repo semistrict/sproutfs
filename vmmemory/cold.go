@@ -43,8 +43,14 @@ import (
 //
 // A move of the origin moves its pins with it. An origin that goes anyway
 // leaves its copies cold, compared with their volume from then on. A protect
-// trap is a store into a page the guest
-// maps, which KVM reports only for a real store, so its copy is never cold.
+// trap is a store into a page the guest maps, which KVM reports only for a
+// real store, so its copy is never cold.
+//
+// A pin keeps the origin in the zero-fork queue, outside the reclaim queues an
+// eviction takes from while anything else can go. The give-back is Zircon's
+// zero-page scan widened to the origin (DedupZeroPage,
+// vm_cow_pages.cc:1363-1437): it checks the copy, write-protects it, checks
+// again, and puts the guest back on the origin.
 //
 // A cold copy is given back only once it is coldCopyAge old. KVM's worker takes
 // the page writable and only then does the vCPU retry its access, so a copy just
@@ -76,14 +82,6 @@ func (r *MemoryRegion) takeColdCopies() []uint64 {
 	clear(r.coldCopies)
 	return pages
 }
-
-// A copy a store trap made of a root's page is not yet known to be the guest's
-// state: it is cold, and pins the page it was copied from in the zero-fork
-// queue, outside the reclaim queues an eviction takes from while anything else
-// can go, until it is compared with it. The give-back (giveback.go) is
-// Zircon's zero-page scan widened to the origin (DedupZeroPage,
-// vm_cow_pages.cc:1363-1437): it checks the copy, write-protects it, checks
-// again, and puts the guest back on the origin.
 
 // pin keeps origin in the arena while b's cold copy is compared with it: the
 // first pin moves it to the zero-fork queue. Caller holds origin's lock.
