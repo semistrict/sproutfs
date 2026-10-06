@@ -1,9 +1,10 @@
 ---
 id: TASK-97
 title: Review the decisions taken on the Zircon port while the owner slept
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-05 17:20'
+updated_date: '2026-10-06 15:47'
 labels:
   - decision
   - vm-memory
@@ -22,5 +23,11 @@ On the night of 2026-10-05 the coordinator took these on the plan's recommendati
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The owner confirms or reverses each, and reversals get tasks
+- [x] #1 The owner confirms or reverses each, and reversals get tasks
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-10-06 owner answers: D1 (a store into a page a checkpoint holds gets a copy) kept; D2 (dirty pages may spill) kept; Zircon's byte offsets kept in zirconvm; aging from faults only kept; the three narrowed ACs (92.4 pageranges stays, 92.5 fault-driven aging, 92.9 reservation moved to 92.6) accepted; the step-13 gate was waived earlier the same day.
+<!-- SECTION:NOTES:END -->

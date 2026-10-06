@@ -4,7 +4,7 @@ title: Replace the pager's page layer with a Go port of Zircon's
 status: To Do
 assignee: []
 created_date: '2026-10-05 05:09'
-updated_date: '2026-10-06 14:22'
+updated_date: '2026-10-06 15:47'
 labels:
   - pager
   - zircon-port
@@ -37,4 +37,6 @@ The owner decided on 2026-10-05 to replace the page layer of vmmemory with a Go 
 Owner decisions, taken by the coordinator overnight 2026-10-05 on the plan's recommendations (owner asleep, asked to proceed independently): D1 split on store — accepted; D2 spill dirty pages of named volumes — accepted; byte offsets with the pager's page size — accepted; aging driven by faults only — accepted; switch-over gate: the runs in step 13, no median fault slower than the spread of two runs of the old core — accepted; test names in repo sentence style with the Zircon name in a comment — accepted. Owner to review in the morning.
 
 2026-10-06: the owner decided to delete the old core and keep only the zircon core now, waiving the step 13 speed gate (zircon random 4 KiB fault ~3.6–5% slower than before step 12 after 251a94f8; forward faults and the walk faster). Steps 13 and 14 proceed without the GCE switch-over measurements.
+
+2026-10-06 owner confirmed every overnight decision (TASK-97).
 <!-- SECTION:NOTES:END -->
