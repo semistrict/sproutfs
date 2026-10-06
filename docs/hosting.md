@@ -1477,7 +1477,7 @@ for every index of the membership's code it holds, and then the window's
 other ranks ([reading from the cluster](#reading-from-the-cluster)), and then
 the same under each earlier code. Either way it checks each item's key, index,
 code and checksum, and rebuilds the envelope from the first k of one code
-that pass. It then checks the envelope's SHA-256 as a read of the store does.
+that pass. It then checks the envelope's XXH3-128 as a read of the store does.
 If that fails with more than k stripes in hand, it rebuilds from other sets of
 k, at most 64 of them, and the stripes that do not match the envelope that
 passed are named wrong and forgotten. With exactly k, which one is wrong cannot
@@ -1708,7 +1708,7 @@ runs out, and reads wait rather than double every holder's load.
 **Rebuilt and checked.** Each stripe's key, index, code and checksum are
 checked as it arrives. A page is rebuilt from any k distinct indices
 (`stripe.Join`) and checked as a page from the store is: its envelope decodes
-and its SHA-256 holds. A stripe that fails its checks, or that a rebuild finds
+and its XXH3-128 holds. A stripe that fails its checks, or that a rebuild finds
 is not the envelope's, is not used, and its holder is sent a drop
 (`Peer.Drop`) behind the fills. With exactly k stripes that rebuild nothing,
 which is wrong cannot be told, so the read asks one more rank at once.
@@ -1724,7 +1724,7 @@ keeps that buffer as it is. The page is copied once more, into the caller's
 buffer, and only what it does not cover there is zeroed. Under k = 1 the
 envelope is a stripe's own bytes, so a stripe a peer sent is copied before
 the read finishes. Nothing the read returns is a view of a reply. Every check
-stays: each stripe's key and checksum, and the envelope's SHA-256. Before, a
+stays: each stripe's key and checksum, and the envelope's XXH3-128. Before, a
 2 MiB page was copied six times and zeroed three times on the way. On an
 Apple M5 Pro, a reader's own work for a 2 MiB page from its data stripes went
 from 1.63 to 1.05 ms, and with two parity stripes from 1.81 to 1.17 ms; it
@@ -1833,7 +1833,11 @@ bench, a chain of 2 MiB pages took 10.3 ms a hop from the cluster and
 41.5 ms from GCS, and a chain of 4 KiB pages 0.65 ms and 24.6 ms; the guest
 in order was 1.6 times as fast. A 2 MiB read from the cluster is mostly the
 reader's SHA-256 and copies, and SHA instructions took the hop to 6.5 ms
-([measurement](measurements/gce-dependent-reads-2026-10-03.md)).
+([measurement](measurements/gce-dependent-reads-2026-10-03.md)). These
+measurements predate envelope format 2, which checks a page with XXH3-128
+rather than SHA-256 ([the envelope](volumes.md)). On an Apple M5 Pro, a
+reader's own work for a 2 MiB page from its data stripes went from about
+1.1 ms to 0.5 ms with that change, measured under load.
 
 ## Reading through a hot tier
 

@@ -21,7 +21,7 @@ import (
 var update = flag.Bool("update", false, "rewrite the part fixtures under testdata")
 
 // currentPart holds one sealed part as this build writes it.
-const currentPart = "testdata/part-4"
+const currentPart = "testdata/part-5"
 
 // supersededParts are the committed parts of layouts this build no longer
 // reads. They are never rewritten: what they are worth is that their bytes are
@@ -41,6 +41,9 @@ var supersededParts = []struct {
 	{dir: "testdata/part-1", version: 1, trailer: 32},
 	{dir: "testdata/part-2", version: 2, trailer: 32},
 	{dir: "testdata/part-3", version: 3, trailer: 48},
+	// Version 4 is the layout of version 5 with members in envelopes of
+	// format 1, which a SHA-256 checked.
+	{dir: "testdata/part-4", version: 4, trailer: 32},
 }
 
 // fixturePages are the pages the committed part holds, by volume and number.

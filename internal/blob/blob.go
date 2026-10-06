@@ -1,23 +1,38 @@
 // Package blob encodes independently readable, bounded raw or Zstandard blobs.
 // The envelope identifies its format explicitly and checks the decoded bytes.
 // It does not change the page identity of the data it contains.
+//
+// An envelope is a header of HeaderSize bytes and then its payload:
+//
+//	0  4  magic "SPB2": "SPB" and the format version
+//	4  1  the codec: 0 raw, 1 Zstandard
+//	5  3  zero
+//	8  8  the decoded length
+//	16 16 the XXH3-128 of the decoded bytes
+//
+// The digest finds corruption. It is not a defence against a forger: every
+// envelope a host reads was written by a host of the same deployment. Format 1
+// carried a SHA-256 in a 48-byte header, and is refused.
 package blob
 
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"slices"
 
 	"github.com/klauspost/compress/zstd"
 	"github.com/semistrict/sproutfs/platform/sim"
+	"github.com/zeebo/xxh3"
 )
 
 const (
-	HeaderSize = 48
+	HeaderSize = 32
 	MaxSize    = 256 << 20
+	// magic opens every envelope. Its last byte is the format version.
+	magic      = "SPB2"
 	windowSize = 1 << 20
 	// DefaultWorkers is how many codecs of each kind the package-wide pool
 	// holds, for a caller that supplies none of its own.
@@ -191,9 +206,9 @@ func (e *Encoder) AppendEncode(ctx context.Context, dst, data []byte) ([]byte, e
 	out := slices.Grow(dst, HeaderSize+len(data))[:base+HeaderSize]
 	header := out[base:]
 	clear(header)
-	copy(header, "SPB1")
+	copy(header, magic)
 	binary.LittleEndian.PutUint64(header[8:16], uint64(len(data)))
-	sum := sha256.Sum256(data)
+	sum := digest(data)
 	copy(header[16:HeaderSize], sum[:])
 	if len(data) >= 256 {
 		out = w.EncodeAll(data, out)
@@ -209,10 +224,17 @@ func (e *Encoder) AppendEncode(ctx context.Context, dst, data []byte) ([]byte, e
 	return out, nil
 }
 
+// digest is the check an envelope carries of its decoded bytes.
+func digest(data []byte) [16]byte { return xxh3.Hash128(data).Bytes() }
+
 // Size validates framing and the decoded-size claim against the caller's
 // logical limit. Decode must still verify the payload before it is trusted.
+// An envelope of another format version is refused with that version named.
 func Size(data []byte, maximum int) (int, error) {
-	if maximum < 0 || len(data) < HeaderSize || string(data[:4]) != "SPB1" ||
+	if len(data) >= len(magic) && string(data[:3]) == magic[:3] && data[3] != magic[3] {
+		return 0, fmt.Errorf("%w: envelope format version %c, want %c", ErrInvalid, data[3], magic[3])
+	}
+	if maximum < 0 || len(data) < HeaderSize || string(data[:4]) != magic ||
 		data[4] > 1 || data[5] != 0 || data[6] != 0 || data[7] != 0 {
 		return 0, ErrInvalid
 	}
@@ -247,7 +269,7 @@ func (c *Codecs) Decode(ctx context.Context, data []byte, maximum int) ([]byte, 
 	if len(out) != n {
 		return nil, ErrInvalid
 	}
-	sum := sha256.Sum256(out)
+	sum := digest(out)
 	if !bytes.Equal(sum[:], data[16:HeaderSize]) {
 		return nil, ErrInvalid
 	}

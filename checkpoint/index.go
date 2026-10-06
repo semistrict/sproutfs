@@ -650,8 +650,9 @@ const (
 	// it reads. Version 8 records every volume's page geometry in the root, and
 	// ends the object with the record it begins with; a version 7 root states no
 	// page size, and its page numbers are 2 MiB pages that must not be read as
-	// anything else.
-	indexFormatVersion = 8
+	// anything else. Version 9 holds the root and segments in envelopes of
+	// format 2, which check their bytes with XXH3-128 rather than SHA-256.
+	indexFormatVersion = 9
 )
 
 // putIndexRecord writes the fixed record of an index object into dst, which is

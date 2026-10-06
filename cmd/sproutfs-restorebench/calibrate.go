@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"cmp"
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -19,6 +18,7 @@ import (
 	"github.com/semistrict/sproutfs/internal/blob"
 	"github.com/semistrict/sproutfs/rank"
 	"github.com/semistrict/sproutfs/stripe"
+	"github.com/zeebo/xxh3"
 )
 
 // calibrateRequest asks a node to time each step of reading a page on its own
@@ -32,6 +32,8 @@ type calibrateRequest struct {
 type calibration struct {
 	CPU string `json:"cpu"`
 	// SHA says the processor has the SHA extensions, which Go's SHA-256 uses.
+	// Reads checked envelopes with SHA-256 until envelope format 2, so it is
+	// what tells measurements made before it apart.
 	SHA bool `json:"sha_instructions"`
 	// Steps is each step's microseconds, by page size and then by step.
 	Steps map[string]map[string]float64 `json:"steps_us"`
@@ -40,14 +42,14 @@ type calibration struct {
 // The steps a calibration times. A read of the store decodes; a read of the
 // cluster checks each stripe's CRC-32C, joins k stripes, from data stripes
 // alone or with parity among them, and decodes. Decoding a page of noise is
-// its framing and its SHA-256, since noise is stored raw. Every read copies
+// its framing and its XXH3-128, since noise is stored raw. Every read copies
 // the page into its caller's buffer. Noise and compare are what the bench
 // used to do on every read to check it, which no restore does: make the page
 // it expected and compare it as strings.
 // sink keeps what a timed step makes, so the compiler cannot leave the step out.
-var sink [sha256.Size]byte
+var sink [16]byte
 
-var calibrationSteps = []string{"sha256", "decode", "crc32c", "copy", "split 4+2", "join 4 data",
+var calibrationSteps = []string{"xxh3-128", "decode", "crc32c", "copy", "split 4+2", "join 4 data",
 	"join 2 data 2 parity", "noise", "compare"}
 
 func runCalibrate(ctx context.Context, args []string) error {
@@ -101,7 +103,7 @@ func calibrate(ctx context.Context, each time.Duration) (calibration, error) {
 		accept := func([]byte) error { return nil }
 		var failed error
 		steps := map[string]func(){
-			"sha256": func() { sink = sha256.Sum256(page) },
+			"xxh3-128": func() { sink = xxh3.Hash128(page).Bytes() },
 			"decode": func() {
 				if _, err := blob.Decode(ctx, envelope, int(size)); err != nil {
 					failed = err
