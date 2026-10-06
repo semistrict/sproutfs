@@ -426,3 +426,25 @@ func (h *Host) DropIdle(ctx context.Context) (int, error) {
 	defer h.mu.Unlock()
 	return dropped, h.err
 }
+
+// abandonSlots gives back reserved slots whose contents failed to arrive, or
+// that their reserver turned out not to need. A failed write may have allocated
+// partial contents, so each is punched before it is accounted free; a failed
+// punch makes the host terminal.
+func (h *Host) abandonSlots(ctx context.Context, at fileSlot, count int, err error) error {
+	var cleanup error
+	for i := range count {
+		cleanup = errors.Join(cleanup, at.file.Release(context.WithoutCancel(ctx), at.slot+i))
+	}
+	h.mu.Lock()
+	if cleanup != nil {
+		h.err = errors.Join(err, cleanup)
+	} else {
+		for i := range count {
+			h.putFree(at.plus(i))
+		}
+	}
+	h.signal()
+	h.mu.Unlock()
+	return errors.Join(err, cleanup)
+}

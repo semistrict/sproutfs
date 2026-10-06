@@ -174,3 +174,25 @@ func (r *MemoryRegion) forgetWindowAsk() {
 	defer r.windowMu.Unlock()
 	r.windowAsked = false
 }
+
+// takeDirtySince is MemoryRegion.takeDirtySince over the zircon core.
+func (r *MemoryRegion) takeDirtySince() time.Time {
+	r.bindingsMu.Lock()
+	since := r.dirtySince
+	r.dirtySince = time.Time{}
+	r.bindingsMu.Unlock()
+	r.windowMu.Lock()
+	r.windowAsked = false
+	r.windowMu.Unlock()
+	return since
+}
+
+// restoreDirtySince is MemoryRegion.restoreDirtySince over the zircon core.
+func (r *MemoryRegion) restoreDirtySince(since time.Time) {
+	r.bindingsMu.Lock()
+	r.dirtySince = older(r.dirtySince, since)
+	r.bindingsMu.Unlock()
+	r.windowMu.Lock()
+	r.windowAsked = false
+	r.windowMu.Unlock()
+}

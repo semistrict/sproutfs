@@ -426,3 +426,23 @@ func (h *Host) revocations() <-chan struct{} {
 	defer h.mu.Unlock()
 	return h.revoked
 }
+
+// closeRoots is what Close does before it gives back every slot: once no
+// region is attached, the identity roots go, and their pages give their slots
+// back as they go.
+func (h *Host) closeRoots() error {
+	h.mu.Lock()
+	if h.logical != 0 {
+		h.mu.Unlock()
+		return errors.New("managed-memory regions still attached")
+	}
+	roots := h.roots
+	h.roots = make(map[rootKey]*identityRoot)
+	h.mu.Unlock()
+	// Every page of a root goes back with it, and with its slot its count
+	// of the roots' pages and of the idle ones (releaseFrame).
+	for _, root := range roots {
+		root.object.Destroy()
+	}
+	return nil
+}

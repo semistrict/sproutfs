@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -149,4 +150,202 @@ func (c *MemoryRegionCheckpoint) since() time.Time {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.dirtySince
+}
+
+// compare reports the origin of a checkpoint's copy when the two hold the
+// same bytes, and nil where the copy stays in the checkpoint. It changes
+// nothing; reshare applies what it decided.
+func (r *MemoryRegion) compare(ctx context.Context, s *settler, held *zbinding) (*zirconvm.VmPage, error) {
+	h := r.host
+	r.bindingsMu.Lock()
+	origin, spill := held.origin, held.spill
+	r.bindingsMu.Unlock()
+	if origin == nil || spill.none() {
+		return nil, nil
+	}
+	if h.wholeRange(r, held.index) {
+		// A range the half-private rule filled stays whole.
+		return nil, nil
+	}
+	// The origin first, as every comparison takes them: clean before private.
+	if err := r.host.lockPage(ctx, origin); err != nil {
+		return nil, err
+	}
+	defer r.host.unlockPage(origin)
+	if !r.host.published(origin) {
+		// Evicted, or no longer its identity's page: there is nothing to
+		// compare with, and the page is published as it would have been.
+		return nil, nil
+	}
+	page, err := r.host.lockedPage(ctx, held)
+	if err != nil || page == nil {
+		// Spilled since the seal, which is store I/O the settle does not do.
+		return nil, err
+	}
+	defer r.host.unlockPage(page)
+	same, err := s.equal(ctx, h, frameOf(origin).fileSlot, frameOf(page).fileSlot)
+	if err != nil || !same {
+		return nil, err
+	}
+	return origin, nil
+}
+
+// reshare applies what the comparison decided, in bounded batches with the
+// region held exclusively: every page of a batch is revoked by one command
+// per run, and only then does each leave the checkpoint. It records in
+// dropped which did.
+func (r *MemoryRegion) reshare(ctx context.Context, c *MemoryRegionCheckpoint, copies []*zbinding,
+	equal []*zirconvm.VmPage, dropped []bool) error {
+	pending := make([]int, 0, len(copies))
+	for i, origin := range equal {
+		if origin != nil {
+			pending = append(pending, i)
+		}
+	}
+	for len(pending) > 0 {
+		count := min(len(pending), revokeBatchPages)
+		batch := pending[:count]
+		if err := r.mu.Lock(ctx); err != nil {
+			return err
+		}
+		err := func() error {
+			defer r.mu.Unlock()
+			if err := r.ready(); err != nil {
+				return err
+			}
+			return r.reshareBatch(ctx, copies, equal, dropped, batch)
+		}()
+		if err != nil {
+			return err
+		}
+		pending = pending[count:]
+	}
+	return nil
+}
+
+// reshareBatch is one batch of reshare, with the region held exclusively.
+// It holds every page it will touch for the whole batch, so the revocation
+// that covers them all is issued while none of them can change.
+func (r *MemoryRegion) reshareBatch(ctx context.Context, copies []*zbinding, equal []*zirconvm.VmPage,
+	dropped []bool, batch []int) error {
+	locked := make(map[*zirconvm.VmPage]bool, 2*len(batch))
+	defer func() {
+		for page := range locked {
+			r.host.unlockPage(page)
+		}
+	}()
+	type ready struct {
+		index  int
+		copied *zirconvm.VmPage
+		origin *zirconvm.VmPage
+		guest  *zbinding
+	}
+	var applying []ready
+	var guests []*zbinding
+	for _, i := range batch {
+		origin := equal[i]
+		if !locked[origin] {
+			if err := r.host.lockPage(ctx, origin); err != nil {
+				return err
+			}
+			locked[origin] = true
+		}
+		if !r.host.published(origin) {
+			continue
+		}
+		page, err := r.host.lockedPage(ctx, copies[i])
+		if err != nil {
+			return err
+		}
+		if page == nil {
+			continue
+		}
+		if locked[page] {
+			r.host.unlockPage(page)
+		} else {
+			locked[page] = true
+		}
+		entry := ready{index: i, copied: page, origin: origin}
+		if b := r.lookupBinding(copies[i].index); b != nil && r.checkpointCopy(b) == copies[i] {
+			entry.guest = b
+			if r.isMapped(b) {
+				guests = append(guests, b)
+			}
+		}
+		applying = append(applying, entry)
+	}
+	// The guest's mapping of the copy it is losing is taken away rather than
+	// swapped underneath it, as the current core's settle does.
+	if err := r.revokeBindings(ctx, guests); err != nil {
+		return err
+	}
+	for _, entry := range applying {
+		if err := r.dropCopy(ctx, copies[entry.index], entry.copied, entry.origin, entry.guest); err != nil {
+			return err
+		}
+		dropped[entry.index] = true
+	}
+	return nil
+}
+
+// dropCopy takes one unchanged page out of the checkpoint. A guest that
+// still shares the checkpoint's copy goes back on the origin and is clean.
+// The copy's page leaves the layer, AwaitingClean in its page list or held
+// beside it, and goes back, and so does its reservation. Caller holds the
+// region exclusively and both pages.
+func (r *MemoryRegion) dropCopy(ctx context.Context, held *zbinding, page, origin *zirconvm.VmPage, guest *zbinding) error {
+	h := r.host
+	ps := h.pageSize
+	if guest != nil {
+		// The one place the pager hands a guest back an older page on
+		// purpose: the audit checks the bytes here rather than trusting the
+		// comparison that chose this page.
+		if found := h.probe.reshared(ctx, h, frameOf(page), frameOf(origin)); found != "" {
+			panic(found)
+		}
+	}
+	h.mu.Lock()
+	if guest != nil {
+		r.host.unaliasLocked(guest)
+		r.host.aliasLocked(guest, origin)
+	}
+	r.host.unaliasLocked(held)
+	others := frameOf(page).aliases.len() > 0
+	h.mu.Unlock()
+	if guest != nil {
+		r.bindingsMu.Lock()
+		r.retireFromCheckpointLocked(guest)
+		r.bindingsMu.Unlock()
+		r.host.node.PageQueues().MarkAccessed(origin)
+	}
+	if others {
+		return fmt.Errorf("vmmemory: a settled page is still mapped at page %d", held.index)
+	}
+	if r.layer.RemovePage(held.index*ps, page) {
+		r.host.releaseFrame(page)
+	}
+	r.bindingsMu.Lock()
+	spill := held.spill
+	held.spill, held.dirty, held.origin = noReservation, false, nil
+	r.bindingsMu.Unlock()
+	h.releaseSpill(spill)
+	return nil
+}
+
+// forgetCopies rebuilds the checkpoint's copies without those a settle
+// dropped, as forget does for the current core's.
+func (c *MemoryRegionCheckpoint) forgetCopies(dropped []bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	copies := make([]*zbinding, 0, len(c.copies))
+	for i, held := range c.copies {
+		if i < len(dropped) && dropped[i] {
+			continue
+		}
+		copies = append(copies, held)
+	}
+	c.copies = copies
+	if len(c.copies) == 0 {
+		c.dirtySince = time.Time{}
+	}
 }

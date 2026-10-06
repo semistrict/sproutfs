@@ -242,3 +242,8 @@ func (r *MemoryRegion) Stats(ctx context.Context) (MemoryRegionStats, error) {
 // eachBindingBatch is how many bindings eachBinding visits under one hold of
 // its locks.
 const eachBindingBatch = 256
+
+// Serving a migration's destination and handing a region off, over the
+// zircon core, as serve.go does for the current core: the pages a region
+// holds are its bindings' pages, resident or spilled, and those that are its
+// own dirty state are what no checkpoint has.

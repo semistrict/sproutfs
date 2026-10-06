@@ -6,18 +6,40 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/internal/ctxsync"
 	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/vmmemory/internal/zirconvm"
 )
 
-// A page of the zircon core is a zirconvm.VmPage whose Frame is a slot of an
-// arena file: the plan keeps fileSlot in place of Zircon's physical address
+// The pager's pages run over the region layers and the identity roots of
+// internal/zirconvm, the port of Zircon's page layer
+// (plans/zircon-pager-port-2026-10-05.md). What is the pager's own is the
+// arena and its files, isolation, placement, pressure, the connection, and
+// the policy of which pages a fault reads and in what order.
+//
+// A page is Zircon's: a zirconvm.VmPage whose Frame is a slot of an arena file
+// (a frame). The plan keeps fileSlot in place of Zircon's physical address
 // (plan: Arena and residency). The arena is the node's Pmm, but it hands out
 // no page itself: every page is made by the pager, filled where the pager
 // reads or copies its bytes, and supplied to the object that holds it, as a
 // user pager supplies pages to Zircon. What Zircon frees goes back to the
 // arena here.
+//
+// A published checkpoint's pages of one volume are an identity root, whose
+// page source is the pager, and a memory region's own pages are its layer,
+// whose lookup falls through to the identity root of each offset it holds
+// nothing at. What Zircon has no place for stays in a binding beside the
+// layer (bindings.go): whether the page is mapped, and which page it maps.
+//
+// The object locks are Zircon's: the layer's, and each root's. No object lock
+// is held across a mapping command or a backing read: a fault collects its
+// commands while it holds them and issues them after, as DeferredOps does, and
+// the window's stripe, which the fault holds from start to end, keeps two
+// faults of one window from issuing commands out of order. Lock order is the
+// layer, then a root, then Host.mu, then MemoryRegion.bindingsMu. A page's own
+// lock (zframe.mu), which an eviction holds across taking every mapping of the
+// page away, is taken before all of them.
 
 // zframe is where one page's bytes are, and who maps it.
 type zframe struct {
@@ -439,48 +461,6 @@ func identityAt(loc *locations, page uint64) (pageKey, bool) {
 	return pageKey{id: e.Identity}, true
 }
 
-// zbinding is what a memory region keeps beside its layer for one page:
-// whether its mapping is installed, and the page it maps, which Zircon keeps
-// in page tables it can read back and the pager cannot; and of a page the
-// region has stored into, what Zircon has no place for: the dirty reservation
-// it was admitted under, the checkpoint's copy it shares, the page it was
-// copied from, whether it is cold, and whether write-ahead made it.
-//
-// A checkpoint's copy of a page is a zbinding too, detached from the page
-// list beside the layer, as the current core's is: it aliases the page the
-// guest had at the seal, AwaitingClean in the layer, and owns the reservation
-// that page was admitted under (D1, D5). The guest's binding shares it until
-// a store copies away from it.
-type zbinding struct {
-	region *MemoryRegion
-	index  uint64
-	// page is the page this region maps here, nil where it maps none or a
-	// zero: a page of an identity root, or of the region's own layer. Guarded
-	// by Host.mu, as the page's aliases are.
-	page *zirconvm.VmPage
-	// mapped is whether the mapping is installed, and zero whether it is a
-	// zero. inZeroRun marks a bound page a compressed zero run maps, as the
-	// current core's binding does. Guarded by MemoryRegion.bindingsMu.
-	mapped, zero, inZeroRun bool
-	// dirty marks a page that is the region's own state and not yet its
-	// volume's: Dirty in the layer, AwaitingClean while it shares the
-	// checkpoint's copy, or spilled. spill is the dirty reservation it was
-	// admitted under, which a seal hands to checkpoint, the copy it then
-	// shares until a store copies away from it. origin is the root's page it
-	// was copied from, cold marks a copy a store trap made of origin that is
-	// not yet known to be the guest's state, from coldAt (Unix nanoseconds),
-	// and ahead marks one write-ahead made before any store. Guarded by
-	// MemoryRegion.bindingsMu. The marks sit beside the reservation, which leaves
-	// them room, so that a binding, which every page a region touches has, is
-	// 64 bytes.
-	dirty       bool
-	spill       reservation
-	cold, ahead bool
-	checkpoint  *zbinding
-	origin      *zirconvm.VmPage
-	coldAt      int64
-}
-
 // aliasLocked makes b an alias of p: the region maps it, so it is not idle.
 // A page a region reaches twice, from its binding and from a checkpoint's copy
 // of it, is one page of the arena. Caller holds h.mu.
@@ -620,3 +600,11 @@ func (h *Host) dropOrigin(page *zirconvm.VmPage) {
 		h.evictIdle(link.Cow, link.Offset)
 	}
 }
+
+// pageKey identifies immutable bytes by the store page object that holds them.
+// A pager page is exactly one store page, so one identity covers a whole pageKey.
+type pageKey struct {
+	id control.Identity
+}
+
+func (f pageKey) zero() bool { return f.id.Zero }
