@@ -68,6 +68,10 @@ func TestConfigTakesTheDocumentedDefaults(t *testing.T) {
 	if config.CacheDir != "" {
 		t.Fatalf("the page cache's directory is %q, want the scratch directory", config.CacheDir)
 	}
+	// The hot tier is off unless SPROUTFS_HOT_TIER names one.
+	if config.HotTier != nil {
+		t.Fatalf("a host given no hot tier reads through %+v", *config.HotTier)
+	}
 	// Each pager's resident pages are its own arena, and its other two bounds
 	// are derived from that — each counted in that pager's own page, which is
 	// why a RAM page other than the default would make them nothing alike: at

@@ -3,7 +3,6 @@ package checkpoint
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -17,6 +16,7 @@ import (
 	"github.com/semistrict/sproutfs/internal/blob"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/platform/sim"
+	"github.com/zeebo/xxh3"
 )
 
 // Config supplies shared object storage and the upload budget a publication
@@ -303,6 +303,8 @@ func (s *Store) refuseSupersededParts(ctx context.Context, ref control.Ref, abse
 // write was written under. One that begins with a record says so there. While
 // the root was the whole of the index object it was one envelope holding a
 // message that carried its own format version, and that field is what says so.
+// Every such envelope is of format 1, which this build does not decode either,
+// so the envelope's refusal is what names the version that moved.
 // Nothing an older build wrote is larger than supersededIndexSize.
 func (s *Store) refuseSupersededIndex(ctx context.Context, key platform.ObjectKey) error {
 	data, _, err := platform.ReadObject(ctx, s.objects, key, 1, supersededIndexSize, ErrCorrupt)
@@ -317,7 +319,7 @@ func (s *Store) refuseSupersededIndex(ctx context.Context, key platform.ObjectKe
 	}
 	root, err := s.codecs.Decode(ctx, data, supersededIndexSize)
 	if err != nil {
-		return ErrCorrupt
+		return errors.Join(ErrCorrupt, err)
 	}
 	if _, err := decodeRoot(s, control.Ref{}, root); err != nil {
 		return err
@@ -418,9 +420,11 @@ func (s *Store) releaseBuilder() {
 // object rather than reading every part back.
 const digestAttribute = "sproutfs-digest"
 
-// digestOf is the attribute value for one object's logical bytes.
+// digestOf is the attribute value for one object's logical bytes: their
+// XXH3-128, hex. It tells a retry's own bytes from other bytes under the same
+// key, which only this deployment's hosts write, so it need not resist a forger.
 func digestOf(data []byte) string {
-	sum := sha256.Sum256(data)
+	sum := xxh3.Hash128(data).Bytes()
 	return hex.EncodeToString(sum[:])
 }
 

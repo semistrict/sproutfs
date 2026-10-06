@@ -18,7 +18,7 @@ import (
 //
 // Its members are encoded side by side, as many at once as the store has
 // encoders, and taken into parts in the order they were submitted, on the
-// publication's own goroutine. Encoding a page — its SHA-256 and its
+// publication's own goroutine. Encoding a page — its digest and its
 // Zstandard — is what a publication spends its processor on, and a
 // publication that encoded one page at a time ran at one processor's pace
 // however many encoders the host gave it

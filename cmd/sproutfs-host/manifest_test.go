@@ -143,7 +143,8 @@ func hostContainer(t *testing.T) (corev1.PodSpec, corev1.Container) {
 // the ConfigMap, the Secret and the downward API supply is stood in for, and
 // every literal is read as the pod reads it. Its disk is the one limiter's:
 // a fifth of the filesystem free and 56 GiB used at most, a write budget, the
-// default reserve, no cap of the cache's own, and the cluster cache off.
+// default reserve, no cap of the cache's own, the cluster cache off, and no
+// hot tier.
 func TestTheHostManifestConfiguresAHost(t *testing.T) {
 	_, container := hostContainer(t)
 	supplied := map[string]string{"bucket": "sproutfs-demo-project", "prefix": "demo", "arena": "isolated",
@@ -185,6 +186,9 @@ func TestTheHostManifestConfiguresAHost(t *testing.T) {
 		config.CacheClusterPercent != 0 {
 		t.Fatalf("the manifest keeps the cache in %q beside the scratch %q with %d%% of windows in the cluster",
 			config.CacheDir, config.ScratchDir, config.CacheClusterPercent)
+	}
+	if config.HotTier != nil {
+		t.Fatalf("the manifest reads through a hot tier, %+v", *config.HotTier)
 	}
 	// What the host promises leaves the cache 38 GiB of the 56 it may hold:
 	// 16 GiB of spill files and an ephemeral spill file of 2.

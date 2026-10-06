@@ -380,7 +380,7 @@ A sealed part is held in memory until its upload finishes. The upload runs
 under an upload slot, so a publication can have parts in flight while it fills
 the next builder.
 
-A publication encodes its pages side by side. Encoding a page is its SHA-256
+A publication encodes its pages side by side. Encoding a page is its XXH3-128
 and its Zstandard, and that is nearly all the processor a publication spends.
 The publication reads its pages one at a time, in page order, on its own
 goroutine, and hands them to the store's encoders in batches: a 2 MiB page
@@ -611,7 +611,7 @@ PUTs its bytes needed. The bound belongs to the store, not to the part layout,
 because the layout does not know how large a part may be. So raising the bound
 did not change any format version.
 
-Part layout version 4 is current. A part with any other version is refused from
+Part layout version 5 is current. A part with any other version is refused from
 its trailer, before the table is parsed. The version is sixteen bytes from the
 end of a part, and the magic is in the last eight bytes. Every earlier layout
 put them in the same places. So a part whose trailer had a different size is
@@ -737,9 +737,22 @@ page size matches its own, so the pager's page and the store's page are the
 same unit. The upload reads the page the guest was running on.
 
 Each member, including the root, uses an independent raw-or-Zstandard envelope,
-with the decoded length and SHA-256 integrity verification. The raw fallback
-prevents expansion beyond the 48-byte envelope. Checksums verify what was read.
-A page's name remains the checkpoint that published it. The size limits are:
+with the decoded length and an XXH3-128 integrity check. The raw fallback
+prevents expansion beyond the 32-byte envelope header. Checksums verify what
+was read. A page's name remains the checkpoint that published it.
+`internal/blob/blob.go` describes the header. The envelope format is version 2.
+Version 1 checked with SHA-256 in a 48-byte header, and is refused with its
+version named.
+
+The digest finds corruption: a torn write, a flipped bit, a wrong stripe. It
+does not resist a forger. Only the deployment's own hosts write what a host
+reads, and a forger who could write there could write a valid digest of any
+kind. SHA-256 of a 2 MiB page took 5.7 ms on Cascade Lake, which has no SHA
+instructions ([measurement](measurements/gce-dependent-reads-2026-10-03.md)).
+On an Apple M5 Pro, which has them, XXH3-128 of a 2 MiB page takes 0.1 ms and
+SHA-256 0.8 ms (`BenchmarkDigest` in `internal/blob`).
+
+The size limits are:
 
 - A root is limited to 2 MiB decoded.
 - VMM state is limited to 64 MiB.
@@ -755,7 +768,8 @@ core count: 2 to 16 encoders and 4 to 32 decoders. A caller that does not size
 them gets four of each. The window is codec history, not a storage or paging
 unit.
 
-Every object carries the digest of its logical contents as an attribute. When a
+Every object carries the XXH3-128 of its logical contents, in hex, as an
+attribute. When a
 publication finds an object already under its key, one HEAD tells it whether
 the object is from the same publication retried or from a reference reused for
 other contents. The publication does not read back what it wrote. A part's
@@ -763,11 +777,12 @@ bytes are raw and a retry's bytes are identical, so the comparison is exact. A
 member's envelope is inside those bytes and is never compared separately. An
 object written without the attribute is read and compared instead.
 
-Index format 8 and part layout 4 are the layout described above. All earlier
-layouts are rejected. These include version 7, whose roots state no volume's
-page size, so its page numbers are always 2 MiB pages. They also include the
-deployments whose roots were an entire index object, and the deployments whose
-roots were part members. There is no data migration.
+Index format 9 and part layout 5 are the layout described above. All earlier
+layouts are rejected. Index format 8 and part layout 4 differ only in their
+envelopes, which were of version 1. Version 7 roots state no volume's page
+size, so their page numbers are always 2 MiB pages. The rejected layouts also
+include the deployments whose roots were an entire index object, and the
+deployments whose roots were part members. There is no data migration.
 
 ### Page cache
 
@@ -882,8 +897,8 @@ envelope the membership ranks its disk for, under the membership's code, and
 a read rebuilds the envelope from any k of them of one code it holds: the
 membership's code, or one the deployment used before it (see
 [the code](hosting.md#the-code)). `checkpoint/diskformat.go` describes the
-format, which is version 2. Version 1 held whole envelopes with no envelope
-length, and a file of it is emptied.
+format, which is version 3. Version 1 held whole envelopes with no envelope
+length. Version 2 held envelopes of version 1. A file of either is emptied.
 
 When the open region is full, it is **closed**. Closing syncs the region's
 items, then writes the region's table at its end, then syncs again. The table
@@ -940,7 +955,7 @@ goes with the pod ([the cache's file](hosting.md#the-caches-file)).
 **Reads.** A read checks the key, the index and the code in each item's
 header against what it asked for, and then the checksum. An item that fails
 any of them is a miss, and the index forgets it. The read rebuilds the envelope from
-the items that pass, and checks it by its own SHA-256. If it holds more than k
+the items that pass, and checks it by its own XXH3-128. If it holds more than k
 stripes and the first k fail that check, it rebuilds from other sets of k, and
 forgets the stripe that does not belong. If none pass, it forgets them all.
 Either way the page is read from the store, or, inside the share, from the

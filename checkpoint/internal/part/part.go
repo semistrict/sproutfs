@@ -45,7 +45,9 @@ const (
 	// FormatVersion is the part layout this package writes and the only one it
 	// reads. It is in the trailer as well as the table so that a part written
 	// under another layout is refused before anything of it is parsed.
-	FormatVersion = 4
+	// Version 5 holds members in envelopes of format 2, which check their bytes
+	// with XXH3-128 rather than SHA-256.
+	FormatVersion = 5
 	// trailerMagic is "SPROUTPA".
 	trailerMagic = 0x5350524f55545041
 )

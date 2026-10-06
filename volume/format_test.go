@@ -34,7 +34,7 @@ var update = flag.Bool("update", false, "rewrite the format fixtures under testd
 // it, and supersededDeployments are the dumps committed before this one, each
 // with the version it was written under — the bytes an older build actually
 // wrote, which is the only thing that makes them worth keeping.
-const fixtureDeployment = "testdata/deployment-record-5-index-8-part-4"
+const fixtureDeployment = "testdata/deployment-record-5-index-9-part-5"
 
 var supersededDeployments = []struct {
 	dir string
@@ -56,9 +56,13 @@ var supersededDeployments = []struct {
 		want: "record format version 4, want 5"},
 	{dir: "testdata/deployment-record-4-index-7-part-4", sentinel: control.ErrCorrupt,
 		want: "record format version 4, want 5"},
-	// The set before this one: its records keep no checkpoint.
+	// Its records keep no checkpoint.
 	{dir: "testdata/deployment-record-4-index-8-part-4", sentinel: control.ErrCorrupt,
 		want: "record format version 4, want 5"},
+	// The set before this one: its envelopes carry a SHA-256. Its record is
+	// current, so the index object it names is what refuses it.
+	{dir: "testdata/deployment-record-5-index-8-part-4", sentinel: checkpoint.ErrCorrupt,
+		want: "checkpoint index format version 8, want 9"},
 }
 
 // objectsDir and manifestFile are the two halves of a fixture: the store's
