@@ -29,7 +29,7 @@ func (a slotArena) Release(context.Context, int) error { return nil }
 func page(slot int, private bool) *zframe {
 	f := &zframe{fileSlot: fileSlot{slot: slot}}
 	if private {
-		f.layer = &zirconRegion{}
+		f.layer = &MemoryRegion{}
 	}
 	return f
 }
@@ -97,7 +97,7 @@ func TestTheProbeStopsOwingAGuestOnceItsPageIsRetired(t *testing.T) {
 // an unnamed one is a guest writing into another's memory.
 func TestTheProbeAllowsTwoMemoryRegionsToShareANamedPrivatePage(t *testing.T) {
 	var p probeState
-	parent, child := &zirconRegion{}, &zirconRegion{}
+	parent, child := &MemoryRegion{}, &MemoryRegion{}
 	shared := page(1, true)
 	shared.layer = parent
 	held := &zbinding{region: parent, index: 7}
@@ -167,7 +167,7 @@ func TestTheProbeRefusesAnOlderPageUnderTheZirconCore(t *testing.T) {
 	var p probeState
 	b := &zbinding{index: 7}
 	origin := &zframe{fileSlot: fileSlot{slot: 1}}
-	copied := &zframe{fileSlot: fileSlot{slot: 2}, layer: &zirconRegion{}}
+	copied := &zframe{fileSlot: fileSlot{slot: 2}, layer: &MemoryRegion{}}
 	p.granted(b, copied, origin)
 	if found := p.bind(nil, b, copied); found != "" {
 		t.Fatalf("re-installing the frame the guest holds was reported as %q", found)
@@ -186,7 +186,7 @@ func TestTheProbeRefusesAnOlderPageUnderTheZirconCore(t *testing.T) {
 // is the sharing working.
 func TestTheProbeAllowsTwoRegionsToShareALentFrame(t *testing.T) {
 	var p probeState
-	parent, child := &zirconRegion{}, &zirconRegion{}
+	parent, child := &MemoryRegion{}, &MemoryRegion{}
 	shared := &zframe{fileSlot: fileSlot{slot: 1}, layer: parent}
 	shared.aliases.add(&zbinding{region: parent, index: 7})
 	wantFinding(t, p.bind(nil, &zbinding{region: child, index: 7}, shared), "reached from two memory regions")

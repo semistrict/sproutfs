@@ -38,9 +38,65 @@ var ErrHandedOff = errors.New("managed-memory-region handed its volume off")
 // While the guest runs, the answer is only as current as the moment it is
 // taken, exactly like the pages a bulk stream already sent.
 func (r *MemoryRegion) ReadResident(ctx context.Context, page uint64, dst []byte) (held, unpublished bool, err error) {
-	z := r.zircon
-
-	return z.readResident(ctx, page, dst)
+	h := r.host
+	if uint64(len(dst)) != h.pageSize {
+		return false, false, ErrRange
+	}
+	if err := r.live.RLock(ctx); err != nil {
+		return false, false, err
+	}
+	defer r.live.RUnlock()
+	if page >= uint64(r.pageCount) {
+		return false, false, ErrRange
+	}
+	// The stripe orders this against the faults that change who owns a
+	// page's bytes, and comes before the region, as in a fault.
+	if err := r.stripe(page).Lock(ctx); err != nil {
+		return false, false, err
+	}
+	defer r.stripe(page).Unlock()
+	if err := r.mu.RLock(ctx); err != nil {
+		return false, false, err
+	}
+	defer r.mu.RUnlock()
+	if err := r.serving(); err != nil {
+		return false, false, err
+	}
+	b := r.lookupBinding(page)
+	if b == nil {
+		return false, false, nil
+	}
+	if err := h.beginIO(ctx); err != nil {
+		return false, false, err
+	}
+	defer h.endIO()
+	p, err := r.host.lockedPage(ctx, b)
+	if err != nil {
+		return false, false, err
+	}
+	r.bindingsMu.Lock()
+	dirty, copied := b.dirty, b.checkpoint
+	spill := b.spill
+	if copied != nil {
+		spill = copied.spill
+	}
+	r.bindingsMu.Unlock()
+	if p != nil {
+		defer r.host.unlockPage(p)
+		f := frameOf(p)
+		if err := f.file.Read(ctx, f.slot, dst); err != nil {
+			return false, false, err
+		}
+		return true, dirty, nil
+	}
+	if !dirty || (copied == nil && !h.spillHolds(spill)) {
+		// Evicted since it was listed, or never held at all.
+		return false, false, nil
+	}
+	if err := h.readSpill(ctx, spill, dst); err != nil {
+		return false, false, err
+	}
+	return true, true, nil
 }
 
 // Resident lists the pages this memory region holds, in ascending order, for a bulk
@@ -53,9 +109,20 @@ func (r *MemoryRegion) ReadResident(ctx context.Context, page uint64, dst []byte
 // holds nothing, and a destination told that reads every page from the volume,
 // which is only correct when this host really holds none of them.
 func (r *MemoryRegion) Resident() ([]uint64, error) {
-	z := r.zircon
-
-	return z.resident()
+	if err := r.mu.RLock(context.Background()); err != nil {
+		return nil, err
+	}
+	defer r.mu.RUnlock()
+	if err := r.serving(); err != nil {
+		return nil, err
+	}
+	var result []uint64
+	r.eachBinding(func(b *zbinding) {
+		if b.page != nil || b.dirty {
+			result = append(result, b.index)
+		}
+	})
+	return result, nil
 }
 
 // Handoff gives up this memory region's volume while keeping its pages. It belongs to
@@ -76,9 +143,18 @@ func (r *MemoryRegion) Resident() ([]uint64, error) {
 // instead of starting a new one. It is read here, under the lock that makes the
 // volume another host's, because that is the moment the set stops changing.
 func (r *MemoryRegion) Handoff(ctx context.Context) (time.Duration, error) {
-	z := r.zircon
-
-	return z.handoff(ctx)
+	if err := r.mu.Lock(ctx); err != nil {
+		return 0, err
+	}
+	defer r.mu.Unlock()
+	if err := r.ready(); err != nil {
+		return 0, err
+	}
+	if r.currentCheckpoint() != nil {
+		return 0, ErrSealed
+	}
+	r.handed = true
+	return r.unpublishedAge(), nil
 }
 
 // Unpublished lists the pages this memory region holds that no checkpoint of its VM
@@ -91,9 +167,20 @@ func (r *MemoryRegion) Handoff(ctx context.Context) (time.Duration, error) {
 // destination acts on by fetching nothing: these pages exist nowhere else, and
 // a handoff that names none of them rewinds the guest to the last checkpoint.
 func (r *MemoryRegion) Unpublished() ([]uint64, error) {
-	z := r.zircon
-
-	return z.unpublished()
+	if err := r.mu.RLock(context.Background()); err != nil {
+		return nil, err
+	}
+	defer r.mu.RUnlock()
+	if err := r.serving(); err != nil {
+		return nil, err
+	}
+	var result []uint64
+	r.eachBinding(func(b *zbinding) {
+		if b.dirty {
+			result = append(result, b.index)
+		}
+	})
+	return result, nil
 }
 
 // MemoryRegionStats is one memory region's share of the host's pages. Like Stats it is
@@ -129,9 +216,27 @@ func (s MemoryRegionStats) SharedBytes() uint64   { return uint64(s.SharedPages)
 // Stats reports this memory region's pages. It is a snapshot taken without stopping
 // the guest, exactly like Resident.
 func (r *MemoryRegion) Stats(ctx context.Context) (MemoryRegionStats, error) {
-	z := r.zircon
-
-	return z.stats(ctx)
+	if err := r.mu.RLock(ctx); err != nil {
+		return MemoryRegionStats{}, err
+	}
+	defer r.mu.RUnlock()
+	stats := MemoryRegionStats{PageSize: r.host.pageSize}
+	r.eachBinding(func(b *zbinding) {
+		if b.page != nil {
+			stats.ResidentPages++
+			for alias := range frameOf(b.page).aliases.all() {
+				if alias.region != r {
+					stats.SharedPages++
+					break
+				}
+			}
+		}
+		if b.dirty {
+			stats.PrivatePages++
+		}
+	})
+	stats.DirtySince = r.OldestUnpublished()
+	return stats, nil
 }
 
 // eachBindingBatch is how many bindings eachBinding visits under one hold of

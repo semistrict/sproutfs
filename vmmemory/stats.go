@@ -231,15 +231,35 @@ type SharingStats struct {
 // holds — a page a store copied away from and left behind, or one a fault has
 // created and not yet bound — so it counts in UniqueBytes and in no mapping.
 func (h *Host) Sharing(ctx context.Context) (SharingStats, error) {
-	z := h.zircon
-
-	return z.sharing(ctx)
+	if err := context.Cause(ctx); err != nil {
+		return SharingStats{}, err
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var stats SharingStats
+	for p := range h.node.PageQueues().Pages() {
+		f := frameOf(p)
+		gauge := &stats.Pmem
+		if f.kind == Ram {
+			gauge = &stats.Ram
+		}
+		aliases := uint64(f.aliases.len())
+		gauge.UniqueBytes += h.pageSize
+		gauge.MappedBytes += aliases * h.pageSize
+		if aliases > 1 {
+			gauge.SavedBytes += (aliases - 1) * h.pageSize
+		}
+	}
+	return stats, h.err
 }
 
+// Stats reports the pager's counters. Its idle pages are the roots' pages no
+// memory region maps.
 func (h *Host) Stats(ctx context.Context) (Stats, error) {
-	z := h.zircon
-
-	return z.stats(ctx)
+	if err := context.Cause(ctx); err != nil {
+		return Stats{}, err
+	}
+	return h.snapshot()
 }
 
 // snapshot is the pager's counters as Stats reports them, which both cores

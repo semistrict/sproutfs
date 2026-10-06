@@ -89,10 +89,66 @@ func (r *MemoryRegion) Populated() PopulateStats {
 // siblings loaded and takes no faults on them. It loads nothing, and it installs
 // at most populationRuns runs of them. Call it once the mapping accepts commands
 // and before memory users start.
+//
+// It is Zircon's CommitRangeLocked restricted to the pages an identity root
+// holds: a commit of the range that reads nothing.
 func (r *MemoryRegion) Populate(ctx context.Context) error {
-	z := r.zircon
-
-	return z.populate(ctx)
+	h := r.host
+	started := h.clock.Now()
+	var installed installedRuns
+	defer func() {
+		r.populated.Store(&PopulateStats{Commands: installed.commands, Runs: installed.runs,
+			Pages: installed.pages, DurationNS: h.clock.Since(started).Nanoseconds()})
+	}()
+	if err := r.mu.Lock(ctx); err != nil {
+		return err
+	}
+	if err := r.ready(); err != nil {
+		r.mu.Unlock()
+		return err
+	}
+	h.mu.Lock()
+	available := r.host.rootPages > 0 || h.zeroMemoryRegions > 0 || r.host.lendsAnyLocked()
+	h.mu.Unlock()
+	r.mu.Unlock()
+	if !available {
+		// There is no page to populate from. A first fault will discover
+		// cold data or zeros without making attachment wait for metadata.
+		return nil
+	}
+	budget := populationBudget{runs: populationRuns, pages: populationPages}
+	for start := uint64(0); start < uint64(r.pageCount) && budget.left(); {
+		end := min(start+max(populationWindowBytes/h.pageSize, 1), uint64(r.pageCount))
+		err := func() error {
+			if err := r.mu.Lock(ctx); err != nil {
+				return err
+			}
+			defer r.mu.Unlock()
+			if err := r.ready(); err != nil {
+				return err
+			}
+			if err := h.beginIO(ctx); err != nil {
+				return err
+			}
+			defer h.endIO()
+			plan, err := r.plan(ctx, start, end, end)
+			if err != nil {
+				return err
+			}
+			defer plan.unlock()
+			if err := plan.bindResidents(ctx, &budget); err != nil {
+				return err
+			}
+			_, err = plan.install(ctx)
+			installed.add(plan.installed)
+			return err
+		}()
+		if err != nil {
+			return err
+		}
+		start = end
+	}
+	return nil
 }
 
 // identityLess is a total order over every field of an identity, so opposing

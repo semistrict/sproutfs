@@ -100,9 +100,48 @@ func evictPastAFreeSlot(ctx context.Context) bool {
 // compresses, and every level takes a mapped page in the end, since an
 // allocation short of a slot has nowhere else to get one.
 func (h *Host) reclaimStep(ctx context.Context, req *evictionRequest, _ bool, _ zirconvm.EvictionLevel) (zirconvm.ReclaimAttempt, bool, error) {
-	z := h.zircon
-
-	return z.reclaimStep(ctx, req)
+	h.mu.Lock()
+	if h.err != nil {
+		err := h.err
+		h.mu.Unlock()
+		return zirconvm.ReclaimAttempt{}, false, err
+	}
+	if !req.preferEviction {
+		h.mu.Unlock()
+		if h.takeIdle() {
+			return zirconvm.ReclaimAttempt{Success: zirconvm.ReclaimSuccess{Type: zirconvm.ReclaimEvict, NumPages: 1}},
+				true, nil
+		}
+		h.mu.Lock()
+		// The slots of a prefetch still reading come next: nothing waits on
+		// its pages. See prefetch.go.
+		if !sim.Bug(ctx, "pager-prefetch-ignores-pressure") && h.cancelPrefetchesLocked(ctx) {
+			req.prefetches, req.changed = true, h.changed
+			h.mu.Unlock()
+			return zirconvm.ReclaimAttempt{}, false, nil
+		}
+	}
+	// A slot that came free after the allocation looked, as a cancelled
+	// prefetch's do when it settles, is taken rather than a page a guest
+	// maps, as in the current core.
+	if !req.preferEviction && req.file != nil && h.freeLocked(req.file) > 0 &&
+		!sim.Bug(ctx, "pager-evict-past-a-freed-slot") {
+		req.freed = true
+		h.mu.Unlock()
+		return zirconvm.ReclaimAttempt{}, false, nil
+	}
+	page := h.peekVictimLocked(req)
+	req.changed = h.changed
+	// Slots reserved by a concurrent load are in no queue yet.
+	if h.queuedLocked() < h.cfg.ResidentPages {
+		req.busy = true
+	}
+	h.mu.Unlock()
+	if page == nil {
+		return zirconvm.ReclaimAttempt{}, false, nil
+	}
+	req.preferEviction = false
+	return h.reclaimVictim(ctx, page)
 }
 
 // evictionSeam runs in a reclaim between reading one victim's aliases and

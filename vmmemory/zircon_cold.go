@@ -22,8 +22,7 @@ import (
 
 // pin keeps origin in the arena while b's cold copy is compared with it: the
 // first pin moves it to the zero-fork queue. Caller holds origin's lock.
-func (z *zirconHost) pin(origin *zirconvm.VmPage, b *zbinding) {
-	h := z.host
+func (h *Host) pin(origin *zirconvm.VmPage, b *zbinding) {
 	h.pinMu.Lock()
 	defer h.pinMu.Unlock()
 	f := frameOf(origin)
@@ -33,14 +32,13 @@ func (z *zirconHost) pin(origin *zirconvm.VmPage, b *zbinding) {
 	first := len(f.coldCopies) == 0
 	f.coldCopies[b] = struct{}{}
 	if first {
-		z.node.PageQueues().MoveAnonymousToAnonymousZeroFork(origin)
+		h.node.PageQueues().MoveAnonymousToAnonymousZeroFork(origin)
 	}
 }
 
 // unpin is the reverse of pin: the last unpin moves origin back to the queue
 // it belongs in.
-func (z *zirconHost) unpin(origin *zirconvm.VmPage, b *zbinding) {
-	h := z.host
+func (h *Host) unpin(origin *zirconvm.VmPage, b *zbinding) {
 	h.pinMu.Lock()
 	defer h.pinMu.Unlock()
 	f := frameOf(origin)
@@ -49,29 +47,28 @@ func (z *zirconHost) unpin(origin *zirconvm.VmPage, b *zbinding) {
 	}
 	delete(f.coldCopies, b)
 	if len(f.coldCopies) == 0 {
-		z.unpinnedLocked(origin)
+		h.unpinnedLocked(origin)
 	}
 }
 
 // unpinnedLocked moves a page no cold copy pins any more back where it
 // belongs: the don't-need queue if it is idle, the newest reclaim queue if
 // not. Caller holds h.pinMu.
-func (z *zirconHost) unpinnedLocked(origin *zirconvm.VmPage) {
-	if _, queued := z.node.PageQueues().Backlink(origin); !queued {
+func (h *Host) unpinnedLocked(origin *zirconvm.VmPage) {
+	if _, queued := h.node.PageQueues().Backlink(origin); !queued {
 		return
 	}
 	if frameOf(origin).idle {
-		z.node.PageQueues().MoveToReclaimDontNeed(origin)
+		h.node.PageQueues().MoveToReclaimDontNeed(origin)
 		return
 	}
-	z.node.PageQueues().MoveToReclaim(origin)
+	h.node.PageQueues().MoveToReclaim(origin)
 }
 
 // dropCold lets every cold copy compared with origin go on without it, as
 // Host.dropCold does: origin is going although it is pinned. The copies stay
 // cold, and are compared with the bytes their volume holds for their page.
-func (z *zirconHost) dropCold(origin *zirconvm.VmPage) {
-	h := z.host
+func (h *Host) dropCold(origin *zirconvm.VmPage) {
 	f := frameOf(origin)
 	h.pinMu.Lock()
 	copies := slices.Collect(maps.Keys(f.coldCopies))
@@ -79,19 +76,18 @@ func (z *zirconHost) dropCold(origin *zirconvm.VmPage) {
 	h.pinMu.Unlock()
 	for _, b := range copies {
 		q := b.region
-		q.mu.Lock()
+		q.bindingsMu.Lock()
 		if b.cold && b.origin == origin {
 			b.origin = nil
 		}
-		q.mu.Unlock()
+		q.bindingsMu.Unlock()
 	}
 }
 
 // moveCold makes every cold copy compared with from compared with to instead,
 // which holds the same bytes and takes from's place. Caller holds both pages'
 // locks.
-func (z *zirconHost) moveCold(from, to *zirconvm.VmPage) {
-	h := z.host
+func (h *Host) moveCold(from, to *zirconvm.VmPage) {
 	ff, tf := frameOf(from), frameOf(to)
 	h.pinMu.Lock()
 	copies := slices.Collect(maps.Keys(ff.coldCopies))
@@ -101,7 +97,7 @@ func (z *zirconHost) moveCold(from, to *zirconvm.VmPage) {
 			tf.coldCopies = make(map[*zbinding]struct{})
 		}
 		if len(tf.coldCopies) == 0 {
-			z.node.PageQueues().MoveAnonymousToAnonymousZeroFork(to)
+			h.node.PageQueues().MoveAnonymousToAnonymousZeroFork(to)
 		}
 	}
 	for _, b := range copies {
@@ -110,26 +106,25 @@ func (z *zirconHost) moveCold(from, to *zirconvm.VmPage) {
 	h.pinMu.Unlock()
 	for _, b := range copies {
 		q := b.region
-		q.mu.Lock()
+		q.bindingsMu.Lock()
 		if b.origin == from {
 			b.origin = to
 		}
-		q.mu.Unlock()
+		q.bindingsMu.Unlock()
 	}
 }
 
 // markCold makes b's copy of origin cold, and records it for its session to
 // give back, as MemoryRegion.markCold does. It reports whether it did: a copy
 // that no longer remembers origin is not one.
-func (z *zirconRegion) markCold(b *zbinding, origin *zirconvm.VmPage) bool {
-	r := z.region
+func (r *MemoryRegion) markCold(b *zbinding, origin *zirconvm.VmPage) bool {
 	h := r.host
-	z.mu.Lock()
+	r.bindingsMu.Lock()
 	h.pinMu.Lock()
 	_, pinned := frameOf(origin).coldCopies[b]
 	h.pinMu.Unlock()
 	if b.origin != origin || !b.writable() {
-		z.mu.Unlock()
+		r.bindingsMu.Unlock()
 		return false
 	}
 	if !pinned {
@@ -138,15 +133,15 @@ func (z *zirconRegion) markCold(b *zbinding, origin *zirconvm.VmPage) bool {
 		b.origin = nil
 	}
 	b.cold, b.coldAt = true, h.clock.Now().UnixNano()
-	if z.coldPages == nil {
-		z.coldPages = make(map[uint64]*zbinding)
+	if r.coldPages == nil {
+		r.coldPages = make(map[uint64]*zbinding)
 	}
-	z.coldPages[b.index] = b
-	if z.coldCopies == nil {
-		z.coldCopies = make(map[uint64]struct{})
+	r.coldPages[b.index] = b
+	if r.coldCopies == nil {
+		r.coldCopies = make(map[uint64]struct{})
 	}
-	z.coldCopies[b.index] = struct{}{}
-	z.mu.Unlock()
+	r.coldCopies[b.index] = struct{}{}
+	r.bindingsMu.Unlock()
 	select {
 	case r.coldCopied <- struct{}{}:
 	default:
@@ -156,17 +151,16 @@ func (z *zirconRegion) markCold(b *zbinding, origin *zirconvm.VmPage) bool {
 
 // requeueCold hands a cold copy back to its session when a give-back could not
 // finish it.
-func (z *zirconRegion) requeueCold(b *zbinding) {
-	r := z.region
-	z.mu.Lock()
+func (r *MemoryRegion) requeueCold(b *zbinding) {
+	r.bindingsMu.Lock()
 	queued := b.cold && b.writable()
 	if queued {
-		if z.coldCopies == nil {
-			z.coldCopies = make(map[uint64]struct{})
+		if r.coldCopies == nil {
+			r.coldCopies = make(map[uint64]struct{})
 		}
-		z.coldCopies[b.index] = struct{}{}
+		r.coldCopies[b.index] = struct{}{}
 	}
-	z.mu.Unlock()
+	r.bindingsMu.Unlock()
 	if queued {
 		select {
 		case r.coldCopied <- struct{}{}:
@@ -176,62 +170,47 @@ func (z *zirconRegion) requeueCold(b *zbinding) {
 }
 
 // uncoldLocked ends b's copy being cold, if it is, as
-// MemoryRegion.uncoldLocked does. Caller holds z.mu.
-func (z *zirconRegion) uncoldLocked(b *zbinding) {
+// MemoryRegion.uncoldLocked does. Caller holds r.bindingsMu.
+func (r *MemoryRegion) uncoldLocked(b *zbinding) {
 	if !b.cold {
 		return
 	}
 	b.cold = false
-	delete(z.coldPages, b.index)
+	delete(r.coldPages, b.index)
 	if b.origin != nil {
-		z.host.unpin(b.origin, b)
+		r.host.unpin(b.origin, b)
 	}
 }
 
-// takeColdCopies is the cold copies recorded since it was last called, in
-// page order.
-func (z *zirconRegion) takeColdCopies() []uint64 {
-	z.mu.Lock()
-	defer z.mu.Unlock()
-	pages := slices.Sorted(maps.Keys(z.coldCopies))
-	clear(z.coldCopies)
-	return pages
-}
-
-// giveBackColdCopies is MemoryRegion.GiveBackColdCopies over the zircon core.
-func (z *zirconRegion) giveBackColdCopies(ctx context.Context) (int, error) {
-	return z.givingBack(ctx, z.takeColdCopies)
-}
-
 // isCold reports whether b's copy is cold and still its own dirty state.
-func (z *zirconRegion) isCold(b *zbinding) bool {
-	z.mu.Lock()
-	defer z.mu.Unlock()
+func (r *MemoryRegion) isCold(b *zbinding) bool {
+	r.bindingsMu.Lock()
+	defer r.bindingsMu.Unlock()
 	return b.cold && b.writable()
 }
 
 // coldSince reports when b's copy became cold.
-func (z *zirconRegion) coldSince(b *zbinding) time.Time {
-	z.mu.Lock()
-	defer z.mu.Unlock()
+func (r *MemoryRegion) coldSince(b *zbinding) time.Time {
+	r.bindingsMu.Lock()
+	defer r.bindingsMu.Unlock()
 	return time.Unix(0, b.coldAt)
 }
 
 // originOf reports the page b was copied from, nil where it was copied from
 // nothing a comparison may use.
-func (z *zirconRegion) originOf(b *zbinding) *zirconvm.VmPage {
-	z.mu.Lock()
-	defer z.mu.Unlock()
+func (r *MemoryRegion) originOf(b *zbinding) *zirconvm.VmPage {
+	r.bindingsMu.Lock()
+	defer r.bindingsMu.Unlock()
 	return b.origin
 }
 
 // forgetOrigin stops comparing b with origin: the guest changed it, or origin
 // has gone. It is left alone where b has been copied again since.
-func (z *zirconRegion) forgetOrigin(b *zbinding, origin *zirconvm.VmPage) {
-	z.mu.Lock()
-	defer z.mu.Unlock()
+func (r *MemoryRegion) forgetOrigin(b *zbinding, origin *zirconvm.VmPage) {
+	r.bindingsMu.Lock()
+	defer r.bindingsMu.Unlock()
 	if b.origin == origin {
-		z.uncoldLocked(b)
+		r.uncoldLocked(b)
 		b.origin = nil
 	}
 }
@@ -240,17 +219,17 @@ func (z *zirconRegion) forgetOrigin(b *zbinding, origin *zirconvm.VmPage) {
 // ones the page it shares again holds, and reports the reservation it was
 // admitted under, for the caller to give back. A region left with no dirty
 // page holds no unpublished write, so its loss window ends too.
-func (z *zirconRegion) endDirty(b *zbinding) reservation {
-	z.region.host.probe.retired(b)
-	z.mu.Lock()
-	defer z.mu.Unlock()
-	z.uncoldLocked(b)
+func (r *MemoryRegion) endDirty(b *zbinding) reservation {
+	r.host.probe.retired(b)
+	r.bindingsMu.Lock()
+	defer r.bindingsMu.Unlock()
+	r.uncoldLocked(b)
 	spill := b.spill
 	b.spill, b.dirty, b.ahead, b.origin = noReservation, false, false, nil
-	delete(z.dirtySet, b.index)
-	z.noteSealableLocked(b)
-	if len(z.dirtySet) == 0 {
-		z.dirtySince = time.Time{}
+	delete(r.dirtySet, b.index)
+	r.noteSealableLocked(b)
+	if len(r.dirtySet) == 0 {
+		r.dirtySince = time.Time{}
 	}
 	return spill
 }
@@ -259,22 +238,21 @@ func (z *zirconRegion) endDirty(b *zbinding) reservation {
 // every cold copy of the set a seal took that still holds its origin's bytes
 // is left out of it, and stays the guest's, cold and writable. Caller holds
 // the region exclusively.
-func (z *zirconRegion) leaveOutColdCopies(ctx context.Context, pending map[uint64]*zbinding) (int, error) {
-	r := z.region
+func (r *MemoryRegion) leaveOutColdCopies(ctx context.Context, pending map[uint64]*zbinding) (int, error) {
 	h := r.host
-	z.mu.Lock()
+	r.bindingsMu.Lock()
 	var cold []*zbinding
-	for index, b := range z.coldPages {
+	for index, b := range r.coldPages {
 		if pending[index] == b {
 			cold = append(cold, b)
 		}
 	}
-	z.mu.Unlock()
+	r.bindingsMu.Unlock()
 	slices.SortFunc(cold, func(a, b *zbinding) int { return int(a.index) - int(b.index) })
 	var buffers settler
 	var unchanged []*zbinding
 	for _, b := range cold {
-		same, err := z.stillOrigins(ctx, b, &buffers)
+		same, err := r.stillOrigins(ctx, b, &buffers)
 		if err != nil {
 			return 0, err
 		}
@@ -283,23 +261,23 @@ func (z *zirconRegion) leaveOutColdCopies(ctx context.Context, pending map[uint6
 			unchanged = append(unchanged, b)
 			continue
 		}
-		z.mu.Lock()
-		z.uncoldLocked(b)
-		z.mu.Unlock()
+		r.bindingsMu.Lock()
+		r.uncoldLocked(b)
+		r.bindingsMu.Unlock()
 	}
 	if len(unchanged) == 0 {
 		return 0, nil
 	}
-	z.mu.Lock()
-	if z.dirtySet == nil {
-		z.dirtySet = make(map[uint64]*zbinding)
+	r.bindingsMu.Lock()
+	if r.dirtySet == nil {
+		r.dirtySet = make(map[uint64]*zbinding)
 	}
 	for _, b := range unchanged {
-		z.dirtySet[b.index] = b
-		z.noteSealableLocked(b)
+		r.dirtySet[b.index] = b
+		r.noteSealableLocked(b)
 	}
-	z.mu.Unlock()
-	if err := z.unprotectMapped(ctx, unchanged); err != nil {
+	r.bindingsMu.Unlock()
+	if err := r.unprotectMapped(ctx, unchanged); err != nil {
 		return 0, err
 	}
 	h.mu.Lock()
@@ -311,25 +289,25 @@ func (z *zirconRegion) leaveOutColdCopies(ctx context.Context, pending map[uint6
 // stillOrigins reports whether a cold copy holds exactly its origin's bytes.
 // An origin no longer there to compare with ends the copy being cold, and it
 // is reported changed. Caller holds the region exclusively.
-func (z *zirconRegion) stillOrigins(ctx context.Context, b *zbinding, buffers *settler) (bool, error) {
-	h := z.region.host
-	origin := z.originOf(b)
+func (r *MemoryRegion) stillOrigins(ctx context.Context, b *zbinding, buffers *settler) (bool, error) {
+	h := r.host
+	origin := r.originOf(b)
 	if origin == nil {
-		return z.volumeHolds(ctx, b, buffers)
+		return r.volumeHolds(ctx, b, buffers)
 	}
-	if err := z.host.lockPage(ctx, origin); err != nil {
+	if err := r.host.lockPage(ctx, origin); err != nil {
 		return false, err
 	}
-	defer z.host.unlockPage(origin)
-	if !z.host.published(origin) {
+	defer r.host.unlockPage(origin)
+	if !r.host.published(origin) {
 		return false, nil
 	}
-	page, err := z.host.lockedPage(ctx, b)
+	page, err := r.host.lockedPage(ctx, b)
 	if err != nil {
 		return false, err
 	}
 	if page != nil {
-		defer z.host.unlockPage(page)
+		defer r.host.unlockPage(page)
 		return buffers.equal(ctx, h, frameOf(origin).fileSlot, frameOf(page).fileSlot)
 	}
 	// Spilled: the reservation holds the copy's bytes.
@@ -340,7 +318,7 @@ func (z *zirconRegion) stillOrigins(ctx context.Context, b *zbinding, buffers *s
 	if err := f.file.Read(ctx, f.slot, buffers.first); err != nil {
 		return false, err
 	}
-	if err := h.readSpill(ctx, z.spillOf(b), buffers.second); err != nil {
+	if err := h.readSpill(ctx, r.spillOf(b), buffers.second); err != nil {
 		return false, err
 	}
 	return slices.Equal(buffers.first, buffers.second), nil
@@ -350,14 +328,13 @@ func (z *zirconRegion) stillOrigins(ctx context.Context, b *zbinding, buffers *s
 // bindings off those the guest still maps, one command per page, with the
 // region's protection held exclusively, as MemoryRegion.unprotectMapped does.
 // Caller holds the region exclusively.
-func (z *zirconRegion) unprotectMapped(ctx context.Context, bindings []*zbinding) error {
-	r := z.region
+func (r *MemoryRegion) unprotectMapped(ctx context.Context, bindings []*zbinding) error {
 	if err := r.protectMu.Lock(ctx); err != nil {
 		return err
 	}
 	defer r.protectMu.Unlock()
 	for _, b := range bindings {
-		if !z.isMapped(b) {
+		if !r.isMapped(b) {
 			continue
 		}
 		if err := r.resolvePages(ctx, b.index, 1, true); err != nil {
@@ -371,8 +348,7 @@ func (z *zirconRegion) unprotectMapped(ctx context.Context, bindings []*zbinding
 // cold copy whose origin has gone holds exactly the bytes its volume holds
 // for its page. A backing that may answer with another host's bytes has no
 // such guarantee, and the copy is reported changed.
-func (z *zirconRegion) volumeHolds(ctx context.Context, b *zbinding, buffers *settler) (bool, error) {
-	r := z.region
+func (r *MemoryRegion) volumeHolds(ctx context.Context, b *zbinding, buffers *settler) (bool, error) {
 	h := r.host
 	if r.peer {
 		return false, nil
@@ -383,52 +359,26 @@ func (z *zirconRegion) volumeHolds(ctx context.Context, b *zbinding, buffers *se
 	if _, err := r.loadBacking(ctx, b.index*h.pageSize, buffers.first); err != nil {
 		return false, err
 	}
-	page, err := z.host.lockedPage(ctx, b)
+	page, err := r.host.lockedPage(ctx, b)
 	if err != nil {
 		return false, err
 	}
 	if page != nil {
-		defer z.host.unlockPage(page)
+		defer r.host.unlockPage(page)
 		f := frameOf(page)
 		if err := f.file.Read(ctx, f.slot, buffers.second); err != nil {
 			return false, err
 		}
-	} else if err := h.readSpill(ctx, z.spillOf(b), buffers.second); err != nil {
+	} else if err := h.readSpill(ctx, r.spillOf(b), buffers.second); err != nil {
 		return false, err
 	}
 	return slices.Equal(buffers.first, buffers.second), nil
 }
 
-// givingBack is MemoryRegion.givingBack over the zircon core: one give-back
-// pass over the pages that pages lists.
-func (z *zirconRegion) givingBack(ctx context.Context, pages func() []uint64) (int, error) {
-	r := z.region
-	if err := r.live.RLock(ctx); err != nil {
-		return 0, err
-	}
-	defer r.live.RUnlock()
-	if err := r.serving(); err != nil {
-		return 0, err
-	}
-	var buffers settler
-	given := 0
-	for _, index := range pages() {
-		back, err := z.giveBack(ctx, index, &buffers)
-		if back {
-			given++
-		}
-		if err != nil {
-			return given, err
-		}
-	}
-	return given, nil
-}
-
 // giveBack is one page of a pass, holding it as a store fault holds it: the
 // page's window, the region shared, the origin's lock and the copy's. It
 // reports whether the copy went back.
-func (z *zirconRegion) giveBack(ctx context.Context, index uint64, buffers *settler) (bool, error) {
-	r := z.region
+func (r *MemoryRegion) giveBack(ctx context.Context, index uint64, buffers *settler) (bool, error) {
 	h := r.host
 	if err := r.stripe(index).Lock(ctx); err != nil {
 		return false, err
@@ -438,59 +388,58 @@ func (z *zirconRegion) giveBack(ctx context.Context, index uint64, buffers *sett
 		return false, err
 	}
 	defer r.mu.RUnlock()
-	b := z.lookupBinding(index)
+	b := r.lookupBinding(index)
 	if b == nil {
 		return false, nil
 	}
-	origin := z.originOf(b)
-	if origin == nil && z.isCold(b) && !h.wholeRange(r, index) {
-		return z.giveBackToVolume(ctx, b, buffers)
+	origin := r.originOf(b)
+	if origin == nil && r.isCold(b) && !h.wholeRange(r, index) {
+		return r.giveBackToVolume(ctx, b, buffers)
 	}
-	if origin == nil || !z.ownDirty(b) || h.wholeRange(r, index) {
+	if origin == nil || !r.ownDirty(b) || h.wholeRange(r, index) {
 		// Stored into and compared since the list was made, or a range the
 		// rules made one mapping, which a page given back would break in
 		// three.
 		return false, nil
 	}
 	// Origin first, as the settle takes them: clean before private.
-	if err := z.host.lockPage(ctx, origin); err != nil {
+	if err := r.host.lockPage(ctx, origin); err != nil {
 		return false, err
 	}
-	defer z.host.unlockPage(origin)
-	if !z.comparable(origin) {
-		z.forgetOrigin(b, origin)
+	defer r.host.unlockPage(origin)
+	if !r.comparable(origin) {
+		r.forgetOrigin(b, origin)
 		return false, nil
 	}
-	page, err := z.host.lockedPage(ctx, b)
+	page, err := r.host.lockedPage(ctx, b)
 	if err != nil {
 		return false, err
 	}
 	if page == nil {
-		if z.isCold(b) {
+		if r.isCold(b) {
 			// A cold copy the pager spilled is read back: it pins its origin
 			// until it is compared.
-			return z.giveBackSpilled(ctx, b, origin, buffers)
+			return r.giveBackSpilled(ctx, b, origin, buffers)
 		}
 		return false, nil
 	}
-	defer z.host.unlockPage(page)
-	return z.giveBackCopy(ctx, b, origin, page, buffers)
+	defer r.host.unlockPage(page)
+	return r.giveBackCopy(ctx, b, origin, page, buffers)
 }
 
 // ownDirty reports whether b is the region's own dirty state no checkpoint
 // holds.
-func (z *zirconRegion) ownDirty(b *zbinding) bool {
-	z.mu.Lock()
-	defer z.mu.Unlock()
+func (r *MemoryRegion) ownDirty(b *zbinding) bool {
+	r.bindingsMu.Lock()
+	defer r.bindingsMu.Unlock()
 	return b.writable()
 }
 
 // comparable reports whether a copy can still be compared with origin: it is
 // resident, still its identity's page, and in a file this region's session
 // was given. Caller holds origin's lock.
-func (z *zirconRegion) comparable(origin *zirconvm.VmPage) bool {
-	r := z.region
-	if !z.host.published(origin) {
+func (r *MemoryRegion) comparable(origin *zirconvm.VmPage) bool {
+	if !r.host.published(origin) {
 		return false
 	}
 	return r.fileNumber(frameOf(origin).file) >= 0
@@ -499,11 +448,10 @@ func (z *zirconRegion) comparable(origin *zirconvm.VmPage) bool {
 // giveBackCopy is one page of a give-back once its locks are held: the
 // page's window, the region shared, the origin and then the copy page. It
 // reports whether the copy went back.
-func (z *zirconRegion) giveBackCopy(ctx context.Context, b *zbinding, origin, page *zirconvm.VmPage, buffers *settler) (bool, error) {
-	r := z.region
+func (r *MemoryRegion) giveBackCopy(ctx context.Context, b *zbinding, origin, page *zirconvm.VmPage, buffers *settler) (bool, error) {
 	h := r.host
 	index := b.index
-	if !z.isMapped(b) {
+	if !r.isMapped(b) {
 		return false, nil
 	}
 	if err := r.protectPages(ctx, index, 1); err != nil {
@@ -523,27 +471,27 @@ func (z *zirconRegion) giveBackCopy(ctx context.Context, b *zbinding, origin, pa
 	}
 	if err != nil || !same {
 		if !same && err == nil {
-			z.forgetOrigin(b, origin)
+			r.forgetOrigin(b, origin)
 		}
 		return false, errors.Join(err, r.liftProtection(ctx, index))
 	}
 	// Mapped and installed read-only, so the guest's next read maps it
 	// without a fault, which is what would otherwise come back as a write.
-	if err := z.mapInPlace(ctx, b, origin); err != nil {
+	if err := r.mapInPlace(ctx, b, origin); err != nil {
 		if !errors.Is(err, ErrMappingRefused) {
 			return false, err
 		}
-		z.requeueCold(b)
+		r.requeueCold(b)
 		return false, r.liftProtection(ctx, index)
 	}
-	return true, z.shareOrigin(b, page, origin)
+	return true, r.shareOrigin(b, page, origin)
 }
 
 // shareOrigin makes the origin b's page again, now that the guest maps it:
 // b is clean, and the copy and the reservation it was admitted under go back.
 // Caller holds the page's window, the region shared and both pages.
-func (z *zirconRegion) shareOrigin(b *zbinding, page, origin *zirconvm.VmPage) error {
-	h := z.region.host
+func (r *MemoryRegion) shareOrigin(b *zbinding, page, origin *zirconvm.VmPage) error {
+	h := r.host
 	ps := h.pageSize
 	// The pager hands a guest back an older page on purpose here, as the
 	// settle does, so the audit compares the bytes itself.
@@ -551,15 +499,15 @@ func (z *zirconRegion) shareOrigin(b *zbinding, page, origin *zirconvm.VmPage) e
 		panic(found)
 	}
 	h.mu.Lock()
-	z.host.unaliasLocked(b)
-	z.host.aliasLocked(b, origin)
+	r.host.unaliasLocked(b)
+	r.host.aliasLocked(b, origin)
 	h.mu.Unlock()
-	if spill := z.endDirty(b); !spill.none() {
+	if spill := r.endDirty(b); !spill.none() {
 		h.releaseSpill(spill)
 	}
-	z.layer.RemovePage(b.index*ps, page)
-	z.host.releaseFrame(page)
-	z.host.node.PageQueues().MarkAccessed(origin)
+	r.layer.RemovePage(b.index*ps, page)
+	r.host.releaseFrame(page)
+	r.host.node.PageQueues().MarkAccessed(origin)
 	h.mu.Lock()
 	h.stats.GivenBackPages++
 	h.signal()
@@ -572,8 +520,8 @@ func (z *zirconRegion) shareOrigin(b *zbinding, page, origin *zirconvm.VmPage) e
 // unchanged one goes back to the origin, unmapped, and its reservation is
 // freed; a changed one stops being cold. Caller holds the page's window, the
 // region shared and the origin.
-func (z *zirconRegion) giveBackSpilled(ctx context.Context, b *zbinding, origin *zirconvm.VmPage, buffers *settler) (bool, error) {
-	h := z.region.host
+func (r *MemoryRegion) giveBackSpilled(ctx context.Context, b *zbinding, origin *zirconvm.VmPage, buffers *settler) (bool, error) {
+	h := r.host
 	if buffers.first == nil {
 		buffers.first, buffers.second = make([]byte, h.pageSize), make([]byte, h.pageSize)
 	}
@@ -581,26 +529,26 @@ func (z *zirconRegion) giveBackSpilled(ctx context.Context, b *zbinding, origin 
 	if err := f.file.Read(ctx, f.slot, buffers.first); err != nil {
 		return false, err
 	}
-	if err := h.readSpill(ctx, z.spillOf(b), buffers.second); err != nil {
+	if err := h.readSpill(ctx, r.spillOf(b), buffers.second); err != nil {
 		return false, err
 	}
 	h.mu.Lock()
 	h.stats.GiveBackCompares++
 	h.mu.Unlock()
 	if !slices.Equal(buffers.first, buffers.second) {
-		z.forgetOrigin(b, origin)
+		r.forgetOrigin(b, origin)
 		return false, nil
 	}
 	if found := h.probe.resharedSpilled(ctx, h, b, buffers.second, frameOf(origin)); found != "" {
 		panic(found)
 	}
 	h.mu.Lock()
-	z.host.aliasLocked(b, origin)
+	r.host.aliasLocked(b, origin)
 	h.mu.Unlock()
-	if spill := z.endDirty(b); !spill.none() {
+	if spill := r.endDirty(b); !spill.none() {
 		h.releaseSpill(spill)
 	}
-	z.host.node.PageQueues().MarkAccessed(origin)
+	r.host.node.PageQueues().MarkAccessed(origin)
 	h.mu.Lock()
 	h.stats.GivenBackPages++
 	h.signal()
@@ -613,39 +561,39 @@ func (z *zirconRegion) giveBackSpilled(ctx context.Context, b *zbinding, origin 
 // unchanged one is dropped, so the guest's next access reads the page again
 // as any first access does. Caller holds the page's window and the region
 // shared.
-func (z *zirconRegion) giveBackToVolume(ctx context.Context, b *zbinding, buffers *settler) (bool, error) {
-	h := z.region.host
+func (r *MemoryRegion) giveBackToVolume(ctx context.Context, b *zbinding, buffers *settler) (bool, error) {
+	h := r.host
 	ps := h.pageSize
 	// The guest's mapping goes first, so nothing it stores can land in the
 	// copy while it is compared.
-	if err := z.revokeBindings(ctx, []*zbinding{b}); err != nil {
+	if err := r.revokeBindings(ctx, []*zbinding{b}); err != nil {
 		return false, err
 	}
-	same, err := z.volumeHolds(ctx, b, buffers)
+	same, err := r.volumeHolds(ctx, b, buffers)
 	h.mu.Lock()
 	h.stats.GiveBackCompares++
 	h.mu.Unlock()
 	if err != nil || !same {
 		if err == nil {
-			z.mu.Lock()
-			z.uncoldLocked(b)
-			z.mu.Unlock()
+			r.bindingsMu.Lock()
+			r.uncoldLocked(b)
+			r.bindingsMu.Unlock()
 		}
 		return false, err
 	}
-	page, err := z.host.lockedPage(ctx, b)
+	page, err := r.host.lockedPage(ctx, b)
 	if err != nil {
 		return false, err
 	}
 	if page != nil {
 		h.mu.Lock()
-		z.host.unaliasLocked(b)
+		r.host.unaliasLocked(b)
 		h.mu.Unlock()
-		z.layer.RemovePage(b.index*ps, page)
-		z.host.releaseFrame(page)
-		z.host.unlockPage(page)
+		r.layer.RemovePage(b.index*ps, page)
+		r.host.releaseFrame(page)
+		r.host.unlockPage(page)
 	}
-	if spill := z.endDirty(b); !spill.none() {
+	if spill := r.endDirty(b); !spill.none() {
 		h.releaseSpill(spill)
 	}
 	h.mu.Lock()
@@ -661,8 +609,7 @@ func (z *zirconRegion) giveBackToVolume(ctx context.Context, b *zbinding, buffer
 // takes before the victim's, so it takes each without waiting, and gives up
 // where one is held: the copy is then spilled, and compared from there.
 // Caller holds page's lock.
-func (z *zirconHost) giveBackVictim(ctx context.Context, page *zirconvm.VmPage) (bool, error) {
-	h := z.host
+func (h *Host) giveBackVictim(ctx context.Context, page *zirconvm.VmPage) (bool, error) {
 	f := frameOf(page)
 	h.mu.Lock()
 	var b *zbinding
@@ -675,9 +622,8 @@ func (z *zirconHost) giveBackVictim(ctx context.Context, page *zirconvm.VmPage) 
 	if b == nil {
 		return false, nil
 	}
-	q := b.region
-	r := q.region
-	if !q.isCold(b) || h.clock.Since(q.coldSince(b)) < coldCopyAge || !r.live.TryRLock() {
+	r := b.region
+	if !r.isCold(b) || h.clock.Since(r.coldSince(b)) < coldCopyAge || !r.live.TryRLock() {
 		return false, nil
 	}
 	defer r.live.RUnlock()
@@ -690,22 +636,22 @@ func (z *zirconHost) giveBackVictim(ctx context.Context, page *zirconvm.VmPage) 
 		return false, nil
 	}
 	defer r.mu.RUnlock()
-	if r.ready() != nil || !q.isCold(b) {
+	if r.ready() != nil || !r.isCold(b) {
 		return false, nil
 	}
-	origin := q.originOf(b)
+	origin := r.originOf(b)
 	if origin == nil || !frameOf(origin).mu.TryLock() {
 		return false, nil
 	}
-	defer z.unlockPage(origin)
+	defer h.unlockPage(origin)
 	h.mu.Lock()
 	current := b.page == page
 	h.mu.Unlock()
-	if !current || !q.comparable(origin) {
+	if !current || !r.comparable(origin) {
 		return false, nil
 	}
 	var buffers settler
-	return q.giveBackCopy(ctx, b, origin, page, &buffers)
+	return r.giveBackCopy(ctx, b, origin, page, &buffers)
 }
 
 // mapInPlace is MemoryRegion.mapInPlace over the zircon core: to, read-only,
@@ -713,11 +659,10 @@ func (z *zirconHost) giveBackVictim(ctx context.Context, page *zirconvm.VmPage) 
 // the guest reads on without a fault. It reports ErrMappingRefused where the
 // client refused the MAP, having changed nothing. Caller holds b's page and
 // to.
-func (z *zirconRegion) mapInPlace(ctx context.Context, b *zbinding, to *zirconvm.VmPage) error {
-	r := z.region
+func (r *MemoryRegion) mapInPlace(ctx context.Context, b *zbinding, to *zirconvm.VmPage) error {
 	h := r.host
 	return r.underProtection(ctx, func() error {
-		if !z.isMapped(b) {
+		if !r.isMapped(b) {
 			return nil
 		}
 		if err := r.mapPages(ctx, r.runAt(b.index, frameOf(to).fileSlot, 1), false); err != nil {

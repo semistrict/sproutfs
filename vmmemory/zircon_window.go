@@ -14,7 +14,7 @@ import (
 // and a page the plan takes is bound to the region at once, under its root's
 // lock, which keeps it out of every idle drop until the region lets it go.
 type zplan struct {
-	z            *zirconRegion
+	region       *MemoryRegion
 	start, end   uint64
 	fault, store uint64
 	// window and alone are windowPlan's: the plan's pages located whole once
@@ -56,12 +56,12 @@ type zplan struct {
 	request *zrequest
 }
 
-func (z *zirconRegion) newPlan(start, end, fault uint64) *zplan {
+func (r *MemoryRegion) newPlan(start, end, fault uint64) *zplan {
 	// The plan's four marks of each page are one allocation: a fault at
 	// random pays for each one it makes.
 	n := end - start
 	marks := make([]bool, 4*n)
-	p := &zplan{z: z, start: start, end: end, fault: fault, store: end,
+	p := &zplan{region: r, start: start, end: end, fault: fault, store: end,
 		pages: make([]*zirconvm.VmPage, n), reserved: make([]fileSlot, n),
 		fresh: marks[:n:n], zeros: marks[n : 2*n : 2*n], writable: marks[2*n : 3*n : 3*n],
 		private: marks[3*n:]}
@@ -73,23 +73,23 @@ func (z *zirconRegion) newPlan(start, end, fault uint64) *zplan {
 }
 
 // plan is a plan of the window [start, end) located whole.
-func (z *zirconRegion) plan(ctx context.Context, start, end, fault uint64) (*zplan, error) {
-	window, err := z.region.locate(ctx, start, end)
+func (r *MemoryRegion) plan(ctx context.Context, start, end, fault uint64) (*zplan, error) {
+	window, err := r.locate(ctx, start, end)
 	if err != nil {
 		return nil, err
 	}
-	p := z.newPlan(start, end, fault)
+	p := r.newPlan(start, end, fault)
 	p.window, p.located = window, true
 	return p, nil
 }
 
 // planPage is a plan of the window [start, end) that has located page alone.
-func (z *zirconRegion) planPage(ctx context.Context, start, end, fault, page uint64) (*zplan, error) {
-	alone, err := z.region.locate(ctx, page, page+1)
+func (r *MemoryRegion) planPage(ctx context.Context, start, end, fault, page uint64) (*zplan, error) {
+	alone, err := r.locate(ctx, page, page+1)
 	if err != nil {
 		return nil, err
 	}
-	p := z.newPlan(start, end, fault)
+	p := r.newPlan(start, end, fault)
 	p.alone = alone
 	return p, nil
 }
@@ -100,7 +100,7 @@ func (p *zplan) locateWindow(ctx context.Context) error {
 	if p.located {
 		return nil
 	}
-	window, err := p.z.region.locate(ctx, p.start, p.end)
+	window, err := p.region.locate(ctx, p.start, p.end)
 	if err != nil {
 		return err
 	}
@@ -128,7 +128,7 @@ func (p *zplan) identity(page uint64) (pageKey, bool) {
 // unlock gives back every slot the plan took and did not fill.
 func (p *zplan) unlock() {
 	p.request.fail()
-	h := p.z.region.host
+	h := p.region.host
 	h.mu.Lock()
 	for i, at := range p.reserved {
 		if at.slot >= 0 {
@@ -190,7 +190,7 @@ func (p *zplan) reserve(page uint64, at fileSlot) {
 // fileOf is windowPlan.fileOf: the public file for a page of a public
 // template, the region's shared file for any other.
 func (p *zplan) fileOf(page uint64) *arenaFile {
-	r := p.z.region
+	r := p.region
 	if r.public != nil {
 		if id, named := p.identity(page); named && control.Public(id.id.Ref.VM) {
 			return r.public
@@ -201,7 +201,7 @@ func (p *zplan) fileOf(page uint64) *arenaFile {
 
 // files is every file this window's loads by identity may go in.
 func (p *zplan) files() []*arenaFile {
-	r := p.z.region
+	r := p.region
 	if r.public != nil {
 		return []*arenaFile{r.sharedFile(), r.public}
 	}
@@ -212,7 +212,7 @@ func (p *zplan) files() []*arenaFile {
 // whose bytes no identity names. This core takes no fork point's and no
 // other host's page yet.
 func (p *zplan) own(page uint64) bool {
-	h := p.z.region.host
+	h := p.region.host
 	if !h.isolated() {
 		return false
 	}
@@ -230,7 +230,7 @@ func (p *zplan) observeZeros() {
 	if p.observedZeros {
 		return
 	}
-	r := p.z.region
+	r := p.region
 	h := r.host
 	h.mu.Lock()
 	if !r.hasZeros {
@@ -248,7 +248,7 @@ func (p *zplan) markZeros(first, last uint64) {
 		return
 	}
 	p.observeZeros()
-	held := p.z.heldIn(first, last)
+	held := p.region.heldIn(first, last)
 	for page := first; page < last; page++ {
 		if len(held) > 0 && held[0] == page {
 			held = held[1:]
@@ -260,7 +260,7 @@ func (p *zplan) markZeros(first, last uint64) {
 
 // eligible reports whether a page other than the faulting one can join the
 // plan: the region holds nothing there yet.
-func (p *zplan) eligible(page uint64) bool { return p.z.eligible(page) }
+func (p *zplan) eligible(page uint64) bool { return p.region.eligible(page) }
 
 // take binds page to the page its root holds under key, where it holds one,
 // and reports it. It waits for the page's lock, which it takes with no
@@ -269,9 +269,9 @@ func (p *zplan) eligible(page uint64) bool { return p.z.eligible(page) }
 // population takes pages in one order of identities, so two that wait on each
 // other's pages cannot both be waiting.
 func (p *zplan) take(ctx context.Context, page uint64, key pageKey) (*zirconvm.VmPage, error) {
-	z := p.z
-	h := z.region.host
-	root := z.host.root(rootOf(key))
+	r := p.region
+	h := r.host
+	root := r.host.root(rootOf(key))
 	offset := key.id.Page * h.pageSize
 	lock := root.pages.Lock()
 	for {
@@ -281,26 +281,26 @@ func (p *zplan) take(ctx context.Context, page uint64, key pageKey) (*zirconvm.V
 		if found == nil {
 			return nil, nil
 		}
-		if err := z.host.lockPage(ctx, found); err != nil {
+		if err := r.host.lockPage(ctx, found); err != nil {
 			return nil, err
 		}
 		lock.Lock()
 		still := root.pages.PageLocked(offset) == found
 		lock.Unlock()
 		if !still {
-			z.host.unlockPage(found)
+			r.host.unlockPage(found)
 			continue
 		}
 		// A page this region's process may not map where it is is moved or
 		// copied where it may, and the copy is held in its place.
-		reached, err := z.reach(ctx, found, key)
+		reached, err := r.reach(ctx, found, key)
 		if err != nil || reached == nil {
 			return nil, err
 		}
 		found = reached
-		z.host.node.PageQueues().MarkAccessed(found)
+		r.host.node.PageQueues().MarkAccessed(found)
 		if page != p.store {
-			z.bind(page, found)
+			r.bind(page, found)
 		}
 		p.locked = append(p.locked, found)
 		h.mu.Lock()
@@ -326,11 +326,11 @@ type zsurvey struct {
 // reading it already; where prefetched says the read is a prefetch's, a page
 // with no identity is left to its own fault.
 func (p *zplan) survey(except uint64, prefetched bool) zsurvey {
-	z := p.z
+	r := p.region
 	found := zsurvey{into: make([]*arenaFile, p.end-p.start)}
-	eligible := z.eligibleIn(p.start, p.end)
+	eligible := r.eligibleIn(p.start, p.end)
 	holes := false
-	reading := z.host.readingIn(p.start, p.end)
+	reading := r.host.readingIn(p.start, p.end)
 	files := &zfileFinder{p: p}
 	for page := p.start; page < p.end; {
 		at := page - p.start
@@ -389,10 +389,10 @@ func (p *zplan) survey(except uint64, prefetched bool) zsurvey {
 // reports which it took, and which the root holds where this region's process
 // may not map them: those are their own faults' to reach.
 func (p *zplan) takeRootRun(first, last uint64, eligible []bool) (taken, elsewhere []bool) {
-	z := p.z
-	h := z.region.host
+	r := p.region
+	h := r.host
 	key, _ := p.identity(first)
-	root := z.host.root(rootOf(key))
+	root := r.host.root(rootOf(key))
 	marks := make([]bool, 2*(last-first))
 	taken, elsewhere = marks[:last-first:last-first], marks[last-first:]
 	hits := uint64(0)
@@ -407,15 +407,15 @@ func (p *zplan) takeRootRun(first, last uint64, eligible []bool) (taken, elsewhe
 		if found == nil {
 			continue
 		}
-		if !z.reachable(found) {
+		if !r.reachable(found) {
 			elsewhere[page-first] = true
 			continue
 		}
 		if !p.hold(found) {
 			continue
 		}
-		z.host.node.PageQueues().MarkAccessed(found)
-		z.bind(page, found)
+		r.host.node.PageQueues().MarkAccessed(found)
+		r.bind(page, found)
 		p.pages[i], p.fresh[i], taken[page-first] = found, true, true
 		hits++
 	}
@@ -437,7 +437,7 @@ type zfileFinder struct {
 }
 
 func (f *zfileFinder) of(id pageKey) *arenaFile {
-	r := f.p.z.region
+	r := f.p.region
 	if r.public == nil {
 		return r.sharedFile()
 	}
@@ -462,7 +462,7 @@ func (p *zplan) reserveAround(index uint64) {
 	for last < p.end && needs(last) {
 		last++
 	}
-	at, count := p.z.region.host.allocateFree(file, int(last-first))
+	at, count := p.region.host.allocateFree(file, int(last-first))
 	if count == 0 {
 		return
 	}
@@ -479,7 +479,7 @@ func (p *zplan) reserveProvisional(index uint64) {
 	if p.reading == readFirst {
 		first, last = p.start, p.end
 	}
-	at, count := p.z.region.host.allocateFree(file, int(last-first))
+	at, count := p.region.host.allocateFree(file, int(last-first))
 	if count == 0 {
 		return
 	}
@@ -505,7 +505,7 @@ func (p *zplan) keepProvisional(into []*arenaFile) {
 	if len(back) == 0 {
 		return
 	}
-	h := p.z.region.host
+	h := p.region.host
 	h.mu.Lock()
 	for _, at := range back {
 		h.putFree(at)
@@ -526,7 +526,7 @@ func (p *zplan) reserveRuns(ctx context.Context, from uint64, into []*arenaFile)
 
 // reserveRunsIn is windowPlan.reserveRunsIn.
 func (p *zplan) reserveRunsIn(ctx context.Context, from uint64, file *arenaFile, into []*arenaFile) error {
-	h := p.z.region.host
+	h := p.region.host
 	needs := func(page uint64) bool { return into[page-p.start] == file && p.reserved[page-p.start].slot < 0 }
 	needed := 0
 	for page := p.start; page < p.end; page++ {
@@ -537,7 +537,7 @@ func (p *zplan) reserveRunsIn(ctx context.Context, from uint64, file *arenaFile,
 	if needed == 0 {
 		return nil
 	}
-	if err := p.z.host.makeRoom(ctx, file, needed); err != nil {
+	if err := p.region.host.makeRoom(ctx, file, needed); err != nil {
 		return err
 	}
 	spans := [][2]uint64{{p.start, p.end}}
@@ -572,7 +572,7 @@ func (p *zplan) reserveRunsIn(ctx context.Context, from uint64, file *arenaFile,
 // reserveOwn takes places in the region's own file for the pages of the
 // window it reads there, without evicting.
 func (p *zplan) reserveOwn() {
-	r := p.z.region
+	r := p.region
 	h := r.host
 	for page := p.start; page < p.end; page++ {
 		i := page - p.start
@@ -593,7 +593,7 @@ func (p *zplan) reserveOwn() {
 // loadReserved reads the reserved pages of the window with one backing read
 // and supplies them, as windowPlan.loadReserved does.
 func (p *zplan) loadReserved(ctx context.Context) error {
-	h := p.z.region.host
+	h := p.region.host
 	first, last := p.end, p.start
 	loading := uint64(0)
 	for page := p.start; page < p.end; page++ {
@@ -613,7 +613,7 @@ func (p *zplan) loadReserved(ctx context.Context) error {
 	buffer := h.takeWindow(last - first)
 	defer h.putWindow(buffer)
 	data := *buffer
-	r := p.z.region
+	r := p.region
 	// The read answers the READ request the faulting page's lookup sent,
 	// where the run holds that page: its supply below resolves it, and a
 	// failed read fails it when the plan is unlocked.
@@ -633,7 +633,7 @@ func (p *zplan) loadReserved(ctx context.Context) error {
 // page's bytes belong to no object of its volume, which for a backing that
 // fetches from another host means that host still holds them.
 func (p *zplan) unpublished(page uint64) bool {
-	if !p.z.region.peer {
+	if !p.region.peer {
 		return false
 	}
 	e, found := p.locationsOf(page).extent(page)
@@ -649,8 +649,7 @@ func (p *zplan) unpublished(page uint64) bool {
 // A page a peer backing reported another host's is the region's own dirty
 // state, which the backing is told the region went on to hold.
 func (p *zplan) publishRead(ctx context.Context, first uint64, wanted []bool, data []byte, unpublished []bool) error {
-	z := p.z
-	r := z.region
+	r := p.region
 	h := r.host
 	ps := h.pageSize
 	last := first + uint64(len(wanted))
@@ -703,7 +702,7 @@ func (p *zplan) publishRead(ctx context.Context, first uint64, wanted []bool, da
 			slot := p.reserved[i]
 			p.reserved[i] = fileSlot{slot: -1}
 			offset := (q - first) * ps
-			frame, err := z.host.newFrame(ctx, slot, data[offset:offset+ps], r.kind)
+			frame, err := r.host.newFrame(ctx, slot, data[offset:offset+ps], r.kind)
 			if err != nil {
 				// newFrame gave this slot back, and the slots of the rest of
 				// the run go back with the plan.
@@ -730,19 +729,19 @@ func (p *zplan) publishRead(ctx context.Context, first uint64, wanted []bool, da
 // then bound to the page its object holds, which is the one read here unless
 // another read supplied its own first.
 func (p *zplan) supplyRun(ctx context.Context, page uint64, id pageKey, shared bool, frames []*zirconvm.VmPage) error {
-	z := p.z
-	h := z.region.host
+	r := p.region
+	h := r.host
 	ps := h.pageSize
-	object, pages := z.layer, z.pages
+	object, pages := r.layer, r.pages
 	if shared {
-		root := z.host.root(rootOf(id))
+		root := r.host.root(rootOf(id))
 		object, pages = root.object, root.pages
 	} else {
 		for _, frame := range frames {
-			frameOf(frame).layer = z
+			frameOf(frame).layer = r
 		}
 	}
-	if err := z.host.supply(ctx, object, page, frames); err != nil {
+	if err := r.host.supply(ctx, object, page, frames); err != nil {
 		return err
 	}
 	last := page + uint64(len(frames))
@@ -769,21 +768,21 @@ func (p *zplan) supplyRun(ctx context.Context, page uint64, id pageKey, shared b
 			p.locked = append(p.locked, found)
 			if shared {
 				h.mu.Lock()
-				z.host.adoptLocked(found)
+				r.host.adoptLocked(found)
 				h.mu.Unlock()
 			}
-		} else if z.reachable(found) && p.hold(found) {
+		} else if r.reachable(found) && p.hold(found) {
 			hits++
 		} else {
 			p.fresh[i] = false
 			continue
 		}
-		z.host.node.PageQueues().MarkAccessed(found)
+		r.host.node.PageQueues().MarkAccessed(found)
 		// A store's own page is bound too, unmapped: it is what the store
 		// copies from, and the binding keeps it from an idle drop until the
 		// copy replaces it.
 		p.pages[i], p.fresh[i] = found, true
-		z.bind(q, found)
+		r.bind(q, found)
 	}
 	lock.Unlock()
 	if hits > 0 {
@@ -799,16 +798,15 @@ func (p *zplan) supplyRun(ctx context.Context, page uint64, id pageKey, shared b
 // a plan holds none, its pages being bound to the region already. The
 // region's own Dirty pages are mapped writable, in runs of their own.
 func (p *zplan) install(ctx context.Context) (bool, error) {
-	z := p.z
-	r := z.region
+	r := p.region
 	h := r.host
 	var runs, writable []MapRun
 	// Whether the region's own page is mapped writable is decided now, with
 	// the page held: a seal taken while the plan read gave the region up
 	// makes it the checkpoint's, read-only.
 	for i, pg := range p.pages {
-		if pg != nil && frameOf(pg).layer == z {
-			p.writable[i] = z.writable(p.start + uint64(i))
+		if pg != nil && frameOf(pg).layer == r {
+			p.writable[i] = r.writable(p.start + uint64(i))
 		}
 	}
 	for page := p.start; page < p.end; {
@@ -819,7 +817,7 @@ func (p *zplan) install(ctx context.Context) (bool, error) {
 			page++
 			continue
 		}
-		if z.mapped(page) {
+		if r.mapped(page) {
 			p.fresh[i] = false
 			page++
 			continue
@@ -831,7 +829,7 @@ func (p *zplan) install(ctx context.Context) (bool, error) {
 		run := uint64(1)
 		for page+run < p.end {
 			next := p.pages[i+run]
-			if !p.fresh[i+run] || page+run == p.store || z.mapped(page+run) || p.zeros[i+run] != zero ||
+			if !p.fresh[i+run] || page+run == p.store || r.mapped(page+run) || p.zeros[i+run] != zero ||
 				p.writable[i+run] != p.writable[i] ||
 				(!zero && (next == nil || frameOf(next).fileSlot != at.plus(int(run)))) {
 				break
@@ -840,13 +838,13 @@ func (p *zplan) install(ctx context.Context) (bool, error) {
 		}
 		switch {
 		case zero:
-			z.mapZeros(page, page+run)
+			r.mapZeros(page, page+run)
 			runs = append(runs, MapRun{Page: page, Count: int(run), Zero: true})
 		case p.writable[i]:
-			z.setMapped(page, page+run, true)
+			r.setMapped(page, page+run, true)
 			writable = append(writable, r.runAt(page, at, int(run)))
 		default:
-			z.setMapped(page, page+run, true)
+			r.setMapped(page, page+run, true)
 			runs = append(runs, r.runAt(page, at, int(run)))
 		}
 		h.mu.Lock()
@@ -861,7 +859,7 @@ func (p *zplan) install(ctx context.Context) (bool, error) {
 			var err error
 			commands, mappingRuns, err = r.mapBatch(ctx, batch, runs)
 			if err != nil {
-				return false, r.mappingFailed(err, func() { z.unmapRuns(runs) })
+				return false, r.mappingFailed(err, func() { r.unmapRuns(runs) })
 			}
 		} else {
 			for i, run := range runs {
@@ -872,7 +870,7 @@ func (p *zplan) install(ctx context.Context) (bool, error) {
 					err = r.mapPages(ctx, run, false)
 				}
 				if err != nil {
-					return false, r.mappingFailed(err, func() { z.unmapRuns(runs[i:]) })
+					return false, r.mappingFailed(err, func() { r.unmapRuns(runs[i:]) })
 				}
 			}
 		}
@@ -884,7 +882,7 @@ func (p *zplan) install(ctx context.Context) (bool, error) {
 	}
 	for _, run := range writable {
 		if err := r.mapPages(ctx, run, true); err != nil {
-			return false, r.mappingFailed(err, func() { z.unmapRuns([]MapRun{run}) })
+			return false, r.mappingFailed(err, func() { r.unmapRuns([]MapRun{run}) })
 		}
 		h.mu.Lock()
 		h.stats.Mappings++
@@ -910,7 +908,7 @@ func (p *zplan) install(ctx context.Context) (bool, error) {
 	}
 	// The faulting page was mapped by an earlier attempt; its trapped access
 	// still has to be completed.
-	if !z.mapped(p.fault) {
+	if !r.mapped(p.fault) {
 		return false, nil
 	}
 	if err := r.resolvePages(ctx, p.fault, 1, p.writable[p.fault-p.start]); err != nil {

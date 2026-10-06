@@ -3,7 +3,12 @@ package vmmemory
 import (
 	"bytes"
 	"context"
+	"errors"
+	"sync"
+	"sync/atomic"
 	"time"
+
+	"github.com/semistrict/sproutfs/vmmemory/internal/zirconvm"
 )
 
 // A write fault is not always a store. KVM finishes a guest's cold read from a
@@ -33,7 +38,85 @@ import (
 // the set this checkpoint will list, so what a settle leaves does not depend on
 // the order they finish in.
 func (c *MemoryRegionCheckpoint) Settle(ctx context.Context) (int, error) {
-	return c.zircon().settle(ctx, c)
+	r := c.memoryRegion
+	h := r.host
+	if err := r.live.RLock(ctx); err != nil {
+		return 0, err
+	}
+	defer r.live.RUnlock()
+	if err := r.serving(); err != nil {
+		return 0, err
+	}
+	select {
+	case <-c.done:
+		return 0, nil
+	default:
+	}
+	if c.held.Load() {
+		// A fork point's seal, whose pages its children are reading.
+		return 0, nil
+	}
+	copies := c.copiesOf()
+	equal := make([]*zirconvm.VmPage, len(copies))
+	dropped := make([]bool, len(copies))
+	failures := make([]error, len(copies))
+	workers := min(max(h.cfg.SettleWorkers, 1), len(copies))
+	measuring := h.measuring()
+	var changed, measured, unmeasured atomic.Uint64
+	var next atomic.Int64
+	var wait sync.WaitGroup
+	for range workers {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			var worker settler
+			for {
+				i := int(next.Add(1)) - 1
+				if i >= len(copies) {
+					return
+				}
+				if measuring {
+					blocks, known, err := r.changedBlocks(ctx, copies[i])
+					if err != nil {
+						failures[i] = err
+						continue
+					}
+					if known {
+						changed.Add(uint64(blocks))
+						measured.Add(1)
+					} else {
+						unmeasured.Add(1)
+					}
+				}
+				equal[i], failures[i] = r.compare(ctx, &worker, copies[i])
+			}
+		}()
+	}
+	wait.Wait()
+	if measuring {
+		h.mu.Lock()
+		h.stats.ChangedBlocks += changed.Load()
+		h.stats.MeasuredPages += measured.Load()
+		h.stats.UnmeasuredPages += unmeasured.Load()
+		h.mu.Unlock()
+	}
+	if err := r.reshare(ctx, c, copies, equal, dropped); err != nil {
+		failures = append(failures, err)
+	}
+	unchanged := 0
+	for _, was := range dropped {
+		if was {
+			unchanged++
+		}
+	}
+	if unchanged > 0 {
+		c.forgetCopies(dropped)
+		h.mu.Lock()
+		h.stats.UnchangedPages += uint64(unchanged)
+		h.signal()
+		h.mu.Unlock()
+	}
+	return unchanged, errors.Join(failures...)
 }
 
 // settler is one worker. Where a file cannot compare two of its own slots, or

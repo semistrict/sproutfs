@@ -2,6 +2,8 @@ package vmmemory
 
 import (
 	"context"
+	"maps"
+	"slices"
 	"time"
 )
 
@@ -60,13 +62,15 @@ var coldCopyAge = 200 * time.Millisecond
 // them itself, coldCopyAge after they are made; this is for a pager with no
 // session, and for a test.
 func (r *MemoryRegion) GiveBackColdCopies(ctx context.Context) (int, error) {
-	z := r.zircon
-
-	return z.giveBackColdCopies(ctx)
+	return r.givingBack(ctx, r.takeColdCopies)
 }
 
 // takeColdCopies is the cold copies recorded since it was last called, in page
 // order. A session's worker takes them and gives them back coldCopyAge later.
 func (r *MemoryRegion) takeColdCopies() []uint64 {
-	return r.zircon.takeColdCopies()
+	r.bindingsMu.Lock()
+	defer r.bindingsMu.Unlock()
+	pages := slices.Sorted(maps.Keys(r.coldCopies))
+	clear(r.coldCopies)
+	return pages
 }

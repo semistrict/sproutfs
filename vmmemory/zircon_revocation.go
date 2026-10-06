@@ -11,26 +11,26 @@ import (
 // seal's write-protect commands and a revocation never overlap.
 
 // lookupBinding is the binding of a page that has one, nil otherwise.
-func (z *zirconRegion) lookupBinding(index uint64) *zbinding {
-	z.mu.Lock()
-	defer z.mu.Unlock()
-	b, _ := z.lookupLocked(index)
+func (r *MemoryRegion) lookupBinding(index uint64) *zbinding {
+	r.bindingsMu.Lock()
+	defer r.bindingsMu.Unlock()
+	b, _ := r.lookupLocked(index)
 	return b
 }
 
 // isMapped reports whether b's mapping is installed.
-func (z *zirconRegion) isMapped(b *zbinding) bool {
-	z.mu.Lock()
-	defer z.mu.Unlock()
+func (r *MemoryRegion) isMapped(b *zbinding) bool {
+	r.bindingsMu.Lock()
+	defer r.bindingsMu.Unlock()
 	return b.mapped
 }
 
 // setBindingMapped records whether b's mapping is installed.
-func (z *zirconRegion) setBindingMapped(b *zbinding, mapped bool) {
-	z.mu.Lock()
-	defer z.mu.Unlock()
+func (r *MemoryRegion) setBindingMapped(b *zbinding, mapped bool) {
+	r.bindingsMu.Lock()
+	defer r.bindingsMu.Unlock()
 	b.mapped = mapped
-	z.noteSealableLocked(b)
+	r.noteSealableLocked(b)
 }
 
 // revokeBindings is MemoryRegion.revokeBindings over the zircon core: the
@@ -38,13 +38,12 @@ func (z *zirconRegion) setBindingMapped(b *zbinding, mapped bool) {
 // per run of consecutive pages where the client takes batches. An error is
 // ambiguous for every run, so the pages stay recorded as mapped and the
 // region is terminal.
-func (z *zirconRegion) revokeBindings(ctx context.Context, bindings []*zbinding) error {
-	r := z.region
+func (r *MemoryRegion) revokeBindings(ctx context.Context, bindings []*zbinding) error {
 	h := r.host
 	batch, ok := r.mapping.(BatchRevocation)
 	if !ok {
 		for _, b := range bindings {
-			if err := z.revoke(ctx, b); err != nil {
+			if err := r.revoke(ctx, b); err != nil {
 				return err
 			}
 		}
@@ -54,7 +53,7 @@ func (z *zirconRegion) revokeBindings(ctx context.Context, bindings []*zbinding)
 	var runs []PageRun
 	pages := 0
 	for _, b := range bindings {
-		if !z.isMapped(b) {
+		if !r.isMapped(b) {
 			continue
 		}
 		pages++
@@ -73,7 +72,7 @@ func (z *zirconRegion) revokeBindings(ctx context.Context, bindings []*zbinding)
 			return r.revocationFailed(err)
 		}
 		for _, b := range bindings {
-			z.setBindingMapped(b, false)
+			r.setBindingMapped(b, false)
 		}
 		h.mu.Lock()
 		h.stats.Revocations += uint64(commands)
@@ -87,20 +86,19 @@ func (z *zirconRegion) revokeBindings(ctx context.Context, bindings []*zbinding)
 
 // revoke is Host.revoke over the zircon core: one page's mapping, where it is
 // installed.
-func (z *zirconRegion) revoke(ctx context.Context, b *zbinding) error {
-	r := z.region
+func (r *MemoryRegion) revoke(ctx context.Context, b *zbinding) error {
 	h := r.host
-	if !z.isMapped(b) {
+	if !r.isMapped(b) {
 		return nil
 	}
 	return r.underProtection(ctx, func() error {
-		if !z.isMapped(b) {
+		if !r.isMapped(b) {
 			return nil
 		}
 		if err := r.revokePage(ctx, b.index); err != nil {
 			return r.revocationFailed(err)
 		}
-		z.setBindingMapped(b, false)
+		r.setBindingMapped(b, false)
 		h.mu.Lock()
 		h.stats.Revocations++
 		h.stats.RevokeRuns++

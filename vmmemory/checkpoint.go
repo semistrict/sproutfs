@@ -172,9 +172,49 @@ func (c *MemoryRegionCheckpoint) Hold() { c.held.Store(true) }
 // checkpoint holds its pages, and a VMM asks every memory region it maps to
 // seal for a capture, so it succeeds rather than failing the capture.
 func (r *MemoryRegion) Seal(ctx context.Context) error {
-	z := r.zircon
-
-	return z.seal(ctx)
+	h := r.host
+	defer func(start time.Time) { h.sealLatency.Observe(h.clock.Since(start)) }(h.clock.Now())
+	if err := r.mu.Lock(ctx); err != nil {
+		return err
+	}
+	held := false
+	defer func() {
+		if !held {
+			r.mu.Unlock()
+		}
+	}()
+	if err := r.ready(); err != nil {
+		return err
+	}
+	if r.Ephemeral() {
+		return nil
+	}
+	if r.currentCheckpoint() != nil {
+		return ErrSealed
+	}
+	r.setSealing(true)
+	protected, err := r.protectDirtyRuns(ctx)
+	if err != nil {
+		r.setSealing(false)
+		return errors.Join(err, r.unprotect(context.WithoutCancel(ctx), protected))
+	}
+	if sealSeam != nil {
+		sealSeam()
+	}
+	// The window moves to the checkpoint with the pages it is measured over,
+	// once the protection has succeeded: a seal that protected nothing takes
+	// nothing else either.
+	checkpoint := &MemoryRegionCheckpoint{memoryRegion: r, dirtySince: r.takeDirtySince(),
+		done: make(chan struct{}), taken: make(chan struct{})}
+	pending := r.takeDirtySet()
+	r.setCheckpoint(checkpoint)
+	// The region stays locked, and the walk gives it back.
+	held = true
+	go r.take(context.WithoutCancel(ctx), checkpoint, pending)
+	h.mu.Lock()
+	h.signal()
+	h.mu.Unlock()
+	return nil
 }
 
 // sealSeam runs in a seal between write-protecting the dirty set and recording
@@ -224,7 +264,12 @@ func (r *MemoryRegion) protect(ctx context.Context, runs []PageRun) ([]PageRun, 
 // pager page is a store page, so these are the store pages a checkpoint
 // republishes.
 func (c *MemoryRegionCheckpoint) DirtyPages() []uint64 {
-	return c.zircon().dirtyPages(c)
+	copies := c.copiesOf()
+	pages := make([]uint64, 0, len(copies))
+	for _, held := range copies {
+		pages = append(pages, held.index)
+	}
+	return pages
 }
 
 // UnpublishedAge is how long the oldest write this checkpoint holds has gone
@@ -254,8 +299,37 @@ func (c *MemoryRegionCheckpoint) UnpublishedAge() time.Duration {
 // when the seal ends. A page already evicted is simply not named — whoever
 // inherits it reads the page through its own backing, which reaches these same
 // pages through the seal.
+//
+// The checkpoint's resident pages become a temporary identity root under the
+// name the fork point lends them, so a child of the point on this host maps
+// them rather than reading them, until the seal ends (plan: Fork sharing).
 func (c *MemoryRegionCheckpoint) Share(ctx context.Context, ref control.Ref, volume string) error {
-	return c.zircon().share(ctx, c, ref, volume)
+	r := c.memoryRegion
+	h := r.host
+	if err := r.inTenant(ref); err != nil {
+		return err
+	}
+	c.held.Store(true)
+	if h.isolated() {
+		h.mu.Lock()
+		h.lent[lentKey{ref, volume}] = c
+		h.mu.Unlock()
+	}
+	root := r.host.lentRoot(c, rootKey{ref: ref, volume: volume})
+	for _, held := range c.copiesOf() {
+		page, err := r.host.lockedPage(ctx, held)
+		if err != nil {
+			return err
+		}
+		if page == nil {
+			// Spilled: whoever inherits it reads it through its own backing,
+			// which reaches these same bytes through the seal.
+			continue
+		}
+		r.host.lend(ctx, root, page, held.index)
+		r.host.unlockPage(page)
+	}
+	return nil
 }
 
 // ReadDirty fills dst, exactly one pager page, with the bytes the seal froze. A
@@ -263,8 +337,52 @@ func (c *MemoryRegionCheckpoint) Share(ctx context.Context, ref control.Ref, vol
 // it is not in them. It takes an I/O permit and the page's lock, never the
 // memory region's: the guest goes on faulting and storing while a checkpoint reads its
 // checkpoint.
+//
+// The bytes are the checkpoint's copy's page, or its reservation where it was
+// spilled.
 func (c *MemoryRegionCheckpoint) ReadDirty(ctx context.Context, page uint64, dst []byte) error {
-	return c.zircon().readDirty(ctx, c, page, dst)
+	r := c.memoryRegion
+	h := r.host
+	if uint64(len(dst)) != h.pageSize {
+		return ErrRange
+	}
+	select {
+	case <-c.done:
+		if c.err != nil {
+			return c.err
+		}
+		return ErrNotSealed
+	default:
+	}
+	held := c.copyOf(page)
+	if held == nil {
+		return ErrRange
+	}
+	release, err := h.beginCheckpointIO(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+	if err := r.readHeld(ctx, held, dst); err != nil {
+		return err
+	}
+	if h.isolated() {
+		// The digest is of exactly what the upload is given, which a copy into
+		// another file is checked against when another region inherits it.
+		sum := digestOf(dst)
+		c.mu.Lock()
+		if c.digests == nil {
+			c.digests = make(map[uint64]digest)
+		}
+		c.digests[page] = sum
+		c.mu.Unlock()
+	}
+	if held.ahead && allZero(dst) {
+		h.mu.Lock()
+		h.stats.WriteAheadZeroPages++
+		h.mu.Unlock()
+	}
+	return nil
 }
 
 // Retire ends the seal this checkpoint holds. published reports that the
@@ -304,7 +422,56 @@ func (r *MemoryRegion) Unseal(ctx context.Context) error {
 // up first, with neither the memory region nor any page held. A page already retired
 // is skipped, so a repeated call finishes what a failed one left.
 func (r *MemoryRegion) endSeal(ctx context.Context, checkpoint *MemoryRegionCheckpoint, published bool) error {
-	z := r.zircon
-
-	return z.endSeal(ctx, checkpoint, published)
+	if err := r.live.RLock(ctx); err != nil {
+		return err
+	}
+	defer r.live.RUnlock()
+	if err := r.endMu.Lock(ctx); err != nil {
+		return err
+	}
+	defer r.endMu.Unlock()
+	current := r.currentCheckpoint()
+	if current == nil || (checkpoint != nil && current != checkpoint) {
+		return nil
+	}
+	for copies := current.copiesOf(); len(copies) > 0; {
+		batch := copies[:min(len(copies), checkpointBatchPages)]
+		var identities map[uint64]storedPage
+		if published {
+			var err error
+			if identities, err = r.storedIdentities(ctx, batch); err != nil {
+				return err
+			}
+		}
+		if err := r.mu.Lock(ctx); err != nil {
+			return err
+		}
+		err := func() error {
+			defer r.mu.Unlock()
+			if published {
+				return r.finalizeCheckpoint(ctx, current, batch, identities)
+			}
+			return r.abandonCopies(ctx, batch)
+		}()
+		if err != nil {
+			return err
+		}
+		copies = copies[len(batch):]
+	}
+	if err := r.mu.Lock(ctx); err != nil {
+		return err
+	}
+	defer r.mu.Unlock()
+	if !published {
+		r.restoreDirtySince(current.since())
+	}
+	if err := r.endFork(ctx, current); err != nil {
+		return err
+	}
+	r.setCheckpoint(nil)
+	current.finish(nil)
+	r.host.mu.Lock()
+	r.host.signal()
+	r.host.mu.Unlock()
+	return nil
 }

@@ -37,7 +37,7 @@ type zframe struct {
 	// checkpoint of it holds beside the layer, nil for a page of an identity
 	// root. A region's own page goes with the region and is never idle. A
 	// retire moves a page from a layer into a root. Guarded by Host.mu.
-	layer *zirconRegion
+	layer *MemoryRegion
 	// aliases are the bindings that map this page. Guarded by Host.mu.
 	aliases aliasSet[*zbinding]
 	// lent is this page as the temporary identity root of a fork point lends
@@ -91,7 +91,7 @@ var errPagerAllocates = errors.New("vmmemory: the zircon core makes every page i
 
 // arenaPmm is the arena as the node's Pmm.
 type arenaPmm struct {
-	z *zirconHost
+	host *Host
 	// zero is the zero page: no frame, because a zero is mapped by a zero
 	// mapping and never by a slot.
 	zero *zirconvm.VmPage
@@ -106,14 +106,14 @@ func (p *arenaPmm) FreePage(page *zirconvm.VmPage) {
 		// The parent's layer holds the frame, and gives it back itself.
 		return
 	}
-	p.z.releaseFrame(page)
+	p.host.releaseFrame(page)
 }
 
 func (p *arenaPmm) ZeroPage() *zirconvm.VmPage { return p.zero }
 
 // CountFreePages is how many more pages the arena may hold.
 func (p *arenaPmm) CountFreePages() uint64 {
-	h := p.z.host
+	h := p.host
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return uint64(max(h.cfg.ResidentPages-h.held, 0))
@@ -124,8 +124,7 @@ func (p *arenaPmm) CountFreePages() uint64 {
 // reports a locked page: no eviction takes it before the caller has put it
 // where it goes and given its lock back. A write that fails gives the slot
 // back.
-func (z *zirconHost) newFrame(ctx context.Context, at fileSlot, data []byte, kind MemoryRegionKind) (*zirconvm.VmPage, error) {
-	h := z.host
+func (h *Host) newFrame(ctx context.Context, at fileSlot, data []byte, kind MemoryRegionKind) (*zirconvm.VmPage, error) {
 	if sim.Bug(ctx, "pager-zero-new-page") {
 		// The page is created without the bytes that were loaded or copied
 		// into it, which every later read of that page then sees as zeroes.
@@ -135,25 +134,24 @@ func (z *zirconHost) newFrame(ctx context.Context, at fileSlot, data []byte, kin
 		return nil, h.abandonSlots(ctx, at, 1, err)
 	}
 	page := zirconvm.NewFramePage(newLockedZframe(at, kind, nil))
-	z.noteFrame(page)
+	h.noteFrame(page)
 	return page, nil
 }
 
 // noteFrame records a page of a private or a fork file at its slot, which
 // is where an allocation of an isolated arena finds it.
-func (z *zirconHost) noteFrame(page *zirconvm.VmPage) {
+func (h *Host) noteFrame(page *zirconvm.VmPage) {
 	f := frameOf(page)
 	if f.file.frames == nil {
 		return
 	}
-	h := z.host
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	f.file.frames[f.slot] = page
 }
 
 // newLockedZframe is newZframe, locked.
-func newLockedZframe(at fileSlot, kind MemoryRegionKind, layer *zirconRegion) *zframe {
+func newLockedZframe(at fileSlot, kind MemoryRegionKind, layer *MemoryRegion) *zframe {
 	f := newZframe(at, kind, layer)
 	if !f.mu.TryLock() {
 		panic("vmmemory: a new page's lock is held")
@@ -163,19 +161,18 @@ func newLockedZframe(at fileSlot, kind MemoryRegionKind, layer *zirconRegion) *z
 
 // newZframe is the frame of a page at a slot, of a region's layer or nil for
 // a root's.
-func newZframe(at fileSlot, kind MemoryRegionKind, layer *zirconRegion) *zframe {
+func newZframe(at fileSlot, kind MemoryRegionKind, layer *MemoryRegion) *zframe {
 	return &zframe{fileSlot: at, kind: kind, layer: layer}
 }
 
 // lockPage takes a page's lock.
-func (z *zirconHost) lockPage(ctx context.Context, p *zirconvm.VmPage) error {
+func (h *Host) lockPage(ctx context.Context, p *zirconvm.VmPage) error {
 	return frameOf(p).mu.Lock(ctx)
 }
 
 // unlockPage gives a page's lock back and wakes whatever waits for a page to
 // be free, as Host.unlock does.
-func (z *zirconHost) unlockPage(p *zirconvm.VmPage) {
-	h := z.host
+func (h *Host) unlockPage(p *zirconvm.VmPage) {
 	found := h.probe.stable(context.Background(), h, frameOf(p), "unlock")
 	frameOf(p).mu.Unlock()
 	h.mu.Lock()
@@ -200,8 +197,7 @@ func probeFrame(p *zirconvm.VmPage) probePage {
 // lockedPage is the page b names, locked, nil where it names none: Host.current
 // over the zircon core. It takes the page's lock with no other lock held, and
 // looks again where an eviction or a move took the page from b meanwhile.
-func (z *zirconHost) lockedPage(ctx context.Context, b *zbinding) (*zirconvm.VmPage, error) {
-	h := z.host
+func (h *Host) lockedPage(ctx context.Context, b *zbinding) (*zirconvm.VmPage, error) {
 	for {
 		h.mu.Lock()
 		p := b.page
@@ -209,7 +205,7 @@ func (z *zirconHost) lockedPage(ctx context.Context, b *zbinding) (*zirconvm.VmP
 		if p == nil {
 			return nil, nil
 		}
-		if err := z.lockPage(ctx, p); err != nil {
+		if err := h.lockPage(ctx, p); err != nil {
 			return nil, err
 		}
 		h.mu.Lock()
@@ -218,7 +214,7 @@ func (z *zirconHost) lockedPage(ctx context.Context, b *zbinding) (*zirconvm.VmP
 		if same {
 			return p, nil
 		}
-		z.unlockPage(p)
+		h.unlockPage(p)
 	}
 }
 
@@ -226,8 +222,7 @@ func (z *zirconHost) lockedPage(ctx context.Context, b *zbinding) (*zirconvm.VmP
 // page is mapped only while a binding holds it, and Zircon frees only a page
 // it holds no more. A slot the arena will not punch makes the host terminal
 // and is kept, as the current core's release does.
-func (z *zirconHost) releaseFrame(p *zirconvm.VmPage) {
-	h := z.host
+func (h *Host) releaseFrame(p *zirconvm.VmPage) {
 	f := frameOf(p)
 	if f.slot < 0 {
 		return
@@ -241,7 +236,7 @@ func (z *zirconHost) releaseFrame(p *zirconvm.VmPage) {
 	// Nothing the pager takes under pressure is pinned, so a page going here
 	// is going for a reason of its own, and a cold copy of it has nothing left
 	// to be compared with.
-	z.dropCold(p)
+	h.dropCold(p)
 	if err := f.file.Release(context.Background(), f.slot); err != nil {
 		slog.Warn("vmmemory: giving a page's slot back failed", "slot", f.slot, "error", err)
 		h.mu.Lock()
@@ -252,9 +247,9 @@ func (z *zirconHost) releaseFrame(p *zirconvm.VmPage) {
 	}
 	h.mu.Lock()
 	if f.layer == nil {
-		z.rootPages--
+		h.rootPages--
 	}
-	z.notIdleLocked(f)
+	h.notIdleLocked(f)
 	if f.file.frames[f.slot] == p {
 		delete(f.file.frames, f.slot)
 	}
@@ -266,32 +261,30 @@ func (z *zirconHost) releaseFrame(p *zirconvm.VmPage) {
 
 // idleLocked makes a root's page nothing maps idle, at the end of the
 // don't-need queue unless a cold copy pins it. Caller holds h.mu.
-func (z *zirconHost) idleLocked(p *zirconvm.VmPage) {
+func (h *Host) idleLocked(p *zirconvm.VmPage) {
 	f := frameOf(p)
 	if f.idle || f.layer != nil || f.slot < 0 || f.aliases.len() > 0 {
 		return
 	}
-	if _, queued := z.node.PageQueues().Backlink(p); !queued {
+	if _, queued := h.node.PageQueues().Backlink(p); !queued {
 		// In no object: it is going, not waiting to be inherited.
 		return
 	}
-	h := z.host
 	h.pinMu.Lock()
 	defer h.pinMu.Unlock()
 	f.idle = true
 	h.idlePages++
 	if len(f.coldCopies) == 0 {
-		z.node.PageQueues().MoveToReclaimDontNeed(p)
+		h.node.PageQueues().MoveToReclaimDontNeed(p)
 	}
 }
 
 // notIdleLocked ends a page being idle, which a region mapping it or its
 // slot going back does. Caller holds h.mu.
-func (z *zirconHost) notIdleLocked(f *zframe) {
+func (h *Host) notIdleLocked(f *zframe) {
 	if !f.idle {
 		return
 	}
-	h := z.host
 	h.pinMu.Lock()
 	f.idle = false
 	h.pinMu.Unlock()
@@ -328,29 +321,27 @@ type identityRoot struct {
 
 // rootLocked is the identity root key names, made where there is none.
 // Caller holds h.mu.
-func (z *zirconHost) rootLocked(key rootKey) *identityRoot {
-	if root := z.roots[key]; root != nil {
+func (h *Host) rootLocked(key rootKey) *identityRoot {
+	if root := h.roots[key]; root != nil {
 		return root
 	}
-	h := z.host
 	reads := newRequestSource()
 	// A root holds the pages of one volume at the pages' own offsets, and no
 	// memory region of this pager is larger than its logical budget.
-	object, err := zirconvm.CreateIdentityRoot(z.node, reads.source, uint64(h.cfg.LogicalPages)*h.pageSize)
+	object, err := zirconvm.CreateIdentityRoot(h.node, reads.source, uint64(h.cfg.LogicalPages)*h.pageSize)
 	if err != nil {
 		panic("vmmemory: making an identity root: " + err.Error())
 	}
 	root := &identityRoot{key: key, object: object, pages: object.CowPages(), reads: reads}
-	z.roots[key] = root
+	h.roots[key] = root
 	return root
 }
 
 // root is rootLocked, taking h.mu.
-func (z *zirconHost) root(key rootKey) *identityRoot {
-	h := z.host
+func (h *Host) root(key rootKey) *identityRoot {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return z.rootLocked(key)
+	return h.rootLocked(key)
 }
 
 // supply gives an object the pages a read brought in for the run of
@@ -358,10 +349,10 @@ func (z *zirconHost) root(key rootKey) *identityRoot {
 // SupplyPages, to an identity root or to a region's own layer. A page some
 // other read supplied first stays, and this one is freed, which gives its
 // slot back. The supply answers every READ request of the run.
-func (z *zirconHost) supply(ctx context.Context, object *zirconvm.ObjectPaged, first uint64, pages []*zirconvm.VmPage) error {
-	ps := z.host.pageSize
+func (h *Host) supply(ctx context.Context, object *zirconvm.ObjectPaged, first uint64, pages []*zirconvm.VmPage) error {
+	ps := h.pageSize
 	length := uint64(len(pages)) * ps
-	list := z.splices.Get().(*zirconvm.PageSpliceList[zirconvm.VmPage])
+	list := h.splices.Get().(*zirconvm.PageSpliceList[zirconvm.VmPage])
 	list.Initialize(length)
 	for i, p := range pages {
 		if err := list.Insert(uint64(i)*ps, zirconvm.Page(p)); err != nil {
@@ -374,7 +365,7 @@ func (z *zirconHost) supply(ctx context.Context, object *zirconvm.ObjectPaged, f
 		list.Free()
 	}
 	list.Reuse()
-	z.splices.Put(list)
+	h.splices.Put(list)
 	return err
 }
 
@@ -391,7 +382,7 @@ func (z *zirconHost) supply(ctx context.Context, object *zirconvm.ObjectPaged, f
 // reading waits on the prefetch's request in the root before it looks
 // (zplan.inFlight).
 type rootResolver struct {
-	region *zirconRegion
+	region *MemoryRegion
 	// located is what the fault holding the layer's lock located, nil
 	// otherwise. Guarded by the layer's lock.
 	located *locations
@@ -407,8 +398,8 @@ func (res *rootResolver) Locate(offset uint64) (*zirconvm.CowPages, uint64, bool
 	if loc == nil {
 		return nil, 0, false
 	}
-	z := res.region
-	ps := z.host.host.pageSize
+	r := res.region
+	ps := r.host.pageSize
 	page := offset / ps
 	if !loc.holds(page) {
 		return nil, 0, false
@@ -419,7 +410,7 @@ func (res *rootResolver) Locate(offset uint64) (*zirconvm.CowPages, uint64, bool
 	}
 	root := rootOf(key)
 	if res.lastRoot == nil || res.last != root {
-		res.last, res.lastRoot = root, z.host.root(root)
+		res.last, res.lastRoot = root, r.host.root(root)
 	}
 	pages, offset := res.lastRoot.pages, key.id.Page*ps
 	lock := pages.Lock()
@@ -461,7 +452,7 @@ func identityAt(loc *locations, page uint64) (pageKey, bool) {
 // that page was admitted under (D1, D5). The guest's binding shares it until
 // a store copies away from it.
 type zbinding struct {
-	region *zirconRegion
+	region *MemoryRegion
 	index  uint64
 	// page is the page this region maps here, nil where it maps none or a
 	// zero: a page of an identity root, or of the region's own layer. Guarded
@@ -469,7 +460,7 @@ type zbinding struct {
 	page *zirconvm.VmPage
 	// mapped is whether the mapping is installed, and zero whether it is a
 	// zero. inZeroRun marks a bound page a compressed zero run maps, as the
-	// current core's binding does. Guarded by zirconRegion.mu.
+	// current core's binding does. Guarded by MemoryRegion.bindingsMu.
 	mapped, zero, inZeroRun bool
 	// dirty marks a page that is the region's own state and not yet its
 	// volume's: Dirty in the layer, AwaitingClean while it shares the
@@ -479,7 +470,7 @@ type zbinding struct {
 	// was copied from, cold marks a copy a store trap made of origin that is
 	// not yet known to be the guest's state, from coldAt (Unix nanoseconds),
 	// and ahead marks one write-ahead made before any store. Guarded by
-	// zirconRegion.mu. The marks sit beside the reservation, which leaves
+	// MemoryRegion.bindingsMu. The marks sit beside the reservation, which leaves
 	// them room, so that a binding, which every page a region touches has, is
 	// 64 bytes.
 	dirty       bool
@@ -493,15 +484,15 @@ type zbinding struct {
 // aliasLocked makes b an alias of p: the region maps it, so it is not idle.
 // A page a region reaches twice, from its binding and from a checkpoint's copy
 // of it, is one page of the arena. Caller holds h.mu.
-func (z *zirconHost) aliasLocked(b *zbinding, p *zirconvm.VmPage) {
+func (h *Host) aliasLocked(b *zbinding, p *zirconvm.VmPage) {
 	f := frameOf(p)
 	// The probe build's audit of what a guest is handed; what it finds is
 	// reported once nothing is held (unlockPage).
-	z.host.probe.keep(z.host.probe.bind(z.host, b, f))
-	z.notIdleLocked(f)
+	h.probe.keep(h.probe.bind(h, b, f))
+	h.notIdleLocked(f)
 	counted := f.mappedBy(b.region)
 	if f.aliases.add(b) && !counted {
-		b.region.region.resident++
+		b.region.resident++
 	}
 	b.page = p
 }
@@ -510,38 +501,38 @@ func (z *zirconHost) aliasLocked(b *zbinding, p *zirconvm.VmPage) {
 // is idle: it stays in its root, for the next region that inherits its
 // identity, and is the first memory an allocation short of a slot gives up.
 // Caller holds h.mu.
-func (z *zirconHost) unaliasLocked(b *zbinding) {
+func (h *Host) unaliasLocked(b *zbinding) {
 	p := b.page
 	b.page = nil
-	z.forgetAliasLocked(b, p)
+	h.forgetAliasLocked(b, p)
 }
 
 // forgetAliasLocked takes b off the aliases of p, which b no longer names.
 // Caller holds h.mu.
-func (z *zirconHost) forgetAliasLocked(b *zbinding, p *zirconvm.VmPage) {
+func (h *Host) forgetAliasLocked(b *zbinding, p *zirconvm.VmPage) {
 	f := frameOf(p)
 	if !f.aliases.remove(b) {
 		return
 	}
 	if !f.mappedBy(b.region) {
-		b.region.region.resident--
+		b.region.resident--
 	}
-	z.idleLocked(p)
+	h.idleLocked(p)
 }
 
 // forgetGoingAliasLocked takes b off the aliases of p, a page in no object
 // any more, which therefore never becomes idle. Caller holds h.mu.
-func (z *zirconHost) forgetGoingAliasLocked(b *zbinding, p *zirconvm.VmPage) {
+func (h *Host) forgetGoingAliasLocked(b *zbinding, p *zirconvm.VmPage) {
 	f := frameOf(p)
 	if f.aliases.remove(b) && !f.mappedBy(b.region) {
-		b.region.region.resident--
+		b.region.resident--
 	}
 }
 
-// mappedBy reports whether any alias of f belongs to z. Caller holds h.mu.
-func (f *zframe) mappedBy(z *zirconRegion) bool {
+// mappedBy reports whether any alias of f belongs to r. Caller holds h.mu.
+func (f *zframe) mappedBy(r *MemoryRegion) bool {
 	for b := range f.aliases.all() {
-		if b.region == z {
+		if b.region == r {
 			return true
 		}
 	}
@@ -550,38 +541,32 @@ func (f *zframe) mappedBy(z *zirconRegion) bool {
 
 // adoptLocked counts a page a supply put in an identity root, which nothing
 // maps yet: idle until a binding takes it. Caller holds h.mu.
-func (z *zirconHost) adoptLocked(p *zirconvm.VmPage) {
-	z.rootPages++
-	z.idleLocked(p)
+func (h *Host) adoptLocked(p *zirconvm.VmPage) {
+	h.rootPages++
+	h.idleLocked(p)
 }
 
 // takeIdle gives up one idle page: a page of a root no memory region maps,
 // in the order the don't-need queue keeps them. Zircon evicts it, as it
 // evicts a clean page a pager backs, and it is read again when a region
 // next faults on it. It reports whether it gave one up.
-func (z *zirconHost) takeIdle() bool {
-	return z.takeIdleIf(func() bool {
-		z.host.mu.Lock()
+func (h *Host) takeIdle() bool {
+	return h.takeIdleIf(func() bool {
+		h.mu.Lock()
 		return true
 	}, nil)
 }
 
-// reclaimIdle is Host.reclaimIdle under this core: the host budget's cache
-// eviction, which never waits for h.mu, because the budget may call it from
-// inside an allocation that holds it.
-func (z *zirconHost) reclaimIdle() bool { return z.takeIdleIf(z.host.mu.TryLock, nil) }
-
 // takeIdleIf is takeIdle, where lock takes h.mu or reports it could not, of
 // the idle pages want accepts, any where want is nil. want is called with
 // h.mu held.
-func (z *zirconHost) takeIdleIf(lock func() bool, want func(*zframe) bool) bool {
-	h := z.host
+func (h *Host) takeIdleIf(lock func() bool, want func(*zframe) bool) bool {
 	if !lock() {
 		return false
 	}
 	// The page is taken with its lock held, which keeps whatever compares or
 	// copies it out of the way of its going.
-	idle, ok := z.node.PageQueues().PeekDontNeedWhere(func(p *zirconvm.VmPage) bool {
+	idle, ok := h.node.PageQueues().PeekDontNeedWhere(func(p *zirconvm.VmPage) bool {
 		f := frameOf(p)
 		if f.aliases.len() != 0 || f.replacing != 0 || f.layer != nil || (want != nil && !want(f)) || !f.mu.TryLock() {
 			return false
@@ -592,7 +577,7 @@ func (z *zirconHost) takeIdleIf(lock func() bool, want func(*zframe) bool) bool 
 	if !ok {
 		return false
 	}
-	evicted := z.evictIdle(idle.Cow, idle.Offset)
+	evicted := h.evictIdle(idle.Cow, idle.Offset)
 	frameOf(idle.Page).mu.Unlock()
 	if !evicted {
 		return false
@@ -607,8 +592,7 @@ func (z *zirconHost) takeIdleIf(lock func() bool, want func(*zframe) bool) bool 
 // when the caller looked. It is evicted only where it is still idle under the
 // root's lock: a fault that takes a page marks it accessed there first, which
 // takes it out of the don't-need queue. It reports whether it went.
-func (z *zirconHost) evictIdle(root *zirconvm.CowPages, offset uint64) bool {
-	h := z.host
+func (h *Host) evictIdle(root *zirconvm.CowPages, offset uint64) bool {
 	success, failure := root.ReclaimRangeForEviction(offset, h.pageSize, zirconvm.IgnoreHint)
 	if failure != zirconvm.ReclaimSucceeded || success.NumPages == 0 {
 		return false
@@ -620,8 +604,7 @@ func (z *zirconHost) evictIdle(root *zirconvm.CowPages, offset uint64) bool {
 // it, which detaching the region does, as the current core's releaseOrigin
 // does: nothing else would ever give it up ahead of the pages other regions
 // still read.
-func (z *zirconHost) dropOrigin(page *zirconvm.VmPage) {
-	h := z.host
+func (h *Host) dropOrigin(page *zirconvm.VmPage) {
 	h.mu.Lock()
 	mapped := frameOf(page).aliases.len() > 0
 	h.mu.Unlock()
@@ -633,7 +616,7 @@ func (z *zirconHost) dropOrigin(page *zirconvm.VmPage) {
 		return
 	}
 	defer frameOf(page).mu.Unlock()
-	if link, ok := z.node.PageQueues().Backlink(page); ok {
-		z.evictIdle(link.Cow, link.Offset)
+	if link, ok := h.node.PageQueues().Backlink(page); ok {
+		h.evictIdle(link.Cow, link.Offset)
 	}
 }

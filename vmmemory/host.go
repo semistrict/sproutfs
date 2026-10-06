@@ -134,10 +134,26 @@ type Host struct {
 	probe probeState
 	// changeSeed keys the block sums Config.MeasureChanges compares.
 	changeSeed maphash.Seed
-	// zircon is this pager's state under the zircon core, nil under the
-	// current one. Every exported method that reaches the page layer asks it
-	// first; see Core.
-	zircon *zirconHost
+	// node is the pages' node: the arena as their Pmm and the page queues
+	// that order them.
+	node *zirconvm.Node
+	pmm  *arenaPmm
+	// roots is every identity root a memory region of this pager has located
+	// a page of. A root lives until the pager closes. Guarded by mu.
+	roots map[rootKey]*identityRoot
+	// prefetches is every prefetch whose slots are not settled yet. Guarded
+	// by mu, as are prefetching and prefetchRunning.
+	prefetches map[*zprefetch]struct{}
+	// rootPages is how many pages the roots hold. Guarded by mu.
+	rootPages uint64
+	// splices lends the splice lists a supply hands its pages over in, as
+	// *zirconvm.PageSpliceList[zirconvm.VmPage]: a fault supplies a page,
+	// and making a list for each was a sixth of what a fault at random
+	// allocated.
+	splices sync.Pool
+	// multis lends the requests a fault's lookup makes, as
+	// *zirconvm.MultiPageRequest, each back once it is answered.
+	multis sync.Pool
 }
 
 // maximumReadAheadBytes is the largest run one fault may hold a buffer for,
@@ -235,9 +251,22 @@ func New(ctx context.Context, resources *resource.Budget, cfg Config, arena Aren
 		changed:     make(chan struct{}), revoked: make(chan struct{}),
 		requests:      sync.Pool{New: func() any { return zirconvm.NewPageRequest() }},
 		memoryRegions: make(map[*MemoryRegion]struct{}), highWater: highWater(cfg.DirtyPages),
-		io: make(chan struct{}, cfg.ConcurrentIO), writeback: make(chan struct{}, 1)}
+		io: make(chan struct{}, cfg.ConcurrentIO), writeback: make(chan struct{}, 1),
+		roots: make(map[rootKey]*identityRoot), prefetches: make(map[*zprefetch]struct{})}
 	h.evictor = newPagerEvictor(h)
-	h.zircon = newZirconHost(h)
+	h.pmm = &arenaPmm{host: h, zero: zirconvm.NewFramePage(nil)}
+	// No compression: a frame's bytes are the pager's to move, so a page's
+	// dirty reservation, the reference a spill writes its bytes to, is kept in
+	// its binding beside the layer, and the spill is the pager's own
+	// (evict.go).
+	h.node = zirconvm.NewNode(h.pmm, pageSize, nil)
+	// Every page ages in the reclaim queues, a region's Dirty and
+	// AwaitingClean pages too, since each can be spilled (D2); a page a cold
+	// copy pins waits in the zero-fork queue outside them.
+	h.node.AgeDirtyPages()
+	h.node.PageQueues().EnableAnonymousReclaim(false)
+	h.splices.New = func() any { return zirconvm.NewPageSpliceList[zirconvm.VmPage](pageSize, h.node) }
+	h.multis.New = func() any { return zirconvm.NewMultiPageRequest() }
 	if cfg.Arena == ArenaIsolated {
 		// Every file is made for a memory region or a tenant when the first one
 		// needs it.
@@ -280,11 +309,9 @@ func (h *Host) LogicalHeadroom() int {
 // spill handles and closes them after this succeeds. A failed punch retains
 // its reservation and can be retried; new attachments are no longer accepted.
 func (h *Host) Close(ctx context.Context) error {
-	z := h.zircon
-
-	// The zircon core's pages are its roots', which go first and give
-	// their slots back as they go.
-	if err := z.close(); err != nil {
+	// Every page that outlives its regions is a root's, and the roots go
+	// first.
+	if err := h.closeRoots(); err != nil {
 		return err
 	}
 

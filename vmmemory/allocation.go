@@ -410,9 +410,7 @@ func (h *Host) protectedLocked(q *MemoryRegion, share int) bool {
 // idle pages itself, and another consumer that finds the lock taken waits for
 // the budget's next release, which a pager this busy is about to make.
 func (h *Host) reclaimIdle(ctx context.Context, _ int64) (bool, error) {
-	z := h.zircon
-
-	return z.reclaimIdle(), nil
+	return h.takeIdleIf(h.mu.TryLock, nil), nil
 }
 
 // DropIdle gives up every idle page this host can take without waiting, and
@@ -420,7 +418,11 @@ func (h *Host) reclaimIdle(ctx context.Context, _ int64) (bool, error) {
 // kept for the next VM to inherit calls it; so does a test whose machine must
 // fault every page from scratch.
 func (h *Host) DropIdle(ctx context.Context) (int, error) {
-	z := h.zircon
-
-	return z.dropIdle(ctx)
+	dropped := 0
+	for h.takeIdle() {
+		dropped++
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return dropped, h.err
 }

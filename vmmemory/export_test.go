@@ -8,7 +8,7 @@ import (
 
 // Layered reports whether this memory region's pages are served by the
 // ported region layer, which every memory region must be.
-func (r *MemoryRegion) Layered() bool { return r.zircon != nil }
+func (r *MemoryRegion) Layered() bool { return r.layer != nil }
 
 // ColdCopyAge is how old a cold copy is before its session gives it back and
 // before an eviction may.
@@ -104,9 +104,8 @@ func HoldHostLock(h *Host) (release func()) {
 // BindingsHeld reports whether something holds a memory region's binding map
 // lock at this moment.
 func BindingsHeld(r *MemoryRegion) bool {
-	z := r.zircon
-	if z.mu.TryLock() {
-		z.mu.Unlock()
+	if r.bindingsMu.TryLock() {
+		r.bindingsMu.Unlock()
 		return false
 	}
 	return true
@@ -147,21 +146,12 @@ func (r *MemoryRegion) PressMappings() { r.pressed.Store(true) }
 // memory regions have all released what they held has none. It also reports a
 // slot two pages claim, and page queues that hold other than the slots held.
 func (h *Host) Unreachable() []string {
-	return h.zircon.unreachable()
-}
-
-// unreachable is Unreachable under the zircon core: every page of an object
-// that no memory region maps and that is not idle either, a slot two pages
-// claim, and queues that hold other than the slots held. A temporary root's
-// pages name frames their parents' layers hold, and are not counted twice.
-func (z *zirconHost) unreachable() []string {
-	h := z.host
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	var found []string
 	claimed := map[fileSlot]bool{}
 	listed := 0
-	for p := range z.node.PageQueues().Pages() {
+	for p := range h.node.PageQueues().Pages() {
 		if isLent(p) {
 			continue
 		}

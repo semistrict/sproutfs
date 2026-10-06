@@ -53,7 +53,7 @@ func waitingInScan() bool {
 	stacks = stacks[:runtime.Stack(stacks, true)]
 	for _, g := range strings.Split(string(stacks), "\n\n") {
 		if strings.Contains(g, "[sync.Mutex.Lock") && (strings.Contains(g, "vmmemory.(*MemoryRegion).eachBinding") ||
-			strings.Contains(g, "vmmemory.(*zirconRegion).eachBinding")) {
+			strings.Contains(g, "vmmemory.(*MemoryRegion).eachBinding")) {
 			return true
 		}
 	}

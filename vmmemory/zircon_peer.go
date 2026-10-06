@@ -20,8 +20,7 @@ import (
 // page takes only one that is free now, and is left to a later fault where
 // none is.
 func (p *zplan) publishPrivate(ctx context.Context, page uint64, data []byte) error {
-	z := p.z
-	r := z.region
+	r := p.region
 	h := r.host
 	i := page - p.start
 	at := p.reserved[i]
@@ -57,14 +56,14 @@ func (p *zplan) publishPrivate(ctx context.Context, page uint64, data []byte) er
 		spill = taken
 	}
 	p.reserved[i] = fileSlot{slot: -1}
-	frame, err := z.host.newFrame(ctx, at, data, r.kind)
+	frame, err := r.host.newFrame(ctx, at, data, r.kind)
 	if err != nil {
 		h.releaseSpill(spill)
 		return err
 	}
-	frameOf(frame).layer = z
+	frameOf(frame).layer = r
 	p.locked = append(p.locked, frame)
-	if err := z.supplyDirty(ctx, page, []*zirconvm.VmPage{frame}); err != nil {
+	if err := r.supplyDirty(ctx, page, []*zirconvm.VmPage{frame}); err != nil {
 		h.releaseSpill(spill)
 		return err
 	}
@@ -72,17 +71,17 @@ func (p *zplan) publishPrivate(ctx context.Context, page uint64, data []byte) er
 		// The supply answered the faulting page's own read request.
 		p.request.answer(nil)
 	}
-	z.mu.Lock()
-	b := z.bindingLocked(page)
-	z.uncoldLocked(b)
+	r.bindingsMu.Lock()
+	b := r.bindingLocked(page)
+	r.uncoldLocked(b)
 	b.zero, b.checkpoint, b.spill, b.dirty, b.origin, b.ahead = false, nil, spill, true, nil, false
-	z.noteDirtyLocked(b)
-	z.mu.Unlock()
+	r.noteDirtyLocked(b)
+	r.bindingsMu.Unlock()
 	h.mu.Lock()
 	if b.page != nil {
-		z.host.unaliasLocked(b)
+		r.host.unaliasLocked(b)
 	}
-	z.host.aliasLocked(b, frame)
+	r.host.aliasLocked(b, frame)
 	h.mu.Unlock()
 	h.probe.granted(b, frameOf(frame), nil)
 	p.pages[i], p.fresh[i], p.private[i] = frame, true, true
@@ -93,7 +92,7 @@ func (p *zplan) publishPrivate(ctx context.Context, page uint64, data []byte) er
 // moves from a file another region may read to the region's own file. It
 // takes nothing it cannot have at once.
 func (p *zplan) ownInstead(page uint64) (fileSlot, bool) {
-	r := p.z.region
+	r := p.region
 	h := r.host
 	i := page - p.start
 	h.mu.Lock()

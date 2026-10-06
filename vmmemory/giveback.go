@@ -60,5 +60,23 @@ func (r *MemoryRegion) liftProtection(ctx context.Context, index uint64) error {
 // givingBack is one give-back pass over the pages that pages lists, which it
 // calls once the memory region is known to be live.
 func (r *MemoryRegion) givingBack(ctx context.Context, pages func() []uint64) (int, error) {
-	return r.zircon.givingBack(ctx, pages)
+	if err := r.live.RLock(ctx); err != nil {
+		return 0, err
+	}
+	defer r.live.RUnlock()
+	if err := r.serving(); err != nil {
+		return 0, err
+	}
+	var buffers settler
+	given := 0
+	for _, index := range pages() {
+		back, err := r.giveBack(ctx, index, &buffers)
+		if back {
+			given++
+		}
+		if err != nil {
+			return given, err
+		}
+	}
+	return given, nil
 }

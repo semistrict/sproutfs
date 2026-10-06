@@ -139,9 +139,7 @@ var prefetchSettleSeam func()
 // Nothing waits on a prefetch; this is what a test of a guest that reads only
 // once its neighbours are in waits on.
 func (r *MemoryRegion) SettlePrefetches(ctx context.Context) error {
-	z := r.zircon
-
-	return z.settlePrefetches(ctx)
+	return r.settlePrefetchesCounted(ctx)
 }
 
 // settlePrefetchesCounted waits for this memory region's count of running
@@ -168,9 +166,7 @@ func (r *MemoryRegion) settlePrefetchesCounted(ctx context.Context) error {
 // this is what a test, or a benchmark about to read what is resident, waits
 // on.
 func (h *Host) SettlePrefetches(ctx context.Context) error {
-	z := h.zircon
-
-	return z.settlePrefetches(ctx)
+	return h.settlePrefetchesCounted(ctx)
 }
 
 // settlePrefetchesCounted waits for the host's count of running prefetches

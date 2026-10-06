@@ -25,55 +25,55 @@ import (
 
 // writable reports whether the guest may store into a page where it is: the
 // region's own Dirty page.
-func (z *zirconRegion) writable(index uint64) bool {
-	z.mu.Lock()
-	defer z.mu.Unlock()
-	b, _ := z.lookupLocked(index)
+func (r *MemoryRegion) writable(index uint64) bool {
+	r.bindingsMu.Lock()
+	defer r.bindingsMu.Unlock()
+	b, _ := r.lookupLocked(index)
 	return b != nil && b.writable()
 }
 
 // holdsOwn reports whether the region's own layer holds a page at index,
 // whatever the volume says is there.
-func (z *zirconRegion) holdsOwn(index uint64) bool {
-	z.mu.Lock()
-	b, _ := z.lookupLocked(index)
-	z.mu.Unlock()
+func (r *MemoryRegion) holdsOwn(index uint64) bool {
+	r.bindingsMu.Lock()
+	b, _ := r.lookupLocked(index)
+	r.bindingsMu.Unlock()
 	if b == nil {
 		return false
 	}
-	h := z.region.host
+	h := r.host
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return b.page != nil && frameOf(b.page).layer == z
+	return b.page != nil && frameOf(b.page).layer == r
 }
 
 // needsPrivatePage reports whether a store to index would have to make a page
 // of its own, and with it take a dirty reservation. It takes no region lock:
 // a store decides this before it competes for one, and decides again after.
-func (z *zirconRegion) needsPrivatePage(index uint64) bool { return !z.writable(index) }
+func (r *MemoryRegion) needsPrivatePage(index uint64) bool { return !r.writable(index) }
 
 // fresh is MemoryRegion.fresh over the bindings beside the layer: zero where
 // the page is mapped to zero, untouched where the region holds nothing of it
 // at all.
-func (z *zirconRegion) fresh(index uint64) (zero, untouched bool) {
-	z.mu.Lock()
-	b, zeroRun := z.lookupLocked(index)
-	z.mu.Unlock()
+func (r *MemoryRegion) fresh(index uint64) (zero, untouched bool) {
+	r.bindingsMu.Lock()
+	b, zeroRun := r.lookupLocked(index)
+	r.bindingsMu.Unlock()
 	if zeroRun {
 		return true, false
 	}
 	if b == nil {
 		return false, true
 	}
-	h := z.region.host
+	h := r.host
 	h.mu.Lock()
 	bound := b.page != nil
 	h.mu.Unlock()
 	if bound {
 		return false, false
 	}
-	z.mu.Lock()
-	defer z.mu.Unlock()
+	r.bindingsMu.Lock()
+	defer r.bindingsMu.Unlock()
 	if b.dirty || b.checkpoint != nil {
 		return false, false
 	}
@@ -81,17 +81,17 @@ func (z *zirconRegion) fresh(index uint64) (zero, untouched bool) {
 }
 
 // store serves a store into a page the region may not store into yet.
-func (z *zirconRegion) store(ctx context.Context, index uint64, spill *reservation) (bool, error) {
-	if fresh, err := z.storeFresh(ctx, index, spill); fresh || err != nil {
+func (r *MemoryRegion) store(ctx context.Context, index uint64, spill *reservation) (bool, error) {
+	if fresh, err := r.storeFresh(ctx, index, spill); fresh || err != nil {
 		return false, err
 	}
-	return z.copyOnWrite(ctx, index, spill)
+	return r.copyOnWrite(ctx, index, spill)
 }
 
 // storeFresh is MemoryRegion.storeFresh over the zircon core: a store into a
 // page whose bytes are known zeros and that the region holds nothing of.
-func (z *zirconRegion) storeFresh(ctx context.Context, index uint64, spill *reservation) (bool, error) {
-	zero, untouched := z.fresh(index)
+func (r *MemoryRegion) storeFresh(ctx context.Context, index uint64, spill *reservation) (bool, error) {
+	zero, untouched := r.fresh(index)
 	if !zero && !untouched {
 		return false, nil
 	}
@@ -100,9 +100,9 @@ func (z *zirconRegion) storeFresh(ctx context.Context, index uint64, spill *rese
 		// Whether an untouched page is a hole is volume metadata, which the
 		// window's extents answer for its neighbours too; the page is asked
 		// first, alone.
-		start, end := z.region.window(index)
+		start, end := r.window(index)
 		var err error
-		if plan, err = z.planPage(ctx, start, end, index, index); err != nil {
+		if plan, err = r.planPage(ctx, start, end, index, index); err != nil {
 			return false, err
 		}
 		if id, ok := plan.identity(index); !ok || !id.zero() {
@@ -112,17 +112,16 @@ func (z *zirconRegion) storeFresh(ctx context.Context, index uint64, spill *rese
 			return false, err
 		}
 	}
-	first, last := z.zeroRun(index, plan)
-	return true, z.storeZeros(ctx, index, first, last, spill)
+	first, last := r.zeroRun(index, plan)
+	return true, r.storeZeros(ctx, index, first, last, spill)
 }
 
 // zeroRun is MemoryRegion.zeroRun over the zircon core.
-func (z *zirconRegion) zeroRun(index uint64, plan *zplan) (uint64, uint64) {
-	r := z.region
+func (r *MemoryRegion) zeroRun(index uint64, plan *zplan) (uint64, uint64) {
 	start, end := r.window(index)
 	limit := uint64(r.host.cfg.WriteAheadPages)
 	zeros := func(page uint64) bool {
-		zero, untouched := z.fresh(page)
+		zero, untouched := r.fresh(page)
 		if zero || !untouched || plan == nil {
 			return zero
 		}
@@ -144,8 +143,7 @@ func (z *zirconRegion) zeroRun(index uint64, plan *zplan) (uint64, uint64) {
 // fresh frames, mapped writable. The faulting page brings its own dirty
 // reservation; the rest of the run takes only free reservations and free
 // slots, and shrinks to what it finds.
-func (z *zirconRegion) storeZeros(ctx context.Context, index, first, last uint64, spill *reservation) error {
-	r := z.region
+func (r *MemoryRegion) storeZeros(ctx context.Context, index, first, last uint64, spill *reservation) error {
 	h := r.host
 	extras := h.takeFreeSpill(int(last-first) - 1)
 	used := 0
@@ -155,7 +153,7 @@ func (z *zirconRegion) storeZeros(ctx context.Context, index, first, last uint64
 		}
 	}()
 	first, last = around(index, first, last, 1+len(extras))
-	first, runs, err := z.allocateRun(ctx, index, first, last)
+	first, runs, err := r.allocateRun(ctx, index, first, last)
 	if err != nil {
 		return err
 	}
@@ -163,7 +161,7 @@ func (z *zirconRegion) storeZeros(ctx context.Context, index, first, last uint64
 	for _, run := range runs {
 		count += run.Count
 	}
-	frames, err := z.newZeroFrames(ctx, r.privateFile(), runs)
+	frames, err := r.newZeroFrames(ctx, r.privateFile(), runs)
 	if err != nil {
 		return err
 	}
@@ -183,7 +181,7 @@ func (z *zirconRegion) storeZeros(ctx context.Context, index, first, last uint64
 	// boot's vCPUs fault runs of thousands of pages at once.
 	page := first
 	for k, run := range runs {
-		if err := z.supplyDirty(ctx, page, frames[k]); err != nil {
+		if err := r.supplyDirty(ctx, page, frames[k]); err != nil {
 			return err
 		}
 		page += uint64(run.Count)
@@ -204,7 +202,7 @@ func (z *zirconRegion) storeZeros(ctx context.Context, index, first, last uint64
 	}
 	// Mapped before the command: an ambiguous answer may still have
 	// installed it.
-	z.bindDirtyRun(first, all, reservations, ahead)
+	r.bindDirtyRun(first, all, reservations, ahead)
 	if h.measuring() {
 		for k := range count {
 			r.noteZeroed(first + uint64(k))
@@ -216,7 +214,7 @@ func (z *zirconRegion) storeZeros(ctx context.Context, index, first, last uint64
 	h.mu.Unlock()
 	for _, run := range runs {
 		if err := r.mapPages(ctx, run, true); err != nil {
-			return r.mappingFailed(err, func() { z.setMapped(first, first+uint64(count), false) })
+			return r.mappingFailed(err, func() { r.setMapped(first, first+uint64(count), false) })
 		}
 	}
 	for _, run := range runs {
@@ -231,11 +229,10 @@ func (z *zirconRegion) storeZeros(ctx context.Context, index, first, last uint64
 // region's private file for the run [first, last), which holds index, by the
 // placement rule first, then free consecutive slots, then index alone, which
 // is the one slot that may give up idle pages for it.
-func (z *zirconRegion) allocateRun(ctx context.Context, index, first, last uint64) (uint64, []MapRun, error) {
-	r := z.region
+func (r *MemoryRegion) allocateRun(ctx context.Context, index, first, last uint64) (uint64, []MapRun, error) {
 	h := r.host
 	f := r.privateFile()
-	if err := z.host.makeRoom(ctx, f, int(last-first)); err != nil {
+	if err := r.host.makeRoom(ctx, f, int(last-first)); err != nil {
 		return 0, nil, err
 	}
 	h.mu.Lock()
@@ -247,7 +244,7 @@ func (z *zirconRegion) allocateRun(ctx context.Context, index, first, last uint6
 	}
 	h.mu.Unlock()
 	if noExtent {
-		z.host.reclaimExtent(f)
+		r.host.reclaimExtent(f)
 	}
 	if start, runs := h.placeRun(r, index, first, last); len(runs) > 0 {
 		return start, runs, nil
@@ -255,7 +252,7 @@ func (z *zirconRegion) allocateRun(ctx context.Context, index, first, last uint6
 	if last-first > 1 && f.owner == nil {
 		prefer := fileSlot{f, -1}
 		if first > 0 {
-			if at := z.slotOf(first - 1); at.slot >= 0 && at.file == f {
+			if at := r.slotOf(first - 1); at.slot >= 0 && at.file == f {
 				prefer = at.plus(1)
 			}
 		}
@@ -264,7 +261,7 @@ func (z *zirconRegion) allocateRun(ctx context.Context, index, first, last uint6
 			return start, []MapRun{r.runAt(start, at, count)}, nil
 		}
 	}
-	at, err := z.reclaimPrivate(ctx, index)
+	at, err := r.reclaimPrivate(ctx, index)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -273,14 +270,14 @@ func (z *zirconRegion) allocateRun(ctx context.Context, index, first, last uint6
 
 // slotOf is the slot of the page the region maps at index, slot -1 where it
 // maps none.
-func (z *zirconRegion) slotOf(index uint64) fileSlot {
-	z.mu.Lock()
-	b, _ := z.lookupLocked(index)
-	z.mu.Unlock()
+func (r *MemoryRegion) slotOf(index uint64) fileSlot {
+	r.bindingsMu.Lock()
+	b, _ := r.lookupLocked(index)
+	r.bindingsMu.Unlock()
 	if b == nil {
 		return fileSlot{slot: -1}
 	}
-	h := z.region.host
+	h := r.host
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if b.page == nil {
@@ -294,8 +291,7 @@ func (z *zirconRegion) slotOf(index uint64) fileSlot {
 // isolated arena one of the page's two places in the region's own file, and
 // otherwise its offset in its range's extent, or an ordinary one beside its
 // neighbours where it has none, evicting where the arena is full.
-func (z *zirconRegion) reclaimPrivate(ctx context.Context, index uint64) (fileSlot, error) {
-	r := z.region
+func (r *MemoryRegion) reclaimPrivate(ctx context.Context, index uint64) (fileSlot, error) {
 	h := r.host
 	return r.reclaimWith(ctx, func() (fileSlot, error) {
 		if reclaimSeam != nil {
@@ -305,7 +301,7 @@ func (z *zirconRegion) reclaimPrivate(ctx context.Context, index uint64) (fileSl
 			return fileSlot{}, err
 		}
 		if r.private != nil {
-			return z.allocateOwn(ctx, index, false)
+			return r.allocateOwn(ctx, index, false)
 		}
 		f := r.privateFile()
 		h.mu.Lock()
@@ -320,7 +316,7 @@ func (z *zirconRegion) reclaimPrivate(ctx context.Context, index uint64) (fileSl
 		if at.slot >= 0 {
 			return at, nil
 		}
-		if noExtent && z.host.reclaimExtent(f) {
+		if noExtent && r.host.reclaimExtent(f) {
 			// The file's extents were held by the idle pages of regions that
 			// have gone; one was given back for this range.
 			h.mu.Lock()
@@ -331,17 +327,17 @@ func (z *zirconRegion) reclaimPrivate(ctx context.Context, index uint64) (fileSl
 			}
 		}
 		if placeable {
-			return z.host.allocate(ctx, r, f, func() int {
+			return h.allocate(ctx, r, f, func() int {
 				at, _ := h.place(r, index)
 				return at.slot
-			})
+			}, evictPastAFreeSlot(ctx))
 		}
 		for _, delta := range []int64{-1, 1} {
 			neighbour := int64(index) + delta
 			if neighbour < 0 || neighbour >= int64(r.pageCount) {
 				continue
 			}
-			if at := z.slotOf(uint64(neighbour)); at.slot >= 0 && at.file == f {
+			if at := r.slotOf(uint64(neighbour)); at.slot >= 0 && at.file == f {
 				near := at.plus(-int(delta))
 				h.mu.Lock()
 				taken := near.slot >= 0 && near.slot < f.slots.Offsets() && f.slots.IsFree(near.slot) && h.takeFree(near, 1)
@@ -351,15 +347,15 @@ func (z *zirconRegion) reclaimPrivate(ctx context.Context, index uint64) (fileSl
 				}
 			}
 		}
-		return z.host.allocate(ctx, r, f, nil)
+		return h.allocate(ctx, r, f, nil, evictPastAFreeSlot(ctx))
 	})
 }
 
 // newZeroFrames fills the slots of every run, which are slots of f, with
 // zeros and reports the frames of each run, as Host.createZeroRuns does. A run
 // that fails takes the runs after it and the frames before it with it.
-func (z *zirconRegion) newZeroFrames(ctx context.Context, f *arenaFile, runs []MapRun) ([][]*zirconvm.VmPage, error) {
-	h := z.region.host
+func (r *MemoryRegion) newZeroFrames(ctx context.Context, f *arenaFile, runs []MapRun) ([][]*zirconvm.VmPage, error) {
+	h := r.host
 	frames := make([][]*zirconvm.VmPage, 0, len(runs))
 	for i, run := range runs {
 		at := fileSlot{f, run.Slot}
@@ -375,8 +371,8 @@ func (z *zirconRegion) newZeroFrames(ctx context.Context, f *arenaFile, runs []M
 		if err == nil {
 			made := make([]*zirconvm.VmPage, run.Count)
 			for k := range made {
-				made[k] = zirconvm.NewFramePage(newLockedZframe(at.plus(k), z.region.kind, z))
-				z.host.noteFrame(made[k])
+				made[k] = zirconvm.NewFramePage(newLockedZframe(at.plus(k), r.kind, r))
+				r.host.noteFrame(made[k])
 			}
 			frames = append(frames, made)
 			continue
@@ -384,7 +380,7 @@ func (z *zirconRegion) newZeroFrames(ctx context.Context, f *arenaFile, runs []M
 		err = h.abandonSlots(ctx, at, run.Count, err)
 		for _, made := range frames {
 			for _, frame := range made {
-				z.host.releaseFrame(frame)
+				r.host.releaseFrame(frame)
 			}
 		}
 		for _, rest := range runs[i+1:] {
@@ -398,51 +394,51 @@ func (z *zirconRegion) newZeroFrames(ctx context.Context, f *arenaFile, runs []M
 // supplyDirty supplies frames, consecutive pages of the region from first, to
 // its layer and makes them Dirty there: the pager's supply and its DIRTY
 // range op. Nothing of the layer holds them yet.
-func (z *zirconRegion) supplyDirty(ctx context.Context, first uint64, frames []*zirconvm.VmPage) error {
-	ps := z.region.host.pageSize
+func (r *MemoryRegion) supplyDirty(ctx context.Context, first uint64, frames []*zirconvm.VmPage) error {
+	ps := r.host.pageSize
 	for _, frame := range frames {
-		frameOf(frame).layer = z
+		frameOf(frame).layer = r
 	}
-	if err := z.host.supply(ctx, z.layer, first, frames); err != nil {
+	if err := r.host.supply(ctx, r.layer, first, frames); err != nil {
 		return err
 	}
-	return z.layer.DirtyPages(ctx, first*ps, uint64(len(frames))*ps)
+	return r.layer.DirtyPages(ctx, first*ps, uint64(len(frames))*ps)
 }
 
 // bindDirtyRun binds the pages from first to frames, Dirty pages of the
 // layer, each under its reservation, and records them mapped, under one hold
 // of each lock for the whole run.
-func (z *zirconRegion) bindDirtyRun(first uint64, frames []*zirconvm.VmPage, reservations []reservation, ahead []bool) {
-	h := z.region.host
+func (r *MemoryRegion) bindDirtyRun(first uint64, frames []*zirconvm.VmPage, reservations []reservation, ahead []bool) {
+	h := r.host
 	bindings := make([]*zbinding, len(frames))
-	z.mu.Lock()
-	if z.dirtySet == nil {
-		z.dirtySet = make(map[uint64]*zbinding)
+	r.bindingsMu.Lock()
+	if r.dirtySet == nil {
+		r.dirtySet = make(map[uint64]*zbinding)
 	}
 	for k := range frames {
-		b := z.bindingLocked(first + uint64(k))
-		z.uncoldLocked(b)
+		b := r.bindingLocked(first + uint64(k))
+		r.uncoldLocked(b)
 		b.dirty, b.spill, b.ahead, b.origin, b.zero, b.mapped = true, reservations[k], ahead[k], nil, false, true
 		b.checkpoint = nil
 		bindings[k] = b
-		z.dirtySet[b.index] = b
+		r.dirtySet[b.index] = b
 	}
-	if z.dirtySince.IsZero() && len(frames) > 0 {
-		z.dirtySince = z.region.host.clock.Now()
+	if r.dirtySince.IsZero() && len(frames) > 0 {
+		r.dirtySince = r.host.clock.Now()
 	}
 	// A run of fresh pages no checkpoint holds is one sealable run: one
 	// change to the runs a seal reads rather than one per page.
-	z.dirtyRuns.add(first, first+uint64(len(frames)))
-	z.mu.Unlock()
+	r.dirtyRuns.add(first, first+uint64(len(frames)))
+	r.bindingsMu.Unlock()
 	for k, b := range bindings {
 		h.probe.granted(b, frameOf(frames[k]), nil)
 	}
 	h.mu.Lock()
 	for k, b := range bindings {
 		if b.page != nil {
-			z.host.unaliasLocked(b)
+			r.host.unaliasLocked(b)
 		}
-		z.host.aliasLocked(b, frames[k])
+		r.host.aliasLocked(b, frames[k])
 	}
 	h.mu.Unlock()
 }
@@ -452,7 +448,7 @@ func (z *zirconRegion) bindDirtyRun(first uint64, frames []*zirconvm.VmPage, res
 // drop may give up before the command that replaces them lands, and the
 // pages the store made, which it holds the locks of until then too.
 type zreplacement struct {
-	z      *zirconRegion
+	region *MemoryRegion
 	pages  []*zirconvm.VmPage
 	guests []*zbinding
 	made   []*zirconvm.VmPage
@@ -472,7 +468,7 @@ func (p *zreplacement) keep(page *zirconvm.VmPage) { p.made = append(p.made, pag
 // done gives up every page held, now that the guest maps none of them: a
 // root's page nothing maps is idle from here, as any other is.
 func (p *zreplacement) done() {
-	h := p.z.region.host
+	h := p.region.host
 	var dropped []*zirconvm.VmPage
 	h.mu.Lock()
 	for _, page := range p.pages {
@@ -483,14 +479,14 @@ func (p *zreplacement) done() {
 			dropped = append(dropped, page)
 			continue
 		}
-		p.z.host.idleLocked(page)
+		p.region.host.idleLocked(page)
 	}
 	h.signal()
 	h.mu.Unlock()
 	// A page that left its object while it was replaced goes back now that
 	// nothing reads it.
 	for _, page := range dropped {
-		p.z.host.releaseFrame(page)
+		p.region.host.releaseFrame(page)
 	}
 	p.pages, p.guests = nil, nil
 }
@@ -502,7 +498,7 @@ func (p *zreplacement) unlock() {
 		frameOf(page).mu.Unlock()
 	}
 	p.made = nil
-	h := p.z.region.host
+	h := p.region.host
 	h.mu.Lock()
 	h.signal()
 	h.mu.Unlock()
@@ -511,7 +507,7 @@ func (p *zreplacement) unlock() {
 // revoke takes the guest's mappings of the held pages away, which a store
 // whose command did not land does, and gives the pages up.
 func (p *zreplacement) revoke(ctx context.Context) error {
-	r := p.z.region
+	r := p.region
 	for _, b := range p.guests {
 		if err := r.revokePage(ctx, b.index); err != nil {
 			p.done()
@@ -532,39 +528,39 @@ func (p *zreplacement) revoke(ctx context.Context) error {
 // checkpoint keeps the page of its pause beside the page list, with the
 // reservation it was admitted under. Any other page of the layer's index is
 // empty, and the copy is supplied there and made Dirty.
-func (z *zirconRegion) takePrivate(ctx context.Context, index uint64, frame *zirconvm.VmPage, spill reservation,
+func (r *MemoryRegion) takePrivate(ctx context.Context, index uint64, frame *zirconvm.VmPage, spill reservation,
 	origin *zirconvm.VmPage, replaced *zreplacement) error {
-	h := z.region.host
+	h := r.host
 	ps := h.pageSize
-	frameOf(frame).layer = z
-	z.mu.Lock()
-	b := z.bindingLocked(index)
-	z.mu.Unlock()
+	frameOf(frame).layer = r
+	r.bindingsMu.Lock()
+	b := r.bindingLocked(index)
+	r.bindingsMu.Unlock()
 	// The page the guest maps is held across the change, as the current
 	// core holds it, so no eviction revokes the guest's mapping of it after
 	// the store's command put the copy there.
-	old, err := z.host.lockedPage(ctx, b)
+	old, err := r.host.lockedPage(ctx, b)
 	if err != nil {
 		return err
 	}
 	if old != nil {
-		defer z.host.unlockPage(old)
+		defer r.host.unlockPage(old)
 	}
-	err = z.layer.SplitAwaitingClean(index*ps, frame)
+	err = r.layer.SplitAwaitingClean(index*ps, frame)
 	if errors.Is(err, zirconvm.ErrBadState) {
-		err = z.supplyDirty(ctx, index, []*zirconvm.VmPage{frame})
+		err = r.supplyDirty(ctx, index, []*zirconvm.VmPage{frame})
 	}
 	if err != nil {
 		return err
 	}
-	z.mu.Lock()
-	z.uncoldLocked(b)
+	r.bindingsMu.Lock()
+	r.uncoldLocked(b)
 	b.checkpoint, b.spill, b.dirty, b.zero, b.ahead, b.origin = nil, spill, true, false, false, origin
-	z.noteDirtyLocked(b)
-	z.mu.Unlock()
+	r.noteDirtyLocked(b)
+	r.bindingsMu.Unlock()
 	h.probe.granted(b, frameOf(frame), probeFrame(origin))
 	if h.measuring() {
-		if err := z.region.noteCopiedAt(ctx, index, frameOf(frame).fileSlot); err != nil {
+		if err := r.noteCopiedAt(ctx, index, frameOf(frame).fileSlot); err != nil {
 			return err
 		}
 	}
@@ -572,15 +568,15 @@ func (z *zirconRegion) takePrivate(ctx context.Context, index uint64, frame *zir
 	if old := b.page; old != nil {
 		// The guest goes on reading the page it maps until the store's command
 		// replaces it, so it stays where it is until then.
-		z.mu.Lock()
+		r.bindingsMu.Lock()
 		mapped := b.mapped
-		z.mu.Unlock()
+		r.bindingsMu.Unlock()
 		if mapped {
 			replaced.holdLocked(b, old)
 		}
-		z.host.unaliasLocked(b)
+		r.host.unaliasLocked(b)
 	}
-	z.host.aliasLocked(b, frame)
+	r.host.aliasLocked(b, frame)
 	h.mu.Unlock()
 	return nil
 }
@@ -588,18 +584,18 @@ func (z *zirconRegion) takePrivate(ctx context.Context, index uint64, frame *zir
 // dirtyInPlace makes the region's own Clean page at index Dirty where it is:
 // a page with no identity, which the region read into its own file. A write
 // to a page a VMO owns dirties it in place, and so does this one.
-func (z *zirconRegion) dirtyInPlace(ctx context.Context, index uint64, spill reservation) error {
-	ps := z.region.host.pageSize
-	if err := z.layer.DirtyPages(ctx, index*ps, ps); err != nil {
+func (r *MemoryRegion) dirtyInPlace(ctx context.Context, index uint64, spill reservation) error {
+	ps := r.host.pageSize
+	if err := r.layer.DirtyPages(ctx, index*ps, ps); err != nil {
 		return err
 	}
-	z.mu.Lock()
-	b := z.bindingLocked(index)
-	z.uncoldLocked(b)
+	r.bindingsMu.Lock()
+	b := r.bindingLocked(index)
+	r.uncoldLocked(b)
 	b.checkpoint, b.spill, b.dirty, b.ahead, b.origin = nil, spill, true, false, nil
-	z.noteDirtyLocked(b)
-	z.mu.Unlock()
-	h := z.region.host
+	r.noteDirtyLocked(b)
+	r.bindingsMu.Unlock()
+	h := r.host
 	h.mu.Lock()
 	page := b.page
 	h.mu.Unlock()
@@ -609,9 +605,9 @@ func (z *zirconRegion) dirtyInPlace(ctx context.Context, index uint64, spill res
 
 // checkpointCopy reports the checkpoint's copy b shares, nil where it holds
 // its own state.
-func (z *zirconRegion) checkpointCopy(b *zbinding) *zbinding {
-	z.mu.Lock()
-	defer z.mu.Unlock()
+func (r *MemoryRegion) checkpointCopy(b *zbinding) *zbinding {
+	r.bindingsMu.Lock()
+	defer r.bindingsMu.Unlock()
 	return b.checkpoint
 }
 
@@ -619,44 +615,43 @@ func (z *zirconRegion) checkpointCopy(b *zbinding) *zbinding {
 // not hold yet: the page's bytes are copied into a frame of its own, Dirty in
 // the layer, and the rules make the pages around it private with it, all of
 // it mapped by one command, as MemoryRegion.fault does.
-func (z *zirconRegion) copyOnWrite(ctx context.Context, index uint64, spill *reservation) (bool, error) {
-	r := z.region
+func (r *MemoryRegion) copyOnWrite(ctx context.Context, index uint64, spill *reservation) (bool, error) {
 	h := r.host
-	unmapped := !z.mapped(index)
-	z.mu.Lock()
-	b := z.bindingLocked(index)
+	unmapped := !r.mapped(index)
+	r.bindingsMu.Lock()
+	b := r.bindingLocked(index)
 	held := b.checkpoint
-	z.mu.Unlock()
+	r.bindingsMu.Unlock()
 	// The page copied from is held while its bytes are read, so no eviction
 	// takes it from under the copy.
-	src, err := z.host.lockedPage(ctx, b)
+	src, err := r.host.lockedPage(ctx, b)
 	if err != nil {
 		return false, err
 	}
-	if src != nil && frameOf(src).layer == z && held == nil {
+	if src != nil && frameOf(src).layer == r && held == nil {
 		// The region's own page, Clean, read with no identity: it is dirtied
 		// where it is.
-		defer z.host.unlockPage(src)
-		if err := z.dirtyInPlace(ctx, index, *spill); err != nil {
+		defer r.host.unlockPage(src)
+		if err := r.dirtyInPlace(ctx, index, *spill); err != nil {
 			return false, err
 		}
 		*spill = noReservation
 		at := frameOf(src).fileSlot
-		z.setMapped(index, index+1, true)
+		r.setMapped(index, index+1, true)
 		if err := r.mapPages(ctx, r.runAt(index, at, 1), true); err != nil {
-			return false, r.mappingFailed(err, func() { z.setMapped(index, index+1, false) })
+			return false, r.mappingFailed(err, func() { r.setMapped(index, index+1, false) })
 		}
 		if err := r.resolvePages(ctx, index, 1, true); err != nil {
 			return false, r.fail(err)
 		}
 		return false, nil
 	}
-	if src == nil && held == nil && !z.zeroMapped(index) {
+	if src == nil && held == nil && !r.zeroMapped(index) {
 		// The region holds nothing of the page, so the copy has nothing to be
 		// made from. Reading it in first is the read fault this store often
 		// really is: it lands in its root, so the copy has an origin and every
 		// region that inherits the identity maps it rather than reading it.
-		origin, again, err := z.readIn(ctx, index)
+		origin, again, err := r.readIn(ctx, index)
 		if err != nil || again {
 			return again, err
 		}
@@ -674,19 +669,19 @@ func (z *zirconRegion) copyOnWrite(ctx context.Context, index uint64, spill *res
 	// was copied from, here, while that page is still held: see cold.go.
 	marked := false
 	if unmapped && origin != nil {
-		z.host.pin(origin, b)
+		r.host.pin(origin, b)
 		defer func() {
 			if !marked {
-				z.host.unpin(origin, b)
+				r.host.unpin(origin, b)
 			}
 		}()
 	}
 	data := make([]byte, h.pageSize)
-	unpublished, err := z.readForCopy(ctx, index, src, held, data)
+	unpublished, err := r.readForCopy(ctx, index, src, held, data)
 	if src != nil {
 		// The bytes are read: the page may go from here, the copy holding
 		// them, and the slot the copy needs may be its.
-		z.host.unlockPage(src)
+		r.host.unlockPage(src)
 	}
 	if err != nil {
 		return false, err
@@ -694,31 +689,31 @@ func (z *zirconRegion) copyOnWrite(ctx context.Context, index uint64, spill *res
 	// The region is given up for the reclaim: a seal, a retire or an abandon
 	// taken meanwhile is what the page's being the checkpoint's or not was
 	// decided against, so it is decided again from the top.
-	at, err := z.reclaimPrivate(ctx, index)
+	at, err := r.reclaimPrivate(ctx, index)
 	if err != nil {
 		return false, err
 	}
-	if z.checkpointCopy(b) != held {
+	if r.checkpointCopy(b) != held {
 		return true, h.abandonSlots(ctx, at, 1, nil)
 	}
-	frame, err := z.host.newFrame(ctx, at, data, r.kind)
+	frame, err := r.host.newFrame(ctx, at, data, r.kind)
 	if err != nil {
 		return false, err
 	}
-	frameOf(frame).layer = z
+	frameOf(frame).layer = r
 	// The copy is held from its making until the store's command lands.
-	replaced := &zreplacement{z: z}
+	replaced := &zreplacement{region: r}
 	defer replaced.unlock()
 	replaced.keep(frame)
 	if err := context.Cause(ctx); err != nil {
 		// The session the store serves ended while it copied. The copy is
 		// reachable from nothing, so it goes back now or never.
-		z.host.releaseFrame(frame)
+		r.host.releaseFrame(frame)
 		replaced.done()
 		return false, err
 	}
-	if err := z.takePrivate(ctx, index, frame, *spill, origin, replaced); err != nil {
-		z.host.releaseFrame(frame)
+	if err := r.takePrivate(ctx, index, frame, *spill, origin, replaced); err != nil {
+		r.host.releaseFrame(frame)
 		replaced.done()
 		return false, err
 	}
@@ -735,17 +730,17 @@ func (z *zirconRegion) copyOnWrite(ctx context.Context, index uint64, spill *res
 		h.stats.UnmappedCopyOnWrites++
 	}
 	h.mu.Unlock()
-	first, last, err := z.closeAround(ctx, index, at, replaced)
+	first, last, err := r.closeAround(ctx, index, at, replaced)
 	if err != nil {
 		return false, errors.Join(err, replaced.revoke(ctx))
 	}
-	z.setMapped(first, last, true)
+	r.setMapped(first, last, true)
 	count := int(last - first)
 	if err := r.mapPages(ctx, r.runAt(first, at.plus(-int(index-first)), count), true); err != nil {
 		if revoked := replaced.revoke(ctx); revoked != nil {
 			return false, errors.Join(r.fail(err), revoked)
 		}
-		err = r.mappingFailed(err, func() { z.setMapped(first, last, false) })
+		err = r.mappingFailed(err, func() { r.setMapped(first, last, false) })
 		if !errors.Is(err, ErrMappingRefused) {
 			return false, err
 		}
@@ -753,7 +748,7 @@ func (z *zirconRegion) copyOnWrite(ctx context.Context, index uint64, spill *res
 		// range the guest is writing in is made whole, and the store is served
 		// again. The region closes gaps from now on.
 		r.pressed.Store(true)
-		merged, mergeErr := z.makeWhole(ctx, index)
+		merged, mergeErr := r.makeWhole(ctx, index)
 		if mergeErr != nil {
 			return false, mergeErr
 		}
@@ -764,7 +759,7 @@ func (z *zirconRegion) copyOnWrite(ctx context.Context, index uint64, spill *res
 		return false, r.fail(err)
 	}
 	if unmapped && origin != nil {
-		marked = z.markCold(b, origin)
+		marked = r.markCold(b, origin)
 	}
 	return false, nil
 }
@@ -774,8 +769,7 @@ func (z *zirconRegion) copyOnWrite(ctx context.Context, index uint64, spill *res
 // whether it freed one. A published page stays at the slot the placement rule
 // gave it when it goes idle, so it keeps that slot's extent from going back
 // after the region that placed it has gone.
-func (z *zirconHost) reclaimExtent(f *arenaFile) bool {
-	h := z.host
+func (h *Host) reclaimExtent(f *arenaFile) bool {
 	orphaned := func(frame *zframe) bool {
 		e := frame.file.leases[frame.slot].extent
 		return e != nil && e.file == f && h.extents[e.key] != e
@@ -788,17 +782,17 @@ func (z *zirconHost) reclaimExtent(f *arenaFile) bool {
 			return freed
 		}
 		h.mu.Unlock()
-		if !z.takeIdleIf(func() bool { h.mu.Lock(); return true }, orphaned) {
+		if !h.takeIdleIf(func() bool { h.mu.Lock(); return true }, orphaned) {
 			return false
 		}
 	}
 }
 
 // zeroMapped reports whether a page is mapped to zero.
-func (z *zirconRegion) zeroMapped(index uint64) bool {
-	z.mu.Lock()
-	defer z.mu.Unlock()
-	b, zeroRun := z.lookupLocked(index)
+func (r *MemoryRegion) zeroMapped(index uint64) bool {
+	r.bindingsMu.Lock()
+	defer r.bindingsMu.Unlock()
+	b, zeroRun := r.lookupLocked(index)
 	return zeroRun || (b != nil && b.zero && b.mapped)
 }
 
@@ -808,9 +802,8 @@ func (z *zirconRegion) zeroMapped(index uint64) bool {
 // It reports whether the bytes are ones no checkpoint of the VM has: only a
 // backing read can say so, and only a backing that fetches from another host
 // ever does.
-func (z *zirconRegion) readForCopy(ctx context.Context, index uint64, src *zirconvm.VmPage, held *zbinding,
+func (r *MemoryRegion) readForCopy(ctx context.Context, index uint64, src *zirconvm.VmPage, held *zbinding,
 	dst []byte) (unpublished bool, err error) {
-	r := z.region
 	if src != nil {
 		f := frameOf(src)
 		return false, f.file.Read(ctx, f.slot, dst)
@@ -818,9 +811,9 @@ func (z *zirconRegion) readForCopy(ctx context.Context, index uint64, src *zirco
 	if held != nil {
 		// The checkpoint's copy the page shares was spilled: its reservation
 		// holds the bytes.
-		return false, r.host.readSpill(ctx, z.spillOf(held), dst)
+		return false, r.host.readSpill(ctx, r.spillOf(held), dst)
 	}
-	if z.zeroMapped(index) {
+	if r.zeroMapped(index) {
 		clear(dst)
 		return false, nil
 	}
@@ -845,15 +838,15 @@ func (z *zirconRegion) readForCopy(ctx context.Context, index uint64, src *zirco
 // load is what answers that the source still holds a page, which is per page,
 // and nothing may be shared under the name of a page it gives that answer
 // for.
-func (z *zirconRegion) readIn(ctx context.Context, index uint64) (*zirconvm.VmPage, bool, error) {
+func (r *MemoryRegion) readIn(ctx context.Context, index uint64) (*zirconvm.VmPage, bool, error) {
 	var plan *zplan
 	var err error
-	if z.region.peer {
-		if plan, err = z.plan(ctx, index, index+1, z.region.end(index)); err == nil {
+	if r.peer {
+		if plan, err = r.plan(ctx, index, index+1, r.end(index)); err == nil {
 			plan.reading = readAlone
 		}
 	} else {
-		plan, err = z.planFault(ctx, index, z.region.end(index))
+		plan, err = r.planFault(ctx, index, r.end(index))
 	}
 	if err != nil {
 		return nil, false, err
@@ -864,7 +857,7 @@ func (z *zirconRegion) readIn(ctx context.Context, index uint64) (*zirconvm.VmPa
 		return nil, false, nil
 	}
 	if waiter := plan.inFlight(ctx, index); waiter != nil {
-		return nil, true, z.awaitRead(ctx, waiter)
+		return nil, true, r.awaitRead(ctx, waiter)
 	}
 	again, err := plan.takeFaulting(ctx, index)
 	if err != nil || again {
@@ -897,15 +890,14 @@ func (z *zirconRegion) readIn(ctx context.Context, index uint64) (*zirconvm.VmPa
 }
 
 // closeAround is MemoryRegion.closeAround over the zircon core.
-func (z *zirconRegion) closeAround(ctx context.Context, index uint64, at fileSlot, replaced *zreplacement) (first, last uint64, err error) {
-	r := z.region
+func (r *MemoryRegion) closeAround(ctx context.Context, index uint64, at fileSlot, replaced *zreplacement) (first, last uint64, err error) {
 	h := r.host
 	h.mu.Lock()
 	placed := h.placedAt(r, index, at)
 	first, last = index, index+1
 	whole := false
 	if placed {
-		first, last = z.nearbyLocked(index)
+		first, last = r.nearbyLocked(index)
 		whole = h.halfPrivate(r, index)
 	}
 	h.mu.Unlock()
@@ -920,19 +912,18 @@ func (z *zirconRegion) closeAround(ctx context.Context, index uint64, at fileSlo
 	if last-first == 1 {
 		return first, last, nil
 	}
-	if err := z.takeShared(ctx, first, index, last, replaced); err != nil {
+	if err := r.takeShared(ctx, first, index, last, replaced); err != nil {
 		return 0, 0, err
 	}
 	if whole {
 		h.markWhole(r, index)
 	}
-	first, last = z.placedRun(index, first, last)
+	first, last = r.placedRun(index, first, last)
 	return first, last, nil
 }
 
 // nearbyLocked is Host.nearby over the zircon core. Caller holds h.mu.
-func (z *zirconRegion) nearbyLocked(index uint64) (first, last uint64) {
-	r := z.region
+func (r *MemoryRegion) nearbyLocked(index uint64) (first, last uint64) {
 	h := r.host
 	if !r.pressed.Load() {
 		return index, index + 1
@@ -943,13 +934,13 @@ func (z *zirconRegion) nearbyLocked(index uint64) (first, last uint64) {
 	high := min(low+span, uint64(r.pageCount))
 	first, last = index, index+1
 	for d := uint64(1); d <= gapPages && index-d >= low && index >= d; d++ {
-		if z.placedPrivateAtLocked(e, index-d) {
+		if r.placedPrivateAtLocked(e, index-d) {
 			first = index - d + 1
 			break
 		}
 	}
 	for d := uint64(1); d <= gapPages && index+d < high; d++ {
-		if z.placedPrivateAtLocked(e, index+d) {
+		if r.placedPrivateAtLocked(e, index+d) {
 			last = index + d
 			break
 		}
@@ -960,47 +951,45 @@ func (z *zirconRegion) nearbyLocked(index uint64) (first, last uint64) {
 // placedPrivateAtLocked is Host.placedPrivateAt over the zircon core: the
 // region's own Dirty page, at the offset its range's extent gives it. Caller
 // holds h.mu.
-func (z *zirconRegion) placedPrivateAtLocked(e *extent, page uint64) bool {
+func (r *MemoryRegion) placedPrivateAtLocked(e *extent, page uint64) bool {
 	if e == nil {
 		return false
 	}
-	z.mu.Lock()
-	b, _ := z.lookupLocked(page)
+	r.bindingsMu.Lock()
+	b, _ := r.lookupLocked(page)
 	dirty := b != nil && b.writable()
-	z.mu.Unlock()
-	return dirty && b.page != nil && frameOf(b.page).fileSlot == z.region.host.slotIn(e, page)
+	r.bindingsMu.Unlock()
+	return dirty && b.page != nil && frameOf(b.page).fileSlot == r.host.slotIn(e, page)
 }
 
 // placedRun is Host.placedRun over the zircon core.
-func (z *zirconRegion) placedRun(index, first, last uint64) (uint64, uint64) {
-	r := z.region
+func (r *MemoryRegion) placedRun(index, first, last uint64) (uint64, uint64) {
 	h := r.host
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	e := h.extents[extentKey{r, index / uint64(h.extentPages)}]
 	start, end := index, index+1
-	for start > first && z.placedPrivateAtLocked(e, start-1) {
+	for start > first && r.placedPrivateAtLocked(e, start-1) {
 		start--
 	}
-	for end < last && z.placedPrivateAtLocked(e, end) {
+	for end < last && r.placedPrivateAtLocked(e, end) {
 		end++
 	}
 	return start, end
 }
 
 // joinsRun reports a page one store's command may cover.
-func (z *zirconRegion) joinsRun(page uint64) bool {
-	r := z.region
+func (r *MemoryRegion) joinsRun(page uint64) bool {
 	h := r.host
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return z.placedPrivateAtLocked(h.extents[extentKey{r, page / uint64(h.extentPages)}], page)
+	return r.placedPrivateAtLocked(h.extents[extentKey{r, page / uint64(h.extentPages)}], page)
 }
 
 // takeShared is MemoryRegion.takeShared over the zircon core.
-func (z *zirconRegion) takeShared(ctx context.Context, first, index, last uint64, replaced *zreplacement) error {
+func (r *MemoryRegion) takeShared(ctx context.Context, first, index, last uint64, replaced *zreplacement) error {
 	for page := index + 1; page < last; page++ {
-		joined, err := z.takeOneShared(ctx, page, replaced)
+		joined, err := r.takeOneShared(ctx, page, replaced)
 		if err != nil {
 			return err
 		}
@@ -1009,7 +998,7 @@ func (z *zirconRegion) takeShared(ctx context.Context, first, index, last uint64
 		}
 	}
 	for page := index; page > first; page-- {
-		joined, err := z.takeOneShared(ctx, page-1, replaced)
+		joined, err := r.takeOneShared(ctx, page-1, replaced)
 		if err != nil {
 			return err
 		}
@@ -1023,30 +1012,29 @@ func (z *zirconRegion) takeShared(ctx context.Context, first, index, last uint64
 // takeOneShared is MemoryRegion.takeOneShared over the zircon core: one page
 // made private for a rule, from bytes this host holds, at the offset of its
 // own, never waiting and never evicting.
-func (z *zirconRegion) takeOneShared(ctx context.Context, page uint64, replaced *zreplacement) (bool, error) {
-	r := z.region
+func (r *MemoryRegion) takeOneShared(ctx context.Context, page uint64, replaced *zreplacement) (bool, error) {
 	h := r.host
-	if z.writable(page) {
-		return z.joinsRun(page), nil
+	if r.writable(page) {
+		return r.joinsRun(page), nil
 	}
-	z.mu.Lock()
-	b := z.bindingLocked(page)
+	r.bindingsMu.Lock()
+	b := r.bindingLocked(page)
 	held := b.checkpoint
-	z.mu.Unlock()
+	r.bindingsMu.Unlock()
 	if held != nil {
 		// The checkpoint's page: the run ends here.
 		return false, nil
 	}
-	src, err := z.host.lockedPage(ctx, b)
+	src, err := r.host.lockedPage(ctx, b)
 	if err != nil {
 		return false, err
 	}
 	unlock := func() {
 		if src != nil {
-			z.host.unlockPage(src)
+			r.host.unlockPage(src)
 		}
 	}
-	if src == nil && !z.zeroMapped(page) {
+	if src == nil && !r.zeroMapped(page) {
 		// This host does not hold the page's bytes, and a rule reads nothing.
 		return false, nil
 	}
@@ -1065,7 +1053,7 @@ func (z *zirconRegion) takeOneShared(ctx context.Context, page uint64, replaced 
 		return false, err
 	}
 	data := make([]byte, h.pageSize)
-	_, err = z.readForCopy(ctx, page, src, nil, data)
+	_, err = r.readForCopy(ctx, page, src, nil, data)
 	unlock()
 	if err != nil {
 		h.releaseSpill(spill)
@@ -1080,19 +1068,19 @@ func (z *zirconRegion) takeOneShared(ctx context.Context, page uint64, replaced 
 		h.releaseSpill(spill)
 		return false, nil
 	}
-	frame, err := z.host.newFrame(ctx, at, data, r.kind)
+	frame, err := r.host.newFrame(ctx, at, data, r.kind)
 	if err != nil {
 		h.releaseSpill(spill)
 		return false, err
 	}
-	frameOf(frame).layer = z
+	frameOf(frame).layer = r
 	replaced.keep(frame)
 	var origin *zirconvm.VmPage
 	if src != nil {
 		origin = src
 	}
-	if err := z.takePrivate(ctx, page, frame, spill, origin, replaced); err != nil {
-		z.host.releaseFrame(frame)
+	if err := r.takePrivate(ctx, page, frame, spill, origin, replaced); err != nil {
+		r.host.releaseFrame(frame)
 		h.releaseSpill(spill)
 		return false, err
 	}
@@ -1105,8 +1093,7 @@ func (z *zirconRegion) takeOneShared(ctx context.Context, page uint64, replaced 
 // makeWhole is MemoryRegion.makeWhole over the zircon core: the mapping
 // budget's backstop, which copies every page of one range into the holes of
 // its extent and maps the range with one command.
-func (z *zirconRegion) makeWhole(ctx context.Context, index uint64) (bool, error) {
-	r := z.region
+func (r *MemoryRegion) makeWhole(ctx context.Context, index uint64) (bool, error) {
 	h := r.host
 	span := uint64(h.extentPages)
 	h.mu.Lock()
@@ -1117,29 +1104,29 @@ func (z *zirconRegion) makeWhole(ctx context.Context, index uint64) (bool, error
 	}
 	first := index - index%span
 	last := min(first+span, uint64(r.pageCount))
-	before := z.privatePages(first, last)
-	replaced := &zreplacement{z: z}
+	before := r.privatePages(first, last)
+	replaced := &zreplacement{region: r}
 	defer replaced.unlock()
-	if err := z.takeShared(ctx, first, index, last, replaced); err != nil {
+	if err := r.takeShared(ctx, first, index, last, replaced); err != nil {
 		return false, errors.Join(err, replaced.revoke(ctx))
 	}
-	if z.privatePages(first, last) <= before {
+	if r.privatePages(first, last) <= before {
 		replaced.done()
 		return false, nil
 	}
 	h.markWhole(r, index)
-	first, last = z.placedRun(index, first, last)
+	first, last = r.placedRun(index, first, last)
 	h.mu.Lock()
 	at := h.placedSlot(r, first)
 	h.stats.MappingMerges++
 	h.mu.Unlock()
 	count := int(last - first)
-	z.setMapped(first, last, true)
+	r.setMapped(first, last, true)
 	if err := r.mapPages(ctx, r.runAt(first, at, count), true); err != nil {
 		if revoked := replaced.revoke(ctx); revoked != nil {
 			return false, errors.Join(r.fail(err), revoked)
 		}
-		return false, r.mappingFailed(err, func() { z.setMapped(first, last, false) })
+		return false, r.mappingFailed(err, func() { r.setMapped(first, last, false) })
 	}
 	replaced.done()
 	return true, nil
@@ -1147,10 +1134,10 @@ func (z *zirconRegion) makeWhole(ctx context.Context, index uint64) (bool, error
 
 // privatePages is how many pages of [first, last) the region may store into
 // where they are.
-func (z *zirconRegion) privatePages(first, last uint64) int {
+func (r *MemoryRegion) privatePages(first, last uint64) int {
 	count := 0
 	for page := first; page < last; page++ {
-		if z.writable(page) {
+		if r.writable(page) {
 			count++
 		}
 	}
@@ -1159,20 +1146,20 @@ func (z *zirconRegion) privatePages(first, last uint64) int {
 
 // releaseDirty gives back the reservations of every page the region has
 // stored into, which a detach does: its writes go with it.
-func (z *zirconRegion) releaseDirty() {
-	h := z.region.host
+func (r *MemoryRegion) releaseDirty() {
+	h := r.host
 	var spills []reservation
-	z.mu.Lock()
-	z.eachBoundLocked(0, uint64(z.region.pageCount), func(b *zbinding) {
+	r.bindingsMu.Lock()
+	r.eachBoundLocked(0, uint64(r.pageCount), func(b *zbinding) {
 		if b.dirty && !b.spill.none() {
 			spills = append(spills, b.spill)
 		}
-		z.uncoldLocked(b)
+		r.uncoldLocked(b)
 		b.dirty, b.spill, b.origin, b.ahead, b.checkpoint = false, noReservation, nil, false, nil
 	})
-	z.dirtySet, z.dirtySince = nil, time.Time{}
-	z.dirtyRuns = newPageRuns(z.region.host.pageSize)
-	z.mu.Unlock()
+	r.dirtySet, r.dirtySince = nil, time.Time{}
+	r.dirtyRuns = newPageRuns(r.host.pageSize)
+	r.bindingsMu.Unlock()
 	for _, spill := range spills {
 		h.releaseSpill(spill)
 	}

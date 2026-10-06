@@ -113,18 +113,17 @@ func (r *MemoryRegion) takeSums(held any) (changeSums, bool) {
 }
 
 // changedBlocks is settler.changedBlocks over the zircon core.
-func (z *zirconRegion) changedBlocks(ctx context.Context, held *zbinding) (int, bool, error) {
-	r := z.region
+func (r *MemoryRegion) changedBlocks(ctx context.Context, held *zbinding) (int, bool, error) {
 	h := r.host
 	was, ok := r.takeSums(held)
 	if !ok {
 		return 0, false, nil
 	}
-	page, err := z.host.lockedPage(ctx, held)
+	page, err := r.host.lockedPage(ctx, held)
 	if err != nil || page == nil {
 		return 0, false, err
 	}
-	defer z.host.unlockPage(page)
+	defer r.host.unlockPage(page)
 	now, err := h.blockSums(ctx, frameOf(page).fileSlot)
 	if err != nil {
 		return 0, false, err
