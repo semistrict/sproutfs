@@ -12,6 +12,7 @@ import (
 
 	"github.com/semistrict/sproutfs/checkpoint"
 	"github.com/semistrict/sproutfs/control"
+	"github.com/semistrict/sproutfs/internal/blob"
 	"github.com/semistrict/sproutfs/peer"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/platform/sim"
@@ -53,9 +54,13 @@ func pacedCluster(queueBytes int64, shake uint64, write time.Duration,
 }
 
 // noisyWindow is what a window of one page of noise costs the queue: its
-// envelope, which holds the page as it is, being noise, and is 144 bytes
-// longer.
-const noisyWindow = checkpoint.PageSize2MiB + 144
+// envelope, which holds the page as it is, being noise, behind the envelope's
+// header. noisySegment is what the window of the segment naming eight such
+// pages costs: its envelope, which holds the segment's 144 bytes as they are.
+const (
+	noisyWindow  = checkpoint.PageSize2MiB + blob.HeaderSize
+	noisySegment = 144 + blob.HeaderSize
+)
 
 // pacedRun is what one publication of noisy pages from the first host of a
 // cluster did: how long its commit took, how long until its fills had
@@ -201,8 +206,8 @@ func TestAPublicationGoesAtThePaceOfItsSlowestHolder(t *testing.T) {
 			t.Fatalf("behind the %s holder the publisher's fills came to %+v; want its eight pages and its segment "+
 				"on both hosts, the six parts after the first two having waited for room", name, fills)
 		}
-		if most := int64(2 * noisyWindow); fills.QueuedPeak != most {
-			t.Fatalf("behind the %s holder the queue held %d bytes at most, want two windows' %d", name,
+		if most := int64(2*noisyWindow + noisySegment); fills.QueuedPeak != most {
+			t.Fatalf("behind the %s holder the queue held %d bytes at most, want two windows' and the segment's %d", name,
 				fills.QueuedPeak, most)
 		}
 	}

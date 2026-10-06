@@ -40,7 +40,7 @@ import (
 // out. A stripe of a code the membership does not name is a miss, and no
 // envelope is rebuilt from stripes of two codes. Each stripe's key and
 // checksum are checked as it is read, and the envelope it rebuilds is checked
-// by the caller's check, which is the envelope's own SHA-256. A stripe found
+// by the caller's check, which is the envelope's own XXH3-128. A stripe found
 // wrong is forgotten. Nothing here reads from a peer or sends one a stripe:
 // clusterread.go does.
 
@@ -496,7 +496,7 @@ func (d *cacheDisk) readUnder(ctx context.Context, key diskKey, code rank.Code,
 
 // decoded is the decoded bytes of the envelope the disk holds under key,
 // rebuilt and checked as one from the store is: it decodes under codecs to at
-// most maximum bytes, its SHA-256 holds, and valid takes what it decodes to.
+// most maximum bytes, its XXH3-128 holds, and valid takes what it decodes to.
 // It reports the code that rebuilt it.
 func (d *cacheDisk) decoded(ctx context.Context, key diskKey, codecs *blob.Codecs, maximum int,
 	valid func([]byte) bool) ([]byte, rank.Code, bool) {

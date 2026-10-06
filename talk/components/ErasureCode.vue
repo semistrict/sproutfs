@@ -3,13 +3,13 @@ import { computed } from 'vue'
 import { useStep } from './Steps'
 
 // One window under 4+2 on six hosts.
-// 0 a page's envelope (zstd + SHA-256), and the window's first six ranks
+// 0 a page's envelope (zstd + XXH3-128), and the window's first six ranks
 // 1 split: four data stripes and two parity stripes, a quarter of the envelope each
 // 2 fill: stripe i goes to rank i
 // 3 read: k+1 = 5 of the six, picked by a hash of reader and window; any 4 rebuild it
 // 4 a host is lost: its refusal is replaced at once by the rank not yet asked
 // 5 and another is slow: the spare request covers it
-// 6 a wrong stripe: the page's SHA-256 fails, another set of 4 holds, its holder is told to drop it
+// 6 a wrong stripe: the page's XXH3-128 fails, another set of 4 holds, its holder is told to drop it
 // 7 a host joins at rank 1: every holder moves down a rank and keeps its index
 const step = useStep()
 
@@ -54,13 +54,13 @@ const wrongIndex = computed(() => {
 })
 
 const caption = computed(() => [
-  'one page of a window: its envelope is the compressed page and its SHA-256. Rendezvous hashing ranks every cache for the window.',
+  'one page of a window: its envelope is the compressed page and its XXH3-128. Rendezvous hashing ranks every cache for the window.',
   'Reed-Solomon 4+2 splits the envelope into four data stripes and two parity stripes, each a quarter of it: 1.5 times the bytes',
   'a fill sends stripe i to rank i. Each of six hosts holds one stripe; no host holds the page.',
   'a reader asks five of the six, picked by a hash of reader and window, and rebuilds from the first four that answer, whichever they are',
   'host B is lost: its refused connection marks it down, and the rank not yet asked is asked at once. Still four stripes.',
   'and host E is slow: the fifth request covers it. Two slow holders would be asked around after the p95 delay, within a budget.',
-  'D answers with a wrong stripe: the rebuilt page fails its SHA-256, another set of four holds, and D is told to drop it',
+  'D answers with a wrong stripe: the rebuilt page fails its XXH3-128, another set of four holds, and D is told to drop it',
   'G joins and ranks first for this window: every holder moves down one rank and keeps its index, so a reader takes any four indices it is sent',
 ][step.value])
 </script>
@@ -69,7 +69,7 @@ const caption = computed(() => [
   <div>
     <svg viewBox="0 0 900 360" class="w-full">
       <!-- the envelope -->
-      <text x="20" y="20" class="tiny left">page envelope · 2 MiB, zstd + SHA-256</text>
+      <text x="20" y="20" class="tiny left">page envelope · 2 MiB, zstd + XXH3-128</text>
       <g v-if="step === 0">
         <rect x="20" y="28" width="480" height="34" rx="5" class="env" />
         <text x="260" y="50" class="small">envelope</text>
@@ -110,8 +110,8 @@ const caption = computed(() => [
             :class="{ got: received.has(i), parity: received.has(i) && i >= 4, bad: wrongIndex === i }" />
           <text :x="167 + i * 62" y="320" class="tiny">{{ l }}</text>
         </g>
-        <text x="540" y="312" class="small left">{{ step === 6 ? 'first four failed SHA-256; rebuilt from another four' : 'rebuilt from four distinct indices' }}</text>
-        <text x="540" y="332" class="small left ok">page checked: SHA-256 holds · no object-store read</text>
+        <text x="540" y="312" class="small left">{{ step === 6 ? 'first four failed XXH3-128; rebuilt from another four' : 'rebuilt from four distinct indices' }}</text>
+        <text x="540" y="332" class="small left ok">page checked: XXH3-128 holds · no object-store read</text>
       </g>
     </svg>
     <p class="phase">{{ caption }}</p>

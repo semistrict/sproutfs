@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/semistrict/sproutfs/checkpoint"
+	"github.com/semistrict/sproutfs/internal/blob"
 	"github.com/semistrict/sproutfs/membership"
 	"github.com/semistrict/sproutfs/peer"
 	"github.com/semistrict/sproutfs/platform/sim"
@@ -160,13 +161,15 @@ func TestEachHolderKeepsAPublicationsWindowsInTheirOrder(t *testing.T) {
 // publication holds only the parts under its upload slots. Twelve pages of
 // noise, a part each, go to three slow holders through a queue with room
 // below its high-water mark for five windows. Every tenth of a second, the
-// windows queued behind the one the worker is on, as many as three, hold
-// exactly the bytes the queue counts of them, and the queue never holds more
-// than the mark. A window holding a view of
+// windows queued behind the one the worker is on, as many as three of pages
+// and the segment's, hold exactly the bytes the queue counts of them, and the
+// queue never holds more than the mark. A window holding a view of
 // its part, as before, would hold the whole part until its last keep was
 // answered: the queue would count the window and the host hold the part.
 func TestAPublicationsQueuedWindowsHoldWhatTheQueueCounts(t *testing.T) {
 	const queueBytes = 16 << 20
+	// The segment naming the twelve pages is 212 bytes, stored as they are.
+	const segment = 212 + blob.HeaderSize
 	var counted, held []int64
 	config := sideBySide(3, queueBytes, 0, slowWrite, nil)
 	run := pacedPublication{config: config, pages: 12, uploads: 4,
@@ -181,10 +184,10 @@ func TestAPublicationsQueuedWindowsHoldWhatTheQueueCounts(t *testing.T) {
 		t.Fatalf("the queued windows held %v bytes, and the queue counted %v of them; want what it counted", held,
 			counted)
 	}
-	if most := slices.Max(counted); most <= 2*noisyWindow || most > 3*noisyWindow ||
+	if most := slices.Max(counted); most <= 2*noisyWindow || most > 3*noisyWindow+segment ||
 		run.fills.QueuedPeak > queueBytes*3/4 {
 		t.Fatalf("the queue counted at most %d bytes of the windows behind the worker's and held %d at most; "+
-			"want three windows', and no more than its high-water mark", most, run.fills.QueuedPeak)
+			"want three windows' and the segment's, and no more than its high-water mark", most, run.fills.QueuedPeak)
 	}
 	if fills := run.fills; !samePlaces(run.placed, run.ranked) || fills.Sent != 39 || dropped(fills) != 0 {
 		t.Fatalf("the windows' stripes are on %v, want %v, and the publisher's fills came to %+v; want every "+

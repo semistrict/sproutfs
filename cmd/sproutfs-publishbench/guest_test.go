@@ -19,7 +19,7 @@ func TestTheGuestCompressesLikeTheValkeyHeap(t *testing.T) {
 		}
 		encoded += len(envelope)
 	}
-	if got, want := encoded, 7_760_084; got != want {
+	if got, want := encoded, 7_759_956; got != want {
 		t.Fatalf("8 pages encode to %d bytes (%.3f of %d), want %d", got,
 			float64(got)/float64(len(g.memory)), len(g.memory), want)
 	}

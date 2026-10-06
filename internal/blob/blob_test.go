@@ -3,9 +3,12 @@ package blob_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"math/rand/v2"
+	"strings"
 	"testing"
 
 	"github.com/semistrict/sproutfs/internal/blob"
@@ -110,6 +113,38 @@ func TestRejectInvalidEncoding(t *testing.T) {
 	}
 	if _, err := blob.Decode(ctx, encoded, 2<<20); !errors.Is(err, context.Canceled) {
 		t.Fatal(err)
+	}
+}
+
+// An envelope's bytes are its format: the header of a raw envelope is the
+// magic, the codec, the decoded length and the XXH3-128 of the decoded bytes,
+// written out here rather than remembered. The digest is the canonical,
+// big-endian one the reference xxhsum -H2 prints.
+func TestARawEnvelopeIsItsHeaderAndItsBytes(t *testing.T) {
+	encoded, err := blob.Encode(t.Context(), []byte("state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = "53504232" + "00000000" + "0500000000000000" +
+		"ccb356a16ce4d54a899465fe1ae32812" + "7374617465"
+	if got := hex.EncodeToString(encoded); got != want {
+		t.Fatalf("the envelope of %q is\n%s\nwant\n%s", "state", got, want)
+	}
+}
+
+// Nothing is deployed, so an envelope of format 1 — a SHA-256 in a 48-byte
+// header — is refused rather than read, and the refusal names its version.
+func TestAnEnvelopeOfFormat1IsRefusedByVersion(t *testing.T) {
+	data := []byte("state")
+	sum := sha256.Sum256(data)
+	old := append([]byte("SPB1\x00\x00\x00\x00"), binary.LittleEndian.AppendUint64(nil, uint64(len(data)))...)
+	old = append(append(old, sum[:]...), data...)
+	_, err := blob.Decode(t.Context(), old, len(data))
+	if !errors.Is(err, blob.ErrInvalid) {
+		t.Fatalf("a format 1 envelope reported %v", err)
+	}
+	if want := "envelope format version 1, want 2"; !strings.Contains(err.Error(), want) {
+		t.Fatalf("the refusal reads %q, want it to name %q", err, want)
 	}
 }
 

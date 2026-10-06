@@ -3,7 +3,6 @@ package checkpoint
 import (
 	"bytes"
 	"errors"
-	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -117,7 +116,8 @@ func TestAZeroedPageLeavesItsSegmentAndNothingElse(t *testing.T) {
 // A deployment written when the root was the whole of an index object is
 // refused by the version it was written under. Nothing is deployed, so the
 // contract is that an operator is told which build wrote the store rather than
-// being served a checkpoint this build cannot read.
+// being served a checkpoint this build cannot read. Such an index object is one
+// envelope of format 1, and that is the version the refusal names.
 func TestADeploymentOfSupersededIndexObjectsIsRefusedByVersion(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		store := fixtureStore(t)
@@ -126,7 +126,7 @@ func TestADeploymentOfSupersededIndexObjectsIsRefusedByVersion(t *testing.T) {
 		if !errors.Is(err, ErrCorrupt) {
 			t.Fatalf("opening a deployment of superseded index objects reported %v", err)
 		}
-		want := fmt.Sprintf("checkpoint index format version %d", 6)
+		want := "envelope format version 1, want 2"
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("the refusal reads %q, want it to name %q", err, want)
 		}
