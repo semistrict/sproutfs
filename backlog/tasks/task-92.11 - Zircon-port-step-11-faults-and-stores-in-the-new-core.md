@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-05 05:10'
-updated_date: '2026-10-05 13:07'
+updated_date: '2026-10-05 16:47'
 labels:
   - pager
   - zircon-port
@@ -27,7 +27,7 @@ Step 11 of the plan. Read faults, prefetch, population, stores, write-ahead, pla
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Under SPROUTFS_PAGER_CORE=zircon the fault, prefetch, population, store, write-ahead, placement and rules tests of vmmemory pass, and they are on the list just check runs
+- [x] #1 Under SPROUTFS_PAGER_CORE=zircon the fault, prefetch, population, store, write-ahead, placement and rules tests of vmmemory pass, and they are on the list just check runs
 - [x] #2 vm_mapping_page_fault_optimisation_test and vm_mapping_page_fault_range_test run as Go tests of mapping a fault's resident neighbours
 - [x] #3 The guard pager-zero-new-page and the fault-policy guards are killed under both cores
 - [ ] #4 No mapping command is issued with an object lock held, shown by a test that holds the client's answer; go test -race of vmmemory passes on the Mac, and the hostile Linux suites pass under the new core on GCE
@@ -61,4 +61,6 @@ Not served yet, refused with ErrCoreUnsupported or ErrCapacity, all step 12's by
 
 Gremlins (scripts/mutate-gremlins.py gained --pager-core, since the wrapper strips SPROUTFS_ variables) on zircon.go, zircon_frames.go, zircon_bindings.go, zircon_fault.go, zircon_window.go, zircon_prefetch.go, zircon_population.go, zircon_stats.go, zircon_store.go and core.go, each mutation running the listed tests under the zircon core: first run 536 killed, 201 lived, 119 not covered, 72 timed out. Tests of the survivors that mattered, run under both cores (store_bounds_test.go: the write-ahead run's growth and reservations, the half-private rule at exactly half, the gap rule at its bound from either side and from a range's first page; window_reads_test.go: a fault over pages of two checkpoints, which caught a stale resolver cache in mutation, a prefetch leaving pages another prefetch reads and the prefetch bound, an attach after the region of zeros detached reading no metadata; content_test.go's counts of copies, store traps, idle and dirty pages), and two zirconvm cases for the departures (a page at a Frame has no bytes here; a reused splice list and a supplied page's backlink): second run 569 killed, 174 lived, 112 not covered, 73 timed out. What lives: slice sizes and resets after a plan is unlocked (equivalent), error branches no fault reaches without injected failures, counters only eviction reads (MemoryRegion.resident), the stream's reserveAround and the isolated arena's reserveOwn boundaries, and the paths step 12's tests reach (refusal backstop, allocation under pressure).
 Not done, for step 12 by the plan: AC 1 holds for every listed test, but the category tests that seal, evict a mapped page, give cold copies back or attach a peer backing to check what they did are not on the list (named above). AC 4's GCE run of the hostile Linux suites under the zircon core is not run: their neighbour publishes through Seal and Retire (hostile_linux_test.go:428, hostile_client_linux_test.go:250), which this core refuses until step 12.
+
+Step 12 (TASK-92.12) finished what this step left: the zircon core serves seals, eviction, cold copies, isolation, serving and peer backings, and just check runs the whole vmmemory, host, vmmigrate, simtest and vmmachine suites under it in both arena modes, so AC 1 holds for every test (the named list is gone). AC 4: go test -race of vmmemory passes on the Mac under the zircon core. On GCE the hostile suites pass under the zircon core in both arenas (the dev VM runs of the whole Linux suite, both page sizes), but one hostile test, TestARefusedFaultWaitsForARevocation, fails under either core on main: its command count is 4 or 5 against the 3 it wants. So AC 4 stays open on that test, which is not the zircon core's.
 <!-- SECTION:NOTES:END -->

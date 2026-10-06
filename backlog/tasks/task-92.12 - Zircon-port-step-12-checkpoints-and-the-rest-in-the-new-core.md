@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-05 05:10'
-updated_date: '2026-10-05 15:02'
+updated_date: '2026-10-05 16:47'
 labels:
   - pager
   - zircon-port
@@ -27,10 +27,10 @@ Step 12 of the plan. Everything else of the old core runs on the new one: the se
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The whole vmmemory suite, and the host, vmmigrate and internal/simtest suites, pass under SPROUTFS_PAGER_CORE=zircon in both arena modes; the named list is gone and just check runs them all under both cores
+- [x] #1 The whole vmmemory suite, and the host, vmmigrate and internal/simtest suites, pass under SPROUTFS_PAGER_CORE=zircon in both arena modes; the named list is gone and just check runs them all under both cores
 - [ ] #2 Every guard in scripts/mutation/guards.json is killed under both cores, every Buggify site fires and every probe is reached in the campaigns that require them, under both cores
-- [ ] #3 The probe build audit (stable, bind, granted, retired, reshared) runs on the new core, and probe_internal_test.go passes against it
-- [ ] #4 The seal pause issues only range protections, shown by the seal pause tests, and the walk runs after the vCPUs resume
+- [x] #3 The probe build audit (stable, bind, granted, retired, reshared) runs on the new core, and probe_internal_test.go passes against it
+- [x] #4 The seal pause issues only range protections, shown by the seal pause tests, and the walk runs after the vCPUs resume
 - [ ] #5 The hostile, race and isolation Linux suites pass under the new core on GCE
 <!-- AC:END -->
 
@@ -55,4 +55,11 @@ Commit 2, cold copies and the give-back: a store trap's copy of a root's page is
 Commit 3, isolation over frames: a plan meets a root's page this region's process may not map (another region's private file, or a fork point's lent page) and reaches it with no object lock held: a published page is moved into the file its identity's pages live in, checked against its upload's digest (ErrTampered otherwise), the root holding the copy and the owner's mapping replaced in place; a lent page is copied into the point's fork file, which the child is given; a page that cannot be moved leaves its root and is the owner's own page again. Neighbours a plan cannot map are left to their own faults. A private file's two places give up an idle page (allocateOwn, over arenaFile.frames). Fork files close at endFork. List 243.
 
 Commit 4, serving, handoff and peer backings: ReadResident, Resident, Unpublished and Handoff over the bindings beside the layer; a handed-off region verifies nothing. A peer backing attaches: a page the backing reports another host's is loaded into the region's own file as a Dirty page of its layer under a dirty reservation (the faulting page's from the waiting path, errUnpublishedReservation, as the current core's), the backing is told what was installed, a prefetch leaves such a page to its fault (ProbePrefetchHeld), and a peer store reads its page alone. ErrCoreUnsupported is gone: the zircon core serves every operation; the refusal test became TestTheZirconCoreServesARegionFromAttachToDetach. Also: a fork point that publishes the name it lent leaves its pages in the (now published) root (host TestLocalForkReceivesTheForkPointOverThePages), and an extent held by idle pages of gone regions is given back (simtest TestScatteredStoresCostMappingsPerRunAndNotPerPage). All 261 vmmemory tests that run on the Mac pass under the zircon core in both arena modes.
+
+Commit 5 (38adf6e1), both cores: the named list is gone. scripts/test-pager-core.py runs the vmmemory, host, vmmigrate, internal/simtest and vmmachine suites under SPROUTFS_PAGER_CORE=zircon in both arena modes (49 s on the Mac), with --survey PACKAGE to find what a change broke. check-guards runs every guard under both cores by default: 310 of 310 runs killed (155 guards), 5 vmmachine guards skipped (Linux root only). The probe build's audit (stable, bind, granted, retired, reshared) takes pages and bindings of either core (probe.go), and probe_internal_test.go has zircon cases; the probe-tagged vmmemory suite passes under both cores.
+Commit 6 (543aaae2): BenchmarkA4KiBCapturePause (32 runs of 1,024 dirty pages: the pause timed, the walk reported as walk-ns/op); bench-memory-gce.sh passes SPROUTFS_PAGER_CORE; a zircon plan's marks are one allocation (41 -> 38 allocs on a fault at random, as the current core).
+Commit 7 (f3861d1f), found by the GCE run: Connect admitted a session's region without the zircon layer, so every region a real VMM attached ran the current core under a zircon host. Host.admit now builds the layer for every region; TestASessionsMemoryRegionRunsInItsPagersCore holds it. Before the fix the hostile suites stalled and miscounted under zircon on GCE.
+Commit 8 (c10890a7): tests for Gremlins survivors (a failed seal's undo, ReadResident of an evicted dirty page from the spill, a changed cold copy compared once).
+Benchmarks (Mac M5 Pro, one test binary, cores alternated by SPROUTFS_PAGER_CORE, 10 runs each, medians, load average 3.7-5.1, median 4.6): BenchmarkARandom4KiBFault current 2858 ns vs zircon 3072 ns (+7.5%; 2866 vs 3068 against main's binaries alternated at load 5.1: step 12 added it, current unchanged; same 38 allocs after the marks change, +400 B/op from bigger frames and bindings; no single hot spot in a CPU profile diff); BenchmarkAForward4KiBFault 347.0 us vs 336.9 us (-3%); BenchmarkA4KiBCapturePause pause 15.8 us vs 17.0 us, walk 9.80 ms vs 9.06 ms (-8%); vmmigrate TestForkFanOutChildrenShareThePagesTheyInherit 156 ms vs 156 ms a run.
+Pre-existing, on main too and under either core: SOAK TestTheCampaignsReachTheirProbes fails (membership violations on seeds 2/8/23, bounded/* and vmmemory/prefetch-random probes not registered, control/reply-reconciled now reached); TestAnAllocationCancelsAPrefetchRatherThanEvict flakes under -race (5 of 800 on main); three Linux tests fail on GCE under the current core on main (TestARefusedFaultWaitsForARevocation, whose command count varies 4-5 under either core; TestManagedPagerReadAheadKeepsZerosAndDataSeparate; TestManagedPagerSmallRAMPageOwnsOnePageAndMapsARunAtOnce); two Linux tests time out accepting the client when built with -race, under either core.
 <!-- SECTION:NOTES:END -->
