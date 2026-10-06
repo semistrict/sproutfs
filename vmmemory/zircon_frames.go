@@ -26,8 +26,10 @@ type zframe struct {
 	// eviction holds it across revoking every mapping of the page and writing
 	// its bytes away, and whatever else changes what a page holds or who
 	// holds it takes it first, so that neither meets the other halfway. It is
-	// taken outside every object's lock and Host.mu.
-	mu *ctxsync.Mutex
+	// taken outside every object's lock and Host.mu. Every page a fault makes
+	// has one, so it is a LazyMutex, which allocates nothing until something
+	// waits for it.
+	mu ctxsync.LazyMutex
 	// kind is what the memory region that made this page maps it as, which
 	// every region that ever maps it agrees on.
 	kind MemoryRegionKind
@@ -41,23 +43,23 @@ type zframe struct {
 	// lent is this page as the temporary identity root of a fork point lends
 	// it (zlent), nil where no fork point names it. Guarded by Host.mu.
 	lent *zirconvm.VmPage
+	// coldCopies is every cold copy that will be compared with this page,
+	// which keeps it in the zero-fork queue (zircon_cold.go). Guarded by
+	// Host.pinMu.
+	coldCopies map[*zbinding]struct{}
+	// replacing counts the stores whose copy took a binding off this page and
+	// whose mapping command has not replaced the guest's mapping of it yet:
+	// the guest goes on reading it until then, so nothing may take it. Guarded
+	// by Host.mu. It and the two marks after it share one word.
+	replacing int32
 	// idle marks a root's page no memory region maps: kept for the next
 	// region that inherits its identity, in the don't-need queue unless a
 	// cold copy pins it. Changed with Host.mu and Host.pinMu held, and read
 	// with either.
 	idle bool
-	// replacing counts the stores whose copy took a binding off this page and
-	// whose mapping command has not replaced the guest's mapping of it yet:
-	// the guest goes on reading it until then, so nothing may take it. Guarded
-	// by Host.mu.
-	replacing int
 	// dropped marks a page whose last mapping went while a store replaced it,
 	// which goes back once that store's command lands. Guarded by Host.mu.
 	dropped bool
-	// coldCopies is every cold copy that will be compared with this page,
-	// which keeps it in the zero-fork queue (zircon_cold.go). Guarded by
-	// Host.pinMu.
-	coldCopies map[*zbinding]struct{}
 }
 
 // zlent is the frame of a page a fork point lends: the page of its parent's
@@ -165,7 +167,7 @@ func newLockedZframe(at fileSlot, kind MemoryRegionKind, layer *zirconRegion) *z
 // newZframe is the frame of a page at a slot, of a region's layer or nil for
 // a root's.
 func newZframe(at fileSlot, kind MemoryRegionKind, layer *zirconRegion) *zframe {
-	return &zframe{fileSlot: at, kind: kind, layer: layer, mu: ctxsync.NewMutex()}
+	return &zframe{fileSlot: at, kind: kind, layer: layer}
 }
 
 // lockPage takes a page's lock.
@@ -480,14 +482,15 @@ type zbinding struct {
 	// was copied from, cold marks a copy a store trap made of origin that is
 	// not yet known to be the guest's state, from coldAt (Unix nanoseconds),
 	// and ahead marks one write-ahead made before any store. Guarded by
-	// zirconRegion.mu.
-	dirty      bool
-	spill      reservation
-	checkpoint *zbinding
-	origin     *zirconvm.VmPage
-	cold       bool
-	coldAt     int64
-	ahead      bool
+	// zirconRegion.mu. The marks sit beside the reservation, which leaves
+	// them room, so that a binding, which every page a region touches has, is
+	// 64 bytes.
+	dirty       bool
+	spill       reservation
+	cold, ahead bool
+	checkpoint  *zbinding
+	origin      *zirconvm.VmPage
+	coldAt      int64
 }
 
 // aliasLocked makes b an alias of p: the region maps it, so it is not idle.

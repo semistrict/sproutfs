@@ -39,8 +39,11 @@ type zplan struct {
 	installed     installedRuns
 	// locked is every page the plan holds the lock of: each page it maps,
 	// from the moment it takes it until the plan is unlocked, which is after
-	// its commands landed, so no eviction takes a page between the two.
-	locked []*zirconvm.VmPage
+	// its commands landed, so no eviction takes a page between the two. It
+	// starts in lockedFirst, so a fault at random, which holds one page,
+	// allocates nothing to hold it.
+	locked      []*zirconvm.VmPage
+	lockedFirst [1]*zirconvm.VmPage
 	// spill is the dirty reservation the fault brought with it, for a page a
 	// peer backing serves as the region's own dirty state, nil or none where
 	// it brought none. private marks the pages the plan took so.
@@ -62,6 +65,7 @@ func (z *zirconRegion) newPlan(start, end, fault uint64) *zplan {
 		pages: make([]*zirconvm.VmPage, n), reserved: make([]fileSlot, n),
 		fresh: marks[:n:n], zeros: marks[n : 2*n : 2*n], writable: marks[2*n : 3*n : 3*n],
 		private: marks[3*n:]}
+	p.locked = p.lockedFirst[:0]
 	for i := range p.reserved {
 		p.reserved[i] = fileSlot{slot: -1}
 	}
