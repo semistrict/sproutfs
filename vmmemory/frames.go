@@ -38,11 +38,11 @@ import (
 // the window's stripe, which the fault holds from start to end, keeps two
 // faults of one window from issuing commands out of order. Lock order is the
 // layer, then a root, then Host.mu, then MemoryRegion.bindingsMu. A page's own
-// lock (zframe.mu), which an eviction holds across taking every mapping of the
+// lock (frame.mu), which an eviction holds across taking every mapping of the
 // page away, is taken before all of them.
 
-// zframe is where one page's bytes are, and who maps it.
-type zframe struct {
+// frame is where one page's bytes are, and who maps it.
+type frame struct {
 	fileSlot
 	// mu is the page's lock, as the current core's resident page has one: an
 	// eviction holds it across revoking every mapping of the page and writing
@@ -61,14 +61,14 @@ type zframe struct {
 	// retire moves a page from a layer into a root. Guarded by Host.mu.
 	layer *MemoryRegion
 	// aliases are the bindings that map this page. Guarded by Host.mu.
-	aliases aliasSet[*zbinding]
+	aliases aliasSet[*binding]
 	// lent is this page as the temporary identity root of a fork point lends
-	// it (zlent), nil where no fork point names it. Guarded by Host.mu.
+	// it (lentFrame), nil where no fork point names it. Guarded by Host.mu.
 	lent *zirconvm.VmPage
 	// coldCopies is every cold copy that will be compared with this page,
 	// which keeps it in the zero-fork queue (zircon_cold.go). Guarded by
 	// Host.pinMu.
-	coldCopies map[*zbinding]struct{}
+	coldCopies map[*binding]struct{}
 	// replacing counts the stores whose copy took a binding off this page and
 	// whose mapping command has not replaced the guest's mapping of it yet:
 	// the guest goes on reading it until then, so nothing may take it. Guarded
@@ -84,24 +84,24 @@ type zframe struct {
 	dropped bool
 }
 
-// zlent is the frame of a page a fork point lends: the page of its parent's
+// lentFrame is the frame of a page a fork point lends: the page of its parent's
 // layer, under the name the point gives it, in the point's temporary
 // identity root. A Zircon page is in one object, so the root holds a page of
 // its own that names the parent's frame; it is never the root's to give back.
-type zlent struct{ frame *zframe }
+type lentFrame struct{ frame *frame }
 
 // frameOf is the frame of a page this core made.
-func frameOf(p *zirconvm.VmPage) *zframe {
-	if lent, ok := p.Frame.(zlent); ok {
+func frameOf(p *zirconvm.VmPage) *frame {
+	if lent, ok := p.Frame.(lentFrame); ok {
 		return lent.frame
 	}
-	return p.Frame.(*zframe)
+	return p.Frame.(*frame)
 }
 
 // isLent reports a page of a fork point's temporary identity root that names
 // its parent's frame.
 func isLent(p *zirconvm.VmPage) bool {
-	_, ok := p.Frame.(zlent)
+	_, ok := p.Frame.(lentFrame)
 	return ok
 }
 
@@ -109,7 +109,7 @@ func isLent(p *zirconvm.VmPage) bool {
 // page here is the pager's to make, at the slot its placement and isolation
 // choose, so a path that reaches the node's Pmm for a page is one this core
 // does not take.
-var errPagerAllocates = errors.New("vmmemory: the zircon core makes every page itself")
+var errPagerAllocates = errors.New("vmmemory: the pager makes every page itself")
 
 // arenaPmm is the arena as the node's Pmm.
 type arenaPmm struct {
@@ -155,7 +155,7 @@ func (h *Host) newFrame(ctx context.Context, at fileSlot, data []byte, kind Memo
 	if err := at.file.Write(ctx, at.slot, data); err != nil {
 		return nil, h.abandonSlots(ctx, at, 1, err)
 	}
-	page := zirconvm.NewFramePage(newLockedZframe(at, kind, nil))
+	page := zirconvm.NewFramePage(makeLockedFrame(at, kind, nil))
 	h.noteFrame(page)
 	return page, nil
 }
@@ -172,19 +172,19 @@ func (h *Host) noteFrame(page *zirconvm.VmPage) {
 	f.file.frames[f.slot] = page
 }
 
-// newLockedZframe is newZframe, locked.
-func newLockedZframe(at fileSlot, kind MemoryRegionKind, layer *MemoryRegion) *zframe {
-	f := newZframe(at, kind, layer)
+// makeLockedFrame is makeFrame, locked.
+func makeLockedFrame(at fileSlot, kind MemoryRegionKind, layer *MemoryRegion) *frame {
+	f := makeFrame(at, kind, layer)
 	if !f.mu.TryLock() {
 		panic("vmmemory: a new page's lock is held")
 	}
 	return f
 }
 
-// newZframe is the frame of a page at a slot, of a region's layer or nil for
+// makeFrame is the frame of a page at a slot, of a region's layer or nil for
 // a root's.
-func newZframe(at fileSlot, kind MemoryRegionKind, layer *MemoryRegion) *zframe {
-	return &zframe{fileSlot: at, kind: kind, layer: layer}
+func makeFrame(at fileSlot, kind MemoryRegionKind, layer *MemoryRegion) *frame {
+	return &frame{fileSlot: at, kind: kind, layer: layer}
 }
 
 // lockPage takes a page's lock.
@@ -219,7 +219,7 @@ func probeFrame(p *zirconvm.VmPage) probePage {
 // lockedPage is the page b names, locked, nil where it names none: Host.current
 // over the zircon core. It takes the page's lock with no other lock held, and
 // looks again where an eviction or a move took the page from b meanwhile.
-func (h *Host) lockedPage(ctx context.Context, b *zbinding) (*zirconvm.VmPage, error) {
+func (h *Host) lockedPage(ctx context.Context, b *binding) (*zirconvm.VmPage, error) {
 	for {
 		h.mu.Lock()
 		p := b.page
@@ -253,7 +253,7 @@ func (h *Host) releaseFrame(p *zirconvm.VmPage) {
 	mapped := f.aliases.len() != 0
 	h.mu.Unlock()
 	if mapped {
-		panic("vmmemory: the zircon core freed a page a memory region maps")
+		panic("vmmemory: the pager freed a page a memory region maps")
 	}
 	// Nothing the pager takes under pressure is pinned, so a page going here
 	// is going for a reason of its own, and a cold copy of it has nothing left
@@ -303,7 +303,7 @@ func (h *Host) idleLocked(p *zirconvm.VmPage) {
 
 // notIdleLocked ends a page being idle, which a region mapping it or its
 // slot going back does. Caller holds h.mu.
-func (h *Host) notIdleLocked(f *zframe) {
+func (h *Host) notIdleLocked(f *frame) {
 	if !f.idle {
 		return
 	}
@@ -402,7 +402,7 @@ func (h *Host) supply(ctx context.Context, object *zirconvm.ObjectPaged, first u
 // for prefetches to see, as in the current core (pagerequests.go, and the
 // step 8 decision of TASK-92). A fault that meets a page a prefetch is
 // reading waits on the prefetch's request in the root before it looks
-// (zplan.inFlight).
+// (plan.inFlight).
 type rootResolver struct {
 	region *MemoryRegion
 	// located is what the fault holding the layer's lock located, nil
@@ -464,7 +464,7 @@ func identityAt(loc *locations, page uint64) (pageKey, bool) {
 // aliasLocked makes b an alias of p: the region maps it, so it is not idle.
 // A page a region reaches twice, from its binding and from a checkpoint's copy
 // of it, is one page of the arena. Caller holds h.mu.
-func (h *Host) aliasLocked(b *zbinding, p *zirconvm.VmPage) {
+func (h *Host) aliasLocked(b *binding, p *zirconvm.VmPage) {
 	f := frameOf(p)
 	// The probe build's audit of what a guest is handed; what it finds is
 	// reported once nothing is held (unlockPage).
@@ -481,7 +481,7 @@ func (h *Host) aliasLocked(b *zbinding, p *zirconvm.VmPage) {
 // is idle: it stays in its root, for the next region that inherits its
 // identity, and is the first memory an allocation short of a slot gives up.
 // Caller holds h.mu.
-func (h *Host) unaliasLocked(b *zbinding) {
+func (h *Host) unaliasLocked(b *binding) {
 	p := b.page
 	b.page = nil
 	h.forgetAliasLocked(b, p)
@@ -489,7 +489,7 @@ func (h *Host) unaliasLocked(b *zbinding) {
 
 // forgetAliasLocked takes b off the aliases of p, which b no longer names.
 // Caller holds h.mu.
-func (h *Host) forgetAliasLocked(b *zbinding, p *zirconvm.VmPage) {
+func (h *Host) forgetAliasLocked(b *binding, p *zirconvm.VmPage) {
 	f := frameOf(p)
 	if !f.aliases.remove(b) {
 		return
@@ -502,7 +502,7 @@ func (h *Host) forgetAliasLocked(b *zbinding, p *zirconvm.VmPage) {
 
 // forgetGoingAliasLocked takes b off the aliases of p, a page in no object
 // any more, which therefore never becomes idle. Caller holds h.mu.
-func (h *Host) forgetGoingAliasLocked(b *zbinding, p *zirconvm.VmPage) {
+func (h *Host) forgetGoingAliasLocked(b *binding, p *zirconvm.VmPage) {
 	f := frameOf(p)
 	if f.aliases.remove(b) && !f.mappedBy(b.region) {
 		b.region.resident--
@@ -510,7 +510,7 @@ func (h *Host) forgetGoingAliasLocked(b *zbinding, p *zirconvm.VmPage) {
 }
 
 // mappedBy reports whether any alias of f belongs to r. Caller holds h.mu.
-func (f *zframe) mappedBy(r *MemoryRegion) bool {
+func (f *frame) mappedBy(r *MemoryRegion) bool {
 	for b := range f.aliases.all() {
 		if b.region == r {
 			return true
@@ -540,7 +540,7 @@ func (h *Host) takeIdle() bool {
 // takeIdleIf is takeIdle, where lock takes h.mu or reports it could not, of
 // the idle pages want accepts, any where want is nil. want is called with
 // h.mu held.
-func (h *Host) takeIdleIf(lock func() bool, want func(*zframe) bool) bool {
+func (h *Host) takeIdleIf(lock func() bool, want func(*frame) bool) bool {
 	if !lock() {
 		return false
 	}

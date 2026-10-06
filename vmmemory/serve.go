@@ -117,7 +117,7 @@ func (r *MemoryRegion) Resident() ([]uint64, error) {
 		return nil, err
 	}
 	var result []uint64
-	r.eachBinding(func(b *zbinding) {
+	r.eachBinding(func(b *binding) {
 		if b.page != nil || b.dirty {
 			result = append(result, b.index)
 		}
@@ -175,7 +175,7 @@ func (r *MemoryRegion) Unpublished() ([]uint64, error) {
 		return nil, err
 	}
 	var result []uint64
-	r.eachBinding(func(b *zbinding) {
+	r.eachBinding(func(b *binding) {
 		if b.dirty {
 			result = append(result, b.index)
 		}
@@ -221,7 +221,7 @@ func (r *MemoryRegion) Stats(ctx context.Context) (MemoryRegionStats, error) {
 	}
 	defer r.mu.RUnlock()
 	stats := MemoryRegionStats{PageSize: r.host.pageSize}
-	r.eachBinding(func(b *zbinding) {
+	r.eachBinding(func(b *binding) {
 		if b.page != nil {
 			stats.ResidentPages++
 			for alias := range frameOf(b.page).aliases.all() {

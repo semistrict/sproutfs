@@ -29,7 +29,7 @@ type changeSums struct{ sums []uint64 }
 type changes struct {
 	mu     sync.Mutex
 	byPage map[uint64]changeSums
-	// byHeld is keyed by the checkpoint's copy, a *binding or a *zbinding.
+	// byHeld is keyed by the checkpoint's copy, a *binding or a *binding.
 	byHeld map[any]changeSums
 }
 
@@ -113,7 +113,7 @@ func (r *MemoryRegion) takeSums(held any) (changeSums, bool) {
 }
 
 // changedBlocks is settler.changedBlocks over the zircon core.
-func (r *MemoryRegion) changedBlocks(ctx context.Context, held *zbinding) (int, bool, error) {
+func (r *MemoryRegion) changedBlocks(ctx context.Context, held *binding) (int, bool, error) {
 	h := r.host
 	was, ok := r.takeSums(held)
 	if !ok {

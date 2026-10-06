@@ -140,7 +140,7 @@ func (r *MemoryRegion) giveBack(ctx context.Context, index uint64, buffers *sett
 
 // ownDirty reports whether b is the region's own dirty state no checkpoint
 // holds.
-func (r *MemoryRegion) ownDirty(b *zbinding) bool {
+func (r *MemoryRegion) ownDirty(b *binding) bool {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
 	return b.writable()
@@ -159,7 +159,7 @@ func (r *MemoryRegion) comparable(origin *zirconvm.VmPage) bool {
 // giveBackCopy is one page of a give-back once its locks are held: the
 // page's window, the region shared, the origin and then the copy page. It
 // reports whether the copy went back.
-func (r *MemoryRegion) giveBackCopy(ctx context.Context, b *zbinding, origin, page *zirconvm.VmPage, buffers *settler) (bool, error) {
+func (r *MemoryRegion) giveBackCopy(ctx context.Context, b *binding, origin, page *zirconvm.VmPage, buffers *settler) (bool, error) {
 	h := r.host
 	index := b.index
 	if !r.isMapped(b) {
@@ -201,7 +201,7 @@ func (r *MemoryRegion) giveBackCopy(ctx context.Context, b *zbinding, origin, pa
 // shareOrigin makes the origin b's page again, now that the guest maps it:
 // b is clean, and the copy and the reservation it was admitted under go back.
 // Caller holds the page's window, the region shared and both pages.
-func (r *MemoryRegion) shareOrigin(b *zbinding, page, origin *zirconvm.VmPage) error {
+func (r *MemoryRegion) shareOrigin(b *binding, page, origin *zirconvm.VmPage) error {
 	h := r.host
 	ps := h.pageSize
 	// The pager hands a guest back an older page on purpose here, as the
@@ -231,7 +231,7 @@ func (r *MemoryRegion) shareOrigin(b *zbinding, page, origin *zirconvm.VmPage) e
 // unchanged one goes back to the origin, unmapped, and its reservation is
 // freed; a changed one stops being cold. Caller holds the page's window, the
 // region shared and the origin.
-func (r *MemoryRegion) giveBackSpilled(ctx context.Context, b *zbinding, origin *zirconvm.VmPage, buffers *settler) (bool, error) {
+func (r *MemoryRegion) giveBackSpilled(ctx context.Context, b *binding, origin *zirconvm.VmPage, buffers *settler) (bool, error) {
 	h := r.host
 	if buffers.first == nil {
 		buffers.first, buffers.second = make([]byte, h.pageSize), make([]byte, h.pageSize)
@@ -272,12 +272,12 @@ func (r *MemoryRegion) giveBackSpilled(ctx context.Context, b *zbinding, origin 
 // unchanged one is dropped, so the guest's next access reads the page again
 // as any first access does. Caller holds the page's window and the region
 // shared.
-func (r *MemoryRegion) giveBackToVolume(ctx context.Context, b *zbinding, buffers *settler) (bool, error) {
+func (r *MemoryRegion) giveBackToVolume(ctx context.Context, b *binding, buffers *settler) (bool, error) {
 	h := r.host
 	ps := h.pageSize
 	// The guest's mapping goes first, so nothing it stores can land in the
 	// copy while it is compared.
-	if err := r.revokeBindings(ctx, []*zbinding{b}); err != nil {
+	if err := r.revokeBindings(ctx, []*binding{b}); err != nil {
 		return false, err
 	}
 	same, err := r.volumeHolds(ctx, b, buffers)
@@ -323,7 +323,7 @@ func (r *MemoryRegion) giveBackToVolume(ctx context.Context, b *zbinding, buffer
 func (h *Host) giveBackVictim(ctx context.Context, page *zirconvm.VmPage) (bool, error) {
 	f := frameOf(page)
 	h.mu.Lock()
-	var b *zbinding
+	var b *binding
 	if f.layer != nil && f.aliases.len() == 1 {
 		for alias := range f.aliases.all() {
 			b = alias
@@ -370,7 +370,7 @@ func (h *Host) giveBackVictim(ctx context.Context, page *zirconvm.VmPage) (bool,
 // the guest reads on without a fault. It reports ErrMappingRefused where the
 // client refused the MAP, having changed nothing. Caller holds b's page and
 // to.
-func (r *MemoryRegion) mapInPlace(ctx context.Context, b *zbinding, to *zirconvm.VmPage) error {
+func (r *MemoryRegion) mapInPlace(ctx context.Context, b *binding, to *zirconvm.VmPage) error {
 	h := r.host
 	return r.underProtection(ctx, func() error {
 		if !r.isMapped(b) {

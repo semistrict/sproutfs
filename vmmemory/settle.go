@@ -155,7 +155,7 @@ func (c *MemoryRegionCheckpoint) since() time.Time {
 // compare reports the origin of a checkpoint's copy when the two hold the
 // same bytes, and nil where the copy stays in the checkpoint. It changes
 // nothing; reshare applies what it decided.
-func (r *MemoryRegion) compare(ctx context.Context, s *settler, held *zbinding) (*zirconvm.VmPage, error) {
+func (r *MemoryRegion) compare(ctx context.Context, s *settler, held *binding) (*zirconvm.VmPage, error) {
 	h := r.host
 	r.bindingsMu.Lock()
 	origin, spill := held.origin, held.spill
@@ -194,7 +194,7 @@ func (r *MemoryRegion) compare(ctx context.Context, s *settler, held *zbinding) 
 // region held exclusively: every page of a batch is revoked by one command
 // per run, and only then does each leave the checkpoint. It records in
 // dropped which did.
-func (r *MemoryRegion) reshare(ctx context.Context, c *MemoryRegionCheckpoint, copies []*zbinding,
+func (r *MemoryRegion) reshare(ctx context.Context, c *MemoryRegionCheckpoint, copies []*binding,
 	equal []*zirconvm.VmPage, dropped []bool) error {
 	pending := make([]int, 0, len(copies))
 	for i, origin := range equal {
@@ -226,7 +226,7 @@ func (r *MemoryRegion) reshare(ctx context.Context, c *MemoryRegionCheckpoint, c
 // reshareBatch is one batch of reshare, with the region held exclusively.
 // It holds every page it will touch for the whole batch, so the revocation
 // that covers them all is issued while none of them can change.
-func (r *MemoryRegion) reshareBatch(ctx context.Context, copies []*zbinding, equal []*zirconvm.VmPage,
+func (r *MemoryRegion) reshareBatch(ctx context.Context, copies []*binding, equal []*zirconvm.VmPage,
 	dropped []bool, batch []int) error {
 	locked := make(map[*zirconvm.VmPage]bool, 2*len(batch))
 	defer func() {
@@ -238,10 +238,10 @@ func (r *MemoryRegion) reshareBatch(ctx context.Context, copies []*zbinding, equ
 		index  int
 		copied *zirconvm.VmPage
 		origin *zirconvm.VmPage
-		guest  *zbinding
+		guest  *binding
 	}
 	var applying []ready
-	var guests []*zbinding
+	var guests []*binding
 	for _, i := range batch {
 		origin := equal[i]
 		if !locked[origin] {
@@ -293,7 +293,7 @@ func (r *MemoryRegion) reshareBatch(ctx context.Context, copies []*zbinding, equ
 // The copy's page leaves the layer, AwaitingClean in its page list or held
 // beside it, and goes back, and so does its reservation. Caller holds the
 // region exclusively and both pages.
-func (r *MemoryRegion) dropCopy(ctx context.Context, held *zbinding, page, origin *zirconvm.VmPage, guest *zbinding) error {
+func (r *MemoryRegion) dropCopy(ctx context.Context, held *binding, page, origin *zirconvm.VmPage, guest *binding) error {
 	h := r.host
 	ps := h.pageSize
 	if guest != nil {
@@ -337,7 +337,7 @@ func (r *MemoryRegion) dropCopy(ctx context.Context, held *zbinding, page, origi
 func (c *MemoryRegionCheckpoint) forgetCopies(dropped []bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	copies := make([]*zbinding, 0, len(c.copies))
+	copies := make([]*binding, 0, len(c.copies))
 	for i, held := range c.copies {
 		if i < len(dropped) && dropped[i] {
 			continue

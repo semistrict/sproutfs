@@ -279,7 +279,7 @@ func affordRuns(runs []populateRun, budget *populationBudget, least uint64) []po
 // window's holes and its pages a root holds, grouped into the runs one
 // mapping command covers each, as many of them as the budget affords, taken
 // into the plan.
-func (p *zplan) bindResidents(ctx context.Context, budget *populationBudget) error {
+func (p *plan) bindResidents(ctx context.Context, budget *populationBudget) error {
 	r := p.region
 	h := r.host
 	ps := h.pageSize

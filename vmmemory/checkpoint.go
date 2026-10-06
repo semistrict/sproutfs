@@ -75,7 +75,7 @@ type MemoryRegionCheckpoint struct {
 	fork    *arenaFile
 	// copies is the set, in ascending page order: the checkpoint's copy of
 	// each page, beside the region's layer. Guarded by mu.
-	copies []*zbinding
+	copies []*binding
 	done   chan struct{}
 	err    error // read only after done is closed
 }
@@ -548,7 +548,7 @@ func (r *MemoryRegion) protectDirtyRuns(ctx context.Context) ([]PageRun, error) 
 // the guest's next store to one faults and maps it writable again. Caller
 // holds the region exclusively.
 func (r *MemoryRegion) unprotect(ctx context.Context, runs []PageRun) error {
-	var bindings []*zbinding
+	var bindings []*binding
 	r.bindingsMu.Lock()
 	for _, run := range runs {
 		for page := run.Page; page < run.Page+uint64(run.Count); page++ {
@@ -561,7 +561,7 @@ func (r *MemoryRegion) unprotect(ctx context.Context, runs []PageRun) error {
 
 // takeDirtySet hands the whole dirty set to a seal in one step and leaves the
 // region with none. Caller holds the region exclusively.
-func (r *MemoryRegion) takeDirtySet() map[uint64]*zbinding {
+func (r *MemoryRegion) takeDirtySet() map[uint64]*binding {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
 	pending := r.dirtySet
@@ -573,7 +573,7 @@ func (r *MemoryRegion) takeDirtySet() map[uint64]*zbinding {
 // take is the walk behind the pause, as MemoryRegionCheckpoint.take: it
 // makes every page of the sealed set the checkpoint's, with the guest
 // running and the region the seal took held, and gives the region back.
-func (r *MemoryRegion) take(ctx context.Context, c *MemoryRegionCheckpoint, pending map[uint64]*zbinding) {
+func (r *MemoryRegion) take(ctx context.Context, c *MemoryRegionCheckpoint, pending map[uint64]*binding) {
 	h := r.host
 	defer r.mu.Unlock()
 	defer close(c.taken)
@@ -601,17 +601,17 @@ func (r *MemoryRegion) take(ctx context.Context, c *MemoryRegionCheckpoint, pend
 // takes the reservation it was admitted under and where it was copied from.
 // The guest's binding shares the copy until a store copies away from it.
 // Caller holds the region exclusively.
-func (r *MemoryRegion) takePages(ctx context.Context, pending map[uint64]*zbinding) ([]*zbinding, error) {
+func (r *MemoryRegion) takePages(ctx context.Context, pending map[uint64]*binding) ([]*binding, error) {
 	h := r.host
 	ps := h.pageSize
-	bindings := make([]*zbinding, 0, len(pending))
+	bindings := make([]*binding, 0, len(pending))
 	for _, b := range pending {
 		bindings = append(bindings, b)
 	}
 	sort.Slice(bindings, func(i, j int) bool { return bindings[i].index < bindings[j].index })
 	// One slab of copies rather than an allocation each.
-	slab := make([]zbinding, len(bindings))
-	copies := make([]*zbinding, 0, len(bindings))
+	slab := make([]binding, len(bindings))
+	copies := make([]*binding, 0, len(bindings))
 	for len(bindings) > 0 {
 		count := min(len(bindings), checkpointBatchPages)
 		batch := bindings[:count]
@@ -620,7 +620,7 @@ func (r *MemoryRegion) takePages(ctx context.Context, pending map[uint64]*zbindi
 		h.mu.Lock()
 		for i, b := range batch {
 			held := &slab[taken+i]
-			*held = zbinding{region: r, index: b.index, dirty: true}
+			*held = binding{region: r, index: b.index, dirty: true}
 			own := b.page != nil && frameOf(b.page).layer == r
 			if b.page != nil {
 				r.host.aliasLocked(held, b.page)
@@ -671,7 +671,7 @@ func (r *MemoryRegion) takePages(ctx context.Context, pending map[uint64]*zbindi
 // whether write-ahead made it to held, the checkpoint's copy, which b shares
 // from here: it stays dirty, and a store must copy away from the checkpoint
 // before it can change its bytes. Caller holds r.bindingsMu.
-func (r *MemoryRegion) holdInCheckpointLocked(b, held *zbinding) {
+func (r *MemoryRegion) holdInCheckpointLocked(b, held *binding) {
 	r.uncoldLocked(b)
 	b.checkpoint, held.spill, b.spill = held, b.spill, noReservation
 	held.ahead, b.ahead = b.ahead, false
@@ -682,7 +682,7 @@ func (r *MemoryRegion) holdInCheckpointLocked(b, held *zbinding) {
 
 // copiesOf is the checkpoint's copies under the zircon core, in ascending
 // page order, once the walk behind the pause has made them.
-func (c *MemoryRegionCheckpoint) copiesOf() []*zbinding {
+func (c *MemoryRegionCheckpoint) copiesOf() []*binding {
 	<-c.taken
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -690,7 +690,7 @@ func (c *MemoryRegionCheckpoint) copiesOf() []*zbinding {
 }
 
 // copyOf is the checkpoint's copy of one page, nil where it holds none.
-func (c *MemoryRegionCheckpoint) copyOf(page uint64) *zbinding {
+func (c *MemoryRegionCheckpoint) copyOf(page uint64) *binding {
 	copies := c.copiesOf()
 	at := sort.Search(len(copies), func(i int) bool { return copies[i].index >= page })
 	if at < len(copies) && copies[at].index == page {
@@ -701,7 +701,7 @@ func (c *MemoryRegionCheckpoint) copyOf(page uint64) *zbinding {
 
 // readHeld reads the bytes a checkpoint's copy holds: its page's, or its
 // reservation's where it was spilled.
-func (r *MemoryRegion) readHeld(ctx context.Context, held *zbinding, dst []byte) error {
+func (r *MemoryRegion) readHeld(ctx context.Context, held *binding, dst []byte) error {
 	h := r.host
 	page, err := r.host.lockedPage(ctx, held)
 	if err != nil {
@@ -730,7 +730,7 @@ func (h *Host) lentRoot(c *MemoryRegionCheckpoint, key rootKey) *identityRoot {
 
 // lend names page, a checkpoint's, in root at index, where the root holds
 // nothing there and no point lends it already. The root's page names the
-// page's frame, and is never the root's to give back (zlent). Caller holds
+// page's frame, and is never the root's to give back (lentFrame). Caller holds
 // the page's lock.
 func (h *Host) lend(ctx context.Context, root *identityRoot, page *zirconvm.VmPage, index uint64) {
 	f := frameOf(page)
@@ -740,7 +740,7 @@ func (h *Host) lend(ctx context.Context, root *identityRoot, page *zirconvm.VmPa
 	if named {
 		return
 	}
-	lent := zirconvm.NewFramePage(zlent{frame: f})
+	lent := zirconvm.NewFramePage(lentFrame{frame: f})
 	if !h.supplyIfEmpty(ctx, root.pages, index, lent) {
 		return
 	}
@@ -784,7 +784,7 @@ func (h *Host) supplyIfEmpty(ctx context.Context, object *zirconvm.CowPages, ind
 
 // retireFromCheckpointLocked ends b's dirty epoch: its bytes are the volume's
 // now, or its origin's. Caller holds r.bindingsMu.
-func (r *MemoryRegion) retireFromCheckpointLocked(b *zbinding) {
+func (r *MemoryRegion) retireFromCheckpointLocked(b *binding) {
 	r.host.probe.retired(b)
 	r.uncoldLocked(b)
 	b.checkpoint, b.dirty, b.origin = nil, false, nil
@@ -796,13 +796,13 @@ func (r *MemoryRegion) retireFromCheckpointLocked(b *zbinding) {
 // the page it was taken from: its reservation, where it was copied from and
 // whether write-ahead made it, and the page is dirty again, exactly as it was
 // before the seal. Caller holds r.bindingsMu.
-func (r *MemoryRegion) restoreFromCheckpointLocked(b, held *zbinding) {
+func (r *MemoryRegion) restoreFromCheckpointLocked(b, held *binding) {
 	r.uncoldLocked(b)
 	b.checkpoint, b.spill, b.dirty, b.ahead = nil, held.spill, true, held.ahead
 	b.origin, held.origin = held.origin, nil
 	held.spill, held.dirty, held.ahead = noReservation, false, false
 	if r.dirtySet == nil {
-		r.dirtySet = make(map[uint64]*zbinding)
+		r.dirtySet = make(map[uint64]*binding)
 	}
 	r.dirtySet[b.index] = b
 	r.noteSealableLocked(b)
@@ -811,9 +811,9 @@ func (r *MemoryRegion) restoreFromCheckpointLocked(b, held *zbinding) {
 // storedIdentities is MemoryRegion.storedIdentities over the zircon core:
 // the identity the volume now gives each page of one retire batch, located
 // once per read-ahead window, with neither the region nor any page held.
-func (r *MemoryRegion) storedIdentities(ctx context.Context, batch []*zbinding) (map[uint64]storedPage, error) {
+func (r *MemoryRegion) storedIdentities(ctx context.Context, batch []*binding) (map[uint64]storedPage, error) {
 	result := make(map[uint64]storedPage, len(batch))
-	var window *zplan
+	var window *plan
 	for _, held := range batch {
 		if r.spillOf(held).none() {
 			continue
@@ -833,7 +833,7 @@ func (r *MemoryRegion) storedIdentities(ctx context.Context, batch []*zbinding) 
 }
 
 // spillOf is the reservation b holds.
-func (r *MemoryRegion) spillOf(b *zbinding) reservation {
+func (r *MemoryRegion) spillOf(b *binding) reservation {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
 	return b.spill
@@ -845,7 +845,7 @@ func (r *MemoryRegion) spillOf(b *zbinding) reservation {
 // the layer for the identity root of its identity, and stays mapped. A page
 // the guest copied away from keeps only the checkpoint's copy, which goes.
 // Either way the reservation goes back. Caller holds the region exclusively.
-func (r *MemoryRegion) finalizeCheckpoint(ctx context.Context, c *MemoryRegionCheckpoint, batch []*zbinding,
+func (r *MemoryRegion) finalizeCheckpoint(ctx context.Context, c *MemoryRegionCheckpoint, batch []*binding,
 	identities map[uint64]storedPage) error {
 	h := r.host
 	if err := r.revokeHandedBack(ctx, batch, identities); err != nil {
@@ -891,8 +891,8 @@ func (r *MemoryRegion) finalizeCheckpoint(ctx context.Context, c *MemoryRegionCh
 // guest's mapping of every page of one retire batch the volume holds no
 // object for goes, one command per run, before the walk, once the page is
 // known to be zeros.
-func (r *MemoryRegion) revokeHandedBack(ctx context.Context, batch []*zbinding, identities map[uint64]storedPage) error {
-	var guests []*zbinding
+func (r *MemoryRegion) revokeHandedBack(ctx context.Context, batch []*binding, identities map[uint64]storedPage) error {
+	var guests []*binding
 	for _, held := range batch {
 		if r.spillOf(held).none() {
 			continue
@@ -917,7 +917,7 @@ func (r *MemoryRegion) revokeHandedBack(ctx context.Context, batch []*zbinding, 
 
 // droppable is Host.droppable over the zircon core: a page given up because
 // the volume holds no object for it must be zeros.
-func (r *MemoryRegion) droppable(ctx context.Context, held *zbinding, now storedPage) error {
+func (r *MemoryRegion) droppable(ctx context.Context, held *binding, now storedPage) error {
 	h := r.host
 	if now.stored && !now.id.zero() {
 		return nil
@@ -946,7 +946,7 @@ func (r *MemoryRegion) droppable(ctx context.Context, held *zbinding, now stored
 // file the publication read no digest of stays the region's own Clean page:
 // another region could not check a copy of it. Caller holds the region
 // exclusively and the page's lock.
-func (r *MemoryRegion) publish(ctx context.Context, c *MemoryRegionCheckpoint, b, held *zbinding,
+func (r *MemoryRegion) publish(ctx context.Context, c *MemoryRegionCheckpoint, b, held *binding,
 	page *zirconvm.VmPage, now storedPage) error {
 	h := r.host
 	ps := h.pageSize
@@ -994,7 +994,7 @@ func (r *MemoryRegion) publish(ctx context.Context, c *MemoryRegionCheckpoint, b
 // published, so it becomes the page of its identity where the volume gives
 // it one and no other page holds it, and those children keep it. Caller
 // holds the region exclusively and the page's lock.
-func (r *MemoryRegion) retireCopy(ctx context.Context, held *zbinding, page *zirconvm.VmPage, now storedPage) error {
+func (r *MemoryRegion) retireCopy(ctx context.Context, held *binding, page *zirconvm.VmPage, now storedPage) error {
 	h := r.host
 	ps := h.pageSize
 	h.mu.Lock()
@@ -1069,10 +1069,10 @@ func (h *Host) adopt(ctx context.Context, from *MemoryRegion, page *zirconvm.VmP
 // mapping goes so the next store maps it writable; a page the guest copied
 // away from needs only its own newer state, so the checkpoint's copy goes.
 // Caller holds the region exclusively.
-func (r *MemoryRegion) abandonCopies(ctx context.Context, batch []*zbinding) error {
+func (r *MemoryRegion) abandonCopies(ctx context.Context, batch []*binding) error {
 	h := r.host
 	ps := h.pageSize
-	var restored []*zbinding
+	var restored []*binding
 	for _, held := range batch {
 		spill := r.spillOf(held)
 		if spill.none() {
@@ -1272,8 +1272,8 @@ func (h *Host) dropLentRoot(ctx context.Context, root *identityRoot) error {
 // dropSharers takes page away from every binding that maps it but keep: a
 // page the guest takes back as dirty state, or that goes back to the arena,
 // must be no other region's. Caller holds the page's lock.
-func (h *Host) dropSharers(ctx context.Context, page *zirconvm.VmPage, keep ...*zbinding) error {
-	var sharers []*zbinding
+func (h *Host) dropSharers(ctx context.Context, page *zirconvm.VmPage, keep ...*binding) error {
+	var sharers []*binding
 	h.mu.Lock()
 	for b := range frameOf(page).aliases.all() {
 		if !slices.Contains(keep, b) && b.page != nil {

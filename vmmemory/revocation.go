@@ -52,7 +52,7 @@ func (r *MemoryRegion) underProtection(ctx context.Context, revoke func() error)
 // per run of consecutive pages where the client takes batches. An error is
 // ambiguous for every run, so the pages stay recorded as mapped and the
 // region is terminal.
-func (r *MemoryRegion) revokeBindings(ctx context.Context, bindings []*zbinding) error {
+func (r *MemoryRegion) revokeBindings(ctx context.Context, bindings []*binding) error {
 	h := r.host
 	batch, ok := r.mapping.(BatchRevocation)
 	if !ok {
@@ -100,7 +100,7 @@ func (r *MemoryRegion) revokeBindings(ctx context.Context, bindings []*zbinding)
 
 // revoke is Host.revoke over the zircon core: one page's mapping, where it is
 // installed.
-func (r *MemoryRegion) revoke(ctx context.Context, b *zbinding) error {
+func (r *MemoryRegion) revoke(ctx context.Context, b *binding) error {
 	h := r.host
 	if !r.isMapped(b) {
 		return nil

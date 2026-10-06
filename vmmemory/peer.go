@@ -19,7 +19,7 @@ import (
 // page brings the reservation the waiting path admitted it under; any other
 // page takes only one that is free now, and is left to a later fault where
 // none is.
-func (p *zplan) publishPrivate(ctx context.Context, page uint64, data []byte) error {
+func (p *plan) publishPrivate(ctx context.Context, page uint64, data []byte) error {
 	r := p.region
 	h := r.host
 	i := page - p.start
@@ -91,7 +91,7 @@ func (p *zplan) publishPrivate(ctx context.Context, page uint64, data []byte) er
 // ownInstead is windowPlan.ownInstead over the zircon core: a page's slot
 // moves from a file another region may read to the region's own file. It
 // takes nothing it cannot have at once.
-func (p *zplan) ownInstead(page uint64) (fileSlot, bool) {
+func (p *plan) ownInstead(page uint64) (fileSlot, bool) {
 	r := p.region
 	h := r.host
 	i := page - p.start

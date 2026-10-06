@@ -6,31 +6,31 @@ import (
 	"github.com/semistrict/sproutfs/vmmemory/internal/zirconvm"
 )
 
-// zreplacement is replacement over the zircon core: the pages a store's copy
+// replacement is replacement over the zircon core: the pages a store's copy
 // replaces the guest's mapping of, which no eviction may take and no idle
 // drop may give up before the command that replaces them lands, and the
 // pages the store made, which it holds the locks of until then too.
-type zreplacement struct {
+type replacement struct {
 	region *MemoryRegion
 	pages  []*zirconvm.VmPage
-	guests []*zbinding
+	guests []*binding
 	made   []*zirconvm.VmPage
 }
 
 // holdLocked keeps page, which b mapped before the store copied it, where it
 // is until the store's command lands. Caller holds h.mu.
-func (p *zreplacement) holdLocked(b *zbinding, page *zirconvm.VmPage) {
+func (p *replacement) holdLocked(b *binding, page *zirconvm.VmPage) {
 	frameOf(page).replacing++
 	p.pages = append(p.pages, page)
 	p.guests = append(p.guests, b)
 }
 
 // keep holds a page the store made, locked, until its command lands.
-func (p *zreplacement) keep(page *zirconvm.VmPage) { p.made = append(p.made, page) }
+func (p *replacement) keep(page *zirconvm.VmPage) { p.made = append(p.made, page) }
 
 // done gives up every page held, now that the guest maps none of them: a
 // root's page nothing maps is idle from here, as any other is.
-func (p *zreplacement) done() {
+func (p *replacement) done() {
 	h := p.region.host
 	var dropped []*zirconvm.VmPage
 	h.mu.Lock()
@@ -56,7 +56,7 @@ func (p *zreplacement) done() {
 
 // unlock gives back the locks of the pages the store made, once the guest's
 // access to them has completed.
-func (p *zreplacement) unlock() {
+func (p *replacement) unlock() {
 	for _, page := range p.made {
 		frameOf(page).mu.Unlock()
 	}
@@ -69,7 +69,7 @@ func (p *zreplacement) unlock() {
 
 // revoke takes the guest's mappings of the held pages away, which a store
 // whose command did not land does, and gives the pages up.
-func (p *zreplacement) revoke(ctx context.Context) error {
+func (p *replacement) revoke(ctx context.Context) error {
 	r := p.region
 	for _, b := range p.guests {
 		if err := r.revokePage(ctx, b.index); err != nil {

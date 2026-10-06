@@ -266,20 +266,20 @@ func (r *MemoryRegion) followsRecent(start uint64) bool {
 	return follows
 }
 
-// zprefetch is prefetch over the zircon core: the rest of one fault's run,
+// prefetch is prefetch over the zircon core: the rest of one fault's run,
 // read behind the fault, as READ requests on the identity roots of its pages
 // that it answers by supplying them, which is Zircon's PrefetchRange with a
 // pager that reads ahead. Which faults prefetch, the bound on prefetches in
 // flight, the bulk class of their reads and mapping what landed into the
 // region that asked stay the pager's (prefetch.go), and so do its sites,
 // probes and controlled points, by the same names.
-type zprefetch struct {
+type prefetch struct {
 	region     *MemoryRegion
 	start, end uint64
 	pages      []prefetchPage
 	// requests are the READ requests it sent, one for each run of its pages
 	// in one root. Guarded by Host.mu.
-	requests []zprefetchRequest
+	requests []prefetchRequest
 	cancel   context.CancelCauseFunc
 	// reading, holding, cancelled and finished are prefetch's. Guarded by
 	// Host.mu.
@@ -287,16 +287,16 @@ type zprefetch struct {
 	ctx                                   context.Context
 }
 
-// zprefetchRequest is one READ request a prefetch sent, and the range it
+// prefetchRequest is one READ request a prefetch sent, and the range it
 // asks for, which a supply may have resolved before the prefetch answers it.
-type zprefetchRequest struct {
+type prefetchRequest struct {
 	root           *identityRoot
 	request        *zirconvm.PageRequest
 	offset, length uint64
 }
 
-// zreadingIn is readingIn over the zircon core's roots.
-type zreadingIn struct {
+// readingIn is readingIn over the zircon core's roots.
+type readingIn struct {
 	host       *Host
 	start, end uint64
 	asked      bool
@@ -304,13 +304,13 @@ type zreadingIn struct {
 	ranges     []zirconvm.RequestRange
 }
 
-func (h *Host) readingIn(start, end uint64) zreadingIn {
-	return zreadingIn{host: h, start: start, end: end}
+func (h *Host) readingIn(start, end uint64) readingIn {
+	return readingIn{host: h, start: start, end: end}
 }
 
 // of reports whether a read is under way of the page key names, which is in
 // the window: a request of its root is outstanding over it.
-func (in *zreadingIn) of(key pageKey) bool {
+func (in *readingIn) of(key pageKey) bool {
 	h := in.host
 	ps := h.pageSize
 	if root := rootOf(key); !in.asked || root != in.root {
@@ -332,7 +332,7 @@ func (in *zreadingIn) of(key pageKey) bool {
 }
 
 // splitPrefetch is windowPlan.splitPrefetch over the zircon core.
-func (p *zplan) splitPrefetch(ctx context.Context, index uint64, into []*arenaFile) *zprefetch {
+func (p *plan) splitPrefetch(ctx context.Context, index uint64, into []*arenaFile) *prefetch {
 	r := p.region
 	h := r.host
 	var pages []prefetchPage
@@ -386,7 +386,7 @@ func (p *zplan) splitPrefetch(ctx context.Context, index uint64, into []*arenaFi
 	if len(kept) == 0 {
 		return nil
 	}
-	pf := &zprefetch{region: r, start: p.start, end: p.end, pages: kept, reading: true, holding: true}
+	pf := &prefetch{region: r, start: p.start, end: p.end, pages: kept, reading: true, holding: true}
 	pf.sendLocked()
 	pf.ctx = sim.WithTask(context.WithoutCancel(ctx), fmt.Sprintf("prefetch-%d", p.start))
 	pf.ctx, pf.cancel = context.WithCancelCause(checkpoint.WithPrefetch(pf.ctx))
@@ -400,7 +400,7 @@ func (p *zplan) splitPrefetch(ctx context.Context, index uint64, into []*arenaFi
 
 // sendLocked sends the prefetch's READ requests, one to the root of each run
 // of its pages in one root. Caller holds h.mu.
-func (pf *zprefetch) sendLocked() {
+func (pf *prefetch) sendLocked() {
 	h := pf.region.host
 	ps := h.pageSize
 	for at := 0; at < len(pf.pages); {
@@ -417,7 +417,7 @@ func (pf *zprefetch) sendLocked() {
 		if !root.reads.proxy.Holds(request) || zirconvm.RequestLen(request) != uint64(run)*ps {
 			panic("vmmemory: a prefetch's request met another")
 		}
-		pf.requests = append(pf.requests, zprefetchRequest{root: root, request: request,
+		pf.requests = append(pf.requests, prefetchRequest{root: root, request: request,
 			offset: first.key.id.Page * ps, length: uint64(run) * ps})
 		at += run
 	}
@@ -426,7 +426,7 @@ func (pf *zprefetch) sendLocked() {
 // answerLocked resolves the prefetch's requests: supplied, or failed where
 // err says its read failed. Either wakes every read waiting on one. A page a
 // prefetch did not land is then its fault's to read. Caller holds h.mu.
-func (pf *zprefetch) answerLocked(err error) {
+func (pf *prefetch) answerLocked(err error) {
 	h := pf.region.host
 	for _, sent := range pf.requests {
 		if err != nil {
@@ -439,15 +439,15 @@ func (pf *zprefetch) answerLocked(err error) {
 	pf.requests = nil
 }
 
-// zwaiter is a READ request waiting on a prefetch's.
-type zwaiter struct {
+// waiter is a READ request waiting on a prefetch's.
+type waiter struct {
 	host    *Host
 	request *zirconvm.PageRequest
 }
 
 // waiter is a READ request waiting on the prefetch's first, nil once the
 // prefetch has finished.
-func (pf *zprefetch) waiter() *zwaiter {
+func (pf *prefetch) waiter() *waiter {
 	h := pf.region.host
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -460,12 +460,12 @@ func (pf *zprefetch) waiter() *zwaiter {
 	if sent.root.reads.proxy.Holds(request) {
 		panic("vmmemory: a fault's request to wait on a prefetch was sent")
 	}
-	return &zwaiter{host: h, request: request}
+	return &waiter{host: h, request: request}
 }
 
 // wait waits for the prefetch's request to be answered and gives the
 // waiting request back.
-func (w *zwaiter) wait(ctx context.Context) error {
+func (w *waiter) wait(ctx context.Context) error {
 	status := w.request.Wait(ctx)
 	w.host.requests.Put(w.request)
 	if status != nil && !zirconvm.IsValidInternalFailureCode(status) {
@@ -475,9 +475,9 @@ func (w *zwaiter) wait(ctx context.Context) error {
 }
 
 // begin runs the prefetch on a goroutine of its own.
-func (pf *zprefetch) begin() { go pf.run(pf.ctx) }
+func (pf *prefetch) begin() { go pf.run(pf.ctx) }
 
-func (pf *zprefetch) run(ctx context.Context) {
+func (pf *prefetch) run(ctx context.Context) {
 	r := pf.region
 	h := r.host
 	defer func() {
@@ -496,7 +496,7 @@ func (pf *zprefetch) run(ctx context.Context) {
 }
 
 // finish is prefetch.finish.
-func (pf *zprefetch) finish(err error) {
+func (pf *prefetch) finish(err error) {
 	h := pf.region.host
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -510,7 +510,7 @@ func (pf *zprefetch) finish(err error) {
 }
 
 // settle is prefetch.settle.
-func (pf *zprefetch) settle() {
+func (pf *prefetch) settle() {
 	h := pf.region.host
 	h.mu.Lock()
 	pf.holding = false
@@ -522,7 +522,7 @@ func (pf *zprefetch) settle() {
 // land reads the prefetch's pages with one backing read and supplies each run
 // of them to its root, where they are idle until a region maps them. It
 // reports the pages that landed; every slot it did not fill goes back.
-func (pf *zprefetch) land(ctx context.Context) []prefetchPage {
+func (pf *prefetch) land(ctx context.Context) []prefetchPage {
 	defer pf.settle()
 	r := pf.region
 	h := r.host
@@ -619,7 +619,7 @@ func (pf *zprefetch) land(ctx context.Context) []prefetchPage {
 // landRun supplies one run of the prefetch's pages, consecutive and of one
 // root, each in its frame. A page another read supplied first stays, and the
 // prefetch's copy goes back.
-func (pf *zprefetch) landRun(ctx context.Context, pages []prefetchPage, frames []*zirconvm.VmPage) []prefetchPage {
+func (pf *prefetch) landRun(ctx context.Context, pages []prefetchPage, frames []*zirconvm.VmPage) []prefetchPage {
 	r := pf.region
 	h := r.host
 	ps := h.pageSize
@@ -662,7 +662,7 @@ func (pf *zprefetch) landRun(ctx context.Context, pages []prefetchPage, frames [
 
 // drop gives the slots of pages that did not land back, as prefetch.drop
 // does.
-func (pf *zprefetch) drop(ctx context.Context, pages []prefetchPage) {
+func (pf *prefetch) drop(ctx context.Context, pages []prefetchPage) {
 	if len(pages) == 0 {
 		return
 	}
@@ -693,7 +693,7 @@ func (pf *zprefetch) drop(ctx context.Context, pages []prefetchPage) {
 
 // mapPrefetched maps the pages a prefetch landed into the region whose fault
 // asked for them, as MemoryRegion.mapPrefetched does.
-func (r *MemoryRegion) mapPrefetched(ctx context.Context, pf *zprefetch, landed []prefetchPage) {
+func (r *MemoryRegion) mapPrefetched(ctx context.Context, pf *prefetch, landed []prefetchPage) {
 	if !r.live.TryRLock() {
 		return
 	}
@@ -740,7 +740,7 @@ func (r *MemoryRegion) mapPrefetched(ctx context.Context, pf *zprefetch, landed 
 // bindLanded takes one page a prefetch landed into the plan, where the region
 // has nothing at that page yet and its identity is still the one that
 // landed, and its root still holds it.
-func (p *zplan) bindLanded(page prefetchPage) bool {
+func (p *plan) bindLanded(page prefetchPage) bool {
 	i := page.page - p.start
 	if p.pages[i] != nil || p.zeros[i] || !p.eligible(page.page) || p.region.mapped(page.page) {
 		return false

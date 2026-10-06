@@ -143,7 +143,7 @@ type Host struct {
 	roots map[rootKey]*identityRoot
 	// prefetches is every prefetch whose slots are not settled yet. Guarded
 	// by mu, as are prefetching and prefetchRunning.
-	prefetches map[*zprefetch]struct{}
+	prefetches map[*prefetch]struct{}
 	// rootPages is how many pages the roots hold. Guarded by mu.
 	rootPages uint64
 	// splices lends the splice lists a supply hands its pages over in, as
@@ -252,7 +252,7 @@ func New(ctx context.Context, resources *resource.Budget, cfg Config, arena Aren
 		requests:      sync.Pool{New: func() any { return zirconvm.NewPageRequest() }},
 		memoryRegions: make(map[*MemoryRegion]struct{}), highWater: highWater(cfg.DirtyPages),
 		io: make(chan struct{}, cfg.ConcurrentIO), writeback: make(chan struct{}, 1),
-		roots: make(map[rootKey]*identityRoot), prefetches: make(map[*zprefetch]struct{})}
+		roots: make(map[rootKey]*identityRoot), prefetches: make(map[*prefetch]struct{})}
 	h.evictor = newPagerEvictor(h)
 	h.pmm = &arenaPmm{host: h, zero: zirconvm.NewFramePage(nil)}
 	// No compression: a frame's bytes are the pager's to move, so a page's

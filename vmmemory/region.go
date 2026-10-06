@@ -86,7 +86,7 @@ type MemoryRegion struct {
 	// the binding of a page the region maps or maps from, and an Untracked
 	// zero interval a compressed zero run, pages mapped to zero with no
 	// binding at all.
-	beside *zirconvm.PageList[zbinding]
+	beside *zirconvm.PageList[binding]
 	// dirtySet is every page the region may store into where it is: its own
 	// Dirty state, which no checkpoint holds, and which the next seal takes
 	// whole. dirtyRuns is the same set less the pages the region does not
@@ -95,12 +95,12 @@ type MemoryRegion struct {
 	// (noteSealableLocked). dirtySince is when the oldest write the region
 	// holds that no checkpoint covers was made, zero while it holds none: the
 	// loss window's bookkeeping.
-	dirtySet   map[uint64]*zbinding
+	dirtySet   map[uint64]*binding
 	dirtyRuns  pageRuns
 	dirtySince time.Time
 	// coldPages is every cold copy of the region, and coldCopies the ones its
 	// session's worker has not taken yet (cold.go).
-	coldPages  map[uint64]*zbinding
+	coldPages  map[uint64]*binding
 	coldCopies map[uint64]struct{}
 	// windowMu guards windowAsked.
 	windowMu sync.Mutex
@@ -287,7 +287,7 @@ func (h *Host) admit(ctx context.Context, memoryRegion MemoryRegionBacking, mapp
 // state (peer.go).
 func (r *MemoryRegion) newLayer() error {
 	ps := r.host.pageSize
-	r.beside, r.dirtyRuns = zirconvm.NewPageList[zbinding](ps), newPageRuns(ps)
+	r.beside, r.dirtyRuns = zirconvm.NewPageList[binding](ps), newPageRuns(ps)
 	r.resolver = &rootResolver{region: r}
 	// The layer's source is the region's own, and it traps dirty
 	// transitions, as a VMO whose pager tracks its writes does: a page of
@@ -702,9 +702,9 @@ func (r *MemoryRegion) Detach(ctx context.Context) error {
 	// Its writes go with it, and their reservations back to the budget. The
 	// pages they were copied from go too, where nothing else maps them.
 	r.bindingsMu.Lock()
-	var bound []*zbinding
+	var bound []*binding
 	var origins []*zirconvm.VmPage
-	r.eachBoundLocked(0, uint64(r.pageCount), func(b *zbinding) {
+	r.eachBoundLocked(0, uint64(r.pageCount), func(b *binding) {
 		bound = append(bound, b)
 		if b.origin != nil {
 			origins = append(origins, b.origin)
@@ -741,7 +741,7 @@ func (r *MemoryRegion) Detach(ctx context.Context) error {
 	h.forgetFilesLocked(r)
 	h.mu.Unlock()
 	r.bindingsMu.Lock()
-	r.beside = zirconvm.NewPageList[zbinding](h.pageSize)
+	r.beside = zirconvm.NewPageList[binding](h.pageSize)
 	r.bindingsMu.Unlock()
 	r.pageCount = 0
 	return nil

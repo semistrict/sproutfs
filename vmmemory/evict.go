@@ -213,7 +213,7 @@ func (h *Host) peekVictimLocked(req *evictionRequest) *zirconvm.VmPage {
 }
 
 // fairLocked is Host.fairLocked over a frame's aliases. Caller holds h.mu.
-func (h *Host) fairLocked(f *zframe, r *MemoryRegion, share int) bool {
+func (h *Host) fairLocked(f *frame, r *MemoryRegion, share int) bool {
 	for b := range f.aliases.all() {
 		if q := b.region; q != r && h.protectedLocked(q, share) {
 			return false
@@ -225,7 +225,7 @@ func (h *Host) fairLocked(f *zframe, r *MemoryRegion, share int) bool {
 // usableVictimLocked is usableVictimLocked over a frame: no store is
 // replacing it, and no terminal region maps it. Caller holds h.mu and the
 // page's lock.
-func (h *Host) usableVictimLocked(f *zframe) bool {
+func (h *Host) usableVictimLocked(f *frame) bool {
 	if f.replacing != 0 || f.slot < 0 {
 		return false
 	}
@@ -265,10 +265,10 @@ func (h *Host) reclaimVictim(ctx context.Context, page *zirconvm.VmPage) (zircon
 }
 
 // aliasesOf is the bindings that map a frame, read under h.mu.
-func (h *Host) aliasesOf(f *zframe) []*zbinding {
+func (h *Host) aliasesOf(f *frame) []*binding {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	result := make([]*zbinding, 0, f.aliases.len())
+	result := make([]*binding, 0, f.aliases.len())
 	for b := range f.aliases.all() {
 		result = append(result, b)
 	}
@@ -279,7 +279,7 @@ func (h *Host) aliasesOf(f *zframe) []*zbinding {
 // b's bytes go to, and whether a page that names none has them held
 // elsewhere: by the checkpoint's copy, or because the page is not b's
 // region's own state at all.
-func (r *MemoryRegion) spillTarget(b *zbinding) (spill reservation, elsewhere bool) {
+func (r *MemoryRegion) spillTarget(b *binding) (spill reservation, elsewhere bool) {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
 	return b.spill, !b.dirty || b.checkpoint != nil
@@ -299,8 +299,8 @@ func (h *Host) evictPage(ctx context.Context, page *zirconvm.VmPage) error {
 	// bytes can be in, and one read twice is written once.
 	var spills []reservation
 	taken := make(map[reservation]bool)
-	byRegion := make(map[*MemoryRegion][]*zbinding)
-	walked := make(map[*zbinding]bool)
+	byRegion := make(map[*MemoryRegion][]*binding)
+	walked := make(map[*binding]bool)
 	for grown := true; grown; {
 		grown = false
 		aliases := h.aliasesOf(f)
@@ -404,8 +404,8 @@ func (h *Host) removeFromObject(page *zirconvm.VmPage) {
 
 // dropAliasesLocked takes every alias off a frame that is going, which an
 // eviction does: each binding names no page from here. Caller holds h.mu.
-func (h *Host) dropAliasesLocked(f *zframe) {
-	var bindings []*zbinding
+func (h *Host) dropAliasesLocked(f *frame) {
+	var bindings []*binding
 	for b := range f.aliases.all() {
 		bindings = append(bindings, b)
 	}

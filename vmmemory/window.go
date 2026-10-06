@@ -89,12 +89,12 @@ func pagesOf(runs []MapRun) uint64 {
 	return pages
 }
 
-// zplan is windowPlan over the zircon core: the pages of one window a fault or
+// plan is windowPlan over the zircon core: the pages of one window a fault or
 // a populate maps together, the slots it took to read pages into, and what is
 // left to map. It holds no lock of a page: Zircon's pages are its objects',
 // and a page the plan takes is bound to the region at once, under its root's
 // lock, which keeps it out of every idle drop until the region lets it go.
-type zplan struct {
+type plan struct {
 	region       *MemoryRegion
 	start, end   uint64
 	fault, store uint64
@@ -134,15 +134,15 @@ type zplan struct {
 	// this plan's read answers, nil where it sent none. One the plan has
 	// not answered when it is unlocked is failed, so whatever waits on it
 	// looks again.
-	request *zrequest
+	request *readRequest
 }
 
-func (r *MemoryRegion) newPlan(start, end, fault uint64) *zplan {
+func (r *MemoryRegion) newPlan(start, end, fault uint64) *plan {
 	// The plan's four marks of each page are one allocation: a fault at
 	// random pays for each one it makes.
 	n := end - start
 	marks := make([]bool, 4*n)
-	p := &zplan{region: r, start: start, end: end, fault: fault, store: end,
+	p := &plan{region: r, start: start, end: end, fault: fault, store: end,
 		pages: make([]*zirconvm.VmPage, n), reserved: make([]fileSlot, n),
 		fresh: marks[:n:n], zeros: marks[n : 2*n : 2*n], writable: marks[2*n : 3*n : 3*n],
 		private: marks[3*n:]}
@@ -154,7 +154,7 @@ func (r *MemoryRegion) newPlan(start, end, fault uint64) *zplan {
 }
 
 // plan is a plan of the window [start, end) located whole.
-func (r *MemoryRegion) plan(ctx context.Context, start, end, fault uint64) (*zplan, error) {
+func (r *MemoryRegion) plan(ctx context.Context, start, end, fault uint64) (*plan, error) {
 	window, err := r.locate(ctx, start, end)
 	if err != nil {
 		return nil, err
@@ -165,7 +165,7 @@ func (r *MemoryRegion) plan(ctx context.Context, start, end, fault uint64) (*zpl
 }
 
 // planPage is a plan of the window [start, end) that has located page alone.
-func (r *MemoryRegion) planPage(ctx context.Context, start, end, fault, page uint64) (*zplan, error) {
+func (r *MemoryRegion) planPage(ctx context.Context, start, end, fault, page uint64) (*plan, error) {
 	alone, err := r.locate(ctx, page, page+1)
 	if err != nil {
 		return nil, err
@@ -177,7 +177,7 @@ func (r *MemoryRegion) planPage(ctx context.Context, start, end, fault, page uin
 
 // locateWindow locates the whole window of a plan that has located only its
 // faulting page.
-func (p *zplan) locateWindow(ctx context.Context) error {
+func (p *plan) locateWindow(ctx context.Context) error {
 	if p.located {
 		return nil
 	}
@@ -191,7 +191,7 @@ func (p *zplan) locateWindow(ctx context.Context) error {
 
 // locationsOf is the locations a page is located in: the faulting page's own
 // where the plan located it alone, and the window's otherwise.
-func (p *zplan) locationsOf(page uint64) *locations {
+func (p *plan) locationsOf(page uint64) *locations {
 	if p.alone.holds(page) {
 		return &p.alone
 	}
@@ -202,12 +202,12 @@ func (p *zplan) locationsOf(page uint64) *locations {
 }
 
 // identity is windowPlan.identity.
-func (p *zplan) identity(page uint64) (pageKey, bool) {
+func (p *plan) identity(page uint64) (pageKey, bool) {
 	return identityAt(p.locationsOf(page), page)
 }
 
 // unlock gives back every slot the plan took and did not fill.
-func (p *zplan) unlock() {
+func (p *plan) unlock() {
 	p.request.fail()
 	h := p.region.host
 	h.mu.Lock()
@@ -241,7 +241,7 @@ func (p *zplan) unlock() {
 
 // release takes page off the pages the plan holds the lock of, for its
 // caller to hold.
-func (p *zplan) release(page *zirconvm.VmPage) {
+func (p *plan) release(page *zirconvm.VmPage) {
 	for i, held := range p.locked {
 		if held == page {
 			p.locked = append(p.locked[:i], p.locked[i+1:]...)
@@ -255,7 +255,7 @@ func (p *zplan) release(page *zirconvm.VmPage) {
 // until it is unlocked, and reports false where something else holds it, an
 // eviction most likely, and the plan leaves the page alone. It is called
 // under the page's object lock, so it never waits.
-func (p *zplan) hold(page *zirconvm.VmPage) bool {
+func (p *plan) hold(page *zirconvm.VmPage) bool {
 	if !frameOf(page).mu.TryLock() {
 		return false
 	}
@@ -263,14 +263,14 @@ func (p *zplan) hold(page *zirconvm.VmPage) bool {
 	return true
 }
 
-func (p *zplan) reserve(page uint64, at fileSlot) {
+func (p *plan) reserve(page uint64, at fileSlot) {
 	p.reserved[page-p.start] = at
 	p.fresh[page-p.start] = true
 }
 
 // fileOf is windowPlan.fileOf: the public file for a page of a public
 // template, the region's shared file for any other.
-func (p *zplan) fileOf(page uint64) *arenaFile {
+func (p *plan) fileOf(page uint64) *arenaFile {
 	r := p.region
 	if r.public != nil {
 		if id, named := p.identity(page); named && control.Public(id.id.Ref.VM) {
@@ -281,7 +281,7 @@ func (p *zplan) fileOf(page uint64) *arenaFile {
 }
 
 // files is every file this window's loads by identity may go in.
-func (p *zplan) files() []*arenaFile {
+func (p *plan) files() []*arenaFile {
 	r := p.region
 	if r.public != nil {
 		return []*arenaFile{r.sharedFile(), r.public}
@@ -292,7 +292,7 @@ func (p *zplan) files() []*arenaFile {
 // own reports a page an isolated arena reads into the region's own file: one
 // whose bytes no identity names. This core takes no fork point's and no
 // other host's page yet.
-func (p *zplan) own(page uint64) bool {
+func (p *plan) own(page uint64) bool {
 	h := p.region.host
 	if !h.isolated() {
 		return false
@@ -307,7 +307,7 @@ func (p *zplan) own(page uint64) bool {
 }
 
 // observeZeros is windowPlan.observeZeros.
-func (p *zplan) observeZeros() {
+func (p *plan) observeZeros() {
 	if p.observedZeros {
 		return
 	}
@@ -324,7 +324,7 @@ func (p *zplan) observeZeros() {
 
 // markZeros records a whole explicit zero extent, skipping the pages that may
 // not join the plan.
-func (p *zplan) markZeros(first, last uint64) {
+func (p *plan) markZeros(first, last uint64) {
 	if first >= last {
 		return
 	}
@@ -341,7 +341,7 @@ func (p *zplan) markZeros(first, last uint64) {
 
 // eligible reports whether a page other than the faulting one can join the
 // plan: the region holds nothing there yet.
-func (p *zplan) eligible(page uint64) bool { return p.region.eligible(page) }
+func (p *plan) eligible(page uint64) bool { return p.region.eligible(page) }
 
 // take binds page to the page its root holds under key, where it holds one,
 // and reports it. It waits for the page's lock, which it takes with no
@@ -349,7 +349,7 @@ func (p *zplan) eligible(page uint64) bool { return p.region.eligible(page) }
 // then, under its root's lock, so no idle drop takes it between the two. A
 // population takes pages in one order of identities, so two that wait on each
 // other's pages cannot both be waiting.
-func (p *zplan) take(ctx context.Context, page uint64, key pageKey) (*zirconvm.VmPage, error) {
+func (p *plan) take(ctx context.Context, page uint64, key pageKey) (*zirconvm.VmPage, error) {
 	r := p.region
 	h := r.host
 	root := r.host.root(rootOf(key))
@@ -393,8 +393,8 @@ func (p *zplan) take(ctx context.Context, page uint64, key pageKey) (*zirconvm.V
 	}
 }
 
-// zsurvey is survey over the zircon core.
-type zsurvey struct {
+// survey is survey over the zircon core.
+type survey struct {
 	into []*arenaFile
 }
 
@@ -406,13 +406,13 @@ type zsurvey struct {
 // identity, unless its bytes go in the region's own file or a prefetch is
 // reading it already; where prefetched says the read is a prefetch's, a page
 // with no identity is left to its own fault.
-func (p *zplan) survey(except uint64, prefetched bool) zsurvey {
+func (p *plan) survey(except uint64, prefetched bool) survey {
 	r := p.region
-	found := zsurvey{into: make([]*arenaFile, p.end-p.start)}
+	found := survey{into: make([]*arenaFile, p.end-p.start)}
 	eligible := r.eligibleIn(p.start, p.end)
 	holes := false
 	reading := r.host.readingIn(p.start, p.end)
-	files := &zfileFinder{p: p}
+	files := &fileFinder{p: p}
 	for page := p.start; page < p.end; {
 		at := page - p.start
 		if page == except || p.pages[at] != nil || p.zeros[at] || p.reserved[at].slot >= 0 || !eligible[at] {
@@ -469,7 +469,7 @@ func (p *zplan) survey(except uint64, prefetched bool) zsurvey {
 // holds and that may join the plan, under one hold of the root's lock, and
 // reports which it took, and which the root holds where this region's process
 // may not map them: those are their own faults' to reach.
-func (p *zplan) takeRootRun(first, last uint64, eligible []bool) (taken, elsewhere []bool) {
+func (p *plan) takeRootRun(first, last uint64, eligible []bool) (taken, elsewhere []bool) {
 	r := p.region
 	h := r.host
 	key, _ := p.identity(first)
@@ -509,15 +509,15 @@ func (p *zplan) takeRootRun(first, last uint64, eligible []bool) (taken, elsewhe
 	return taken, elsewhere
 }
 
-// zfileFinder is fileFinder over a zplan.
-type zfileFinder struct {
-	p        *zplan
+// fileFinder is fileFinder over a plan.
+type fileFinder struct {
+	p        *plan
 	vm       string
 	public   bool
 	answered bool
 }
 
-func (f *zfileFinder) of(id pageKey) *arenaFile {
+func (f *fileFinder) of(id pageKey) *arenaFile {
 	r := f.p.region
 	if r.public == nil {
 		return r.sharedFile()
@@ -532,7 +532,7 @@ func (f *zfileFinder) of(id pageKey) *arenaFile {
 }
 
 // reserveAround is windowPlan.reserveAround.
-func (p *zplan) reserveAround(index uint64) {
+func (p *plan) reserveAround(index uint64) {
 	file := p.fileOf(index)
 	into := p.survey(index, false).into
 	needs := func(page uint64) bool { return into[page-p.start] == file }
@@ -554,7 +554,7 @@ func (p *zplan) reserveAround(index uint64) {
 }
 
 // reserveProvisional is windowPlan.reserveProvisional.
-func (p *zplan) reserveProvisional(index uint64) {
+func (p *plan) reserveProvisional(index uint64) {
 	file := p.fileOf(index)
 	first, last := index, index+1
 	if p.reading == readFirst {
@@ -572,7 +572,7 @@ func (p *zplan) reserveProvisional(index uint64) {
 }
 
 // keepProvisional is windowPlan.keepProvisional.
-func (p *zplan) keepProvisional(into []*arenaFile) {
+func (p *plan) keepProvisional(into []*arenaFile) {
 	run := p.provisional
 	p.provisional = provisionalRun{}
 	var back []fileSlot
@@ -596,7 +596,7 @@ func (p *zplan) keepProvisional(into []*arenaFile) {
 }
 
 // reserveRuns is windowPlan.reserveRuns.
-func (p *zplan) reserveRuns(ctx context.Context, from uint64, into []*arenaFile) error {
+func (p *plan) reserveRuns(ctx context.Context, from uint64, into []*arenaFile) error {
 	for _, file := range p.files() {
 		if err := p.reserveRunsIn(ctx, from, file, into); err != nil {
 			return err
@@ -606,7 +606,7 @@ func (p *zplan) reserveRuns(ctx context.Context, from uint64, into []*arenaFile)
 }
 
 // reserveRunsIn is windowPlan.reserveRunsIn.
-func (p *zplan) reserveRunsIn(ctx context.Context, from uint64, file *arenaFile, into []*arenaFile) error {
+func (p *plan) reserveRunsIn(ctx context.Context, from uint64, file *arenaFile, into []*arenaFile) error {
 	h := p.region.host
 	needs := func(page uint64) bool { return into[page-p.start] == file && p.reserved[page-p.start].slot < 0 }
 	needed := 0
@@ -652,7 +652,7 @@ func (p *zplan) reserveRunsIn(ctx context.Context, from uint64, file *arenaFile,
 
 // reserveOwn takes places in the region's own file for the pages of the
 // window it reads there, without evicting.
-func (p *zplan) reserveOwn() {
+func (p *plan) reserveOwn() {
 	r := p.region
 	h := r.host
 	for page := p.start; page < p.end; page++ {
@@ -673,7 +673,7 @@ func (p *zplan) reserveOwn() {
 
 // loadReserved reads the reserved pages of the window with one backing read
 // and supplies them, as windowPlan.loadReserved does.
-func (p *zplan) loadReserved(ctx context.Context) error {
+func (p *plan) loadReserved(ctx context.Context) error {
 	h := p.region.host
 	first, last := p.end, p.start
 	loading := uint64(0)
@@ -713,7 +713,7 @@ func (p *zplan) loadReserved(ctx context.Context) error {
 // unpublished is windowPlan.unpublished: the window's extents say this
 // page's bytes belong to no object of its volume, which for a backing that
 // fetches from another host means that host still holds them.
-func (p *zplan) unpublished(page uint64) bool {
+func (p *plan) unpublished(page uint64) bool {
 	if !p.region.peer {
 		return false
 	}
@@ -729,7 +729,7 @@ func (p *zplan) unpublished(page uint64) bool {
 //
 // A page a peer backing reported another host's is the region's own dirty
 // state, which the backing is told the region went on to hold.
-func (p *zplan) publishRead(ctx context.Context, first uint64, wanted []bool, data []byte, unpublished []bool) error {
+func (p *plan) publishRead(ctx context.Context, first uint64, wanted []bool, data []byte, unpublished []bool) error {
 	r := p.region
 	h := r.host
 	ps := h.pageSize
@@ -809,7 +809,7 @@ func (p *zplan) publishRead(ctx context.Context, first uint64, wanted []bool, da
 // root where shared, and to the region's own layer otherwise. Each page is
 // then bound to the page its object holds, which is the one read here unless
 // another read supplied its own first.
-func (p *zplan) supplyRun(ctx context.Context, page uint64, id pageKey, shared bool, frames []*zirconvm.VmPage) error {
+func (p *plan) supplyRun(ctx context.Context, page uint64, id pageKey, shared bool, frames []*zirconvm.VmPage) error {
 	r := p.region
 	h := r.host
 	ps := h.pageSize
@@ -878,7 +878,7 @@ func (p *zplan) supplyRun(ctx context.Context, page uint64, id pageKey, shared b
 // windowPlan.install does. The commands are issued with no object lock held:
 // a plan holds none, its pages being bound to the region already. The
 // region's own Dirty pages are mapped writable, in runs of their own.
-func (p *zplan) install(ctx context.Context) (bool, error) {
+func (p *plan) install(ctx context.Context) (bool, error) {
 	r := p.region
 	h := r.host
 	var runs, writable []MapRun

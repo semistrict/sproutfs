@@ -635,7 +635,7 @@ func (h *Host) unindex(ctx context.Context, page *zirconvm.VmPage, key pageKey) 
 // the page it has, which is then its alone. Caller holds both pages.
 func (h *Host) rebind(ctx context.Context, from, to *zirconvm.VmPage) error {
 	h.moveCold(from, to)
-	byRegion := make(map[*MemoryRegion][]*zbinding)
+	byRegion := make(map[*MemoryRegion][]*binding)
 	for _, b := range h.aliasesOf(frameOf(from)) {
 		byRegion[b.region] = append(byRegion[b.region], b)
 	}
@@ -674,7 +674,7 @@ func (h *Host) rebind(ctx context.Context, from, to *zirconvm.VmPage) error {
 // this region maps one of bindings, installed so the guest reads on without
 // a fault; where the client refuses the mapping, the mappings are taken
 // away instead.
-func (r *MemoryRegion) remap(ctx context.Context, bindings []*zbinding, to *zirconvm.VmPage) error {
+func (r *MemoryRegion) remap(ctx context.Context, bindings []*binding, to *zirconvm.VmPage) error {
 	for _, b := range bindings {
 		err := r.mapInPlace(ctx, b, to)
 		if errors.Is(err, ErrMappingRefused) {

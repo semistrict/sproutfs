@@ -95,7 +95,7 @@ func (r *MemoryRegion) storeFresh(ctx context.Context, index uint64, spill *rese
 	if !zero && !untouched {
 		return false, nil
 	}
-	var plan *zplan
+	var plan *plan
 	if untouched {
 		// Whether an untouched page is a hole is volume metadata, which the
 		// window's extents answer for its neighbours too; the page is asked
@@ -117,7 +117,7 @@ func (r *MemoryRegion) storeFresh(ctx context.Context, index uint64, spill *rese
 }
 
 // zeroRun is MemoryRegion.zeroRun over the zircon core.
-func (r *MemoryRegion) zeroRun(index uint64, plan *zplan) (uint64, uint64) {
+func (r *MemoryRegion) zeroRun(index uint64, plan *plan) (uint64, uint64) {
 	start, end := r.window(index)
 	limit := uint64(r.host.cfg.WriteAheadPages)
 	zeros := func(page uint64) bool {
@@ -371,7 +371,7 @@ func (r *MemoryRegion) newZeroFrames(ctx context.Context, f *arenaFile, runs []M
 		if err == nil {
 			made := make([]*zirconvm.VmPage, run.Count)
 			for k := range made {
-				made[k] = zirconvm.NewFramePage(newLockedZframe(at.plus(k), r.kind, r))
+				made[k] = zirconvm.NewFramePage(makeLockedFrame(at.plus(k), r.kind, r))
 				r.host.noteFrame(made[k])
 			}
 			frames = append(frames, made)
@@ -410,10 +410,10 @@ func (r *MemoryRegion) supplyDirty(ctx context.Context, first uint64, frames []*
 // of each lock for the whole run.
 func (r *MemoryRegion) bindDirtyRun(first uint64, frames []*zirconvm.VmPage, reservations []reservation, ahead []bool) {
 	h := r.host
-	bindings := make([]*zbinding, len(frames))
+	bindings := make([]*binding, len(frames))
 	r.bindingsMu.Lock()
 	if r.dirtySet == nil {
-		r.dirtySet = make(map[uint64]*zbinding)
+		r.dirtySet = make(map[uint64]*binding)
 	}
 	for k := range frames {
 		b := r.bindingLocked(first + uint64(k))
@@ -454,7 +454,7 @@ func (r *MemoryRegion) bindDirtyRun(first uint64, frames []*zirconvm.VmPage, res
 // reservation it was admitted under. Any other page of the layer's index is
 // empty, and the copy is supplied there and made Dirty.
 func (r *MemoryRegion) takePrivate(ctx context.Context, index uint64, frame *zirconvm.VmPage, spill reservation,
-	origin *zirconvm.VmPage, replaced *zreplacement) error {
+	origin *zirconvm.VmPage, replaced *replacement) error {
 	h := r.host
 	ps := h.pageSize
 	frameOf(frame).layer = r
@@ -530,7 +530,7 @@ func (r *MemoryRegion) dirtyInPlace(ctx context.Context, index uint64, spill res
 
 // checkpointCopy reports the checkpoint's copy b shares, nil where it holds
 // its own state.
-func (r *MemoryRegion) checkpointCopy(b *zbinding) *zbinding {
+func (r *MemoryRegion) checkpointCopy(b *binding) *binding {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
 	return b.checkpoint
@@ -627,7 +627,7 @@ func (r *MemoryRegion) copyOnWrite(ctx context.Context, index uint64, spill *res
 	}
 	frameOf(frame).layer = r
 	// The copy is held from its making until the store's command lands.
-	replaced := &zreplacement{region: r}
+	replaced := &replacement{region: r}
 	defer replaced.unlock()
 	replaced.keep(frame)
 	if err := context.Cause(ctx); err != nil {
@@ -695,7 +695,7 @@ func (r *MemoryRegion) copyOnWrite(ctx context.Context, index uint64, spill *res
 // gave it when it goes idle, so it keeps that slot's extent from going back
 // after the region that placed it has gone.
 func (h *Host) reclaimExtent(f *arenaFile) bool {
-	orphaned := func(frame *zframe) bool {
+	orphaned := func(frame *frame) bool {
 		e := frame.file.leases[frame.slot].extent
 		return e != nil && e.file == f && h.extents[e.key] != e
 	}
@@ -727,7 +727,7 @@ func (r *MemoryRegion) zeroMapped(index uint64) bool {
 // It reports whether the bytes are ones no checkpoint of the VM has: only a
 // backing read can say so, and only a backing that fetches from another host
 // ever does.
-func (r *MemoryRegion) readForCopy(ctx context.Context, index uint64, src *zirconvm.VmPage, held *zbinding,
+func (r *MemoryRegion) readForCopy(ctx context.Context, index uint64, src *zirconvm.VmPage, held *binding,
 	dst []byte) (unpublished bool, err error) {
 	if src != nil {
 		f := frameOf(src)
@@ -764,7 +764,7 @@ func (r *MemoryRegion) readForCopy(ctx context.Context, index uint64, src *zirco
 // and nothing may be shared under the name of a page it gives that answer
 // for.
 func (r *MemoryRegion) readIn(ctx context.Context, index uint64) (*zirconvm.VmPage, bool, error) {
-	var plan *zplan
+	var plan *plan
 	var err error
 	if r.peer {
 		if plan, err = r.plan(ctx, index, index+1, r.end(index)); err == nil {
@@ -815,7 +815,7 @@ func (r *MemoryRegion) readIn(ctx context.Context, index uint64) (*zirconvm.VmPa
 }
 
 // closeAround is MemoryRegion.closeAround over the zircon core.
-func (r *MemoryRegion) closeAround(ctx context.Context, index uint64, at fileSlot, replaced *zreplacement) (first, last uint64, err error) {
+func (r *MemoryRegion) closeAround(ctx context.Context, index uint64, at fileSlot, replaced *replacement) (first, last uint64, err error) {
 	h := r.host
 	h.mu.Lock()
 	placed := h.placedAt(r, index, at)
@@ -912,7 +912,7 @@ func (r *MemoryRegion) joinsRun(page uint64) bool {
 }
 
 // takeShared is MemoryRegion.takeShared over the zircon core.
-func (r *MemoryRegion) takeShared(ctx context.Context, first, index, last uint64, replaced *zreplacement) error {
+func (r *MemoryRegion) takeShared(ctx context.Context, first, index, last uint64, replaced *replacement) error {
 	for page := index + 1; page < last; page++ {
 		joined, err := r.takeOneShared(ctx, page, replaced)
 		if err != nil {
@@ -937,7 +937,7 @@ func (r *MemoryRegion) takeShared(ctx context.Context, first, index, last uint64
 // takeOneShared is MemoryRegion.takeOneShared over the zircon core: one page
 // made private for a rule, from bytes this host holds, at the offset of its
 // own, never waiting and never evicting.
-func (r *MemoryRegion) takeOneShared(ctx context.Context, page uint64, replaced *zreplacement) (bool, error) {
+func (r *MemoryRegion) takeOneShared(ctx context.Context, page uint64, replaced *replacement) (bool, error) {
 	h := r.host
 	if r.writable(page) {
 		return r.joinsRun(page), nil
@@ -1030,7 +1030,7 @@ func (r *MemoryRegion) makeWhole(ctx context.Context, index uint64) (bool, error
 	first := index - index%span
 	last := min(first+span, uint64(r.pageCount))
 	before := r.privatePages(first, last)
-	replaced := &zreplacement{region: r}
+	replaced := &replacement{region: r}
 	defer replaced.unlock()
 	if err := r.takeShared(ctx, first, index, last, replaced); err != nil {
 		return false, errors.Join(err, replaced.revoke(ctx))
@@ -1075,7 +1075,7 @@ func (r *MemoryRegion) releaseDirty() {
 	h := r.host
 	var spills []reservation
 	r.bindingsMu.Lock()
-	r.eachBoundLocked(0, uint64(r.pageCount), func(b *zbinding) {
+	r.eachBoundLocked(0, uint64(r.pageCount), func(b *binding) {
 		if b.dirty && !b.spill.none() {
 			spills = append(spills, b.spill)
 		}

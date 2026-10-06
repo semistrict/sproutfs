@@ -32,18 +32,18 @@ type probeBinding interface {
 	probeRegion() any
 }
 
-func (f *zframe) probeAbsent() bool   { return f == nil }
-func (f *zframe) probeSlot() fileSlot { return f.fileSlot }
+func (f *frame) probeAbsent() bool   { return f == nil }
+func (f *frame) probeSlot() fileSlot { return f.fileSlot }
 
 // probePublished is a root's page: a page the zircon core holds under an
 // identity is in an identity root and never in a region's layer.
-func (f *zframe) probePublished() bool { return f.layer == nil && f.slot >= 0 }
+func (f *frame) probePublished() bool { return f.layer == nil && f.slot >= 0 }
 
 // probeUnnamed is a page of a region's layer no fork point lends.
-func (f *zframe) probeUnnamed() bool { return f.layer != nil && f.lent == nil }
-func (f *zframe) probeName() string  { return fmt.Sprintf("frame of slot %d", f.slot) }
+func (f *frame) probeUnnamed() bool { return f.layer != nil && f.lent == nil }
+func (f *frame) probeName() string  { return fmt.Sprintf("frame of slot %d", f.slot) }
 
-func (f *zframe) probeOther(region any) (uint64, bool) {
+func (f *frame) probeOther(region any) (uint64, bool) {
 	for other := range f.aliases.all() {
 		if other.region != region {
 			return other.index, true
@@ -52,5 +52,5 @@ func (f *zframe) probeOther(region any) (uint64, bool) {
 	return 0, false
 }
 
-func (b *zbinding) probeIndex() uint64 { return b.index }
-func (b *zbinding) probeRegion() any   { return b.region }
+func (b *binding) probeIndex() uint64 { return b.index }
+func (b *binding) probeRegion() any   { return b.region }
