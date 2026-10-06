@@ -81,12 +81,6 @@ var allowed = map[string]allowance{
 	// pager's client, and a client that misses it fails that command.
 	"vmmemory/connection_linux.go:time.Now": {2,
 		"kernel socket deadlines, which the operating system compares against its own clock"},
-	// The audit ring exists only under the sproutfsprobe build tag, and all it
-	// dates is the post-mortem dump it prints after a guest has already died.
-	// No build a deployment or a campaign runs contains it, and nothing it
-	// records reaches a decision, let alone a durable one.
-	"vmmemory/probe_on.go:time.Now": {1,
-		"the audit ring's post-mortem timestamps, behind a build tag no deployment uses"},
 }
 
 type allowance struct {
