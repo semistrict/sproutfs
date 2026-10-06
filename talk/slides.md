@@ -480,6 +480,218 @@ A one-byte store costs a whole page in memory: 2 MiB copied and counted against 
 -->
 
 ---
+
+# The page layer comes from Zircon
+
+<div class="text-base opacity-70 mb-3">Fuchsia's kernel · <code>zircon/kernel/vm</code> at revision <code>90e54e09</code> · MIT licence</div>
+
+<div class="grid grid-cols-2 gap-10 mt-4 text-xl">
+<div class="space-y-5">
+
+**built for a pager outside the kernel** — pages come from a user-space pager through page requests
+
+**Clean → Dirty → AwaitingClean → Clean** — its writeback is our seal
+
+**eviction splits two kinds** — a page the pager can supply again is dropped; an anonymous page is compressed
+
+**its unit tests** — 261 cases
+
+</div>
+<div class="space-y-5">
+
+<div v-click><b>copied, not redesigned</b> — a Go port that reads like its source, line by line</div>
+
+<div v-click><b>the licence</b> — Zircon's <code>LICENSE</code> in <code>vmmemory/internal/zirconvm</code>; every ported file names its source files and the revision, and a test holds each one to it</div>
+
+<div v-click><b>FreeBSD</b> — read for comparison only; some of its <code>sys/vm</code> is BSD-4-Clause, which is not OSI-approved</div>
+
+</div>
+</div>
+
+<!--
+The pager's page layer is a Go port of the page layer of Zircon, Fuchsia's kernel. It is copied from zircon/kernel/vm at fuchsia revision 90e54e09, and it is not redesigned. We chose Zircon for four reasons.
+
+One: Zircon is built for a pager outside the kernel. A VMO's pages can come from a user-space pager through page requests. The pager supplies pages, is asked before a clean page becomes dirty, and writes dirty pages back. Our pager is that user-space pager, and its sources are the store, the cluster and a peer.
+
+Two: Zircon's dirty tracking is our seal. A page a user pager backs is Clean, Dirty or AwaitingClean. A writeback makes the Dirty pages AwaitingClean and takes write access away, and its end makes them Clean. Our seal does the same while the guest runs.
+
+Three: its eviction makes the same split as ours. A clean page a pager backs is dropped and read again. An anonymous page is compressed. Ours drops a named page and spills a region's own page.
+
+Four: it comes with its tests. Zircon's VM has 261 unit test cases.
+
+Zircon's kernel is under the MIT licence, which is compatible with our Apache-2.0. The package keeps Zircon's LICENSE verbatim. Every ported file begins with its source's copyright line and a line naming the Zircon files it comes from at that revision. A test fails on a file without them, or one that names a file that does not exist at that revision.
+
+FreeBSD's sys/vm was read for comparison. Nothing of it is copied: some of its files are under the four-clause BSD licence, which is not OSI-approved.
+
+Source: plans/zircon-pager-port-2026-10-05.md, Why Zircon and Licence; docs/vm-memory.md, the package layout.
+-->
+
+---
+
+# What was taken
+
+<div class="text-base opacity-70 mb-3">from <code>zircon/kernel/vm/</code>, into the pager</div>
+
+<div class="text-lg space-y-3">
+
+<div><code>vm_page_list.cc</code> — the page list: a region's state per page, zero intervals, dirty runs</div>
+
+<div><code>page_queues.cc</code> — the page queues: reclaim order, the don't-need queue, the zero-fork queue</div>
+
+<div><code>compression.cc</code> · <code>slot_page_storage.cc</code> — the spill: a spilled page is a reference to a slot of the spill file</div>
+
+<div><code>evictor.cc</code> — the evictor: an allocation short of a slot evicts</div>
+
+<div><code>page_source.cc</code> · <code>pager_proxy.cc</code> — page requests: a fault's read and a prefetch</div>
+
+<div><code>vm_cow_pages.cc</code> · <code>vm_object_paged.cc</code> — a region's layer and the identity roots; snapshot-on-write only</div>
+
+</div>
+
+<v-click>
+
+<div class="mt-8 text-xl">
+
+**stays ours** — the memfd arena · isolation · the mapping protocol · the userfaultfd connection
+
+</div>
+
+</v-click>
+
+<!--
+The page list holds a region's state per page. A page with state of its own has a slot. A run of zeros is a zero interval, which holds its two ends and nothing between them. The pages a seal protects are the list's dirty runs.
+
+The page queues order resident pages for reclaim. An idle page is in the don't-need queue and goes first. A cold copy pins its origin in the zero-fork queue. Aging follows faults only: a userfaultfd pager cannot read the VMM's accessed bits.
+
+The spill keeps Zircon's compressed references. A spilled page is a reference to storage, and the storage is the spill file in the shape of Zircon's slot storage. LZ4 is not ported; a page is stored as it is.
+
+The evictor's synchronous path is what an allocation short of a slot runs. Our fair share is a filter on its candidates.
+
+The page source turns a fault's read and a prefetch into READ requests. A fault that meets a page a prefetch is reading waits on that request. PagerProxy becomes a goroutine per request.
+
+VmCowPages is used twice. Each region has a layer that holds the pages it owns. Each published checkpoint and volume a region reads is an identity root, whose pages are Clean and never change. Zircon finds a page by walking up a chain of parents. A region's content is a mosaic of many checkpoints, so the walk is one lookup by identity instead. Of Zircon's three kinds of snapshot, only snapshot-on-write is taken: named pages never change, and a fork point's pages are frozen while it holds them.
+
+What stays ours: the arena is a set of memfds, not physical memory. Isolation divides those files by who may read them. The mapping protocol issues commands to another process, not page table writes. The userfaultfd connection is how faults reach the pager on Linux.
+
+Source: plans/zircon-pager-port-2026-10-05.md, Zircon's objects and ours, and Part by part.
+-->
+
+---
+
+# Five departures
+
+<div class="text-xl space-y-4 mt-4">
+
+<div><b>D1</b> — a store into a page a checkpoint holds gets a copy. Zircon makes the page Dirty again in place.</div>
+
+<div><b>D2</b> — a Dirty or AwaitingClean page can be spilled. Zircon never reclaims one.</div>
+
+<div><b>D3</b> — the pause only write-protects. The walk that marks the pages runs after the vCPUs resume.</div>
+
+<div><b>D4</b> — a failed checkpoint gives its pages back Dirty. Zircon has no abandon.</div>
+
+<div><b>D5</b> — a page holds its spill slot before it is Dirty. Zircon allocates when it compresses, and that can fail.</div>
+
+</div>
+
+<v-click>
+
+<div class="mt-8 text-xl">
+
+`spec/writeback` checks them: **SealedBytes · NoLostWrite · Reserved · Budget**. Zircon's rule for D1, put back as a mutant, fails **SealedBytes**.
+
+</div>
+
+</v-click>
+
+<!--
+The port copies Zircon's code except at five places. Each is marked in the ported file beside the line it changes.
+
+D1: Zircon lets a store make an AwaitingClean page Dirty again in place, and the writeback reads bytes that changed after it began. A checkpoint here must hold exactly the bytes of its pause across every page, because a fork's children and a restore read it as one point in time. So the checkpoint keeps its page and the store gets a copy.
+
+D2: RAM is checkpointed only on request, so its dirty set is bounded by the spill and not by writeback. We spill dirty pages, as Zircon compresses an anonymous one.
+
+D3: Zircon's writeback walks every page and then takes write access away. At 4 KiB that walk would be most of the pause. Our pause issues only the range protections, and the walk runs behind it.
+
+D4: a publication that does not land makes each page Dirty again with its own reservation, and revokes its read-only mapping.
+
+D5: a store takes its spill slot before the guest resumes, so a spill never needs space.
+
+spec/writeback models a few pages of one region across a checkpoint: stores, the pause, the walk, eviction, refault, the upload, a fork point, and a publication that lands or fails. SealedBytes: whatever reads a checkpoint reads the bytes of its pause. NoLostWrite: the guest reads what it last stored. Reserved: every private page and every checkpoint's copy owns one reservation. Budget: no reservation is held twice. Zircon's in-place rule fails SealedBytes. The code has the same rules as guards: zircon-dirty-awaiting-clean-in-place and zircon-abandon-leaves-awaiting-clean.
+
+Source: plans/zircon-pager-port-2026-10-05.md, Departures; docs/testing.md, spec/writeback and the zircon guards.
+-->
+
+---
+
+# Testing the port
+
+<v-clicks>
+
+<div class="text-xl space-y-5 mt-4">
+
+- **110 of Zircon's 261 unit tests** ported: page list 55 · VMO 33 · page queues 10 · evictor 6 · compression 4 · address space 2
+- the page list, page queue and VMO cases run at **4 KiB and 2 MiB**, in simulated bubbles
+- the pager, host, migration and simulation suites run under **both cores**, in both arena modes
+- every mutation guard is killed under **both cores**: 314 of 314 runs
+- the port found a **Zircon bug** — zeroing a child past its parent's end left the parent's bytes showing
+
+</div>
+
+</v-clicks>
+
+<!--
+Zircon's VM has 261 unit test cases. 110 of them port. The rest test physical memory, pinning, address spaces, attribution by process and the slab allocator, which do not apply to a pager over memfds. Each ported test has a sentence name, and its comment names the Zircon case it came from. The page list, page queue and VMO cases run in synctest bubbles at both page sizes, because a pager here has one page size for its life, 4 KiB or 2 MiB.
+
+During the port both cores ran behind a switch. The vmmemory, host, vmmigrate, simtest and vmmachine suites ran under each, in the isolated and the shared arena. Every guard in the guard list was killed under both: 314 of 314 runs, 157 guards. On GCE the Linux pager suite passed under the ported core at both page sizes, apart from tests that fail under the old core too.
+
+Mutation testing found a bug Zircon has too. ZeroPagesLocked took a gap as zero when the whole gap did not see the parent. A gap across the parent's end then left its first part showing the parent. The port sends any gap that starts below the parent's end to the walk by offset, and says so beside the line.
+
+Source: plans/zircon-pager-port-2026-10-05.md, Which Zircon tests port; TASK-92.3 to 92.12 notes; docs/testing.md, mutation testing of zirconvm.
+-->
+
+---
+
+# The ported core against the old one
+
+<div class="text-base opacity-70 mb-3">Mac M5 Pro · one test binary, cores alternated · medians of 10 runs</div>
+
+<div class="text-base">
+
+| | old core | ported core | |
+| --- | --- | --- | --- |
+| 4 KiB faults, forward | 347.0 µs | 336.9 µs | −3 % |
+| the walk behind a 4 KiB capture, 1,024 dirty pages | 9.80 ms | 9.06 ms | −8 % |
+| fork fan-out | 156 ms | 156 ms | equal |
+| one 4 KiB fault at random | — | — | **3.6–5 % slower** |
+
+</div>
+
+<v-clicks>
+
+<div class="text-xl mt-6 space-y-3">
+
+- the fault at random's cost is **still being attributed**
+- metadata per page a region reads, one page in 512: **21,828 B → 389 B** with the page list
+- the old core is **being deleted**; only the ported core stays <span class="opacity-70">(owner's decision, 2026-10-06)</span>
+
+</div>
+
+</v-clicks>
+
+<!--
+Metadata: the page list replaced blocks of 256 bindings. A region that reads one page in 512 holds 389 bytes for each page it read, against 21,828 with the blocks. That is from sparse_metadata_test.go, 2026-10-05.
+
+The fault and capture numbers are Go benchmarks on the Mac, from one test binary with the core chosen by SPROUTFS_PAGER_CORE, ten runs of each core alternated. A chain of forward 4 KiB faults is 3 % faster. The walk behind a 4 KiB capture's pause is 8 % faster. A fork fan-out in the migration suite takes 156 ms a run under either core.
+
+A single 4 KiB fault at random is slower. At step 12 it was 3,072 ns against 2,858, or 7.5 %. Giving each page a lock that allocates nothing, and smaller frames and bindings, took it to 3.6 to 5 % slower than before step 12. A CPU profile diff shows no single hot spot. We are still finding where the rest goes.
+
+The plan was to switch the default only after a GCE run of the fault chains, the capture pause, a fork fan-out and a warm restore under both cores. On 2026-10-06 the owner decided to delete the old core now and keep only the ported one, without that gate. Forward faults and the walk are faster; the fault at random is the cost.
+
+Source: TASK-92.4 notes (metadata); TASK-92.12 notes (benchmarks); TASK-92 notes, 2026-10-06 (the decision and the 3.6–5 %).
+-->
+
+---
 layout: section
 ---
 
@@ -1134,7 +1346,7 @@ This is a bulk sequential read, and both paths were limited by the reader's CPU 
 
 <v-clicks>
 
-<div class="text-xl space-y-5 mt-4">
+<div class="text-lg mt-4">
 
 - **no garbage collector** — pins are permanent and the store grows; postponed
 - **an unreachable source that is still listed** — the migration waits; it needs evidence, not a timeout
@@ -1145,6 +1357,7 @@ This is a bulk sequential read, and both paths were limited by the reader's CPU 
 - **the cluster cache is off in the deployment** — its share of windows is 0 until the rollout raises it
 - **shards on network disks** — designed for autoscaling, not built yet
 - **serving copies through memory** — not yet `sendfile`
+- **the page layer ported from Zircon** — a 4 KiB fault at random is 3.6–5 % slower, not yet attributed; not yet timed on GCE
 
 </div>
 
@@ -1168,6 +1381,10 @@ The cluster cache is built and measured, but the deployment turns it on for none
 The cache's disks are still the hosts' own SSDs. Shards on network disks, which keep the cache whole through autoscaling, are designed and tracked as TASK-86, and not built yet.
 
 A host serving stripes still reads them into memory and writes them out. Sending them from the disk with sendfile is the next step, if a plain copy turns out to cost enough to matter.
+
+A single 4 KiB fault at random is 3.6 to 5 % slower under the page layer ported from Zircon. A CPU profile diff shows no single hot spot, and we are still finding where it goes.
+
+The plan measured the ported core against the old one on GCE before switching: fault chains, the capture pause, a fork fan-out and a warm restore. On 2026-10-06 the owner waived that gate, and the old core is being deleted. The ported core has passed the Linux suites on GCE, but no GCE run has timed it against the old one.
 -->
 
 ---
@@ -1186,6 +1403,7 @@ resource            budgets and the disk limiter
 control             control records
 volume              volumes, publication, forks, handoffs
 vmmemory            the pager
+vmmemory/internal/zirconvm   the page layer, ported from Zircon (MIT)
 peer                the peer server: frames, peers, classes, liveness
 vmmigrate           handoffs and the peer backing
 host                one host: checkpoint loop, drain, fork, migration, templates
@@ -1204,6 +1422,8 @@ docs/  plans/                design, decisions, measurements
 Cost scales with what the VM changed, not with what it inherited or its size.
 </div>
 
+<div class="text-base">
+
 | | pause | data moved |
 | --- | --- | --- |
 | disk checkpoint | 3–14 ms | about the disk data changed since the last one |
@@ -1211,6 +1431,16 @@ Cost scales with what the VM changed, not with what it inherited or its size.
 | migration | 0.6–0.75 s | pages no checkpoint has, while the guest runs |
 | restore from the cluster | — | pages from the hosts' disks; a lost host costs nothing |
 | host loss | — | disk writes since the last checkpoint (at most the loss window), and RAM |
+
+</div>
+
+<div class="mt-3 text-lg opacity-80">
+The pager's page layer is a port of Zircon's, with 110 of its tests and five departures a spec checks.
+</div>
+
+<style>
+td, th { padding-top: 0.4rem; padding-bottom: 0.4rem; }
+</style>
 
 <v-click>
 
