@@ -328,11 +328,13 @@ func TestCheckpointRetirementNeverStrandsItsPrivatePage(t *testing.T) {
 func TestSealRetriedAfterAPartialSealCapturesEveryDirtyPage(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 8, LogicalPages: 16, DirtyPages: 8})
-		r, m, b := f.memoryRegion(4)
-		// Two runs: the gap at page 1 is what makes the seal two commands, so
-		// the capture can be abandoned between them.
-		access(t, r, m, 2, true)[0] = 62
+		r, m, b := f.memoryRegion(5)
+		// Two runs: the gap at page 2 is what makes the seal two commands, so
+		// the capture can be abandoned between them. The first run is two
+		// pages, so its undo has a run to walk.
+		access(t, r, m, 3, true)[0] = 62
 		access(t, r, m, 0, true)[0] = 61
+		access(t, r, m, 1, true)[0] = 63
 		vmmemory.SetCheckpointBatchPages(t, 1)
 		ctx, cancel := context.WithCancelCause(t.Context())
 		stop := errors.New("capture abandoned")
@@ -359,10 +361,12 @@ func TestSealRetriedAfterAPartialSealCapturesEveryDirtyPage(t *testing.T) {
 		}
 		// The run it protected lost its mapping, so the guest faults there and
 		// maps it writable again; the run it never reached is as it was.
-		if p, mapped := m.pages[0]; mapped {
-			t.Fatalf("the guest still maps the run the abandoned seal protected, as %+v", p)
+		for page := range uint64(2) {
+			if p, mapped := m.pages[page]; mapped {
+				t.Fatalf("the guest still maps page %d of the run the abandoned seal protected, as %+v", page, p)
+			}
 		}
-		if p, mapped := m.pages[2]; !mapped || !p.writable {
+		if p, mapped := m.pages[3]; !mapped || !p.writable {
 			t.Fatalf("the guest maps the run the abandoned seal never reached as %+v (mapped %t), want writable", p, mapped)
 		}
 		// The failed seal captured nothing, so this store belongs to the retry —
@@ -372,11 +376,12 @@ func TestSealRetriedAfterAPartialSealCapturesEveryDirtyPage(t *testing.T) {
 			t.Fatal(err)
 		}
 		f.mustCheckpoint(r, b)
-		if b.data[0] != 99 || b.data[2*pageSize] != 62 {
-			t.Fatalf("the retried checkpoint published %d and %d, want 99 and 62", b.data[0], b.data[2*pageSize])
+		if b.data[0] != 99 || b.data[pageSize] != 63 || b.data[3*pageSize] != 62 {
+			t.Fatalf("the retried checkpoint published %d, %d and %d, want 99, 63 and 62",
+				b.data[0], b.data[pageSize], b.data[3*pageSize])
 		}
-		if s, err := f.h.Stats(t.Context()); err != nil || s.CheckpointPages != 2 || s.DirtyPages != 0 {
-			t.Fatalf("the retry counted %d checkpoint pages and left %d dirty, want 2 and 0: %v", s.CheckpointPages, s.DirtyPages, err)
+		if s, err := f.h.Stats(t.Context()); err != nil || s.CheckpointPages != 3 || s.DirtyPages != 0 {
+			t.Fatalf("the retry counted %d checkpoint pages and left %d dirty, want 3 and 0: %v", s.CheckpointPages, s.DirtyPages, err)
 		}
 	})
 }
