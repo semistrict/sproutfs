@@ -329,8 +329,16 @@ func newHostileFixtureIn(t testing.TB, mode vmmemory.ArenaMode) *hostileFixture 
 // memory regions of hostilePages pages each.
 func newHostileFixtureFor(t testing.TB, mode vmmemory.ArenaMode, regions int) *hostileFixture {
 	t.Helper()
+	return newHostileFixtureReading(t, mode, regions, 4)
+}
+
+// newHostileFixtureReading is newHostileFixtureFor whose faults read runs of
+// readAhead pages. A run of one page reads each faulting page alone, so no
+// prefetch behind a fault sends the client a mapping of its own.
+func newHostileFixtureReading(t testing.TB, mode vmmemory.ArenaMode, regions, readAhead int) *hostileFixture {
+	t.Helper()
 	cfg := vmmemory.Config{PageSize: hostilePage, ResidentPages: regions * hostilePages,
-		LogicalPages: regions * hostilePages, DirtyPages: regions * hostilePages, ReadAheadPages: 4,
+		LogicalPages: regions * hostilePages, DirtyPages: regions * hostilePages, ReadAheadPages: readAhead,
 		WriteAheadPages: 1, Arena: mode, Core: suiteCore}
 	h, arena := kernelHostArenaIn(t, cfg)
 	fx := &hostileFixture{h: h, arena: arena}
@@ -1023,10 +1031,14 @@ func errorSays(err error, says string) bool {
 // client that refuses every command would keep the pager serving it for as
 // long as it lives.
 func TestARefusedFaultWaitsForARevocation(t *testing.T) {
-	fx := newHostileFixture(t)
+	// Each fault reads its page alone. A prefetch behind a fault would map
+	// what it read with a command of its own, which the client refuses too,
+	// and whether it lands before the client hangs up is a race this test
+	// is not about.
+	fx := newHostileFixtureReading(t, suiteArena, 4, 1)
 	before := kernelStats(t, fx.h)
-	// The two faults are in different read-ahead windows, so they are served
-	// at once. After the READY, the client refuses every command.
+	// The two faults are on different pages, so they are served at once.
+	// After the READY, the client refuses every command.
 	end := fx.round(t, hostileScript{answers: []answer{acknowledge, refuse}, ops: []hostileOp{
 		{opFault, 0, 0}, {opFault, 4, 0},
 		{opAwait, 0, 0}, {opAwait, 0, 0},

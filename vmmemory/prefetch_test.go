@@ -362,10 +362,24 @@ func TestAPrefetchTakesOnlyFreeSlots(t *testing.T) {
 // prefetch and takes one of its slots instead of evicting a page the guest
 // is using. It waits for nothing but its own page's read and the cancelled
 // prefetch's slots: held, the cancelled prefetch gives them back a moment
-// after its read ends, and the fault waits that moment rather than evict.
+// after its read ends, and the fault waits that moment rather than evict. The
+// last case gives them back and settles between the fault's look for a free
+// slot and its eviction step, which then finds no prefetch to wait for and
+// must take a free slot rather than evict.
 func TestAnAllocationCancelsAPrefetchRatherThanEvict(t *testing.T) {
-	for _, held := range []time.Duration{0, time.Millisecond} {
-		t.Run(fmt.Sprintf("settle-after=%v", held), func(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		held time.Duration
+		// settleBeforeEvicting runs everything else in the bubble between
+		// the fault's look for a free slot and its eviction step.
+		settleBeforeEvicting bool
+	}{
+		{name: "settle-after=0s"},
+		{name: "settle-after=1ms", held: time.Millisecond},
+		{name: "settle-before-evicting", settleBeforeEvicting: true},
+	} {
+		held := c.held
+		t.Run(c.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 8, LogicalPages: 32, DirtyPages: 8,
 					ReadAheadPages: 4, PrefetchRuns: 1})
@@ -383,6 +397,29 @@ func TestAnAllocationCancelsAPrefetchRatherThanEvict(t *testing.T) {
 					if err := r.Fault(f.ctx, page, false); err != nil {
 						t.Fatal(err)
 					}
+				}
+				if c.settleBeforeEvicting {
+					// The cancelled prefetch parks before it gives its slots
+					// back. The fault's first look finds no slot and cancels
+					// the prefetch, so every later look comes after the
+					// cancel: the second waits for the prefetch to park, lets
+					// it give its slots back and settle, and waits until it
+					// has, before the eviction step.
+					parked, looked := make(chan struct{}), make(chan struct{})
+					vmmemory.SetPrefetchSettleSeam(t, sync.OnceFunc(func() {
+						close(parked)
+						<-looked
+					}))
+					looks := 0
+					vmmemory.SetAllocateSeam(t, func() {
+						looks++
+						if looks != 2 {
+							return
+						}
+						<-parked
+						close(looked)
+						synctest.Wait()
+					})
 				}
 				started := time.Now()
 				if err := r.Fault(f.ctx, 20, false); err != nil {

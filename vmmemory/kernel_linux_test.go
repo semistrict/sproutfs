@@ -866,10 +866,16 @@ func TestManagedPagerReadAheadKeepsZerosAndDataSeparate(t *testing.T) {
 		backing = append(backing, b)
 	}
 	p := startNative(t, h, 4, backing...)
+	// The fault reads its own page and prefetches the rest of the data run
+	// behind it (vmmemory/faultfirst.go), two loads of one page each. The
+	// zero pages around the run are read by neither.
 	p.request(fmt.Sprintf("kvmread 0 %d", hugePageSize), "kvm 9")
+	if err := h.SettlePrefetches(t.Context()); err != nil {
+		t.Fatal(err)
+	}
 	before, _ := h.Stats(t.Context())
-	if before.Loads != 1 || before.LoadedPages != 2 {
-		t.Fatalf("read-ahead did not load just the data run: %+v", before)
+	if before.Loads != 2 || before.LoadedPages != 2 || before.Prefetches != 1 {
+		t.Fatalf("the fault and its prefetch did not load just the data run: %+v", before)
 	}
 	p.request("kvmread 0 0", "kvm 0")
 	p.request(fmt.Sprintf("kvmread 0 %d", 2*hugePageSize), "kvm 10")

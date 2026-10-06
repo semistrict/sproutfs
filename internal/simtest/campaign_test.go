@@ -73,6 +73,16 @@ func newCrashRuntime(seed uint64) *sim.Runtime {
 			BytesPerSecond: 1 << 40}})
 }
 
+// checkDeployment runs the deployment check over what the store holds once a
+// run is over. It turns the fault sites off first: the check reads the store
+// through the same code the hosts do, and a read a site failed on purpose
+// would be reported as an object the store holds wrong.
+func checkDeployment(ctx context.Context, runtime *sim.Runtime, prefix platform.ObjectPrefix,
+	allow ...volume.Allowance) error {
+	runtime.SetBuggify(false)
+	return volume.CheckDeployment(context.WithoutCancel(ctx), runtime.ObjectStore(), prefix, allow...)
+}
+
 func newPrefix(t *testing.T, text string) platform.ObjectPrefix {
 	t.Helper()
 	prefix, err := platform.NewObjectPrefix(text)
@@ -137,7 +147,7 @@ func runShakenTopologyCampaign(t *testing.T, seed uint64, buggify bool, cache ca
 	// publication interrupted between its parts and its index, a VM deleted
 	// after it was forked leaves the checkpoints its pin protects, and a sweep the
 	// store refused leaves the checkpoint it replaced behind.
-	if err := volume.CheckDeployment(context.WithoutCancel(ctx), runtime.ObjectStore(), prefix,
+	if err := checkDeployment(ctx, runtime, prefix,
 		volume.AllowSupersededEpoch, volume.AllowUnpublishedIndex, volume.AllowUnrecordedVM,
 		volume.AllowUnreferencedCheckpoint); err != nil {
 		t.Errorf("seed=%d: %v", seed, err)

@@ -421,12 +421,22 @@ func (h *Host) allocate(ctx context.Context, r *MemoryRegion, f *arenaFile, plac
 		} else if slot >= 0 {
 			capacityBlocked = true
 		}
+		// A slot that comes free before the eviction step ends the need only
+		// where the look found none: one the budget refused needs a page of
+		// the budget, which only an eviction gives back.
+		req.file = nil
+		if place == nil && !capacityBlocked {
+			req.file = f
+		}
 		h.mu.Unlock()
+		if allocateSeam != nil {
+			allocateSeam()
+		}
 		evicted, err := h.evictOne(ctx, req)
 		if err != nil {
 			return fileSlot{}, err
 		}
-		if evicted {
+		if evicted || req.freed {
 			continue
 		}
 		if req.prefetches {
@@ -466,6 +476,10 @@ func (h *Host) allocate(ctx context.Context, r *MemoryRegion, f *arenaFile, plac
 		}
 	}
 }
+
+// allocateSeam runs between an allocation's look for a free slot and its
+// eviction step, so a test can put another goroutine's work in that moment.
+var allocateSeam func()
 
 // fairLocked reports whether evicting pg to make room for a page of r leaves
 // every other protected memory region its pages. Caller holds h.mu.

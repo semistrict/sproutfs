@@ -47,6 +47,15 @@ func (z *zirconHost) reclaimStep(ctx context.Context, req *evictionRequest) (zir
 			return zirconvm.ReclaimAttempt{}, false, nil
 		}
 	}
+	// A slot that came free after the allocation looked, as a cancelled
+	// prefetch's do when it settles, is taken rather than a page a guest
+	// maps, as in the current core.
+	if !req.preferEviction && req.file != nil && h.freeLocked(req.file) > 0 &&
+		!sim.Bug(ctx, "pager-evict-past-a-freed-slot") {
+		req.freed = true
+		h.mu.Unlock()
+		return zirconvm.ReclaimAttempt{}, false, nil
+	}
 	page := z.peekVictimLocked(req)
 	req.changed = h.changed
 	// Slots reserved by a concurrent load are in no queue yet.

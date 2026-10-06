@@ -144,7 +144,7 @@ func TestAKilledHostRestartsOnItsOwnDiskAndRewindsToItsLastCheckpoint(t *testing
 				if err := world.Close(ctx); err != nil {
 					t.Error(err)
 				}
-				if err := volume.CheckDeployment(context.WithoutCancel(ctx), runtime.ObjectStore(), prefix,
+				if err := checkDeployment(ctx, runtime, prefix,
 					volume.AllowSupersededEpoch, volume.AllowUnpublishedIndex,
 					volume.AllowUnreferencedCheckpoint, volume.AllowUnrecordedVM); err != nil {
 					t.Error(err)
@@ -220,7 +220,7 @@ func TestAKilledHostIsTakenOverByAnotherHostAtItsLastCheckpoint(t *testing.T) {
 		if err := world.Close(ctx); err != nil {
 			t.Error(err)
 		}
-		if err := volume.CheckDeployment(context.WithoutCancel(ctx), runtime.ObjectStore(), prefix,
+		if err := checkDeployment(ctx, runtime, prefix,
 			volume.AllowSupersededEpoch, volume.AllowUnpublishedIndex,
 			volume.AllowUnreferencedCheckpoint, volume.AllowUnrecordedVM); err != nil {
 			t.Error(err)

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"testing/synctest"
+	"time"
 
 	"github.com/semistrict/sproutfs/checkpoint"
 	"github.com/semistrict/sproutfs/control"
@@ -299,6 +300,45 @@ func TestAPullThatDoesNotFitIsRefusedAndTheStoreServes(t *testing.T) {
 	if _, err := none.store.Pull(t.Context(), none.index); !errors.Is(err, checkpoint.ErrNoDisk) {
 		t.Fatalf("a pull on a host that keeps no disk returned %v, want %v", err, checkpoint.ErrNoDisk)
 	}
+}
+
+// A read of a pulled page whose caller gives up asks nothing of the store.
+// The caller's leaving cancels the shared fetch, the disk's read of the page
+// then fails for that, and a failed read of the disk is otherwise read from
+// the store. On 2026-10-05 a give-back's compare on GCE made exactly that
+// request of a pulled template page, after a prefetch cancelled under
+// pressure had left the fetch it started.
+func TestAReadGivenUpReadsNothingFromTheStore(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		// The disk takes a moment to read, so the caller can leave while it
+		// does.
+		f := newPullFixtureWith(t, 64<<20, cachedPages, []uint64{0, 1, 2, 3},
+			func(_ *sim.Runtime, disk *sim.DiskConfig, _ *checkpoint.CacheConfig) {
+				disk.ReadLatency = time.Millisecond
+			})
+		pull := f.pull(t)
+		if err := pull.Wait(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		f.objects.gets.Store(0)
+		ctx, cancel := context.WithCancel(f.ctx(t))
+		read := make(chan error, 1)
+		go func() {
+			got := make([]byte, checkpoint.PageSize2MiB)
+			read <- f.store.Read(ctx, f.index, "root", 2*checkpoint.PageSize2MiB, got)
+		}()
+		// The read is under way on the disk; its caller gives up.
+		synctest.Wait()
+		cancel()
+		if err := <-read; !errors.Is(err, context.Canceled) {
+			t.Fatalf("a read whose caller gave up returned %v, want %v", err, context.Canceled)
+		}
+		// The fetch its leaving cancelled runs on, and ends.
+		synctest.Wait()
+		if gets := f.objects.gets.Load(); gets != 0 {
+			t.Fatalf("a read whose caller gave up made %d requests of the store, want none", gets)
+		}
+	})
 }
 
 // Losing the disk loses nothing: the store still holds everything a pull copied,

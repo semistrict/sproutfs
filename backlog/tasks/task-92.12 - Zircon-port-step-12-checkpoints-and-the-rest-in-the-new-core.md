@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-05 05:10'
-updated_date: '2026-10-05 16:47'
+updated_date: '2026-10-05 17:20'
 labels:
   - pager
   - zircon-port
@@ -62,4 +62,5 @@ Commit 7 (f3861d1f), found by the GCE run: Connect admitted a session's region w
 Commit 8 (c10890a7): tests for Gremlins survivors (a failed seal's undo, ReadResident of an evicted dirty page from the spill, a changed cold copy compared once).
 Benchmarks (Mac M5 Pro, one test binary, cores alternated by SPROUTFS_PAGER_CORE, 10 runs each, medians, load average 3.7-5.1, median 4.6): BenchmarkARandom4KiBFault current 2858 ns vs zircon 3072 ns (+7.5%; 2866 vs 3068 against main's binaries alternated at load 5.1: step 12 added it, current unchanged; same 38 allocs after the marks change, +400 B/op from bigger frames and bindings; no single hot spot in a CPU profile diff); BenchmarkAForward4KiBFault 347.0 us vs 336.9 us (-3%); BenchmarkA4KiBCapturePause pause 15.8 us vs 17.0 us, walk 9.80 ms vs 9.06 ms (-8%); vmmigrate TestForkFanOutChildrenShareThePagesTheyInherit 156 ms vs 156 ms a run.
 Pre-existing, on main too and under either core: SOAK TestTheCampaignsReachTheirProbes fails (membership violations on seeds 2/8/23, bounded/* and vmmemory/prefetch-random probes not registered, control/reply-reconciled now reached); TestAnAllocationCancelsAPrefetchRatherThanEvict flakes under -race (5 of 800 on main); three Linux tests fail on GCE under the current core on main (TestARefusedFaultWaitsForARevocation, whose command count varies 4-5 under either core; TestManagedPagerReadAheadKeepsZerosAndDataSeparate; TestManagedPagerSmallRAMPageOwnsOnePageAndMapsARunAtOnce); two Linux tests time out accepting the client when built with -race, under either core.
+2026-10-05: the step 12 agent stopped at the account's weekly usage limit. Its branch worktree-agent-a46377a0b1e5763e3 holds 8 unmerged commits (c8aaf509..c10890a7: checkpoints and eviction, cold copies and give-back, isolation/moves/fork files, serving/handoff/peer backings, both-core suites and guards, capture-pause bench, serving in the pager's core, survivor tests) plus uncommitted backlog notes. Not yet verified or merged; GCE was left clean. Resume from that branch: merge main, run just check, finish docs and Gremlins, report.
 <!-- SECTION:NOTES:END -->

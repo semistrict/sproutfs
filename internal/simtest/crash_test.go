@@ -248,7 +248,7 @@ func runCrashScenario(t *testing.T, runtime *sim.Runtime, seed uint64, name stri
 	// checkpoint a takeover opened on, the parts of a publication whose index
 	// never landed, a checkpoint no sweep came back for, and the objects of a
 	// child whose record the destination never wrote.
-	if err := volume.CheckDeployment(context.WithoutCancel(ctx), runtime.ObjectStore(), prefix,
+	if err := checkDeployment(ctx, runtime, prefix,
 		volume.AllowSupersededEpoch, volume.AllowUnpublishedIndex,
 		volume.AllowUnreferencedCheckpoint, volume.AllowUnrecordedVM); err != nil {
 		t.Errorf("seed=%d %s: %v", seed, name, err)
