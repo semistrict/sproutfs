@@ -34,8 +34,9 @@ type arenaFile struct {
 	owner *MemoryRegion
 	// The rest belongs to an isolated arena and is guarded by Host.mu; see
 	// isolation.go. shared marks a tenant's shared file, and tenant names the
-	// tenant. pages is the resident page at each held slot of a private or a
-	// fork file, which are the files the pager looks into by slot. digests is
+	// tenant. frames is the page at each held slot of a private or a fork
+	// file, which are the files the pager looks into by slot, and nil for
+	// every other file. digests is
 	// what the upload read of each published page of a private file hashed
 	// to. holders is every memory region a shared or a fork file was given to,
 	// by the number it was given under. orphaned marks a file nothing will be
@@ -44,13 +45,10 @@ type arenaFile struct {
 	// ended. Such a file is given back with its last page.
 	shared   bool
 	tenant   string
-	pages    map[int]*resident
+	frames   map[int]*zirconvm.VmPage
 	digests  map[int][32]byte
 	holders  map[*MemoryRegion]int
 	orphaned bool
-	// frames is the zircon core's page at each held slot of a private or a
-	// fork file, as pages is the current core's. Guarded by Host.mu.
-	frames map[int]*zirconvm.VmPage
 }
 
 // keepFile keeps one file the arena made, whose offsets space says which hold
@@ -285,8 +283,8 @@ func (h *Host) allocateFreeFrom(prefer fileSlot, want int) (fileSlot, int) {
 
 // allocate returns one slot of f for a page of r, evicting a page by the
 // evictor's synchronous path when the arena is full. It waits for progress
-// rather than failing while every candidate is temporarily busy. See
-// evictor.go for which page goes.
+// rather than failing while every candidate is temporarily busy. See evict.go
+// for which page goes.
 //
 // place, where it is not nil, is where the slot must be: the placement rule has
 // already decided this page's slot, so only the page budget is at stake and
@@ -412,9 +410,7 @@ func (h *Host) protectedLocked(q *MemoryRegion, share int) bool {
 // idle pages itself, and another consumer that finds the lock taken waits for
 // the budget's next release, which a pager this busy is about to make.
 func (h *Host) reclaimIdle(ctx context.Context, _ int64) (bool, error) {
-	z := h.zircon
-
-	return z.reclaimIdle(), nil
+	return h.takeIdleIf(h.mu.TryLock, nil), nil
 }
 
 // DropIdle gives up every idle page this host can take without waiting, and
@@ -422,7 +418,33 @@ func (h *Host) reclaimIdle(ctx context.Context, _ int64) (bool, error) {
 // kept for the next VM to inherit calls it; so does a test whose machine must
 // fault every page from scratch.
 func (h *Host) DropIdle(ctx context.Context) (int, error) {
-	z := h.zircon
+	dropped := 0
+	for h.takeIdle() {
+		dropped++
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return dropped, h.err
+}
 
-	return z.dropIdle(ctx)
+// abandonSlots gives back reserved slots whose contents failed to arrive, or
+// that their reserver turned out not to need. A failed write may have allocated
+// partial contents, so each is punched before it is accounted free; a failed
+// punch makes the host terminal.
+func (h *Host) abandonSlots(ctx context.Context, at fileSlot, count int, err error) error {
+	var cleanup error
+	for i := range count {
+		cleanup = errors.Join(cleanup, at.file.Release(context.WithoutCancel(ctx), at.slot+i))
+	}
+	h.mu.Lock()
+	if cleanup != nil {
+		h.err = errors.Join(err, cleanup)
+	} else {
+		for i := range count {
+			h.putFree(at.plus(i))
+		}
+	}
+	h.signal()
+	h.mu.Unlock()
+	return errors.Join(err, cleanup)
 }

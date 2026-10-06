@@ -870,7 +870,7 @@ A window's envelopes are split with Reed-Solomon, klauspost/reedsolomon, into k 
 
 A fill puts stripe i on rank i, but no reader relies on that. Ranks shift when hosts join and leave, so a holder may hold any index. A reader asks k+1 holders, picked by a hash of reader and window so the readers of a hot page spread over every holder, and rebuilds from the first k distinct indices that arrive. A miss is replaced at once. If k have not arrived after the 95th percentile of recent reads, it asks the rest, within a budget that grows a twentieth of a request per fast read.
 
-Every stripe carries its key, index, code and CRC32C, and the rebuilt envelope carries its SHA-256. A wrong stripe is never returned: another set of k is tried, and its holder is told to drop it.
+Every stripe carries its key, index, code and CRC32C, and the rebuilt envelope carries its XXH3-128. A wrong stripe is never returned: another set of k is tried, and its holder is told to drop it.
 -->
 
 ---

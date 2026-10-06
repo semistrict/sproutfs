@@ -2,11 +2,36 @@ package blob_test
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"math/rand/v2"
 	"testing"
 
 	"github.com/semistrict/sproutfs/internal/blob"
+	"github.com/zeebo/xxh3"
 )
+
+// BenchmarkDigest is the check of one 2 MiB page alone, under the digest an
+// envelope carries and under the SHA-256 that format 1 carried, side by side
+// under the same load.
+func BenchmarkDigest(b *testing.B) {
+	page := make([]byte, 2<<20)
+	_, _ = rand.NewChaCha8([32]byte{9}).Read(page)
+	var sink [32]byte
+	for _, digest := range []struct {
+		name string
+		sum  func([]byte)
+	}{
+		{"xxh3-128", func(data []byte) { sum := xxh3.Hash128(data).Bytes(); copy(sink[:], sum[:]) }},
+		{"sha256", func(data []byte) { sink = sha256.Sum256(data) }},
+	} {
+		b.Run(digest.name, func(b *testing.B) {
+			b.SetBytes(int64(len(page)))
+			for b.Loop() {
+				digest.sum(page)
+			}
+		})
+	}
+}
 
 // These controls measure codec costs, not a representative guest workload.
 func BenchmarkBlob(b *testing.B) {

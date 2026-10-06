@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"sort"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/semistrict/sproutfs/vmmemory/internal/zirconvm"
 )
 
 // A write fault is not always a store. KVM finishes a guest's cold read from a
@@ -37,13 +39,8 @@ import (
 // the set this checkpoint will list, so what a settle leaves does not depend on
 // the order they finish in.
 func (c *MemoryRegionCheckpoint) Settle(ctx context.Context) (int, error) {
-	if z := c.zircon(); z != nil {
-		return z.settle(ctx, c)
-	}
 	r := c.memoryRegion
-	// The bindings must stay in existence for the whole walk, which is what a
-	// fault holds the memory region live for; nothing wider is taken, so a seal, a
-	// retire or a detach waits for this settle and never for a page of it.
+	h := r.host
 	if err := r.live.RLock(ctx); err != nil {
 		return 0, err
 	}
@@ -53,23 +50,19 @@ func (c *MemoryRegionCheckpoint) Settle(ctx context.Context) (int, error) {
 	}
 	select {
 	case <-c.done:
-		// Retired, abandoned or discarded: these pages are the guest's own
-		// state again or the volume's, and there is nothing left to settle.
 		return 0, nil
 	default:
 	}
 	if c.held.Load() {
-		// A fork point's seal, which publishes nothing and whose pages its
-		// children are reading. Taking one out from under them would take away
-		// a page they map; the next checkpoint of each settles it instead.
+		// A fork point's seal, whose pages its children are reading.
 		return 0, nil
 	}
-	held := c.sealedPages()
-	equal := make([]*resident, len(held))
-	dropped := make([]bool, len(held))
-	failures := make([]error, len(held))
-	workers := min(max(r.host.cfg.SettleWorkers, 1), len(held))
-	measuring := r.host.measuring()
+	copies := c.copiesOf()
+	equal := make([]*zirconvm.VmPage, len(copies))
+	dropped := make([]bool, len(copies))
+	failures := make([]error, len(copies))
+	workers := min(max(h.cfg.SettleWorkers, 1), len(copies))
+	measuring := h.measuring()
 	var changed, measured, unmeasured atomic.Uint64
 	var next atomic.Int64
 	var wait sync.WaitGroup
@@ -80,11 +73,11 @@ func (c *MemoryRegionCheckpoint) Settle(ctx context.Context) (int, error) {
 			var worker settler
 			for {
 				i := int(next.Add(1)) - 1
-				if i >= len(held) {
+				if i >= len(copies) {
 					return
 				}
 				if measuring {
-					blocks, known, err := worker.changedBlocks(ctx, c, held[i])
+					blocks, known, err := r.changedBlocks(ctx, copies[i])
 					if err != nil {
 						failures[i] = err
 						continue
@@ -96,28 +89,21 @@ func (c *MemoryRegionCheckpoint) Settle(ctx context.Context) (int, error) {
 						unmeasured.Add(1)
 					}
 				}
-				equal[i], failures[i] = worker.compare(ctx, c, held[i])
+				equal[i], failures[i] = r.compare(ctx, &worker, copies[i])
 			}
 		}()
 	}
 	wait.Wait()
 	if measuring {
-		h := r.host
 		h.mu.Lock()
 		h.stats.ChangedBlocks += changed.Load()
 		h.stats.MeasuredPages += measured.Load()
 		h.stats.UnmeasuredPages += unmeasured.Load()
 		h.mu.Unlock()
 	}
-	// The comparison holds no page across the walk, so what it decided is
-	// applied afterwards, in page order and in bounded batches: a settle of a
-	// guest's whole working set is thousands of pages at 4 KiB, and revoking
-	// them one round trip at a time is a stall the guest feels.
-	if err := c.reshare(ctx, held, equal, dropped); err != nil {
+	if err := r.reshare(ctx, c, copies, equal, dropped); err != nil {
 		failures = append(failures, err)
 	}
-	// The outcome is read back in page order, so a settle that failed reports
-	// the same thing however its workers were scheduled.
 	unchanged := 0
 	for _, was := range dropped {
 		if was {
@@ -125,13 +111,9 @@ func (c *MemoryRegionCheckpoint) Settle(ctx context.Context) (int, error) {
 		}
 	}
 	if unchanged > 0 {
-		c.forget(dropped)
-		h := r.host
+		c.forgetCopies(dropped)
 		h.mu.Lock()
 		h.stats.UnchangedPages += uint64(unchanged)
-		// A store waiting for the dirty budget or for this VM's loss window
-		// waits on the host's own signal, and a settle that emptied the
-		// checkpoint is exactly as good to it as a checkpoint that landed.
 		h.signal()
 		h.mu.Unlock()
 	}
@@ -161,73 +143,60 @@ func (s *settler) equal(ctx context.Context, h *Host, first, second fileSlot) (b
 	return bytes.Equal(s.first, s.second), nil
 }
 
-// compare reports the page one sealed page was copied from when the two hold
-// the same bytes, and nil when this page stays in the checkpoint. It mutates
-// nothing: what it decides is applied by reshare, in page order.
-//
-// The two locks are taken origin first: an origin holds a published identity
-// and a sealed page is private, a clean page never becomes private, and no
-// other transition waits for a clean page while holding a private one — so
-// clean before private is one order for every settle at once.
-func (s *settler) compare(ctx context.Context, c *MemoryRegionCheckpoint, held *binding) (*resident, error) {
-	r := c.memoryRegion
+// since is when the oldest write this checkpoint still holds was made, zero
+// where it holds none. A settle can empty the set, so it is read under the
+// checkpoint's own lock rather than off the field.
+func (c *MemoryRegionCheckpoint) since() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.dirtySince
+}
+
+// compare reports the origin of a checkpoint's copy when the two hold the
+// same bytes, and nil where the copy stays in the checkpoint. It changes
+// nothing; reshare applies what it decided.
+func (r *MemoryRegion) compare(ctx context.Context, s *settler, held *binding) (*zirconvm.VmPage, error) {
 	h := r.host
-	origin := r.originOf(held)
-	if origin == nil || held.spill.none() {
+	r.bindingsMu.Lock()
+	origin, spill := held.origin, held.spill
+	r.bindingsMu.Unlock()
+	if origin == nil || spill.none() {
 		return nil, nil
 	}
 	if h.wholeRange(r, held.index) {
-		// The half-private rule filled this range, so it is one mapping and one
-		// write-protect command at a seal. A page handed back here would break
-		// it into three again, for a page the guest is about to write anyway: a
-		// whole range stays whole.
+		// A range the half-private rule filled stays whole.
 		return nil, nil
 	}
-	if err := origin.mu.Lock(ctx); err != nil {
+	// The origin first, as every comparison takes them: clean before private.
+	if err := r.host.lockPage(ctx, origin); err != nil {
 		return nil, err
 	}
-	defer h.unlock(origin)
-	if !origin.published() || origin.slot < 0 {
-		// Evicted, or no longer reachable by the name whose bytes these were:
-		// there is nothing to compare against and nothing to re-share onto, so
-		// the page is published exactly as it would have been before.
+	defer r.host.unlockPage(origin)
+	if !r.host.published(origin) {
+		// Evicted, or no longer its identity's page: there is nothing to
+		// compare with, and the page is published as it would have been.
 		return nil, nil
 	}
-	pg, err := h.current(ctx, held)
-	if err != nil {
+	page, err := r.host.lockedPage(ctx, held)
+	if err != nil || page == nil {
+		// Spilled since the seal, which is store I/O the settle does not do.
 		return nil, err
 	}
-	if pg == nil {
-		// Spilled since the seal. Reading it back is store I/O the settle does
-		// not do, so the page is published as it is.
-		return nil, nil
-	}
-	defer h.unlock(pg)
-	same, err := s.equal(ctx, h, origin.fileSlot, pg.fileSlot)
+	defer r.host.unlockPage(page)
+	same, err := s.equal(ctx, h, frameOf(origin).fileSlot, frameOf(page).fileSlot)
 	if err != nil || !same {
 		return nil, err
 	}
 	return origin, nil
 }
 
-// reshare applies what the comparison decided, in bounded batches under the
-// memory region: every page of a batch is revoked by one command per run of
-// consecutive pages, and only then does each page leave the checkpoint. It
-// records in dropped which pages did.
-//
-// The memory region is taken exclusively, as a retire takes it and for the same
-// reason: the pages are revoked as a batch, so no fault may be part way
-// through one of them, and the memory region is given back between batches so a fault
-// waits for one batch rather than for the walk. Nothing here reads a byte.
-//
-// The comparison released its locks, so a guest may have stored into one of
-// these pages since. That store copied away from the checkpoint's copy, which
-// still holds the bytes that were compared, so the copy still leaves the
-// checkpoint — the guest simply keeps the page it made instead of going back
-// to the origin.
-func (c *MemoryRegionCheckpoint) reshare(ctx context.Context, held []*binding, equal []*resident, dropped []bool) error {
-	r := c.memoryRegion
-	pending := make([]int, 0, len(held))
+// reshare applies what the comparison decided, in bounded batches with the
+// region held exclusively: every page of a batch is revoked by one command
+// per run, and only then does each leave the checkpoint. It records in
+// dropped which did.
+func (r *MemoryRegion) reshare(ctx context.Context, c *MemoryRegionCheckpoint, copies []*binding,
+	equal []*zirconvm.VmPage, dropped []bool) error {
+	pending := make([]int, 0, len(copies))
 	for i, origin := range equal {
 		if origin != nil {
 			pending = append(pending, i)
@@ -244,7 +213,7 @@ func (c *MemoryRegionCheckpoint) reshare(ctx context.Context, held []*binding, e
 			if err := r.ready(); err != nil {
 				return err
 			}
-			return c.reshareBatch(ctx, held, equal, dropped, batch)
+			return r.reshareBatch(ctx, copies, equal, dropped, batch)
 		}()
 		if err != nil {
 			return err
@@ -254,26 +223,21 @@ func (c *MemoryRegionCheckpoint) reshare(ctx context.Context, held []*binding, e
 	return nil
 }
 
-// reshareBatch is one batch of reshare, with the memory region held exclusively. It
-// locks every page it will touch for the whole batch, so the revocation that
-// covers them all is issued while none of them can change underneath it.
-func (c *MemoryRegionCheckpoint) reshareBatch(ctx context.Context, held []*binding, equal []*resident, dropped []bool, batch []int) error {
-	r := c.memoryRegion
-	h := r.host
-	locked := make(map[*resident]bool, 2*len(batch))
+// reshareBatch is one batch of reshare, with the region held exclusively.
+// It holds every page it will touch for the whole batch, so the revocation
+// that covers them all is issued while none of them can change.
+func (r *MemoryRegion) reshareBatch(ctx context.Context, copies []*binding, equal []*zirconvm.VmPage,
+	dropped []bool, batch []int) error {
+	locked := make(map[*zirconvm.VmPage]bool, 2*len(batch))
 	defer func() {
-		pages := make([]*resident, 0, len(locked))
-		for pg := range locked {
-			pages = append(pages, pg)
+		for page := range locked {
+			r.host.unlockPage(page)
 		}
-		h.unlockAll(pages)
 	}()
-	// The pages this batch re-shares, and the guest bindings whose mappings of
-	// them the revocation below takes away.
 	type ready struct {
 		index  int
-		copied *resident
-		origin *resident
+		copied *zirconvm.VmPage
+		origin *zirconvm.VmPage
 		guest  *binding
 	}
 	var applying []ready
@@ -281,32 +245,28 @@ func (c *MemoryRegionCheckpoint) reshareBatch(ctx context.Context, held []*bindi
 	for _, i := range batch {
 		origin := equal[i]
 		if !locked[origin] {
-			if err := origin.mu.Lock(ctx); err != nil {
+			if err := r.host.lockPage(ctx, origin); err != nil {
 				return err
 			}
 			locked[origin] = true
 		}
-		if !origin.published() || origin.slot < 0 {
-			// Evicted since the comparison: there is nothing to re-share onto,
-			// so this page is published as it would have been.
+		if !r.host.published(origin) {
 			continue
 		}
-		pg, err := h.current(ctx, held[i])
+		page, err := r.host.lockedPage(ctx, copies[i])
 		if err != nil {
 			return err
 		}
-		if pg == nil {
-			continue // spilled since the comparison
+		if page == nil {
+			continue
 		}
-		if locked[pg] {
-			// One resident page reached twice in a batch is one this walk has
-			// already taken; current returned it locked a second time.
-			h.unlock(pg)
+		if locked[page] {
+			r.host.unlockPage(page)
 		} else {
-			locked[pg] = true
+			locked[page] = true
 		}
-		entry := ready{index: i, copied: pg, origin: origin}
-		if b := r.lookupBinding(held[i].index); b != nil && r.heldBy(held[i].index, held[i]) {
+		entry := ready{index: i, copied: page, origin: origin}
+		if b := r.lookupBinding(copies[i].index); b != nil && r.checkpointCopy(b) == copies[i] {
 			entry.guest = b
 			if r.isMapped(b) {
 				guests = append(guests, b)
@@ -314,14 +274,13 @@ func (c *MemoryRegionCheckpoint) reshareBatch(ctx context.Context, held []*bindi
 		}
 		applying = append(applying, entry)
 	}
-	// One command per run of consecutive pages. The guest maps the copy it is
-	// losing, so the mapping is taken away rather than swapped underneath it:
-	// see drop.
+	// The guest's mapping of the copy it is losing is taken away rather than
+	// swapped underneath it: see dropCopy.
 	if err := r.revokeBindings(ctx, guests); err != nil {
 		return err
 	}
 	for _, entry := range applying {
-		if err := c.drop(ctx, held[entry.index], entry.copied, entry.origin, entry.guest); err != nil {
+		if err := r.dropCopy(ctx, copies[entry.index], entry.copied, entry.origin, entry.guest); err != nil {
 			return err
 		}
 		dropped[entry.index] = true
@@ -329,102 +288,75 @@ func (c *MemoryRegionCheckpoint) reshareBatch(ctx context.Context, held []*bindi
 	return nil
 }
 
-// drop takes one unchanged page out of the checkpoint. A guest that still
-// shares the checkpoint's copy — which is what guest names, or nil where the
-// guest has stored into the page since — is put back on the origin: the
-// binding takes the origin as its resident page and becomes clean. Its mapping
-// of the copy has already been taken away by the batch's revocation, because
-// the page a guest maps is taken away and never swapped underneath it: a
-// revocation is the one replacement that installs no page table and wakes
-// nothing, and the guest's next access reaches the origin through the fault
-// path, under the window that serializes every mapping of that page against
-// every other. Installing the origin in its place — one command, no fence, the
-// bytes identical and the page write-protected either way — is what the settle
-// used to do. Revoking instead lowered the rate of a fan-out panic whose cause
-// was elsewhere: see "A post-copy child's own published pages" in
-// docs/migration.md.
+// dropCopy takes one unchanged page out of the checkpoint. A guest that still
+// shares the checkpoint's copy goes back on the origin and is clean. Its
+// mapping of the copy has already been taken away by the batch's revocation,
+// because the page a guest maps is taken away and never swapped underneath it:
+// a revocation installs no page table and wakes nothing, and the guest's next
+// access reaches the origin through the fault path, under the window that
+// orders every mapping of that page. Revoking rather than installing the
+// origin lowered the rate of a fan-out panic whose cause was elsewhere: see "A
+// post-copy child's own published pages" in docs/migration.md.
 //
-// Either way the checkpoint's copy goes, and with it the dirty reservation it
-// held. Caller holds the memory region exclusively and both resident pages.
-func (c *MemoryRegionCheckpoint) drop(ctx context.Context, held *binding, pg, origin *resident, guest *binding) error {
-	r := c.memoryRegion
+// The copy's page leaves the layer, AwaitingClean in its page list or held
+// beside it, and goes back, and so does its reservation. Caller holds the
+// region exclusively and both pages.
+func (r *MemoryRegion) dropCopy(ctx context.Context, held *binding, page, origin *zirconvm.VmPage, guest *binding) error {
 	h := r.host
-	note(r, held.index, "settle-drop", pg.slot, origin.slot)
+	ps := h.pageSize
 	if guest != nil {
-		if err := h.unlink(ctx, guest, pg); err != nil {
-			return err
-		}
-		// The one place the pager hands a guest back an older page on purpose:
-		// the audit checks the bytes here rather than trusting the comparison
-		// that chose this page, and dates the origin by the copy once they
-		// agree. See probe_on.go.
-		if found := h.probe.reshared(ctx, h, pg, origin); found != "" {
+		// The one place the pager hands a guest back an older page on
+		// purpose: the audit checks the bytes here rather than trusting the
+		// comparison that chose this page.
+		if found := h.probe.reshared(ctx, h, frameOf(page), frameOf(origin)); found != "" {
 			panic(found)
 		}
-		h.bind(guest, origin)
-		r.retireFromCheckpoint(guest)
-		h.probe.retired(guest)
-		h.touch(origin)
 	}
-	// The name a seal lent the page goes with the page.
-	h.unshare(pg)
-	if err := h.unlink(ctx, held, pg); err != nil {
-		return err
+	h.mu.Lock()
+	if guest != nil {
+		r.host.unaliasLocked(guest)
+		r.host.aliasLocked(guest, origin)
 	}
-	h.releaseSpill(held.spill)
+	r.host.unaliasLocked(held)
+	others := frameOf(page).aliases.len() > 0
+	h.mu.Unlock()
+	if guest != nil {
+		r.bindingsMu.Lock()
+		r.retireFromCheckpointLocked(guest)
+		r.bindingsMu.Unlock()
+		r.host.node.PageQueues().MarkAccessed(origin)
+	}
+	if others {
+		return fmt.Errorf("vmmemory: a settled page is still mapped at page %d", held.index)
+	}
+	if r.layer.RemovePage(held.index*ps, page) {
+		r.host.releaseFrame(page)
+	}
+	r.bindingsMu.Lock()
+	spill := held.spill
 	held.spill, held.dirty, held.origin = noReservation, false, nil
+	r.bindingsMu.Unlock()
+	h.releaseSpill(spill)
 	return nil
 }
 
-// sealedPages is the set this checkpoint holds, which a settle is what changes.
-// It waits for the walk behind the pause: the set is what that walk makes, and
-// every reader of it runs after the capture resumed the guest.
-func (c *MemoryRegionCheckpoint) sealedPages() []*binding {
-	<-c.taken
+// forgetCopies rebuilds the copies this checkpoint lists without those a
+// settle dropped, in the order it had them, so the result is the workers'
+// outcome and not their order. A checkpoint left holding nothing holds no
+// unpublished write either, so the window it took off the memory region at the
+// seal ends here.
+func (c *MemoryRegionCheckpoint) forgetCopies(dropped []bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.pages
-}
-
-// heldPage is the checkpoint's copy of one page, nil where it holds none. The
-// set is in ascending page order, so it is found rather than indexed: a map of
-// it would be one insertion per page, which at a 4 KiB page is millions of them
-// for a reader that asks for each page once.
-func (c *MemoryRegionCheckpoint) heldPage(page uint64) *binding {
-	held := c.sealedPages()
-	at := sort.Search(len(held), func(i int) bool { return held[i].index >= page })
-	if at < len(held) && held[at].index == page {
-		return held[at]
-	}
-	return nil
-}
-
-// forget rebuilds the set this checkpoint lists without the pages a settle
-// dropped, in the order it had them, so the result is the workers' outcome and
-// not their order. A checkpoint left holding nothing holds no unpublished write
-// either, so the window it took off the memory region at the seal ends here: what the
-// memory region reports from now on is its own stores since.
-func (c *MemoryRegionCheckpoint) forget(dropped []bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	pages := make([]*binding, 0, len(c.pages))
-	for i, held := range c.pages {
+	copies := make([]*binding, 0, len(c.copies))
+	for i, held := range c.copies {
 		if i < len(dropped) && dropped[i] {
 			continue
 		}
-		pages = append(pages, held)
+		copies = append(copies, held)
 	}
-	c.pages = pages
-	if len(c.pages) == 0 {
+	c.copies = copies
+	if len(c.copies) == 0 {
 		c.dirtySince = time.Time{}
 	}
-}
-
-// since is when the oldest write this checkpoint still holds was made, zero
-// where it holds none. A settle can empty the set, so it is read under the
-// checkpoint's own lock rather than off the field.
-func (c *MemoryRegionCheckpoint) since() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.dirtySince
 }

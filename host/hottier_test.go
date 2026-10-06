@@ -29,6 +29,39 @@ func TestAHostRefusesAHotTierBesideTheClusterCache(t *testing.T) {
 	}
 }
 
+// The hot tier is off by default. Hosts given no hot tier run without one: a
+// VM written and closed on one opens on the other from the regional bucket,
+// and neither host reports a hot tier.
+func TestAHostGivenNoHotTierRunsWithoutOne(t *testing.T) {
+	h := newHostHarness(t)
+	h.start(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	vm, err := h.hosts[0].Volumes().Create(ctx, "cold", rootVolume)
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, ctx, vm, 0, "read from the regional bucket")
+	if err := vm.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	opened, err := h.hosts[1].Volumes().Open(ctx, "cold")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := read(t, ctx, opened, 0, len("read from the regional bucket")); got != "read from the regional bucket" {
+		t.Fatalf("the VM read back %q", got)
+	}
+	if err := opened.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for n, started := range h.hosts {
+		if got := started.Status().HotTier; got != nil {
+			t.Fatalf("host %d, given no hot tier, reports one that did %+v", n, *got)
+		}
+	}
+}
+
 // Two hosts share a hot tier. A VM written and closed on one publishes its
 // checkpoint to the hot tier behind the regional bucket, and opened on the
 // other reads every checkpoint object it needs from the hot tier: no read

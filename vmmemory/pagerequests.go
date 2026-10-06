@@ -18,7 +18,7 @@ import (
 //
 //   - An identity root's. A published checkpoint's pages of one volume are an
 //     identity root, and a page's identity names its root and its place in it,
-//     which is the page's own (windowPlan.identity). A prefetch sends its READ
+//     which is the page's own (plan.identity). A prefetch sends its READ
 //     requests to the roots of its pages, so that two prefetches of one
 //     identity batch: the later leaves those pages to the earlier. A fault
 //     that meets a page a prefetch is reading sends a READ request that waits

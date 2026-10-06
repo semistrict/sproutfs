@@ -30,8 +30,8 @@ var update = flag.Bool("update", false, "rewrite the index fixtures under testda
 const (
 	// currentCheckpoint holds the objects of a small published checkpoint as
 	// this build writes them, named for the two formats they are written in: an
-	// index object of format 8, and parts of layout 4.
-	currentCheckpoint = "testdata/index-8-part-4"
+	// index object of format 9, and parts of layout 5.
+	currentCheckpoint = "testdata/index-9-part-5"
 	fixturePrefix     = "fixture/"
 )
 
@@ -50,21 +50,24 @@ var supersededRootTables = []struct {
 // this build no longer reads, each with the refusal opening one must carry. A
 // store written before a bump is refused with the version it carries named,
 // which is the whole contract while nothing is deployed. The first two wrote
-// the root as the whole of an index object and are named by that object's
-// version; the third wrote it as the last member of a part and is named by that
-// part's layout.
+// the root as the whole of an index object, one envelope of format 1, and are
+// named by that envelope's version; the third wrote it as the last member of a
+// part and is named by that part's layout.
 var supersededCheckpoints = []struct {
 	dir     string
 	refusal string
 }{
-	{dir: "testdata/index-5-part-1", refusal: "checkpoint index format version 5"},
-	{dir: "testdata/index-6-part-2", refusal: "checkpoint index format version 6"},
+	{dir: "testdata/index-5-part-1", refusal: "envelope format version 1, want 2"},
+	{dir: "testdata/index-6-part-2", refusal: "envelope format version 1, want 2"},
 	{dir: "testdata/part-3", refusal: "checkpoint part format version 3"},
-	// Version 7 is the layout immediately before this one: its roots state no
-	// volume's page size, so its page numbers are 2 MiB pages and nothing else
-	// may read them. Nothing is converted — it is refused by the version it
-	// carries, before a segment is decoded or a page is served.
+	// Version 7's roots state no volume's page size, so its page numbers are
+	// 2 MiB pages and nothing else may read them. Nothing is converted — it is
+	// refused by the version it carries, before a segment is decoded or a page
+	// is served.
 	{dir: "testdata/index-7-part-4", refusal: "checkpoint index format version 7"},
+	// Version 8 is the layout immediately before this one: its envelopes carry
+	// a SHA-256, and the envelopes of version 9 an XXH3-128.
+	{dir: "testdata/index-8-part-4", refusal: "checkpoint index format version 8"},
 }
 
 // fixtureVM is the checkpoint the fixture publishes: a first checkpoint of the

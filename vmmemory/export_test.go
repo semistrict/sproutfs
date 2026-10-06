@@ -8,7 +8,7 @@ import (
 
 // Layered reports whether this memory region's pages are served by the
 // ported region layer, which every memory region must be.
-func (r *MemoryRegion) Layered() bool { return r.zircon != nil }
+func (r *MemoryRegion) Layered() bool { return r.layer != nil }
 
 // ColdCopyAge is how old a cold copy is before its session gives it back and
 // before an eviction may.
@@ -104,13 +104,6 @@ func HoldHostLock(h *Host) (release func()) {
 // BindingsHeld reports whether something holds a memory region's binding map
 // lock at this moment.
 func BindingsHeld(r *MemoryRegion) bool {
-	if z := r.zircon; z != nil {
-		if z.mu.TryLock() {
-			z.mu.Unlock()
-			return false
-		}
-		return true
-	}
 	if r.bindingsMu.TryLock() {
 		r.bindingsMu.Unlock()
 		return false
@@ -153,51 +146,12 @@ func (r *MemoryRegion) PressMappings() { r.pressed.Store(true) }
 // memory regions have all released what they held has none. It also reports a
 // slot two pages claim, and page queues that hold other than the slots held.
 func (h *Host) Unreachable() []string {
-	if z := h.zircon; z != nil {
-		return z.unreachable()
-	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	var found []string
 	claimed := map[fileSlot]bool{}
 	listed := 0
-	for pg := range h.queues.Pages() {
-		listed++
-		if claimed[pg.fileSlot] {
-			found = append(found, fmt.Sprintf("slot %d is claimed twice", pg.slot))
-		}
-		claimed[pg.fileSlot] = true
-		if pg.aliases.len() > 0 || pg.idle {
-			continue
-		}
-		found = append(found, fmt.Sprintf("slot %d key %+v private %t replacing %d dropped %t indexed %t free %t",
-			pg.slot, pg.key.id, pg.private, pg.replacing, pg.dropped, h.clean[pg.key] == pg, pg.slot >= 0 && pg.file.slots.IsFree(pg.slot)))
-	}
-	for _, f := range h.files {
-		for slot, entry := range f.leases {
-			if !claimed[fileSlot{f, slot}] {
-				found = append(found, fmt.Sprintf("slot %d is held for no page, in an extent %t", slot, entry.extent != nil))
-			}
-		}
-	}
-	if held := h.heldLocked(); listed != held {
-		found = append(found, fmt.Sprintf("%d pages are listed and %d slots held", listed, held))
-	}
-	return found
-}
-
-// unreachable is Unreachable under the zircon core: every page of an object
-// that no memory region maps and that is not idle either, a slot two pages
-// claim, and queues that hold other than the slots held. A temporary root's
-// pages name frames their parents' layers hold, and are not counted twice.
-func (z *zirconHost) unreachable() []string {
-	h := z.host
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	var found []string
-	claimed := map[fileSlot]bool{}
-	listed := 0
-	for p := range z.node.PageQueues().Pages() {
+	for p := range h.node.PageQueues().Pages() {
 		if isLent(p) {
 			continue
 		}

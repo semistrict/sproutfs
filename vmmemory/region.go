@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/internal/ctxsync"
@@ -70,34 +71,47 @@ type MemoryRegion struct {
 	filesMu *ctxsync.Mutex
 	// ended is closed when the memory region becomes terminal, which is how
 	// its session learns of an end another memory region's fault found.
-	ended      chan struct{}
-	pageCount  int
+	ended     chan struct{}
+	pageCount int
+	// layer is the region's own pages: Zircon's VmObjectPaged over a
+	// VmCowPages, pages, whose page source is the region's own (reads) and
+	// whose lookup falls through to the identity root resolver names.
+	layer    *zirconvm.ObjectPaged
+	pages    *zirconvm.CowPages
+	resolver *rootResolver
+	// bindingsMu guards beside, the bindings beside the layer, the dirty set
+	// and its age, and the cold copies.
 	bindingsMu sync.Mutex
+	// beside is the page list of the bindings beside the layer: a slot holds
+	// the binding of a page the region maps or maps from, and an Untracked
+	// zero interval a compressed zero run, pages mapped to zero with no
+	// binding at all.
+	beside *zirconvm.PageList[binding]
+	// dirtySet is every page the region may store into where it is: its own
+	// Dirty state, which no checkpoint holds, and which the next seal takes
+	// whole. dirtyRuns is the same set less the pages the region does not
+	// map, held as runs, which is what a seal's pause write-protects; every
+	// transition that changes whether a page is one of those keeps it
+	// (noteSealableLocked). dirtySince is when the oldest write the region
+	// holds that no checkpoint covers was made, zero while it holds none: the
+	// loss window's bookkeeping.
+	dirtySet   map[uint64]*binding
+	dirtyRuns  pageRuns
+	dirtySince time.Time
+	// coldPages is every cold copy of the region, and coldCopies the ones its
+	// session's worker has not taken yet (cold.go).
+	coldPages  map[uint64]*binding
+	coldCopies map[uint64]struct{}
+	// windowMu guards windowAsked.
+	windowMu sync.Mutex
 	// changes is Config.MeasureChanges's state, empty unless it is on.
 	changes changes
-	// pages is the memory region's page list, Zircon's VmPageList over this
-	// pager's page: a slot holds the binding of a page that has per-page
-	// state, and an Untracked zero interval is a compressed zero run, pages
-	// mapped to zero with no binding at all. A page with no slot holds
-	// nothing. Guarded by bindingsMu; see bindings.go.
-	pages         *zirconvm.PageList[binding]
-	dirtyBindings map[uint64]*binding
-	// dirtyRuns is the same set as dirtyBindings less the pages no mapping of
-	// this memory region covers, held as runs rather than as pages: it is what a seal
-	// write-protects, and reading it is how a pause costs its commands rather
-	// than the pages they cover. It is maintained by every transition that
-	// changes whether a page is one the next seal would protect, all of which
-	// hold bindingsMu.
-	dirtyRuns pageRuns
-	// coldPages is every cold copy of this memory region, and coldCopies the
-	// ones its session's worker has not taken yet, both guarded by bindingsMu;
-	// coldCopied wakes that worker. See cold.go.
-	coldPages  map[uint64]*binding
+	// coldCopied wakes the worker of this memory region's session that gives
+	// its cold copies back. See cold.go.
 	coldCopied chan struct{}
 	// windowAsked is set once a store has asked for the checkpoint that ends
 	// this memory region's window, so the stores after it do not ask again. The
 	// checkpoint that seals the window, and one that gives it back, clear it.
-	// It is guarded by bindingsMu, as dirtySince is.
 	windowAsked bool
 	terminal    atomic.Pointer[failure]
 	// pressed is set by the first mapping command this memory region's process
@@ -159,10 +173,6 @@ type MemoryRegion struct {
 	// dirty budget at that moment is told a checkpoint is coming rather than
 	// that nothing is.
 	sealing bool
-	// zircon is this memory region's state under the zircon core, nil under
-	// the current one. Every exported method that reaches the page layer asks
-	// it first; see Core.
-	zircon *zirconRegion
 }
 
 // Attach admits metadata and verifies writer authority before exposing a memory region.
@@ -238,7 +248,7 @@ func (h *Host) admit(ctx context.Context, memoryRegion MemoryRegionBacking, mapp
 		return nil, err
 	}
 	_, peer := backing.(UnpublishedLoader)
-	r := &MemoryRegion{live: ctxsync.NewRWMutex(), mu: ctxsync.NewRWMutex(), endMu: ctxsync.NewMutex(), protectMu: ctxsync.NewRWMutex(), filesMu: ctxsync.NewMutex(), ended: make(chan struct{}), coldCopied: make(chan struct{}, 1), host: h, backing: backing, kind: memoryRegion.Kind, peer: peer, mapping: mapping, tenant: memoryRegion.Tenant, pageCount: int(count), pages: zirconvm.NewPageList[binding](h.pageSize), dirtyRuns: newPageRuns(h.pageSize), readAheadPages: h.cfg.ReadAheadPages, reads: newRequestSource()}
+	r := &MemoryRegion{live: ctxsync.NewRWMutex(), mu: ctxsync.NewRWMutex(), endMu: ctxsync.NewMutex(), protectMu: ctxsync.NewRWMutex(), filesMu: ctxsync.NewMutex(), ended: make(chan struct{}), coldCopied: make(chan struct{}, 1), host: h, backing: backing, kind: memoryRegion.Kind, peer: peer, mapping: mapping, tenant: memoryRegion.Tenant, pageCount: int(count), readAheadPages: h.cfg.ReadAheadPages}
 	if h.isolated() {
 		if err := h.newFiles(ctx, r); err != nil {
 			h.mu.Lock()
@@ -253,19 +263,15 @@ func (h *Host) admit(ctx context.Context, memoryRegion MemoryRegionBacking, mapp
 	for i := range r.stripes {
 		r.stripes[i] = ctxsync.NewMutex()
 	}
-	// Under the zircon core a memory region's own pages are a region layer
-	// of its own, however it attaches: here, or a session's Connect.
-	z := h.zircon
-
-	zr, err := z.newRegion(r)
-	if err != nil {
+	// A memory region's own pages are a region layer of its own, however it
+	// attaches: here, or a session's Connect.
+	if err := r.newLayer(); err != nil {
 		h.mu.Lock()
 		h.logical -= int(count)
 		h.forgetFilesLocked(r)
 		h.mu.Unlock()
 		return nil, err
 	}
-	r.zircon = zr
 
 	// The dirty budget is shared, so relieving it is a choice among all the
 	// memory regions that hold it, not only the one whose store is waiting.
@@ -273,6 +279,28 @@ func (h *Host) admit(ctx context.Context, memoryRegion MemoryRegionBacking, mapp
 	h.memoryRegions[r] = struct{}{}
 	h.mu.Unlock()
 	return r, nil
+}
+
+// newLayer makes the region's layer, which admit does for every region however
+// it attaches. A migration destination's peer backing, whose loads can return
+// bytes no checkpoint holds, takes a page it serves as the region's own dirty
+// state (peer.go).
+func (r *MemoryRegion) newLayer() error {
+	ps := r.host.pageSize
+	r.beside, r.dirtyRuns = zirconvm.NewPageList[binding](ps), newPageRuns(ps)
+	r.resolver = &rootResolver{region: r}
+	// The layer's source is the region's own, and it traps dirty
+	// transitions, as a VMO whose pager tracks its writes does: a page of
+	// the layer becomes Dirty only when the pager says so (DirtyPages), which
+	// a store does once it holds the page's dirty reservation.
+	proxy := zirconvm.NewPagerProxy(true)
+	r.reads = &requestSource{source: zirconvm.NewPageSource(proxy), proxy: proxy}
+	layer, err := zirconvm.CreateRegionLayer(r.host.node, r.reads.source, uint64(r.pageCount)*ps, r.resolver)
+	if err != nil {
+		return err
+	}
+	r.layer, r.pages = layer, layer.CowPages()
+	return nil
 }
 
 // inTenant refuses a checkpoint of a tenant other than this memory region's.
@@ -615,17 +643,106 @@ func (r *MemoryRegion) readRun(ctx context.Context, first uint64, wanted []bool,
 // Faults continue while it runs. A memory region that has handed its volume off has no
 // authority to observe and reports success without touching it.
 func (r *MemoryRegion) Verify(ctx context.Context) error {
-	z := r.zircon
-
-	return z.verify(ctx)
+	if err := r.mu.RLock(ctx); err != nil {
+		return err
+	}
+	defer r.mu.RUnlock()
+	if err := r.serving(); err != nil {
+		return err
+	}
+	if err := r.countAllocated(); err != nil {
+		return err
+	}
+	if r.handed {
+		// There is no authority left to observe: the volume is another
+		// host's, and this region only serves the pages it still holds.
+		return nil
+	}
+	if err := r.backing.Verify(ctx); err != nil {
+		return r.fail(err)
+	}
+	return nil
 }
 
 // Detach requires all memory users stopped and KVM slots unregistered (or the
 // process exited). It discards unpublished stores, including a sealed
 // checkpoint a publication may still be reading, and permits reuse after failed
 // mapping ACKs. The caller retains ownership of Backing and its lifetime.
+//
+// Its prefetches end, every page it maps is no longer mapped by it, its own
+// pages go back, and its layer goes.
 func (r *MemoryRegion) Detach(ctx context.Context) error {
-	z := r.zircon
-
-	return z.detach(ctx)
+	h := r.host
+	if err := r.live.Lock(ctx); err != nil {
+		return err
+	}
+	defer r.live.Unlock()
+	if err := r.cancelPrefetches(ctx); err != nil {
+		return err
+	}
+	if err := r.mu.Lock(ctx); err != nil {
+		return err
+	}
+	defer r.mu.Unlock()
+	if r.closed {
+		return nil
+	}
+	// A sealed checkpoint goes with the region, whatever publication may still
+	// be reading it: its memory users are gone, and its unpublished stores
+	// with them.
+	if checkpoint := r.currentCheckpoint(); checkpoint != nil {
+		if err := r.discardCheckpoint(ctx, checkpoint); err != nil {
+			return err
+		}
+		r.setCheckpoint(nil)
+	}
+	// Every page this region mapped from a root is mapped by it no more, and
+	// one nothing else maps is idle, kept for the next region that inherits
+	// its identity.
+	// Its writes go with it, and their reservations back to the budget. The
+	// pages they were copied from go too, where nothing else maps them.
+	r.bindingsMu.Lock()
+	var bound []*binding
+	var origins []*zirconvm.VmPage
+	r.eachBoundLocked(0, uint64(r.pageCount), func(b *binding) {
+		bound = append(bound, b)
+		if b.origin != nil {
+			origins = append(origins, b.origin)
+		}
+	})
+	r.bindingsMu.Unlock()
+	r.releaseDirty()
+	h.mu.Lock()
+	for _, b := range bound {
+		if b.page != nil {
+			r.host.unaliasLocked(b)
+		}
+	}
+	h.mu.Unlock()
+	for _, origin := range origins {
+		r.host.dropOrigin(origin)
+	}
+	h.mu.Lock()
+	h.logical -= r.pageCount
+	h.forgetExtents(r)
+	delete(h.memoryRegions, r)
+	if r.hasZeros {
+		h.zeroMemoryRegions--
+		r.hasZeros = false
+	}
+	h.signal()
+	h.mu.Unlock()
+	r.closed = true
+	// The layer's own pages go back with it, and its page source, the
+	// region's, closes with it: no fault reads after this, so it has no
+	// request to end.
+	r.layer.Destroy()
+	h.mu.Lock()
+	h.forgetFilesLocked(r)
+	h.mu.Unlock()
+	r.bindingsMu.Lock()
+	r.beside = zirconvm.NewPageList[binding](h.pageSize)
+	r.bindingsMu.Unlock()
+	r.pageCount = 0
+	return nil
 }

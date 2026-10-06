@@ -2,6 +2,11 @@ package vmmemory
 
 import (
 	"context"
+	"errors"
+	"slices"
+
+	"github.com/semistrict/sproutfs/platform/sim"
+	"github.com/semistrict/sproutfs/vmmemory/internal/zirconvm"
 )
 
 // Why a copy is given back without a checkpoint.
@@ -60,5 +65,324 @@ func (r *MemoryRegion) liftProtection(ctx context.Context, index uint64) error {
 // givingBack is one give-back pass over the pages that pages lists, which it
 // calls once the memory region is known to be live.
 func (r *MemoryRegion) givingBack(ctx context.Context, pages func() []uint64) (int, error) {
-	return r.zircon.givingBack(ctx, pages)
+	if err := r.live.RLock(ctx); err != nil {
+		return 0, err
+	}
+	defer r.live.RUnlock()
+	if err := r.serving(); err != nil {
+		return 0, err
+	}
+	var buffers settler
+	given := 0
+	for _, index := range pages() {
+		back, err := r.giveBack(ctx, index, &buffers)
+		if back {
+			given++
+		}
+		if err != nil {
+			return given, err
+		}
+	}
+	return given, nil
+}
+
+// giveBack is one page of a pass, holding it as a store fault holds it: the
+// page's window, the region shared, the origin's lock and the copy's. It
+// reports whether the copy went back.
+func (r *MemoryRegion) giveBack(ctx context.Context, index uint64, buffers *settler) (bool, error) {
+	h := r.host
+	if err := r.stripe(index).Lock(ctx); err != nil {
+		return false, err
+	}
+	defer r.stripe(index).Unlock()
+	if err := r.lockPageAccess(ctx, index, true); err != nil {
+		return false, err
+	}
+	defer r.mu.RUnlock()
+	b := r.lookupBinding(index)
+	if b == nil {
+		return false, nil
+	}
+	origin := r.originOf(b)
+	if origin == nil && r.isCold(b) && !h.wholeRange(r, index) {
+		return r.giveBackToVolume(ctx, b, buffers)
+	}
+	if origin == nil || !r.ownDirty(b) || h.wholeRange(r, index) {
+		// Stored into and compared since the list was made, or a range the
+		// rules made one mapping, which a page given back would break in
+		// three.
+		return false, nil
+	}
+	// Origin first, as the settle takes them: clean before private.
+	if err := r.host.lockPage(ctx, origin); err != nil {
+		return false, err
+	}
+	defer r.host.unlockPage(origin)
+	if !r.comparable(origin) {
+		r.forgetOrigin(b, origin)
+		return false, nil
+	}
+	page, err := r.host.lockedPage(ctx, b)
+	if err != nil {
+		return false, err
+	}
+	if page == nil {
+		if r.isCold(b) {
+			// A cold copy the pager spilled is read back: it pins its origin
+			// until it is compared.
+			return r.giveBackSpilled(ctx, b, origin, buffers)
+		}
+		return false, nil
+	}
+	defer r.host.unlockPage(page)
+	return r.giveBackCopy(ctx, b, origin, page, buffers)
+}
+
+// ownDirty reports whether b is the region's own dirty state no checkpoint
+// holds.
+func (r *MemoryRegion) ownDirty(b *binding) bool {
+	r.bindingsMu.Lock()
+	defer r.bindingsMu.Unlock()
+	return b.writable()
+}
+
+// comparable reports whether a copy can still be compared with origin: it is
+// resident, still its identity's page, and in a file this region's session
+// was given. Caller holds origin's lock.
+func (r *MemoryRegion) comparable(origin *zirconvm.VmPage) bool {
+	if !r.host.published(origin) {
+		return false
+	}
+	return r.fileNumber(frameOf(origin).file) >= 0
+}
+
+// giveBackCopy is one page of a give-back once its locks are held: the
+// page's window, the region shared, the origin and then the copy page. It
+// reports whether the copy went back.
+func (r *MemoryRegion) giveBackCopy(ctx context.Context, b *binding, origin, page *zirconvm.VmPage, buffers *settler) (bool, error) {
+	h := r.host
+	index := b.index
+	if !r.isMapped(b) {
+		return false, nil
+	}
+	if err := r.protectPages(ctx, index, 1); err != nil {
+		if cause := context.Cause(ctx); cause != nil && errors.Is(err, cause) {
+			return false, err
+		}
+		return false, r.fail(err)
+	}
+	h.mu.Lock()
+	h.stats.GiveBackCompares++
+	h.mu.Unlock()
+	same, err := buffers.equal(ctx, h, frameOf(origin).fileSlot, frameOf(page).fileSlot)
+	if err == nil && !same && sim.Bug(ctx, "pager-give-back-changed-copy") {
+		// The copy goes back although the guest stored into it, which loses
+		// what it stored.
+		same = true
+	}
+	if err != nil || !same {
+		if !same && err == nil {
+			r.forgetOrigin(b, origin)
+		}
+		return false, errors.Join(err, r.liftProtection(ctx, index))
+	}
+	// Mapped and installed read-only, so the guest's next read maps it
+	// without a fault, which is what would otherwise come back as a write.
+	if err := r.mapInPlace(ctx, b, origin); err != nil {
+		if !errors.Is(err, ErrMappingRefused) {
+			return false, err
+		}
+		r.requeueCold(b)
+		return false, r.liftProtection(ctx, index)
+	}
+	return true, r.shareOrigin(b, page, origin)
+}
+
+// shareOrigin makes the origin b's page again, now that the guest maps it:
+// b is clean, and the copy and the reservation it was admitted under go back.
+// Caller holds the page's window, the region shared and both pages.
+func (r *MemoryRegion) shareOrigin(b *binding, page, origin *zirconvm.VmPage) error {
+	h := r.host
+	ps := h.pageSize
+	// The pager hands a guest back an older page on purpose here, as the
+	// settle does, so the audit compares the bytes itself.
+	if found := h.probe.reshared(context.Background(), h, frameOf(page), frameOf(origin)); found != "" {
+		panic(found)
+	}
+	h.mu.Lock()
+	r.host.unaliasLocked(b)
+	r.host.aliasLocked(b, origin)
+	h.mu.Unlock()
+	if spill := r.endDirty(b); !spill.none() {
+		h.releaseSpill(spill)
+	}
+	r.layer.RemovePage(b.index*ps, page)
+	r.host.releaseFrame(page)
+	r.host.node.PageQueues().MarkAccessed(origin)
+	h.mu.Lock()
+	h.stats.GivenBackPages++
+	h.signal()
+	h.mu.Unlock()
+	return nil
+}
+
+// giveBackSpilled compares a spilled cold copy, read back from the spill, with
+// its origin. An unchanged one goes back to the origin, unmapped, and its
+// reservation is freed; a changed one stops being cold. Caller holds the
+// page's window, the region shared and the origin.
+func (r *MemoryRegion) giveBackSpilled(ctx context.Context, b *binding, origin *zirconvm.VmPage, buffers *settler) (bool, error) {
+	h := r.host
+	if buffers.first == nil {
+		buffers.first, buffers.second = make([]byte, h.pageSize), make([]byte, h.pageSize)
+	}
+	f := frameOf(origin)
+	if err := f.file.Read(ctx, f.slot, buffers.first); err != nil {
+		return false, err
+	}
+	if err := h.readSpill(ctx, r.spillOf(b), buffers.second); err != nil {
+		return false, err
+	}
+	h.mu.Lock()
+	h.stats.GiveBackCompares++
+	h.mu.Unlock()
+	if !slices.Equal(buffers.first, buffers.second) {
+		r.forgetOrigin(b, origin)
+		return false, nil
+	}
+	if found := h.probe.resharedSpilled(ctx, h, b, buffers.second, frameOf(origin)); found != "" {
+		panic(found)
+	}
+	h.mu.Lock()
+	r.host.aliasLocked(b, origin)
+	h.mu.Unlock()
+	if spill := r.endDirty(b); !spill.none() {
+		h.releaseSpill(spill)
+	}
+	r.host.node.PageQueues().MarkAccessed(origin)
+	h.mu.Lock()
+	h.stats.GivenBackPages++
+	h.signal()
+	h.mu.Unlock()
+	return true, nil
+}
+
+// giveBackToVolume compares a cold copy whose origin has gone with its
+// volume's bytes, and an unchanged one is dropped, so the guest's next access
+// reads the page again as any first access does. Caller holds the page's
+// window and the region shared.
+func (r *MemoryRegion) giveBackToVolume(ctx context.Context, b *binding, buffers *settler) (bool, error) {
+	h := r.host
+	ps := h.pageSize
+	// The guest's mapping goes first, so nothing it stores can land in the
+	// copy while it is compared.
+	if err := r.revokeBindings(ctx, []*binding{b}); err != nil {
+		return false, err
+	}
+	same, err := r.volumeHolds(ctx, b, buffers)
+	h.mu.Lock()
+	h.stats.GiveBackCompares++
+	h.mu.Unlock()
+	if err != nil || !same {
+		if err == nil {
+			r.bindingsMu.Lock()
+			r.uncoldLocked(b)
+			r.bindingsMu.Unlock()
+		}
+		return false, err
+	}
+	page, err := r.host.lockedPage(ctx, b)
+	if err != nil {
+		return false, err
+	}
+	if page != nil {
+		h.mu.Lock()
+		r.host.unaliasLocked(b)
+		h.mu.Unlock()
+		r.layer.RemovePage(b.index*ps, page)
+		r.host.releaseFrame(page)
+		r.host.unlockPage(page)
+	}
+	if spill := r.endDirty(b); !spill.none() {
+		h.releaseSpill(spill)
+	}
+	h.mu.Lock()
+	h.stats.GivenBackPages++
+	h.signal()
+	h.mu.Unlock()
+	return true, nil
+}
+
+// giveBackVictim gives an eviction's victim that is a cold copy the guest has
+// not changed back to its origin instead of the spill. A reclaim holds none of
+// the locks a give-back takes before the victim's, so it takes each without
+// waiting, and gives up where one is held: the copy is then spilled, and
+// compared from there. Caller holds page's lock.
+func (h *Host) giveBackVictim(ctx context.Context, page *zirconvm.VmPage) (bool, error) {
+	f := frameOf(page)
+	h.mu.Lock()
+	var b *binding
+	if f.layer != nil && f.aliases.len() == 1 {
+		for alias := range f.aliases.all() {
+			b = alias
+		}
+	}
+	h.mu.Unlock()
+	if b == nil {
+		return false, nil
+	}
+	r := b.region
+	if !r.isCold(b) || h.clock.Since(r.coldSince(b)) < coldCopyAge || !r.live.TryRLock() {
+		return false, nil
+	}
+	defer r.live.RUnlock()
+	stripe := r.stripe(b.index)
+	if !stripe.TryLock() {
+		return false, nil
+	}
+	defer stripe.Unlock()
+	if !r.mu.TryRLock() {
+		return false, nil
+	}
+	defer r.mu.RUnlock()
+	if r.ready() != nil || !r.isCold(b) {
+		return false, nil
+	}
+	origin := r.originOf(b)
+	if origin == nil || !frameOf(origin).mu.TryLock() {
+		return false, nil
+	}
+	defer h.unlockPage(origin)
+	h.mu.Lock()
+	current := b.page == page
+	h.mu.Unlock()
+	if !current || !r.comparable(origin) {
+		return false, nil
+	}
+	var buffers settler
+	return r.giveBackCopy(ctx, b, origin, page, &buffers)
+}
+
+// mapInPlace maps to, read-only, where b is mapped, in one MAP, installed in
+// the region's page tables, so the guest reads on without a fault. It reports
+// ErrMappingRefused where the client refused the MAP, having changed nothing.
+// Caller holds b's page and to.
+func (r *MemoryRegion) mapInPlace(ctx context.Context, b *binding, to *zirconvm.VmPage) error {
+	h := r.host
+	return r.underProtection(ctx, func() error {
+		if !r.isMapped(b) {
+			return nil
+		}
+		if err := r.mapPages(ctx, r.runAt(b.index, frameOf(to).fileSlot, 1), false); err != nil {
+			return r.mappingFailed(err, func() {})
+		}
+		h.mu.Lock()
+		h.stats.Mappings++
+		h.stats.MappingRuns++
+		h.stats.MappedPages++
+		h.mu.Unlock()
+		if err := r.resolvePages(ctx, b.index, 1, false); err != nil {
+			return r.fail(err)
+		}
+		return nil
+	})
 }

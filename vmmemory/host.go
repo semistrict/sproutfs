@@ -40,7 +40,7 @@ type Host struct {
 	// pinMu guards every resident page's coldCopies, which pin it, and the
 	// page's moves between the page queues, which its pins and its being idle
 	// decide. It is taken inside any other lock of the pager, and around none
-	// but the page queues' own. See queues.go and cold.go.
+	// but the page queues' own. See evict.go and cold.go.
 	pinMu sync.Mutex
 	cfg   Config
 	// clock times the fault path. It is Config.Clock, or the wall clock.
@@ -65,9 +65,7 @@ type Host struct {
 	lent map[lentKey]*MemoryRegionCheckpoint
 	// spill is the dirty budget: the spill file as the storage of a
 	// reservation per private page this pager admits. See spill.go.
-	spill        *zirconvm.SpillStorage
-	clean        map[pageKey]*resident
-	cleanVersion uint64
+	spill *zirconvm.SpillStorage
 	// requests are the READ requests not in use (pagerequests.go).
 	// prefetching counts the prefetches still reading, and prefetchRunning
 	// those whose goroutines have not ended, mapping their pages included.
@@ -88,10 +86,8 @@ type Host struct {
 	// flushed is what a guest's flush of a memory region is handed to. See SetFlushed.
 	flushed           func(*MemoryRegion, func(error))
 	zeroMemoryRegions int // attached memory regions retaining knowledge of explicit zeros
-	// queues order every resident page for reclaim. See queues.go.
-	queues *pageQueues
-	// evictor frees a slot for an allocation short of one, taking its
-	// victims from queues. See evictor.go.
+	// evictor frees a slot for an allocation short of one, taking its victims
+	// from the page queues. See evict.go.
 	evictor *pagerEvictor
 	// idlePages counts the resident pages no memory region maps: published
 	// pages kept for the next memory region that inherits their identity, and
@@ -138,10 +134,26 @@ type Host struct {
 	probe probeState
 	// changeSeed keys the block sums Config.MeasureChanges compares.
 	changeSeed maphash.Seed
-	// zircon is this pager's state under the zircon core, nil under the
-	// current one. Every exported method that reaches the page layer asks it
-	// first; see Core.
-	zircon *zirconHost
+	// node is the pages' node: the arena as their Pmm and the page queues
+	// that order them.
+	node *zirconvm.Node
+	pmm  *arenaPmm
+	// roots is every identity root a memory region of this pager has located
+	// a page of. A root lives until the pager closes. Guarded by mu.
+	roots map[rootKey]*identityRoot
+	// prefetches is every prefetch whose slots are not settled yet. Guarded
+	// by mu, as are prefetching and prefetchRunning.
+	prefetches map[*prefetch]struct{}
+	// rootPages is how many pages the roots hold. Guarded by mu.
+	rootPages uint64
+	// splices lends the splice lists a supply hands its pages over in, as
+	// *zirconvm.PageSpliceList[zirconvm.VmPage]: a fault supplies a page,
+	// and making a list for each was a sixth of what a fault at random
+	// allocated.
+	splices sync.Pool
+	// multis lends the requests a fault's lookup makes, as
+	// *zirconvm.MultiPageRequest, each back once it is answered.
+	multis sync.Pool
 }
 
 // maximumReadAheadBytes is the largest run one fault may hold a buffer for,
@@ -236,13 +248,25 @@ func New(ctx context.Context, resources *resource.Budget, cfg Config, arena Aren
 		arena:       arena,
 		extents:     make(map[extentKey]*extent),
 		extentPages: extentPages,
-		clean:       make(map[pageKey]*resident), changed: make(chan struct{}), revoked: make(chan struct{}),
+		changed:     make(chan struct{}), revoked: make(chan struct{}),
 		requests:      sync.Pool{New: func() any { return zirconvm.NewPageRequest() }},
-		queues:        newPageQueues(pageSize),
 		memoryRegions: make(map[*MemoryRegion]struct{}), highWater: highWater(cfg.DirtyPages),
-		io: make(chan struct{}, cfg.ConcurrentIO), writeback: make(chan struct{}, 1)}
+		io: make(chan struct{}, cfg.ConcurrentIO), writeback: make(chan struct{}, 1),
+		roots: make(map[rootKey]*identityRoot), prefetches: make(map[*prefetch]struct{})}
 	h.evictor = newPagerEvictor(h)
-	h.zircon = newZirconHost(h)
+	h.pmm = &arenaPmm{host: h, zero: zirconvm.NewFramePage(nil)}
+	// No compression: a frame's bytes are the pager's to move, so a page's
+	// dirty reservation, the reference a spill writes its bytes to, is kept in
+	// its binding beside the layer, and the spill is the pager's own
+	// (evict.go).
+	h.node = zirconvm.NewNode(h.pmm, pageSize, nil)
+	// Every page ages in the reclaim queues, a region's Dirty and
+	// AwaitingClean pages too, since each can be spilled (D2); a page a cold
+	// copy pins waits in the zero-fork queue outside them.
+	h.node.AgeDirtyPages()
+	h.node.PageQueues().EnableAnonymousReclaim(false)
+	h.splices.New = func() any { return zirconvm.NewPageSpliceList[zirconvm.VmPage](pageSize, h.node) }
+	h.multis.New = func() any { return zirconvm.NewMultiPageRequest() }
 	if cfg.Arena == ArenaIsolated {
 		// Every file is made for a memory region or a tenant when the first one
 		// needs it.
@@ -285,11 +309,9 @@ func (h *Host) LogicalHeadroom() int {
 // spill handles and closes them after this succeeds. A failed punch retains
 // its reservation and can be retried; new attachments are no longer accepted.
 func (h *Host) Close(ctx context.Context) error {
-	z := h.zircon
-
-	// The zircon core's pages are its roots', which go first and give
-	// their slots back as they go.
-	if err := z.close(); err != nil {
+	// Every page that outlives its regions is a root's, and the roots go
+	// first.
+	if err := h.closeRoots(); err != nil {
 		return err
 	}
 
@@ -343,44 +365,6 @@ func (h *Host) revokedLocked() {
 	h.revoked = make(chan struct{})
 }
 
-func (h *Host) unlock(pg *resident) {
-	found := h.probe.stable(context.Background(), h, pg, "unlock")
-	pg.mu.Unlock()
-	h.mu.Lock()
-	h.signal()
-	h.mu.Unlock()
-	if found != "" {
-		panic(found)
-	}
-}
-
-// unlockAll releases a batch of pages and wakes waiters once rather than once
-// per page. A seal, a revoke and a plan each release many at a time, and a
-// waiter rechecks everything the batch changed whichever wake reaches it.
-func (h *Host) unlockAll(pages []*resident) {
-	if len(pages) == 0 {
-		return
-	}
-	for _, pg := range pages {
-		pg.mu.Unlock()
-	}
-	h.mu.Lock()
-	h.signal()
-	h.mu.Unlock()
-}
-
-// locked runs fn under the binding's current page lock and always releases
-// that lock. A binding with no resident page is a no-op.
-func (h *Host) locked(ctx context.Context, b *binding, fn func(pg *resident) error) error {
-	pg, err := h.current(ctx, b)
-	if err != nil || pg == nil {
-		return err
-	}
-	err = fn(pg)
-	h.unlock(pg)
-	return err
-}
-
 // takeWindow lends a fault the bytes its window read fills, of the given pages
 // of this pager. A window read covers the whole span of the pages it is
 // fetching, holes and all, so a fault that wants two pages at opposite ends of
@@ -431,29 +415,6 @@ func (h *Host) beginCheckpointIO(ctx context.Context) (func(), error) {
 	}
 }
 
-// current acquires the page lock without holding the host lock, then validates
-// that eviction did not replace the binding while the caller waited.
-func (h *Host) current(ctx context.Context, b *binding) (*resident, error) {
-	for {
-		h.mu.Lock()
-		pg := b.resident
-		h.mu.Unlock()
-		if pg == nil {
-			return nil, nil
-		}
-		if err := pg.mu.Lock(ctx); err != nil {
-			return nil, err
-		}
-		h.mu.Lock()
-		same := b.resident == pg
-		h.mu.Unlock()
-		if same {
-			return pg, nil
-		}
-		h.unlock(pg)
-	}
-}
-
 // revocations reports the signal the host's next revocation closes. A client
 // refuses a mapping command for want of mapping budget, and a revocation is the
 // only work of this pager's that gives a client budget back. Any other change
@@ -464,4 +425,24 @@ func (h *Host) revocations() <-chan struct{} {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.revoked
+}
+
+// closeRoots is what Close does before it gives back every slot: once no
+// region is attached, the identity roots go, and their pages give their slots
+// back as they go.
+func (h *Host) closeRoots() error {
+	h.mu.Lock()
+	if h.logical != 0 {
+		h.mu.Unlock()
+		return errors.New("managed-memory regions still attached")
+	}
+	roots := h.roots
+	h.roots = make(map[rootKey]*identityRoot)
+	h.mu.Unlock()
+	// Every page of a root goes back with it, and with its slot its count
+	// of the roots' pages and of the idle ones (releaseFrame).
+	for _, root := range roots {
+		root.object.Destroy()
+	}
+	return nil
 }

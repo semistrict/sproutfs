@@ -29,7 +29,7 @@ type changeSums struct{ sums []uint64 }
 type changes struct {
 	mu     sync.Mutex
 	byPage map[uint64]changeSums
-	// byHeld is keyed by the checkpoint's copy, a *binding or a *zbinding.
+	// byHeld is keyed by the checkpoint's copy.
 	byHeld map[any]changeSums
 }
 
@@ -116,49 +116,17 @@ func (r *MemoryRegion) takeSums(held any) (changeSums, bool) {
 // what the page held as it became private, and reports false where that is not
 // known: a page private since before it was measured, one another host made
 // private, or one spilled since the seal.
-func (s *settler) changedBlocks(ctx context.Context, c *MemoryRegionCheckpoint, held *binding) (int, bool, error) {
-	r := c.memoryRegion
+func (r *MemoryRegion) changedBlocks(ctx context.Context, held *binding) (int, bool, error) {
 	h := r.host
 	was, ok := r.takeSums(held)
 	if !ok {
 		return 0, false, nil
 	}
-	pg, err := h.current(ctx, held)
-	if err != nil || pg == nil {
-		return 0, false, err
-	}
-	defer h.unlock(pg)
-	now, err := h.blockSums(ctx, pg.fileSlot)
-	if err != nil {
-		return 0, false, err
-	}
-	zero := h.zeroBlockSum()
-	changed := 0
-	for i, sum := range now {
-		before := zero
-		if was.sums != nil {
-			before = was.sums[i]
-		}
-		if sum != before {
-			changed++
-		}
-	}
-	return changed, true, nil
-}
-
-// changedBlocks is settler.changedBlocks over the zircon core.
-func (z *zirconRegion) changedBlocks(ctx context.Context, held *zbinding) (int, bool, error) {
-	r := z.region
-	h := r.host
-	was, ok := r.takeSums(held)
-	if !ok {
-		return 0, false, nil
-	}
-	page, err := z.host.lockedPage(ctx, held)
+	page, err := r.host.lockedPage(ctx, held)
 	if err != nil || page == nil {
 		return 0, false, err
 	}
-	defer z.host.unlockPage(page)
+	defer r.host.unlockPage(page)
 	now, err := h.blockSums(ctx, frameOf(page).fileSlot)
 	if err != nil {
 		return 0, false, err

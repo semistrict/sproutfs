@@ -5,6 +5,8 @@ import (
 	"maps"
 	"slices"
 	"time"
+
+	"github.com/semistrict/sproutfs/vmmemory/internal/zirconvm"
 )
 
 // Why a copy is cold before it is dirty.
@@ -41,8 +43,14 @@ import (
 //
 // A move of the origin moves its pins with it. An origin that goes anyway
 // leaves its copies cold, compared with their volume from then on. A protect
-// trap is a store into a page the guest
-// maps, which KVM reports only for a real store, so its copy is never cold.
+// trap is a store into a page the guest maps, which KVM reports only for a
+// real store, so its copy is never cold.
+//
+// A pin keeps the origin in the zero-fork queue, outside the reclaim queues an
+// eviction takes from while anything else can go. The give-back is Zircon's
+// zero-page scan widened to the origin (DedupZeroPage,
+// vm_cow_pages.cc:1363-1437): it checks the copy, write-protects it, checks
+// again, and puts the guest back on the origin.
 //
 // A cold copy is given back only once it is coldCopyAge old. KVM's worker takes
 // the page writable and only then does the vCPU retry its access, so a copy just
@@ -57,24 +65,175 @@ import (
 // coldCopyAge is how old a cold copy is before its session gives it back.
 var coldCopyAge = 200 * time.Millisecond
 
-// unpin is the reverse of pin: the last unpin moves origin back to the queue
-// it belongs in.
-func (h *Host) unpin(origin *resident, b *binding) {
+// GiveBackColdCopies gives back at once the cold copies recorded and not yet
+// taken, and reports how many went back: see giveback.go. A session takes
+// them itself, coldCopyAge after they are made; this is for a pager with no
+// session, and for a test.
+func (r *MemoryRegion) GiveBackColdCopies(ctx context.Context) (int, error) {
+	return r.givingBack(ctx, r.takeColdCopies)
+}
+
+// takeColdCopies is the cold copies recorded since it was last called, in page
+// order. A session's worker takes them and gives them back coldCopyAge later.
+func (r *MemoryRegion) takeColdCopies() []uint64 {
+	r.bindingsMu.Lock()
+	defer r.bindingsMu.Unlock()
+	pages := slices.Sorted(maps.Keys(r.coldCopies))
+	clear(r.coldCopies)
+	return pages
+}
+
+// pin keeps origin in the arena while b's cold copy is compared with it: the
+// first pin moves it to the zero-fork queue. Caller holds origin's lock.
+func (h *Host) pin(origin *zirconvm.VmPage, b *binding) {
 	h.pinMu.Lock()
 	defer h.pinMu.Unlock()
-	if _, pinned := origin.coldCopies[b]; !pinned {
+	f := frameOf(origin)
+	if f.coldCopies == nil {
+		f.coldCopies = make(map[*binding]struct{})
+	}
+	first := len(f.coldCopies) == 0
+	f.coldCopies[b] = struct{}{}
+	if first {
+		h.node.PageQueues().MoveAnonymousToAnonymousZeroFork(origin)
+	}
+}
+
+// unpin is the reverse of pin: the last unpin moves origin back to the queue
+// it belongs in.
+func (h *Host) unpin(origin *zirconvm.VmPage, b *binding) {
+	h.pinMu.Lock()
+	defer h.pinMu.Unlock()
+	f := frameOf(origin)
+	if _, pinned := f.coldCopies[b]; !pinned {
 		return
 	}
-	delete(origin.coldCopies, b)
-	if len(origin.coldCopies) == 0 {
+	delete(f.coldCopies, b)
+	if len(f.coldCopies) == 0 {
 		h.unpinnedLocked(origin)
 	}
 }
 
-// uncoldLocked ends b's copy being cold, if it is: a comparison found it
-// changed, it was given back, or its dirty epoch or its origin ended some other
-// way. Every transition that changes a page's origin or ends its dirty epoch
-// calls it first. Caller holds bindingsMu.
+// unpinnedLocked moves a page no cold copy pins any more back where it
+// belongs: the don't-need queue if it is idle, the newest reclaim queue if
+// not. Caller holds h.pinMu.
+func (h *Host) unpinnedLocked(origin *zirconvm.VmPage) {
+	if _, queued := h.node.PageQueues().Backlink(origin); !queued {
+		return
+	}
+	if frameOf(origin).idle {
+		h.node.PageQueues().MoveToReclaimDontNeed(origin)
+		return
+	}
+	h.node.PageQueues().MoveToReclaim(origin)
+}
+
+// dropCold lets every cold copy compared with origin go on without it, as
+// Host.dropCold does: origin is going although it is pinned. The copies stay
+// cold, and are compared with the bytes their volume holds for their page.
+func (h *Host) dropCold(origin *zirconvm.VmPage) {
+	f := frameOf(origin)
+	h.pinMu.Lock()
+	copies := slices.Collect(maps.Keys(f.coldCopies))
+	f.coldCopies = nil
+	h.pinMu.Unlock()
+	for _, b := range copies {
+		q := b.region
+		q.bindingsMu.Lock()
+		if b.cold && b.origin == origin {
+			b.origin = nil
+		}
+		q.bindingsMu.Unlock()
+	}
+}
+
+// moveCold makes every cold copy compared with from compared with to instead,
+// which holds the same bytes and takes from's place. Caller holds both pages'
+// locks.
+func (h *Host) moveCold(from, to *zirconvm.VmPage) {
+	ff, tf := frameOf(from), frameOf(to)
+	h.pinMu.Lock()
+	copies := slices.Collect(maps.Keys(ff.coldCopies))
+	ff.coldCopies = nil
+	if len(copies) > 0 {
+		if tf.coldCopies == nil {
+			tf.coldCopies = make(map[*binding]struct{})
+		}
+		if len(tf.coldCopies) == 0 {
+			h.node.PageQueues().MoveAnonymousToAnonymousZeroFork(to)
+		}
+	}
+	for _, b := range copies {
+		tf.coldCopies[b] = struct{}{}
+	}
+	h.pinMu.Unlock()
+	for _, b := range copies {
+		q := b.region
+		q.bindingsMu.Lock()
+		if b.origin == from {
+			b.origin = to
+		}
+		q.bindingsMu.Unlock()
+	}
+}
+
+// markCold makes b's copy of origin cold, and records it for its session to
+// give back, as MemoryRegion.markCold does. It reports whether it did: a copy
+// that no longer remembers origin is not one.
+func (r *MemoryRegion) markCold(b *binding, origin *zirconvm.VmPage) bool {
+	h := r.host
+	r.bindingsMu.Lock()
+	h.pinMu.Lock()
+	_, pinned := frameOf(origin).coldCopies[b]
+	h.pinMu.Unlock()
+	if b.origin != origin || !b.writable() {
+		r.bindingsMu.Unlock()
+		return false
+	}
+	if !pinned {
+		// An eviction with nothing else to take took origin while the copy
+		// was being made: the copy is compared with its volume instead.
+		b.origin = nil
+	}
+	b.cold, b.coldAt = true, h.clock.Now().UnixNano()
+	if r.coldPages == nil {
+		r.coldPages = make(map[uint64]*binding)
+	}
+	r.coldPages[b.index] = b
+	if r.coldCopies == nil {
+		r.coldCopies = make(map[uint64]struct{})
+	}
+	r.coldCopies[b.index] = struct{}{}
+	r.bindingsMu.Unlock()
+	select {
+	case r.coldCopied <- struct{}{}:
+	default:
+	}
+	return true
+}
+
+// requeueCold hands a cold copy back to its session when a give-back could not
+// finish it.
+func (r *MemoryRegion) requeueCold(b *binding) {
+	r.bindingsMu.Lock()
+	queued := b.cold && b.writable()
+	if queued {
+		if r.coldCopies == nil {
+			r.coldCopies = make(map[uint64]struct{})
+		}
+		r.coldCopies[b.index] = struct{}{}
+	}
+	r.bindingsMu.Unlock()
+	if queued {
+		select {
+		case r.coldCopied <- struct{}{}:
+		default:
+		}
+	}
+}
+
+// uncoldLocked ends b's copy being cold, if it is, as
+// MemoryRegion.uncoldLocked does. Caller holds r.bindingsMu.
 func (r *MemoryRegion) uncoldLocked(b *binding) {
 	if !b.cold {
 		return
@@ -86,41 +245,194 @@ func (r *MemoryRegion) uncoldLocked(b *binding) {
 	}
 }
 
-// dropCold lets every cold copy compared with pg go on without it: pg is
-// going although it is pinned, because an eviction had nothing else to take,
-// its identity was dropped, or a move put its bytes elsewhere. The copies stay
-// cold, and are compared with the bytes their volume holds for their page
-// instead, which are what pg held: see volumeHolds. Caller holds pg's lock.
-func (h *Host) dropCold(pg *resident) {
-	h.pinMu.Lock()
-	copies := slices.Collect(maps.Keys(pg.coldCopies))
-	pg.coldCopies = nil
-	if len(copies) > 0 {
-		h.unpinnedLocked(pg)
+// isCold reports whether b's copy is cold and still its own dirty state.
+func (r *MemoryRegion) isCold(b *binding) bool {
+	r.bindingsMu.Lock()
+	defer r.bindingsMu.Unlock()
+	return b.cold && b.writable()
+}
+
+// coldSince reports when b's copy became cold.
+func (r *MemoryRegion) coldSince(b *binding) time.Time {
+	r.bindingsMu.Lock()
+	defer r.bindingsMu.Unlock()
+	return time.Unix(0, b.coldAt)
+}
+
+// originOf reports the page b was copied from, nil where it was copied from
+// nothing a comparison may use.
+func (r *MemoryRegion) originOf(b *binding) *zirconvm.VmPage {
+	r.bindingsMu.Lock()
+	defer r.bindingsMu.Unlock()
+	return b.origin
+}
+
+// forgetOrigin stops comparing b with origin: the guest changed it, or origin
+// has gone. It is left alone where b has been copied again since.
+func (r *MemoryRegion) forgetOrigin(b *binding, origin *zirconvm.VmPage) {
+	r.bindingsMu.Lock()
+	defer r.bindingsMu.Unlock()
+	if b.origin == origin {
+		r.uncoldLocked(b)
+		b.origin = nil
 	}
-	h.pinMu.Unlock()
-	for _, b := range copies {
-		r := b.memoryRegion
-		r.bindingsMu.Lock()
-		if b.cold && b.origin == pg {
-			b.origin = nil
+}
+
+// endDirty ends b's dirty epoch with no checkpoint, because its bytes are the
+// ones the page it shares again holds, and reports the reservation it was
+// admitted under, for the caller to give back. A region left with no dirty
+// page holds no unpublished write, so its loss window ends too.
+func (r *MemoryRegion) endDirty(b *binding) reservation {
+	r.host.probe.retired(b)
+	r.bindingsMu.Lock()
+	defer r.bindingsMu.Unlock()
+	r.uncoldLocked(b)
+	spill := b.spill
+	b.spill, b.dirty, b.ahead, b.origin = noReservation, false, false, nil
+	delete(r.dirtySet, b.index)
+	r.noteSealableLocked(b)
+	if len(r.dirtySet) == 0 {
+		r.dirtySince = time.Time{}
+	}
+	return spill
+}
+
+// leaveOutColdCopies leaves out of the set a seal took every cold copy that
+// still holds its origin's bytes, which stays the guest's, cold and writable.
+// Caller holds the region exclusively.
+func (r *MemoryRegion) leaveOutColdCopies(ctx context.Context, pending map[uint64]*binding) (int, error) {
+	h := r.host
+	r.bindingsMu.Lock()
+	var cold []*binding
+	for index, b := range r.coldPages {
+		if pending[index] == b {
+			cold = append(cold, b)
 		}
+	}
+	r.bindingsMu.Unlock()
+	slices.SortFunc(cold, func(a, b *binding) int { return int(a.index) - int(b.index) })
+	var buffers settler
+	var unchanged []*binding
+	for _, b := range cold {
+		same, err := r.stillOrigins(ctx, b, &buffers)
+		if err != nil {
+			return 0, err
+		}
+		if same {
+			delete(pending, b.index)
+			unchanged = append(unchanged, b)
+			continue
+		}
+		r.bindingsMu.Lock()
+		r.uncoldLocked(b)
 		r.bindingsMu.Unlock()
 	}
+	if len(unchanged) == 0 {
+		return 0, nil
+	}
+	r.bindingsMu.Lock()
+	if r.dirtySet == nil {
+		r.dirtySet = make(map[uint64]*binding)
+	}
+	for _, b := range unchanged {
+		r.dirtySet[b.index] = b
+		r.noteSealableLocked(b)
+	}
+	r.bindingsMu.Unlock()
+	if err := r.unprotectMapped(ctx, unchanged); err != nil {
+		return 0, err
+	}
+	h.mu.Lock()
+	h.stats.UnchangedPages += uint64(len(unchanged))
+	h.mu.Unlock()
+	return len(unchanged), nil
 }
 
-// GiveBackColdCopies gives back at once the cold copies recorded and not yet
-// taken, and reports how many went back: see giveback.go. A session takes
-// them itself, coldCopyAge after they are made; this is for a pager with no
-// session, and for a test.
-func (r *MemoryRegion) GiveBackColdCopies(ctx context.Context) (int, error) {
-	z := r.zircon
-
-	return z.giveBackColdCopies(ctx)
+// stillOrigins reports whether a cold copy holds exactly its origin's bytes.
+// An origin no longer there to compare with ends the copy being cold, and it
+// is reported changed. Caller holds the region exclusively.
+func (r *MemoryRegion) stillOrigins(ctx context.Context, b *binding, buffers *settler) (bool, error) {
+	h := r.host
+	origin := r.originOf(b)
+	if origin == nil {
+		return r.volumeHolds(ctx, b, buffers)
+	}
+	if err := r.host.lockPage(ctx, origin); err != nil {
+		return false, err
+	}
+	defer r.host.unlockPage(origin)
+	if !r.host.published(origin) {
+		return false, nil
+	}
+	page, err := r.host.lockedPage(ctx, b)
+	if err != nil {
+		return false, err
+	}
+	if page != nil {
+		defer r.host.unlockPage(page)
+		return buffers.equal(ctx, h, frameOf(origin).fileSlot, frameOf(page).fileSlot)
+	}
+	// Spilled: the reservation holds the copy's bytes.
+	if buffers.first == nil {
+		buffers.first, buffers.second = make([]byte, h.pageSize), make([]byte, h.pageSize)
+	}
+	f := frameOf(origin)
+	if err := f.file.Read(ctx, f.slot, buffers.first); err != nil {
+		return false, err
+	}
+	if err := h.readSpill(ctx, r.spillOf(b), buffers.second); err != nil {
+		return false, err
+	}
+	return slices.Equal(buffers.first, buffers.second), nil
 }
 
-// takeColdCopies is the cold copies recorded since it was last called, in page
-// order. A session's worker takes them and gives them back coldCopyAge later.
-func (r *MemoryRegion) takeColdCopies() []uint64 {
-	return r.zircon.takeColdCopies()
+// unprotectMapped takes the write protection the pause put on the pages of
+// bindings off those the guest still maps, one command per page, with the
+// region's protection held exclusively, as MemoryRegion.unprotectMapped does.
+// Caller holds the region exclusively.
+func (r *MemoryRegion) unprotectMapped(ctx context.Context, bindings []*binding) error {
+	if err := r.protectMu.Lock(ctx); err != nil {
+		return err
+	}
+	defer r.protectMu.Unlock()
+	for _, b := range bindings {
+		if !r.isMapped(b) {
+			continue
+		}
+		if err := r.resolvePages(ctx, b.index, 1, true); err != nil {
+			return r.fail(err)
+		}
+	}
+	return nil
+}
+
+// volumeHolds reports whether a cold copy whose origin has gone holds exactly
+// the bytes its volume holds for its page. A backing that may answer with
+// another host's bytes has no such guarantee, and the copy is reported
+// changed.
+func (r *MemoryRegion) volumeHolds(ctx context.Context, b *binding, buffers *settler) (bool, error) {
+	h := r.host
+	if r.peer {
+		return false, nil
+	}
+	if buffers.first == nil {
+		buffers.first, buffers.second = make([]byte, h.pageSize), make([]byte, h.pageSize)
+	}
+	if _, err := r.loadBacking(ctx, b.index*h.pageSize, buffers.first); err != nil {
+		return false, err
+	}
+	page, err := r.host.lockedPage(ctx, b)
+	if err != nil {
+		return false, err
+	}
+	if page != nil {
+		defer r.host.unlockPage(page)
+		f := frameOf(page)
+		if err := f.file.Read(ctx, f.slot, buffers.second); err != nil {
+			return false, err
+		}
+	} else if err := h.readSpill(ctx, r.spillOf(b), buffers.second); err != nil {
+		return false, err
+	}
+	return slices.Equal(buffers.first, buffers.second), nil
 }

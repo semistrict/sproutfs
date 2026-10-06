@@ -11,12 +11,12 @@ import (
 	"github.com/semistrict/sproutfs/vmmemory"
 )
 
-// A fault maps the pages around its own that are resident already, as
-// Zircon's fault maps the pages around the faulting one that are present in
-// its VMO (VmMapping::PageFaultLockedObject, vm/vm_mapping.cc:1334-1360). Here
-// the bound is the read-ahead window, where Zircon's is its optimistic cap,
-// and only a fault that reads its window maps it: a fault at random maps its
-// page alone (faultfirst.go). Both cores do this.
+// A fault maps the pages around its own that are resident already, as Zircon's
+// fault maps the pages around the faulting one that are present in its VMO
+// (VmMapping::PageFaultLockedObject, vm/vm_mapping.cc:1334-1360). Here the
+// bound is the read-ahead window, where Zircon's is its optimistic cap, and
+// only a fault that reads its window maps it: a fault at random maps its page
+// alone (faultfirst.go).
 
 // aroundPages is the size of every region these tests attach: four windows.
 const aroundPages = 32

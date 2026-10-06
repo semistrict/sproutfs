@@ -352,8 +352,8 @@ func requireKernelBytes(t *testing.T, b *kernelBacking, want []byte) {
 }
 
 // Every memory region a session attaches has the region layer, as a region
-// Attach makes does. A session's region once had none, and ran the old core
-// under the new one, whose host-wide work then never saw its pages.
+// Attach makes does. A session's region once had none, and the pager's
+// host-wide work then never saw its pages.
 func TestASessionsMemoryRegionHasTheRegionLayer(t *testing.T) {
 	h := kernelHost(t, 8, 16)
 	p := startNative(t, h, 4)
@@ -475,13 +475,6 @@ type clientOptions struct {
 	// and returns the socket to hand the pager instead, which may forward the
 	// two and misbehave between them. A nil result leaves the socket as it is.
 	proxy func(region int, client *net.UnixConn) *net.UnixConn
-}
-
-type clientOption func(*clientOptions)
-
-// withProxy interposes a proxy on the client's control sockets.
-func withProxy(proxy func(region int, client *net.UnixConn) *net.UnixConn) clientOption {
-	return func(o *clientOptions) { o.proxy = proxy }
 }
 
 // startNativeIn starts a client process whose VM belongs to tenant, empty for

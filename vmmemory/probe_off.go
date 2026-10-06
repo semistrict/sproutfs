@@ -21,12 +21,3 @@ func (probeState) take() string                                                 
 func (probeState) resharedSpilled(context.Context, *Host, probeBinding, []byte, probePage) string {
 	return ""
 }
-
-// note and Ring are nothing in an ordinary build: the pager records no history
-// of what it did to a page. See probe_on.go.
-func note(*MemoryRegion, uint64, string, int, int) {}
-
-// Ring reports nothing without the accelerator's build tag.
-func Ring(*MemoryRegion, uint64, uint64) []string { return nil }
-
-func caller() string { return "" }

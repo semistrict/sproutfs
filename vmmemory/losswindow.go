@@ -18,10 +18,10 @@ import "time"
 // that has been faulting since it resumed keeps the earlier of its own first
 // store and what it was handed.
 func (r *MemoryRegion) SetUnpublishedAge(age time.Duration) {
-	z := r.zircon
-
-	z.setUnpublishedAge(age)
-	return
+	if age <= 0 {
+		return
+	}
+	r.restoreDirtySince(r.host.clock.Now().Add(-age))
 }
 
 // OldestUnpublished is when the oldest write this memory region holds that no landed
@@ -33,9 +33,13 @@ func (r *MemoryRegion) SetUnpublishedAge(age time.Duration) {
 // It is what a host sums across the memory regions of one VM to answer Pressure.Oldest,
 // and what it reports that VM's loss window from.
 func (r *MemoryRegion) OldestUnpublished() time.Time {
-	z := r.zircon
-
-	return z.oldestUnpublished()
+	r.bindingsMu.Lock()
+	since := r.dirtySince
+	r.bindingsMu.Unlock()
+	if _, draining := r.sealState(); draining != nil {
+		since = older(since, draining.since())
+	}
+	return since
 }
 
 // unpublishedAge is how long this memory region has held its oldest unpublished write,
@@ -154,8 +158,8 @@ func (h *Host) window(r *MemoryRegion) windowAnswer {
 // askWindow claims this memory region's one request for the checkpoint that
 // ends its window, reporting whether this caller is the one to ask.
 func (r *MemoryRegion) askWindow() bool {
-	r.bindingsMu.Lock()
-	defer r.bindingsMu.Unlock()
+	r.windowMu.Lock()
+	defer r.windowMu.Unlock()
 	if r.windowAsked {
 		return false
 	}
@@ -166,7 +170,32 @@ func (r *MemoryRegion) askWindow() bool {
 // forgetWindowAsk gives the request back when nobody took it, so the next
 // store asks again.
 func (r *MemoryRegion) forgetWindowAsk() {
-	r.bindingsMu.Lock()
-	defer r.bindingsMu.Unlock()
+	r.windowMu.Lock()
+	defer r.windowMu.Unlock()
 	r.windowAsked = false
+}
+
+// takeDirtySince takes the region's loss window off it and reports it, which a
+// seal does to hand the window to its checkpoint. The next store that holds a
+// write no checkpoint covers starts a window of its own.
+func (r *MemoryRegion) takeDirtySince() time.Time {
+	r.bindingsMu.Lock()
+	since := r.dirtySince
+	r.dirtySince = time.Time{}
+	r.bindingsMu.Unlock()
+	r.windowMu.Lock()
+	r.windowAsked = false
+	r.windowMu.Unlock()
+	return since
+}
+
+// restoreDirtySince hands a window back to the region, which an abandoned
+// checkpoint does: the older of it and the region's own stands.
+func (r *MemoryRegion) restoreDirtySince(since time.Time) {
+	r.bindingsMu.Lock()
+	r.dirtySince = older(r.dirtySince, since)
+	r.bindingsMu.Unlock()
+	r.windowMu.Lock()
+	r.windowAsked = false
+	r.windowMu.Unlock()
 }

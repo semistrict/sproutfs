@@ -20,7 +20,7 @@ import (
 //
 //	offset size
 //	0      4    magic "SFCI"
-//	4      1    format version, 2
+//	4      1    format version, 3
 //	5      1    kind: 0 a page, 1 a segment
 //	6      1    the item's stripe index in its code
 //	7      1    k, the code's data stripes
@@ -39,7 +39,9 @@ import (
 // A whole envelope is stripe 0 of the code 1+0, and its bytes are the
 // envelope. The stripes are cut by package stripe; each is stored as it goes
 // on the wire, with what a reader needs to rebuild the envelope from any k.
-// Version 1 had no envelope length, and held whole envelopes only.
+// Version 1 had no envelope length, and held whole envelopes only. Version 2
+// held envelopes of format 1, which a SHA-256 checked; version 3 holds those of
+// format 2, which XXH3-128 checks. A disk of another version is made anew.
 //
 // A closed region ends with its table, then a fixed trailer:
 //
@@ -49,7 +51,7 @@ import (
 //
 //	trailer, the region's last 40 bytes:
 //	0  4 magic "SFCT"
-//	4  1 format version, 2
+//	4  1 format version, 3
 //	5  3 zero
 //	8  8 the region's sequence number
 //	16 8 the file's generation
@@ -67,7 +69,7 @@ import (
 // span, so every region starts on a region boundary:
 //
 //	0  4  magic "SFCH"
-//	4  1  format version, 2
+//	4  1  format version, 3
 //	5  3  zero
 //	8  8  the region size
 //	16 16 the cache's identity
@@ -84,7 +86,7 @@ import (
 // takes a new generation, so a table the old file left behind is never read
 // as one of the new file's, even where the device kept it.
 const (
-	diskFormatVersion = 2
+	diskFormatVersion = 3
 	diskItemFixed     = 44
 	diskTableFixed    = 34
 	diskTrailerSize   = 40

@@ -30,19 +30,32 @@ func (r *MemoryRegion) revocationFailed(err error) error {
 	return r.fail(err)
 }
 
-// Callers own all resident transitions (or an unmapped binding's memory region lock).
-// Preserve possibly mapped state until the whole batch has a successful ACK.
-//
-// Each command is issued with the memory region's protection held shared, as every
-// revocation is: a seal reads the runs of the dirty set rather than walking its
-// pages, so what says that a revocation of one of those pages is either
-// finished and out of the runs the seal reads, or has not begun, is this and
-// nothing else.
+// underProtection runs one revocation with the memory region's protection held
+// shared, so that a seal's write-protect commands and the mappings a reclaim
+// takes away cannot overlap. It is never nested and never waits for the memory region
+// or for a page while it holds it.
+func (r *MemoryRegion) underProtection(ctx context.Context, revoke func() error) error {
+	if err := r.protectMu.RLock(ctx); err != nil {
+		return err
+	}
+	defer r.protectMu.RUnlock()
+	return revoke()
+}
+
+// Zircon's Unmap and UnmapAndHarvest are RevokeBatch here, and each command is
+// issued with the region's protection held shared, so a seal's write-protect
+// commands and a revocation never overlap.
+
+// revokeBindings revokes the mapped pages of bindings, every one this
+// region's, by one command per run of consecutive pages where the client takes
+// batches. An error is ambiguous for every run, so the pages stay recorded as
+// mapped and the region is terminal.
 func (r *MemoryRegion) revokeBindings(ctx context.Context, bindings []*binding) error {
+	h := r.host
 	batch, ok := r.mapping.(BatchRevocation)
 	if !ok {
 		for _, b := range bindings {
-			if err := r.host.revoke(ctx, b); err != nil {
+			if err := r.revoke(ctx, b); err != nil {
 				return err
 			}
 		}
@@ -71,49 +84,32 @@ func (r *MemoryRegion) revokeBindings(ctx context.Context, bindings []*binding) 
 			return r.revocationFailed(err)
 		}
 		for _, b := range bindings {
-			r.setMapped(b, false)
+			r.setBindingMapped(b, false)
 		}
-		r.host.mu.Lock()
-		r.host.stats.Revocations += uint64(commands)
-		r.host.stats.RevokeRuns += uint64(count)
-		r.host.stats.RevokedPages += uint64(pages)
-		r.host.revokedLocked()
-		r.host.mu.Unlock()
+		h.mu.Lock()
+		h.stats.Revocations += uint64(commands)
+		h.stats.RevokeRuns += uint64(count)
+		h.stats.RevokedPages += uint64(pages)
+		h.revokedLocked()
+		h.mu.Unlock()
 		return nil
 	})
 }
 
-// underProtection runs one revocation with the memory region's protection held
-// shared, so that a seal's write-protect commands and the mappings a reclaim
-// takes away cannot overlap. It is never nested and never waits for the memory region
-// or for a page while it holds it.
-func (r *MemoryRegion) underProtection(ctx context.Context, revoke func() error) error {
-	if err := r.protectMu.RLock(ctx); err != nil {
-		return err
-	}
-	defer r.protectMu.RUnlock()
-	return revoke()
-}
-
-func (h *Host) revoke(ctx context.Context, b *binding) error {
-	// A reclaim revokes its victim's pages under that page's lock alone and a
-	// seal reads the runs of its dirty set under the memory region, so the two exclude
-	// each other through the memory region's protection and nothing else: the mapping
-	// state itself is read through the binding map, like every other holder of
-	// it.
-	if !b.memoryRegion.isMapped(b) {
-		note(b.memoryRegion, b.index, "revoke-skipped-unmapped", -1, -1)
+// revoke takes one page's mapping away, where it is installed.
+func (r *MemoryRegion) revoke(ctx context.Context, b *binding) error {
+	h := r.host
+	if !r.isMapped(b) {
 		return nil
 	}
-	return b.memoryRegion.underProtection(ctx, func() error {
-		if !b.memoryRegion.isMapped(b) {
+	return r.underProtection(ctx, func() error {
+		if !r.isMapped(b) {
 			return nil
 		}
-		if err := b.memoryRegion.revokePage(ctx, b.index); err != nil {
-			return b.memoryRegion.revocationFailed(err)
+		if err := r.revokePage(ctx, b.index); err != nil {
+			return r.revocationFailed(err)
 		}
-		note(b.memoryRegion, b.index, "revoke", -1, -1)
-		b.memoryRegion.setMapped(b, false)
+		r.setBindingMapped(b, false)
 		h.mu.Lock()
 		h.stats.Revocations++
 		h.stats.RevokeRuns++

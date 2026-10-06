@@ -10,8 +10,7 @@ import (
 )
 
 // The bounds of what one store makes private, which neither checkpoints nor
-// evicts: write-ahead's run, the half-private rule and the gap rule. Both
-// cores run them.
+// evicts: write-ahead's run, the half-private rule and the gap rule.
 
 // A store into fresh zeros makes the zero pages after it private up to the end
 // of its read-ahead window, then those before it, at most WriteAheadPages of

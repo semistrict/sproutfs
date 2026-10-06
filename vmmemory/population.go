@@ -89,10 +89,66 @@ func (r *MemoryRegion) Populated() PopulateStats {
 // siblings loaded and takes no faults on them. It loads nothing, and it installs
 // at most populationRuns runs of them. Call it once the mapping accepts commands
 // and before memory users start.
+//
+// It is Zircon's CommitRangeLocked restricted to the pages an identity root
+// holds: a commit of the range that reads nothing.
 func (r *MemoryRegion) Populate(ctx context.Context) error {
-	z := r.zircon
-
-	return z.populate(ctx)
+	h := r.host
+	started := h.clock.Now()
+	var installed installedRuns
+	defer func() {
+		r.populated.Store(&PopulateStats{Commands: installed.commands, Runs: installed.runs,
+			Pages: installed.pages, DurationNS: h.clock.Since(started).Nanoseconds()})
+	}()
+	if err := r.mu.Lock(ctx); err != nil {
+		return err
+	}
+	if err := r.ready(); err != nil {
+		r.mu.Unlock()
+		return err
+	}
+	h.mu.Lock()
+	available := r.host.rootPages > 0 || h.zeroMemoryRegions > 0 || r.host.lendsAnyLocked()
+	h.mu.Unlock()
+	r.mu.Unlock()
+	if !available {
+		// There is no page to populate from. A first fault will discover
+		// cold data or zeros without making attachment wait for metadata.
+		return nil
+	}
+	budget := populationBudget{runs: populationRuns, pages: populationPages}
+	for start := uint64(0); start < uint64(r.pageCount) && budget.left(); {
+		end := min(start+max(populationWindowBytes/h.pageSize, 1), uint64(r.pageCount))
+		err := func() error {
+			if err := r.mu.Lock(ctx); err != nil {
+				return err
+			}
+			defer r.mu.Unlock()
+			if err := r.ready(); err != nil {
+				return err
+			}
+			if err := h.beginIO(ctx); err != nil {
+				return err
+			}
+			defer h.endIO()
+			plan, err := r.plan(ctx, start, end, end)
+			if err != nil {
+				return err
+			}
+			defer plan.unlock()
+			if err := plan.bindResidents(ctx, &budget); err != nil {
+				return err
+			}
+			_, err = plan.install(ctx)
+			installed.add(plan.installed)
+			return err
+		}()
+		if err != nil {
+			return err
+		}
+		start = end
+	}
+	return nil
 }
 
 // identityLess is a total order over every field of an identity, so opposing
@@ -140,7 +196,7 @@ type populateRun struct {
 // groupResidentRuns groups candidates into the runs one mapping command each
 // covers, given the slot of each candidate's resident page (slot -1 for one
 // with none) and whether a fork point named it, nil for none named, and
-// appends them to runs. Both cores' populates group their candidates so.
+// appends them to runs.
 func groupResidentRuns(candidates []candidate, slots []fileSlot, named []bool, runs []populateRun) []populateRun {
 	isNamed := func(i int) bool { return named != nil && named[i] }
 	for first := 0; first < len(candidates); first++ {
@@ -217,4 +273,122 @@ func affordRuns(runs []populateRun, budget *populationBudget, least uint64) []po
 	}
 	sort.Slice(kept, func(i, j int) bool { return kept[i].first < kept[j].first })
 	return kept
+}
+
+// bindResidents takes into the plan the window's holes and its pages a root
+// holds, grouped into the runs one mapping command covers each, as many of
+// them as the budget affords.
+func (p *plan) bindResidents(ctx context.Context, budget *populationBudget) error {
+	r := p.region
+	h := r.host
+	ps := h.pageSize
+	var candidates []candidate
+	var runs []populateRun
+	for _, extent := range p.window.extents {
+		if err := context.Cause(ctx); err != nil {
+			return err
+		}
+		if extent.Identity.Zero {
+			// A hole is one run, however large, observed whether or not the
+			// budget affords mapping it.
+			first := max((extent.Offset+ps-1)/ps, p.start)
+			last := min((extent.Offset+extent.Length)/ps, p.end)
+			if first < last {
+				p.observeZeros()
+				runs = append(runs, populateRun{first: first, last: last, zero: true})
+			}
+			continue
+		}
+		if extent.Identity.Ref.IsZero() || extent.Length < ps {
+			continue
+		}
+		page := extent.Offset / ps
+		if extent.Identity.Page != page || page < p.start || page >= p.end || !p.eligible(page) {
+			continue
+		}
+		candidates = append(candidates, candidate{page: page, key: pageKey{id: extent.Identity}})
+	}
+	slots, named := r.host.residentSlots(candidates)
+	var kept []candidate
+	for _, run := range affordRuns(groupResidentRuns(candidates, slots, named, runs), budget, uint64(r.populationRun())) {
+		if run.zero {
+			p.markZeros(run.first, run.last)
+			continue
+		}
+		kept = append(kept, candidates[run.from:run.to]...)
+	}
+	// Every population takes the pages' locks in the same order of identities.
+	sort.Slice(kept, func(i, j int) bool {
+		if kept[i].key == kept[j].key {
+			return kept[i].page < kept[j].page
+		}
+		return identityLess(kept[i].key.id, kept[j].key.id)
+	})
+	for _, item := range kept {
+		if _, err := p.take(ctx, item.page, item.key); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// residentSlots is the slot of the page each candidate's root holds, or slot
+// -1, read once with each root's lock held for each run of candidates of one
+// root, and whether a fork point lends it: the parent's own dirty state, which
+// this populate is the only moment a child can map, so its runs take the
+// budget first. Nothing here decides what a page holds: a page given up
+// before it is taken is a command and a fault more, never a page.
+func (h *Host) residentSlots(candidates []candidate) ([]fileSlot, []bool) {
+	ps := h.pageSize
+	slots := make([]fileSlot, len(candidates))
+	named := make([]bool, len(candidates))
+	for at := 0; at < len(candidates); {
+		key := rootOf(candidates[at].key)
+		h.mu.Lock()
+		root := h.roots[key]
+		h.mu.Unlock()
+		run := 1
+		for at+run < len(candidates) && rootOf(candidates[at+run].key) == key {
+			run++
+		}
+		for i := at; i < at+run; i++ {
+			slots[i] = fileSlot{slot: -1}
+		}
+		if root != nil {
+			root.slotsOf(candidates[at:at+run], slots[at:at+run], ps)
+			h.mu.Lock()
+			lent := root.lent != nil
+			h.mu.Unlock()
+			for i := at; i < at+run; i++ {
+				named[i] = lent && slots[i].slot >= 0
+			}
+		}
+		at += run
+	}
+	return slots, named
+}
+
+// slotsOf sets the slot of the page the root holds for each candidate, all of
+// this root, under one hold of its lock, leaving the slot of a page it does
+// not hold as it is.
+func (root *identityRoot) slotsOf(candidates []candidate, slots []fileSlot, pageSize uint64) {
+	lock := root.pages.Lock()
+	lock.Lock()
+	defer lock.Unlock()
+	for i, item := range candidates {
+		if found := root.pages.PageLocked(item.key.id.Page * pageSize); found != nil {
+			slots[i] = frameOf(found).fileSlot
+		}
+	}
+}
+
+// lendsAnyLocked reports a fork point lending pages under a temporary
+// identity root. Caller holds h.mu.
+func (h *Host) lendsAnyLocked() bool {
+	for _, root := range h.roots {
+		if len(root.lentPages) > 0 {
+			return true
+		}
+	}
+	return false
 }

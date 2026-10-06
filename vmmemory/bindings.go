@@ -1,96 +1,297 @@
 package vmmemory
 
-// binding is a page's state in one memory region. It is the content of the
-// page's slot in the region's page list, as a page is the content of a slot of
-// Zircon's VmPageList. It holds what Zircon's slot holds in its own way — the
-// resident page, explicit zero and the spill reservation — and beside them
-// what Zircon has no place for: whether the page is mapped, the checkpoint's
-// copy it shares, the page it was copied from, whether it is cold and whether
-// write-ahead made it.
+import "github.com/semistrict/sproutfs/vmmemory/internal/zirconvm"
+
+// The bindings beside a region's layer: what Zircon keeps in page tables it
+// can read back, and the pager cannot. A page has a binding once the region
+// maps it or maps from it; a run of pages mapped to zero with nothing else is
+// an Untracked zero interval of the same page list, which costs nothing per
+// page.
+
+// binding is what a memory region keeps beside its layer for one page: whether
+// its mapping is installed, and the page it maps, which Zircon keeps in page
+// tables it can read back and the pager cannot; and of a page the region has
+// stored into, what Zircon has no place for: the dirty reservation it was
+// admitted under, the checkpoint's copy it shares, the page it was copied
+// from, whether it is cold, and whether write-ahead made it.
+//
+// A checkpoint's copy of a page is a binding too, detached from the page list
+// beside the layer: it aliases the page the guest had at the seal,
+// AwaitingClean in the layer, and owns the reservation that page was admitted
+// under (D1, D5). The guest's binding shares it until a store copies away from
+// it.
 type binding struct {
-	memoryRegion *MemoryRegion
-	index        uint64
-	// Host.mu protects the pointer. The pointed-to resident's lock protects
-	// mapping state. Eviction publishes spill before clearing this pointer.
-	resident *resident
-	// spill is the dirty reservation this page was admitted under, or none.
-	// Whether it holds the page's bytes is the spill storage's own state: a
-	// seal hands a reservation to the checkpoint's copy while a reclaim may
-	// already be writing the bytes it will hold, and the fact has to follow the
-	// reservation rather than the binding that named it.
-	spill reservation
-	// checkpoint names the detached copy holding this page's sealed bytes while a
-	// checkpoint ingests. Such a binding is dirty but owns neither the spill
-	// reservation nor the right to store: it shares the checkpoint's page until a
-	// store copies away from it. The detached copy itself is not reachable from
-	// the memory region's bindings and always has checkpoint == nil.
-	checkpoint *binding
-	// origin is the resident page this private copy was made from, when that
-	// page held a published page identity: eight bytes, and not the identity
-	// itself. A write fault is not always a store, so the settle compares the
-	// sealed bytes with what that page still holds and re-shares the copy onto
-	// it where the two are equal. Nothing is pinned by the pointer — an origin
-	// that has been evicted is simply no longer an origin — and a page copied
-	// from a checkpoint's held copy, from the name a fork point lent a private
-	// page, from another host's unpublished page or from zeros has none.
-	origin *resident
-	mapped bool
-	zero   bool // explicit zero backing, independent of arena residency
-	dirty  bool
-	// ahead marks a private page that write-ahead made resident before any
-	// store into it. A store into a writable page never faults, so it stays
-	// set until the page's dirty epoch ends, and only the bytes written back
-	// can tell whether the guest used it.
-	ahead bool
-	// cold marks a copy a store trap made of origin, which is not yet known to
-	// be the guest's state and pins origin until it is: see cold.go.
-	cold bool
-	// inZeroRun marks a bound page that a compressed zero run maps: a page
-	// whose binding is clean and holds no memory, which a plan mapped to zero.
-	// The run's mapping becomes the page's own state when the page is next
-	// bound, as it does for a page of the run with no binding. A slot of the
-	// page list holds a binding or lies in an interval, never both, so the
-	// run keeps such a page here.
-	inZeroRun bool
+	region *MemoryRegion
+	index  uint64
+	// page is the page this region maps here, nil where it maps none or a
+	// zero: a page of an identity root, or of the region's own layer. Guarded
+	// by Host.mu, as the page's aliases are.
+	page *zirconvm.VmPage
+	// mapped is whether the mapping is installed, and zero whether it is a
+	// zero. inZeroRun marks a bound page a compressed zero run maps: its
+	// binding is clean and holds no page, and the run's mapping becomes the
+	// page's own state when the page is next bound. A slot of the page list
+	// holds a binding or lies in an interval, never both, so the run keeps
+	// such a page here. Guarded by MemoryRegion.bindingsMu.
+	mapped, zero, inZeroRun bool
+	// dirty marks a page that is the region's own state and not yet its
+	// volume's: Dirty in the layer, AwaitingClean while it shares the
+	// checkpoint's copy, or spilled. spill is the dirty reservation it was
+	// admitted under, which a seal hands to checkpoint, the copy it then
+	// shares until a store copies away from it. origin is the root's page it
+	// was copied from, cold marks a copy a store trap made of origin that is
+	// not yet known to be the guest's state, from coldAt (Unix nanoseconds),
+	// and ahead marks one write-ahead made before any store. Guarded by
+	// MemoryRegion.bindingsMu. The marks sit beside the reservation, which
+	// leaves them room, so that a binding, which every page a region touches
+	// has, is 64 bytes.
+	dirty       bool
+	spill       reservation
+	cold, ahead bool
+	checkpoint  *binding
+	origin      *zirconvm.VmPage
+	coldAt      int64
 }
 
-// offset is the page list's offset of a page. The page list keeps Zircon's byte
-// offsets; the pager counts pages, and converts here.
-func (r *MemoryRegion) offset(index uint64) uint64 { return index * r.host.pageSize }
+// writable reports whether the guest may store into b's page where it is: its
+// own dirty state, which no checkpoint still holds.
+func (b *binding) writable() bool { return b.dirty && b.checkpoint == nil }
+
+// repeated reports whether a fault on index for this access would be a repeated
+// fault: this memory region already maps the page for it. See repeats.go.
+func (r *MemoryRegion) repeated(index uint64, write bool) bool {
+	r.bindingsMu.Lock()
+	defer r.bindingsMu.Unlock()
+	b, zero := r.lookupLocked(index)
+	if zero {
+		return !write
+	}
+	return b != nil && b.mapped && (!write || b.writable())
+}
+
+// dirtyCount reports how many pages hold private state a checkpoint has not
+// taken, which is what the next seal takes.
+func (r *MemoryRegion) dirtyCount() int {
+	r.bindingsMu.Lock()
+	defer r.bindingsMu.Unlock()
+	return len(r.dirtySet)
+}
+
+// bindingLocked is the binding of one page, made where the page has none. A
+// page that leaves a compressed zero run takes the run's mapping with it.
+// Caller holds r.bindingsMu.
+func (r *MemoryRegion) bindingLocked(index uint64) *binding {
+	offset := index * r.host.pageSize
+	if slot := r.beside.Lookup(offset); slot != nil && slot.IsPage() {
+		b := slot.Page()
+		if b.inZeroRun {
+			b.inZeroRun = false
+			b.zero, b.mapped = true, true
+		}
+		return b
+	}
+	slot, inRun := r.beside.LookupOrAllocate(offset, zirconvm.SplitInterval)
+	b := &binding{region: r, index: index}
+	if inRun {
+		b.zero, b.mapped = true, true
+	}
+	slot.Set(zirconvm.Page(b))
+	return b
+}
 
 // lookupLocked is the binding of a page that has one, and whether a
-// compressed zero run maps the page. Caller holds bindingsMu.
+// compressed zero run maps the page. Caller holds r.bindingsMu.
 func (r *MemoryRegion) lookupLocked(index uint64) (b *binding, zeroRun bool) {
-	offset := r.offset(index)
-	if slot := r.pages.Lookup(offset); slot != nil && slot.IsPage() {
+	offset := index * r.host.pageSize
+	if slot := r.beside.Lookup(offset); slot != nil && slot.IsPage() {
 		b = slot.Page()
 		return b, b.inZeroRun
 	}
-	return nil, r.pages.IsOffsetInZeroInterval(offset)
+	return nil, r.beside.IsOffsetInZeroInterval(offset)
 }
 
-// setMapped and isMapped carry a page's mapping state across the one pair of
-// holders that do not exclude each other: a reclaim revokes a victim's pages
-// under that page's lock alone, and a seal reads them under the memory region.
-func (r *MemoryRegion) setMapped(b *binding, mapped bool) {
+// eachBoundLocked calls visit on the binding of every page of [first, last)
+// that has one, in order. Caller holds r.bindingsMu.
+func (r *MemoryRegion) eachBoundLocked(first, last uint64, visit func(*binding)) {
+	ps := r.host.pageSize
+	if err := r.beside.ForEveryPageInRange(func(slot *zirconvm.PageOrMarker[binding], _ uint64) error {
+		if slot.IsPage() {
+			visit(slot.Page())
+		}
+		return nil
+	}, first*ps, last*ps); err != nil {
+		panic("vmmemory: walking the bindings beside a layer: " + err.Error())
+	}
+}
+
+// bind makes page index of the region map p, a page an object holds, in
+// place of whatever it mapped from before. The caller holds the lock of p's
+// object, so p cannot be given up between its lookup and here.
+func (r *MemoryRegion) bind(index uint64, p *zirconvm.VmPage) {
 	r.bindingsMu.Lock()
-	b.mapped = mapped
-	r.noteSealableLocked(b)
+	b := r.bindingLocked(index)
 	r.bindingsMu.Unlock()
+	h := r.host
+	h.mu.Lock()
+	if b.page != p {
+		if b.page != nil {
+			r.host.unaliasLocked(b)
+		}
+		r.host.aliasLocked(b, p)
+	}
+	h.mu.Unlock()
 }
 
-// noteSealableLocked records whether this page is one the next seal would
-// write-protect: this memory region's own dirty state, held by no checkpoint, and
-// mapped. The seal reads the runs of those pages rather than walking the dirty
-// set, so its pause costs the commands it issues and not the pages they cover;
-// every transition that changes any of the three keeps this up to date, which
-// is what makes reading it O(runs). Caller holds bindingsMu.
+// eligible reports whether a page can join a plan: the region holds nothing
+// there yet, no page, no zero and no mapping.
+func (r *MemoryRegion) eligible(index uint64) bool {
+	r.bindingsMu.Lock()
+	b, _ := r.lookupLocked(index)
+	r.bindingsMu.Unlock()
+	return r.eligibleBinding(b)
+}
+
+// eligibleBinding is eligible of a page's binding, nil for one with none.
+func (r *MemoryRegion) eligibleBinding(b *binding) bool {
+	if b == nil {
+		return true
+	}
+	h := r.host
+	h.mu.Lock()
+	page := b.page
+	h.mu.Unlock()
+	r.bindingsMu.Lock()
+	defer r.bindingsMu.Unlock()
+	return page == nil && !b.mapped && !b.zero && !b.inZeroRun && !b.dirty && b.checkpoint == nil
+}
+
+// eligibleIn is eligible of every page of [first, last) by its binding, under
+// one walk of the bindings. A page of a compressed zero run has none and is
+// eligible: a plan finds it a hole, and its install finds it mapped.
+func (r *MemoryRegion) eligibleIn(first, last uint64) []bool {
+	result := make([]bool, last-first)
+	for i := range result {
+		result[i] = true
+	}
+	var bound []*binding
+	r.bindingsMu.Lock()
+	r.eachBoundLocked(first, last, func(b *binding) { bound = append(bound, b) })
+	r.bindingsMu.Unlock()
+	for _, b := range bound {
+		result[b.index-first] = r.eligibleBinding(b)
+	}
+	return result
+}
+
+// heldIn is the pages of [first, last) that may not join a plan, in order.
+func (r *MemoryRegion) heldIn(first, last uint64) []uint64 {
+	var held []uint64
+	for i, ok := range r.eligibleIn(first, last) {
+		if !ok {
+			held = append(held, first+uint64(i))
+		}
+	}
+	return held
+}
+
+// mapped reports whether the region maps a page, to a page or to zero.
+func (r *MemoryRegion) mapped(index uint64) bool {
+	r.bindingsMu.Lock()
+	defer r.bindingsMu.Unlock()
+	b, zero := r.lookupLocked(index)
+	return zero || b != nil && b.mapped
+}
+
+// setMapped records whether the pages of [first, last) are mapped. A page
+// recorded mapped is retained across an ambiguous answer.
+func (r *MemoryRegion) setMapped(first, last uint64, mapped bool) {
+	r.bindingsMu.Lock()
+	defer r.bindingsMu.Unlock()
+	for page := first; page < last; page++ {
+		b := r.bindingLocked(page)
+		b.mapped = mapped
+		r.noteSealableLocked(b)
+	}
+}
+
+// mapZeros records that a plan mapped every page of [start, end) to zero, as
+// MemoryRegion.mapZeros does.
+func (r *MemoryRegion) mapZeros(start, end uint64) {
+	r.bindingsMu.Lock()
+	defer r.bindingsMu.Unlock()
+	ps := r.host.pageSize
+	var gaps [][2]uint64
+	if err := r.beside.ForEveryPageAndGapInRange(func(slot *zirconvm.PageOrMarker[binding], _ uint64) error {
+		if slot.IsPage() {
+			slot.Page().inZeroRun = true
+		}
+		return nil
+	}, func(start, end uint64) error {
+		gaps = append(gaps, [2]uint64{start, end})
+		return nil
+	}, start*ps, end*ps); err != nil {
+		panic("vmmemory: walking the bindings beside a layer: " + err.Error())
+	}
+	for _, gap := range gaps {
+		if err := r.beside.AddZeroInterval(gap[0], gap[1], zirconvm.IntervalUntracked); err != nil {
+			panic("vmmemory: adding a zero run: " + err.Error())
+		}
+	}
+}
+
+// unmapRuns takes back the record that the runs of one refused command are
+// mapped, as MemoryRegion.unmapRuns does.
+func (r *MemoryRegion) unmapRuns(runs []MapRun) {
+	r.bindingsMu.Lock()
+	defer r.bindingsMu.Unlock()
+	ps := r.host.pageSize
+	for _, run := range runs {
+		first, last := run.Page, run.Page+uint64(run.Count)
+		if run.Zero {
+			r.eachBoundLocked(first, last, func(b *binding) { b.inZeroRun = false })
+			start, end := first*ps, last*ps
+			if r.beside.IsOffsetInZeroInterval(start) {
+				r.beside.LookupOrAllocate(start, zirconvm.SplitInterval)
+			}
+			if lastPage := end - ps; lastPage > start && r.beside.IsOffsetInZeroInterval(lastPage) {
+				r.beside.LookupOrAllocate(lastPage, zirconvm.SplitInterval)
+			}
+			if err := r.beside.RemovePages(func(slot *zirconvm.PageOrMarker[binding], _ uint64) error {
+				if slot.IsInterval() {
+					slot.Take()
+				}
+				return nil
+			}, start, end); err != nil {
+				panic("vmmemory: walking the bindings beside a layer: " + err.Error())
+			}
+			continue
+		}
+		r.eachBoundLocked(first, last, func(b *binding) {
+			b.mapped = false
+			r.noteSealableLocked(b)
+		})
+	}
+}
+
+// noteDirtyLocked puts b in the dirty set, Dirty and writable where it is,
+// and starts the region's loss window where it held none. Caller holds r.bindingsMu.
+func (r *MemoryRegion) noteDirtyLocked(b *binding) {
+	if r.dirtySet == nil {
+		r.dirtySet = make(map[uint64]*binding)
+	}
+	r.dirtySet[b.index] = b
+	if r.dirtySince.IsZero() {
+		r.dirtySince = r.host.clock.Now()
+	}
+	r.noteSealableLocked(b)
+}
+
+// noteSealableLocked records whether b is a page the next seal
+// write-protects: the region's own dirty state, held by no checkpoint, and
+// mapped, as MemoryRegion.noteSealableLocked does. Caller holds r.bindingsMu.
 func (r *MemoryRegion) noteSealableLocked(b *binding) {
-	sealable := b.dirty && b.checkpoint == nil && b.mapped
+	sealable := b.writable() && b.mapped
 	if r.dirtyRuns.has(b.index) == sealable {
-		// Changing a run costs a join or a split, and most of these
-		// transitions change nothing: a read of the runs is what tells them
-		// apart.
 		return
 	}
 	if sealable {
@@ -100,12 +301,7 @@ func (r *MemoryRegion) noteSealableLocked(b *binding) {
 	}
 }
 
-func (r *MemoryRegion) isMapped(b *binding) bool {
-	r.bindingsMu.Lock()
-	defer r.bindingsMu.Unlock()
-	return b.mapped
-}
-
+// lookupBinding is the binding of a page that has one, nil otherwise.
 func (r *MemoryRegion) lookupBinding(index uint64) *binding {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
@@ -113,46 +309,17 @@ func (r *MemoryRegion) lookupBinding(index uint64) *binding {
 	return b
 }
 
-// repeated reports whether a fault on index for this access would be a repeated
-// fault: this memory region already maps the page for it. See repeats.go.
-func (r *MemoryRegion) repeated(index uint64, write bool) bool {
-	z := r.zircon
-
-	return z.repeated(index, write)
-}
-
-// originOf reports the page a checkpoint's copy was made from, nil where it was
-// made from nothing a settle may compare it with.
-func (r *MemoryRegion) originOf(b *binding) *resident {
+// isMapped reports whether b's mapping is installed.
+func (r *MemoryRegion) isMapped(b *binding) bool {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
-	return b.origin
+	return b.mapped
 }
 
-func (r *MemoryRegion) retireFromCheckpoint(b *binding) {
+// setBindingMapped records whether b's mapping is installed.
+func (r *MemoryRegion) setBindingMapped(b *binding, mapped bool) {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
-	r.uncoldLocked(b)
-	// The page is the volume's again, so where it was copied from says nothing
-	// about it any more.
-	b.checkpoint, b.dirty, b.origin = nil, false, nil
-	delete(r.dirtyBindings, b.index)
+	b.mapped = mapped
 	r.noteSealableLocked(b)
-}
-
-// heldBy reports whether the live page still shares the checkpoint's copy,
-// which is what decides between publishing that copy and discarding it.
-func (r *MemoryRegion) heldBy(index uint64, held *binding) bool {
-	r.bindingsMu.Lock()
-	defer r.bindingsMu.Unlock()
-	b, _ := r.lookupLocked(index)
-	return b != nil && b.checkpoint == held
-}
-
-// dirtyCount reports how many pages hold private state a checkpoint has not
-// taken, which is what the next seal takes.
-func (r *MemoryRegion) dirtyCount() int {
-	z := r.zircon
-
-	return z.dirtyCount()
 }
