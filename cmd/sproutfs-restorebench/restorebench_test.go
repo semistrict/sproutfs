@@ -363,46 +363,53 @@ func TestAPublishingRunCountsEachPublicationsFills(t *testing.T) {
 }
 
 // A publishing run that times faults publishes the guest they read from the
-// third node, publishes each guest it names alone, times a chain of faults on
-// the publisher and on the reader with nothing publishing, which takes all
-// its hops, and then beside one more publication of each guest, which outlasts
-// its four hops.
+// third node and publishes each guest it names alone. It then times a chain of
+// faults on the publisher and on the reader with nothing publishing, which
+// takes all its hops, 25 ms apart, and follows the guest's links across the
+// pager it takes every 128 hops. Then it times a chain beside one more
+// publication of each guest, which ends with the publication.
 func TestAPublishingRunTimesFaultsBesideItsPublications(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		runtime := sim.New(sim.Config{})
 		ctx := sim.WithRuntime(t.Context(), runtime)
 		nodes := simNodes(t, ctx, runtime, nil)
 		result, _, err := drive(ctx, nodes, driveConfig{pages: map[uint64]uint64{}, code: "4+2", lost: 3,
-			publishes: 1, publishPages: []uint64{16, 32}, faultPages: 64, faultHops: 4, seed: 1})
+			publishes: 1, publishPages: []uint64{16, 32}, faultPages: 256, faultHops: 200, seed: 1})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if result.Victim == nil || result.Victim.Fill.FromPublications != 65 {
-			t.Fatalf("the faults' guest was published as %+v, want its 64 pages' windows and its segment", result.Victim)
+		if result.Victim == nil || result.Victim.Fill.FromPublications != 257 {
+			t.Fatalf("the faults' guest was published as %+v, want its 256 pages' windows and its segment", result.Victim)
 		}
+		victim := mustGuest(t, "victim-2mib", checkpoint.PageSize2MiB, 256)
 		var got []string
 		for _, c := range result.IdleFaults {
-			got = append(got, fmt.Sprintf("idle on %d: %d hops, wrong %d, failed %d", c.Node, c.Hops, c.Wrong, c.Failed))
+			linked := true
+			for at := 1; at < len(c.Units); at++ {
+				linked = linked && c.Units[at] == uint64(victim.nextPage[c.Units[at-1]])
+			}
+			got = append(got, fmt.Sprintf("idle on %d: %d hops, linked %v, paced %v, wrong %d, failed %d", c.Node,
+				c.Hops, linked, c.Seconds >= 5, c.Wrong, c.Failed))
 		}
 		for _, one := range result.Publications {
 			got = append(got, fmt.Sprintf("%s: %d windows, dropped %v", one.VM, one.Fills[0].FromPublications,
 				one.Fills[0].Dropped))
 			for _, c := range one.Faults {
-				got = append(got, fmt.Sprintf("beside on %d: %d hops, wrong %d, failed %d", c.Node, c.Hops, c.Wrong,
-					c.Failed))
+				got = append(got, fmt.Sprintf("beside on %d: ended early %v, wrong %d, failed %d", c.Node,
+					c.Hops < 256, c.Wrong, c.Failed))
 			}
 		}
 		want := []string{
-			"idle on 0: 4 hops, wrong 0, failed 0",
-			"idle on 1: 4 hops, wrong 0, failed 0",
+			"idle on 0: 200 hops, linked true, paced true, wrong 0, failed 0",
+			"idle on 1: 200 hops, linked true, paced true, wrong 0, failed 0",
 			"guest-2mib-16-0: 17 windows, dropped [0 0 0 0 0 0 0 0 0]",
 			"guest-2mib-32-0: 33 windows, dropped [0 0 0 0 0 0 0 0 0]",
 			"guest-2mib-16-faults: 17 windows, dropped [0 0 0 0 0 0 0 0 0]",
-			"beside on 0: 4 hops, wrong 0, failed 0",
-			"beside on 1: 4 hops, wrong 0, failed 0",
+			"beside on 0: ended early true, wrong 0, failed 0",
+			"beside on 1: ended early true, wrong 0, failed 0",
 			"guest-2mib-32-faults: 33 windows, dropped [0 0 0 0 0 0 0 0 0]",
-			"beside on 0: 4 hops, wrong 0, failed 0",
-			"beside on 1: 4 hops, wrong 0, failed 0",
+			"beside on 0: ended early true, wrong 0, failed 0",
+			"beside on 1: ended early true, wrong 0, failed 0",
 		}
 		if !slices.Equal(got, want) {
 			t.Fatalf("the run did\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))

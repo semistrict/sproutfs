@@ -37,10 +37,10 @@
 # (docs/measurements/gce-fill-backpressure-2026-10-04.md).
 # SPROUTFS_RESTORE_PUBLISH_PAGES names those guests instead, as counts of
 # 2 MiB pages, comma-separated. SPROUTFS_RESTORE_FAULT_PAGES, when set, also
-# times chains of faults on the publisher and on a holder, of at most
-# SPROUTFS_RESTORE_FAULT_HOPS hops (1000 by default), over a guest of that many
-# 2 MiB pages a third host publishes: with nothing publishing, and beside one
-# more publication of each guest
+# times chains of faults on the publisher and on a holder, over a guest of that
+# many 2 MiB pages a third host publishes: SPROUTFS_RESTORE_FAULT_HOPS hops
+# (500 by default) with nothing publishing, and beside one more publication of
+# each guest until it ends
 # (docs/measurements/gce-fill-defaults-2026-10-06.md).
 #
 # `all` always deletes the hosts. `create`, `run` and `delete` expose the same

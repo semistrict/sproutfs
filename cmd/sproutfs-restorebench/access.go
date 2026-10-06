@@ -54,8 +54,13 @@ type access struct {
 	// Reads is how many units a random read or a chain reads. A sequential
 	// read reads every unit.
 	Reads int `json:"reads"`
-	// Seed orders a random read and chooses where a chain starts.
-	Seed uint64 `json:"seed"`
+	// Seed orders a random read and chooses where a chain starts, unless
+	// Start names the unit it starts at.
+	Seed  uint64  `json:"seed"`
+	Start *uint64 `json:"start,omitempty"`
+	// Pace is how long a chain waits before each hop, as a guest computes
+	// between faults. The wait is not part of the hop's latency.
+	Pace time.Duration `json:"pace_ns,omitempty"`
 }
 
 func (a access) check() error {
@@ -82,6 +87,8 @@ type walked struct {
 	// reads that returned an error.
 	Wrong  int `json:"wrong"`
 	Failed int `json:"failed"`
+	// Next is the unit a chain would have read next.
+	Next uint64 `json:"next"`
 }
 
 // readBound is the longest one read of a walk may take.
@@ -138,14 +145,20 @@ func walk(ctx context.Context, g *guest, a access, read reader, stop <-chan stru
 	case patternChain:
 		random := rand.New(rand.NewPCG(a.Seed, units))
 		unit := random.Uint64N(units)
+		if a.Start != nil {
+			if unit = *a.Start; unit >= units {
+				return walked{}, fmt.Errorf("a chain from unit %d of %d", unit, units)
+			}
+		}
 		buffer := make([]byte, unitBytes)
-	hops:
 		for at := range reads {
-			select {
-			case <-stop:
+			stopped, err := beforeHop(ctx, stop, a.Pace)
+			if err != nil {
+				return walked{}, err
+			}
+			if stopped {
 				out.Units, out.Latencies = out.Units[:at], out.Latencies[:at]
-				break hops
-			default:
+				break
 			}
 			if err := one(at, unit, buffer); err != nil {
 				return walked{}, fmt.Errorf("hop %d of the chain, at unit %d: %w", at, unit, err)
@@ -155,6 +168,7 @@ func walk(ctx context.Context, g *guest, a access, read reader, stop <-chan stru
 				return walked{}, fmt.Errorf("hop %d of the chain links to unit %d of %d", at, unit, units)
 			}
 		}
+		out.Next = unit
 	default:
 		order := make([]uint64, units)
 		for at := range order {
@@ -190,4 +204,26 @@ func walk(ctx context.Context, g *guest, a access, read reader, stop <-chan stru
 		}
 	}
 	return out, nil
+}
+
+// beforeHop waits pace before a chain's next hop, and reports whether stop
+// closed first or is closed once the wait is over.
+func beforeHop(ctx context.Context, stop <-chan struct{}, pace time.Duration) (bool, error) {
+	if pace > 0 {
+		timer := time.NewTimer(pace)
+		defer timer.Stop()
+		select {
+		case <-stop:
+			return true, nil
+		case <-ctx.Done():
+			return false, context.Cause(ctx)
+		case <-timer.C:
+		}
+	}
+	select {
+	case <-stop:
+		return true, nil
+	default:
+		return false, nil
+	}
 }

@@ -135,8 +135,9 @@ type driveConfig struct {
 	// faultPages, when not zero, has a publishing run time chains of faults
 	// on the filling hosts (faulting): over a guest of that many 2 MiB pages
 	// that a third node published first, once with nothing publishing and
-	// once beside a further publication of each guest. faultHops is the most
-	// hops a chain takes.
+	// once beside a further publication of each guest. faultHops is the hops
+	// a chain with nothing publishing takes. A chain beside a publication
+	// takes a hop for each page at most, and ends with the publication.
 	faultPages uint64
 	faultHops  int
 }
@@ -148,6 +149,15 @@ var faulting = []int{0, 1}
 // victimNode publishes the guest the chains of faults read, so the
 // publisher's memory is its own publications'.
 const victimNode = 2
+
+// A chain of faults waits faultPace before each hop, as a guest computes
+// between faults, so it spans a publication of a minute or more without
+// visiting a page twice. It takes a new pager every faultSegment hops, so the
+// pager's arena holds a segment's runs, about 1 GiB, and not the whole chain's.
+const (
+	faultPace    = 25 * time.Millisecond
+	faultSegment = 128
+)
 
 // caseResult is one read of a guest.
 type caseResult struct {
@@ -235,7 +245,7 @@ func runDrive(ctx context.Context, args []string) error {
 		"count of 2 MiB pages and comma-separated, instead of a guest of each page size the cases name")
 	faultPages := flags.Uint64("fault-pages", 0, "time chains of faults on the publisher and the reader, over "+
 		"a guest of this many 2 MiB pages, with nothing publishing and beside a publication of each guest")
-	faultHops := flags.Int("fault-hops", 1000, "the most hops a chain of faults beside publications takes")
+	faultHops := flags.Int("fault-hops", 500, "the hops a chain of faults with nothing publishing takes")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -433,7 +443,7 @@ type publication struct {
 }
 
 // faultChain is one chain of faults through a pager on one node: every hop's
-// latency in nanoseconds, the hops that faulted, and their percentiles in
+// latency in nanoseconds and the page it read, the hops that faulted, and their percentiles in
 // milliseconds. A hop that took less than faultFloor found its page already
 // in, brought by a prefetch, and is left out of the percentiles.
 type faultChain struct {
@@ -443,6 +453,7 @@ type faultChain struct {
 	Seconds   float64            `json:"seconds"`
 	Latency   map[string]float64 `json:"latency_ms"`
 	Latencies []int64            `json:"latencies_ns"`
+	Units     []uint64           `json:"units"`
 	Wrong     int                `json:"wrong"`
 	Failed    int                `json:"failed"`
 	Pager     *pagerStats        `json:"pager,omitempty"`
@@ -526,15 +537,17 @@ func publishFaulting(ctx context.Context, nodes []controller, config driveConfig
 	}
 	result.Victim = &published
 	random := rand.New(rand.NewPCG(config.seed, 1))
-	chain := func(name string) readRequest {
-		return readRequest{Guest: victim, Sequence: published.Sequence, Source: sourceCluster,
-			Access: access{Pattern: patternChain, Unit: unitFault, Concurrency: 1, Reads: config.faultHops,
-				Seed: random.Uint64()}, Stop: name}
+	chain := func(hops int) func(name string) readRequest {
+		return func(name string) readRequest {
+			return readRequest{Guest: victim, Sequence: published.Sequence, Source: sourceCluster,
+				Access: access{Pattern: patternChain, Unit: unitFault, Concurrency: 1, Reads: hops,
+					Seed: random.Uint64(), Pace: faultPace}, Stop: name, Segment: faultSegment}
+		}
 	}
 	if err := dropAll(ctx, nodes); err != nil {
 		return err
 	}
-	if result.IdleFaults, err = faultChains(ctx, nodes, chain, nil); err != nil {
+	if result.IdleFaults, err = faultChains(ctx, nodes, chain(config.faultHops), nil); err != nil {
 		return err
 	}
 	for _, g := range guests {
@@ -542,7 +555,7 @@ func publishFaulting(ctx context.Context, nodes []controller, config driveConfig
 			return err
 		}
 		var one publication
-		chains, err := faultChains(ctx, nodes, chain, func(ctx context.Context) error {
+		chains, err := faultChains(ctx, nodes, chain(int(config.faultPages)), func(ctx context.Context) error {
 			var err error
 			one, err = publishOnce(ctx, nodes, g, config.publishes)
 			return err
@@ -619,7 +632,7 @@ func chainOf(node int, got readReply) faultChain {
 	}
 	latency, _ := shape(faulted)
 	return faultChain{Node: node, Hops: len(got.Latencies), Faulted: len(faulted), Seconds: got.Seconds,
-		Latency: latency, Latencies: got.Latencies, Wrong: got.Wrong, Failed: got.Failed, Pager: got.Pager}
+		Latency: latency, Latencies: got.Latencies, Units: got.Units, Wrong: got.Wrong, Failed: got.Failed, Pager: got.Pager}
 }
 
 // publishOnce publishes g from the first node, and reads what every node's

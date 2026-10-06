@@ -26,6 +26,7 @@ import (
 	"github.com/semistrict/sproutfs/platform/adapters"
 	"github.com/semistrict/sproutfs/rank"
 	"github.com/semistrict/sproutfs/resource"
+	"github.com/semistrict/sproutfs/vmmemory"
 )
 
 // volume is the one volume a published guest has: its memory.
@@ -550,6 +551,10 @@ type readRequest struct {
 	Tables string `json:"tables,omitempty"`
 	// Stop names the read, where a stop of that name is to end its chain.
 	Stop string `json:"stop,omitempty"`
+	// Segment, for a chain through a pager, is how many hops each pager
+	// takes before a new one carries on: what a pager's arena holds is a
+	// segment's runs. Zero is one pager for the whole chain.
+	Segment int `json:"segment,omitempty"`
 }
 
 // When a read loads the page tables of its volume.
@@ -587,6 +592,19 @@ type pagerStats struct {
 	Evictions       uint64 `json:"evictions"`
 }
 
+// add counts what a pager did into s.
+func (s *pagerStats) add(did vmmemory.Stats) {
+	s.Faults += did.Faults
+	s.Loads += did.Loads
+	s.LoadedPages += did.LoadedPages
+	s.Prefetches += did.Prefetches
+	s.PrefetchedPages += did.PrefetchedPages
+	s.PrefetchWaits += did.PrefetchWaits
+	s.PrefetchRefused += did.PrefetchRefused
+	s.PrefetchRandom += did.PrefetchRandom
+	s.Evictions += did.Evictions
+}
+
 func (n *node) read(ctx context.Context, request readRequest) (readReply, error) {
 	g, err := n.guestOf(request.Guest)
 	if err != nil {
@@ -612,34 +630,60 @@ func (n *node) read(ctx context.Context, request readRequest) (readReply, error)
 		out.TablesSeconds = time.Since(began).Seconds()
 	}
 	hits := cache.Stats().Hits
-	read := func(ctx context.Context, offset uint64, dst []byte) error {
-		return store.Read(ctx, index, volume, offset, dst)
-	}
-	var pager *pagerReader
-	if pagerUnit(request.Access.Unit) {
-		if pager, err = newPagerReader(ctx, n.config.disk, store, index, g.pageSize, g.pages,
-			request.Access.Unit == unitRunFirst); err != nil {
-			return readReply{}, err
-		}
-		read = pager.read
-	}
 	out.Profile, err = profiled(request.Profile, func() error {
 		var err error
-		out.walked, err = walk(ctx, g, request.Access, read, n.stopOf(request.Stop))
+		out.walked, out.Pager, err = n.walkThrough(ctx, g, store, index, request)
 		return err
 	})
-	if pager != nil {
-		stats, closeErr := pager.close(ctx)
-		err = errors.Join(err, closeErr)
-		out.Pager = &pagerStats{Faults: stats.Faults, Loads: stats.Loads, LoadedPages: stats.LoadedPages,
-			Prefetches: stats.Prefetches, PrefetchedPages: stats.PrefetchedPages, PrefetchWaits: stats.PrefetchWaits,
-			PrefetchRefused: stats.PrefetchRefused, PrefetchRandom: stats.PrefetchRandom, Evictions: stats.Evictions}
-	}
 	if err != nil {
 		return readReply{}, err
 	}
 	out.MemoryHits = cache.Stats().Hits - hits
 	return out, nil
+}
+
+// walkThrough walks g's memory as request's access says, straight from store
+// or, for a pager's unit, through a pager and what it did. A chain through a
+// pager takes a new pager every request.Segment hops, from where the last one
+// ended.
+func (n *node) walkThrough(ctx context.Context, g *guest, store *checkpoint.Store, index *checkpoint.Index,
+	request readRequest) (walked, *pagerStats, error) {
+	stop := n.stopOf(request.Stop)
+	a := request.Access
+	if !pagerUnit(a.Unit) {
+		w, err := walk(ctx, g, a, func(ctx context.Context, offset uint64, dst []byte) error {
+			return store.Read(ctx, index, volume, offset, dst)
+		}, stop)
+		return w, nil, err
+	}
+	var out walked
+	stats := &pagerStats{}
+	for {
+		part := a
+		if a.Pattern == patternChain && request.Segment > 0 {
+			part.Reads = min(request.Segment, a.Reads-len(out.Latencies))
+		}
+		pager, err := newPagerReader(ctx, n.config.disk, store, index, g.pageSize, g.pages, a.Unit == unitRunFirst)
+		if err != nil {
+			return walked{}, nil, err
+		}
+		got, err := walk(ctx, g, part, pager.read, stop)
+		pagerDid, closeErr := pager.close(ctx)
+		if err := errors.Join(err, closeErr); err != nil {
+			return walked{}, nil, err
+		}
+		stats.add(pagerDid)
+		out.Units = append(out.Units, got.Units...)
+		out.Latencies = append(out.Latencies, got.Latencies...)
+		out.Seconds += got.Seconds
+		out.Wrong += got.Wrong
+		out.Failed += got.Failed
+		out.Next = got.Next
+		if part.Reads == a.Reads || len(got.Latencies) < part.Reads || len(out.Latencies) == a.Reads {
+			return out, stats, nil
+		}
+		a.Start = &out.Next
+	}
 }
 
 // tablesAtOnce is how many segments loadTables looks up at a time.
