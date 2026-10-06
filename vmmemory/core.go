@@ -15,13 +15,13 @@ import (
 type Core int
 
 const (
-	// CoreCurrent is the pager's own core, bindings and resident pages over
-	// the ported page list, queues, evictor and page requests. It is the
-	// default.
-	CoreCurrent Core = iota
 	// CoreZircon is the core over the ported region layer and identity
-	// roots (internal/zirconvm). It serves everything the current core does.
-	CoreZircon
+	// roots (internal/zirconvm). It is the default (2026-10-06), and the old
+	// core is being deleted.
+	CoreZircon Core = iota
+	// CoreCurrent is the old core, bindings and resident pages over the
+	// ported page list, queues, evictor and page requests.
+	CoreCurrent
 )
 
 // String is the core as a deployment names it.

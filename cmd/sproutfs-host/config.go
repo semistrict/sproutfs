@@ -383,7 +383,7 @@ func loadConfig(lookup func(string) string) (config, error) {
 	// The pager core is the fault and checkpoint code every pager runs: the
 	// pager's own, or the port of Zircon's page layer, which runs beside it
 	// until it has been measured (plans/zircon-pager-port-2026-10-05.md).
-	core := text("SPROUTFS_PAGER_CORE", vmmemory.CoreCurrent.String())
+	core := text("SPROUTFS_PAGER_CORE", vmmemory.CoreZircon.String())
 	if c.PagerCore, err = vmmemory.ParseCore(core); err != nil {
 		fail("SPROUTFS_PAGER_CORE is %q, want current or zircon", core)
 	}

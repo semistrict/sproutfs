@@ -37,7 +37,7 @@ func MustCore() vmmemory.Core {
 func parse() (vmmemory.Core, error) {
 	name := os.Getenv(Var)
 	if name == "" {
-		return vmmemory.CoreCurrent, nil
+		return vmmemory.CoreZircon, nil
 	}
 	return vmmemory.ParseCore(name)
 }
