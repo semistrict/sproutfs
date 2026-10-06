@@ -15,8 +15,8 @@ import (
 // A pager's core is named as a deployment names it, and a configuration that
 // names none runs the current core.
 func TestAPagerCoreIsNamedAsADeploymentNamesIt(t *testing.T) {
-	if got := (vmmemory.Config{}).Core; got != vmmemory.CoreCurrent {
-		t.Fatalf("a configuration naming no core runs %s, want current", got)
+	if got := (vmmemory.Config{}).Core; got != vmmemory.CoreZircon {
+		t.Fatalf("a configuration naming no core runs %s, want zircon", got)
 	}
 	for _, core := range []vmmemory.Core{vmmemory.CoreCurrent, vmmemory.CoreZircon} {
 		parsed, err := vmmemory.ParseCore(core.String())

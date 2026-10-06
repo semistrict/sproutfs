@@ -488,17 +488,17 @@ func TestConfigReadsThePagerCore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.PagerCore != vmmemory.CoreCurrent {
-		t.Fatalf("an unset pager core configured %s, want current", config.PagerCore)
+	if config.PagerCore != vmmemory.CoreZircon {
+		t.Fatalf("an unset pager core configured %s, want zircon", config.PagerCore)
 	}
 	values := minimal()
-	values["SPROUTFS_PAGER_CORE"] = "zircon"
+	values["SPROUTFS_PAGER_CORE"] = "current"
 	config, err = loadConfig(environ(values))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.PagerCore != vmmemory.CoreZircon {
-		t.Fatalf("SPROUTFS_PAGER_CORE=zircon configured %s, want zircon", config.PagerCore)
+	if config.PagerCore != vmmemory.CoreCurrent {
+		t.Fatalf("SPROUTFS_PAGER_CORE=current configured %s, want current", config.PagerCore)
 	}
 }
 

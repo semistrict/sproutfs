@@ -23,10 +23,9 @@ func deploymentConfig() SupervisorConfig {
 func TestEveryPagerRunsTheCoreItsHostNames(t *testing.T) {
 	config := deploymentConfig()
 	config.Ephemeral.DiskBytes = 1 << 30
-	if got := pagerConfig(config, vmmemory.Ram).Core; got != vmmemory.CoreCurrent {
-		t.Fatalf("a host naming no core gives its RAM pager the %s core, want current", got)
+	if got := pagerConfig(config, vmmemory.Ram).Core; got != vmmemory.CoreZircon {
+		t.Fatalf("a host naming no core gives its RAM pager the %s core, want zircon", got)
 	}
-	config.PagerCore = vmmemory.CoreZircon
 	configs := map[pagerSlot]vmmemory.Config{ramPager: pagerConfig(config, vmmemory.Ram),
 		pmemPager: pagerConfig(config, vmmemory.Pmem), ephemeralPager: *ephemeralPagerConfig(config)}
 	for kind, cfg := range configs {
