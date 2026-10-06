@@ -477,13 +477,6 @@ type clientOptions struct {
 	proxy func(region int, client *net.UnixConn) *net.UnixConn
 }
 
-type clientOption func(*clientOptions)
-
-// withProxy interposes a proxy on the client's control sockets.
-func withProxy(proxy func(region int, client *net.UnixConn) *net.UnixConn) clientOption {
-	return func(o *clientOptions) { o.proxy = proxy }
-}
-
 // startNativeIn starts a client process whose VM belongs to tenant, empty for
 // none.
 func startNativeIn(t testing.TB, h *vmmemory.Host, tenant string, pages int, config vmmemory.ConnectionConfig, provided ...vmmemory.Backing) *nativeProcess {

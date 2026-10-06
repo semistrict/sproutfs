@@ -21,6 +21,3 @@ func (probeState) take() string                                                 
 func (probeState) resharedSpilled(context.Context, *Host, probeBinding, []byte, probePage) string {
 	return ""
 }
-
-// Ring reports nothing without the accelerator's build tag.
-func Ring(*MemoryRegion, uint64, uint64) []string { return nil }
