@@ -25,12 +25,6 @@ type resident struct {
 	fileSlot
 	key     pageKey
 	private bool
-	// kind is what the memory region that created this page maps it as, RAM or PMEM.
-	// A page identity names a volume, so every memory region that ever maps this page
-	// agrees; it is kept on the page rather than read off an alias because a
-	// page can outlive every mapping of it — the page a store copied away from
-	// is host memory whether anything maps it or not.
-	kind MemoryRegionKind
 	// aliases is protected by Host.mu, not by this page's lock: a seal joins
 	// the checkpoint's copy to a page a reclaim is already holding, and the
 	// reclaim finds it there.

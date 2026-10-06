@@ -109,29 +109,6 @@ var (
 	errDetaching      = errors.New("vmmemory: the memory region a prefetch was for is detaching")
 )
 
-// prefetch is the rest of one fault's run, read behind the fault.
-type prefetch struct {
-	memoryRegion *MemoryRegion
-	// start and end are the window, and pages the pages it reads, in page
-	// order, each with its identity and the free slot reserved for it.
-	start, end uint64
-	pages      []prefetchPage
-	cancel     context.CancelCauseFunc
-	// reading is set from the split until the read has ended, and holding
-	// until every slot is settled: given back, or holding a page that landed,
-	// idle. Until then a slot is neither free nor a page, and an allocation
-	// short of one waits for it rather than evict (cancelPrefetchesLocked).
-	// cancelled marks one an allocation has cancelled already. All are guarded
-	// by Host.mu.
-	reading, holding, cancelled bool
-	// finished is set once the read has ended (finish). Guarded by Host.mu.
-	finished bool
-	// ctx is what the prefetch runs under: the values of the context of the
-	// fault that split it off, a task of its own in a controlled run, and
-	// the prefetch mark; cancel ends it.
-	ctx context.Context
-}
-
 type prefetchPage struct {
 	page uint64
 	key  pageKey

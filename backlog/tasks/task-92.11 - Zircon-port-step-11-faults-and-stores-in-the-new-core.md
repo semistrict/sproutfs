@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-05 05:10'
-updated_date: '2026-10-05 16:47'
+updated_date: '2026-10-06 15:17'
 labels:
   - pager
   - zircon-port
@@ -63,4 +63,6 @@ Gremlins (scripts/mutate-gremlins.py gained --pager-core, since the wrapper stri
 Not done, for step 12 by the plan: AC 1 holds for every listed test, but the category tests that seal, evict a mapped page, give cold copies back or attach a peer backing to check what they did are not on the list (named above). AC 4's GCE run of the hostile Linux suites under the zircon core is not run: their neighbour publishes through Seal and Retire (hostile_linux_test.go:428, hostile_client_linux_test.go:250), which this core refuses until step 12.
 
 Step 12 (TASK-92.12) finished what this step left: the zircon core serves seals, eviction, cold copies, isolation, serving and peer backings, and just check runs the whole vmmemory, host, vmmigrate, simtest and vmmachine suites under it in both arena modes, so AC 1 holds for every test (the named list is gone). AC 4: go test -race of vmmemory passes on the Mac under the zircon core. On GCE the hostile suites pass under the zircon core in both arenas (the dev VM runs of the whole Linux suite, both page sizes), but one hostile test, TestARefusedFaultWaitsForARevocation, fails under either core on main: its command count is 4 or 5 against the 3 it wants. So AC 4 stays open on that test, which is not the zircon core's.
+
+2026-10-06: AC 4's GCE hostile suites were not rerun after the old core was deleted; TestARefusedFaultWaitsForARevocation was changed in 9d8b6d17 and not yet run on GCE.
 <!-- SECTION:NOTES:END -->

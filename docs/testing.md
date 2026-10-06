@@ -22,8 +22,6 @@ campaign is a schedule, a fault set and an invariant set over the deployment's
 - the determinism rule below;
 - `gofmt`, `go build` and `go vet` for Linux and macOS;
 - `go test ./...`;
-- the suites that build pagers again under the zircon pager core, in both
-  arena modes (see [the pager cores](#the-pager-cores));
 - `buf lint` and `shellcheck`;
 - the Rust crate's `fmt`, `clippy` and unit tests;
 - the TLA+ specs, model-checked with TLC (see [Model checking](#model-checking)).
@@ -2231,9 +2229,7 @@ SPROUTFS_SIM_BUG=zircon-abandon-leaves-awaiting-clean \
 ```
 
 Each invocation must fail. `just check-guards` runs every entry and fails if
-any of them passes; `just check` runs it, and so does CI. An entry runs under
-the pager cores its `cores` names, `current` where it names none; see
-[the pager cores](#the-pager-cores). It builds each
+any of them passes; `just check` runs it, and so does CI. It builds each
 package's test binary once, runs each entry once with no guard on, and then
 once with its guard on. It takes about fifteen seconds once the binaries are
 built. The `vmmachine` entries name `"goos": "linux"` and `"root": true`, and
@@ -3861,26 +3857,10 @@ accumulate.
 
 ## The pager cores
 
-While the pager's page layer is ported from Zircon's
-(`plans/zircon-pager-port-2026-10-05.md`), a pager runs one of two cores,
-which `SPROUTFS_PAGER_CORE` names: `current`, the default, or `zircon`. Every
-suite builds its pagers in the core the variable names (`internal/testcore`),
-as it builds them in the arena mode `SPROUTFS_ARENA` names.
-
-The zircon core serves everything the current one does, so `just
-check-zircon-core` runs the suites that build pagers (`vmmemory`, `host`,
-`vmmigrate`, `internal/simtest` and `vmmachine`) under it in both arena modes,
-as `check-go` runs them under the current core. `--survey` runs each test of a
-package alone under it instead and says which pass, which is what finding the
-tests a change to the core broke needs:
-
-```sh
-just check-zircon-core
-python3 scripts/test-pager-core.py --survey vmmemory
-SPROUTFS_PAGER_CORE=zircon go test ./vmmemory -run '^TestAPrivatePageIsPlacedAtItsOwnOffsetInItsRangesExtent$' -count=1
-```
-
-`check-guards` runs every guard in `scripts/mutation/guards.json` under both
-cores and must kill it under each; an entry may narrow that with `"cores"`.
-Every Buggify site, probe, guard and controlled point exists in both cores
-under the same name.
+While the pager's page layer was ported from Zircon's
+(`plans/zircon-pager-port-2026-10-05.md`), a pager ran one of two cores
+behind a switch, `SPROUTFS_PAGER_CORE`, and `just check` ran the suites that
+build pagers and every guard under each. On 2026-10-06 the owner kept the
+ported core; the old core, the switch and the second pass were deleted
+(TASK-92.14). Every Buggify site, probe, guard and controlled point kept its
+name.

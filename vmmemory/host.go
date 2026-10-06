@@ -68,16 +68,11 @@ type Host struct {
 	spill        *zirconvm.SpillStorage
 	clean        map[pageKey]*resident
 	cleanVersion uint64
-	// roots is the page source of each identity root a prefetch reads, which
-	// its READ requests go to (pagerequests.go), and requests the READ
-	// requests not in use. prefetches is every prefetch whose slots are not
-	// settled yet (holding), and prefetching how many of them are still
-	// reading. prefetchRunning counts the prefetches whose goroutines have not
-	// ended, mapping their pages included. All but requests are guarded by
-	// mu. See prefetch.go.
-	roots           map[rootKey]*requestSource
+	// requests are the READ requests not in use (pagerequests.go).
+	// prefetching counts the prefetches still reading, and prefetchRunning
+	// those whose goroutines have not ended, mapping their pages included.
+	// Both are guarded by mu. See prefetch.go.
 	requests        sync.Pool
-	prefetches      map[*prefetch]struct{}
 	prefetching     int
 	prefetchRunning int
 	// memory regions is every attached memory region, which is what the dirty budget's
@@ -242,7 +237,6 @@ func New(ctx context.Context, resources *resource.Budget, cfg Config, arena Aren
 		extents:     make(map[extentKey]*extent),
 		extentPages: extentPages,
 		clean:       make(map[pageKey]*resident), changed: make(chan struct{}), revoked: make(chan struct{}),
-		roots: make(map[rootKey]*requestSource), prefetches: make(map[*prefetch]struct{}),
 		requests:      sync.Pool{New: func() any { return zirconvm.NewPageRequest() }},
 		queues:        newPageQueues(pageSize),
 		memoryRegions: make(map[*MemoryRegion]struct{}), highWater: highWater(cfg.DirtyPages),

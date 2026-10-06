@@ -48,9 +48,6 @@ func rootOf(key pageKey) rootKey { return rootKey{ref: key.id.Ref, volume: key.i
 type requestSource struct {
 	source *zirconvm.PageSource
 	proxy  *zirconvm.PagerProxy
-	// users counts the requests of a root's source that are sent or waiting,
-	// which keep it in Host.roots. Guarded by Host.mu.
-	users int
 }
 
 func newRequestSource() *requestSource {

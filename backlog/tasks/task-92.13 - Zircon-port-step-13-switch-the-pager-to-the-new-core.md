@@ -1,9 +1,10 @@
 ---
 id: TASK-92.13
 title: 'Zircon port step 13: switch the pager to the new core'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-05 05:10'
+updated_date: '2026-10-06 15:17'
 labels:
   - pager
   - zircon-port
@@ -31,3 +32,9 @@ Step 13 of the plan. The new core becomes the default only once it is measured a
 - [ ] #2 The results meet the gate the owner set, recorded in TASK-92
 - [ ] #3 The default core is zircon, the old core runs in the second pass of just check, and the host logs show the new core on a GCE host
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-10-06: the owner waived this step's GCE comparison and gate and kept the ported core outright. ACs 1–2 not done by that decision; AC 3's second pass is moot because the old core is deleted (TASK-92.14). The zircon core became the default in cedd9975.
+<!-- SECTION:NOTES:END -->

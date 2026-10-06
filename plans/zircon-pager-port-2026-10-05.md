@@ -1,5 +1,10 @@
 # A Go port of Zircon's page layer — 2026-10-05
 
+**Status, 2026-10-06:** steps 1 to 12 are done. The owner kept the ported core
+without the step 13 GCE measurements, and the old core, the switch and the
+second test pass are deleted (step 14, main 0c0f3682). What follows is the plan
+as written.
+
 The owner has decided to replace the page layer of the pager (`vmmemory`, about
 35,000 lines with its tests) with a Go port of the page layer of Zircon's VM.
 The port copies Zircon's code. It does not redesign it. This plan says what

@@ -47,19 +47,17 @@ Three parts of `vmmemory` are nested packages that only `vmmemory` can import:
   prefetch answers one: see [page requests](#page-requests). The pager's
   bindings use the page list, and its dirty reservations are references of
   the spill storage. The region's layer and the identity roots are what the
-  zircon core runs over (below).
+  pager's core runs over (below).
 
-A pager runs one of two cores, which `Config.Core` names (the host's
-`SPROUTFS_PAGER_CORE`): `current`, the default, or `zircon`. The core is the
-fault and checkpoint code: what a fault maps, what a store copies, what a seal
-takes. It is the one part of the port that cannot be swapped in place, so the
-zircon core, over the region's layer and the identity roots, is built beside
-the current one and measured before it becomes the default. Every exported
-method of `Host` and `MemoryRegion` that reaches the page layer asks the core
-first (`core.go`, `zircon.go`). Both serve every operation. What stays the pager's own
-whichever core runs is shared: the arena and its files, isolation, placement,
-pressure and the loss window, the flush, the connection and the statistics'
-clock. The supervisor logs each pager's core with the bounds it chose for it.
+The pager's core is the fault and checkpoint code: what a fault maps, what a
+store copies, what a seal takes. It runs over the region's layer and the
+identity roots (`zircon.go` and the `zircon_*.go` files). During the port it
+was built beside the pager's own core and the two ran behind a switch; on
+2026-10-06 the owner kept the ported core and the old one was deleted
+(TASK-92.14). Every exported method of `Host` and `MemoryRegion` that reaches
+the page layer calls it. What is the pager's own is unchanged: the arena and
+its files, isolation, placement, pressure and the loss window, the flush, the
+connection and the statistics' clock.
 
 Under the zircon core a page is a `zirconvm.VmPage` whose `Frame` is a slot
 of an arena file, which stands where Zircon has a physical address
@@ -2860,16 +2858,6 @@ qualification requires a separately provisioned 2 MiB HugeTLB pool.
 scripts/test-vm-memory-lima.sh
 SPROUTFS_VM_MEMORY_REPEAT=20 scripts/test-vm-memory-lima.sh
 scripts/test-firecracker-lima.sh
-```
-
-Every suite builds its pagers in the core `SPROUTFS_PAGER_CORE` names,
-`current` when it is unset (`internal/testcore`), and `just check` runs the
-suites that build pagers again under `SPROUTFS_PAGER_CORE=zircon` in both
-arena modes (`scripts/test-pager-core.py`). The GCE qualification passes it
-through, so the Linux suites run under the zircon core with:
-
-```sh
-SPROUTFS_GCE_QUALIFY=1 SPROUTFS_PAGER_CORE=zircon SPROUTFS_ARENA=shared scripts/bench-memory-gce.sh all
 ```
 
 Every suite builds its pagers in the arena mode `SPROUTFS_ARENA` names,

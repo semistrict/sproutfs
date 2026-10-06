@@ -673,7 +673,7 @@ Source: plans/zircon-pager-port-2026-10-05.md, Which Zircon tests port; TASK-92.
 
 - the fault at random's cost is **still being attributed**
 - metadata per page a region reads, one page in 512: **21,828 B → 389 B** with the page list
-- the old core is **being deleted**; only the ported core stays <span class="opacity-70">(owner's decision, 2026-10-06)</span>
+- the old core is **deleted**; only the ported core stays <span class="opacity-70">(owner's decision, 2026-10-06)</span>
 
 </div>
 
@@ -1384,7 +1384,7 @@ A host serving stripes still reads them into memory and writes them out. Sending
 
 A single 4 KiB fault at random is 3.6 to 5 % slower under the page layer ported from Zircon. A CPU profile diff shows no single hot spot, and we are still finding where it goes.
 
-The plan measured the ported core against the old one on GCE before switching: fault chains, the capture pause, a fork fan-out and a warm restore. On 2026-10-06 the owner waived that gate, and the old core is being deleted. The ported core has passed the Linux suites on GCE, but no GCE run has timed it against the old one.
+The plan measured the ported core against the old one on GCE before switching: fault chains, the capture pause, a fork fan-out and a warm restore. On 2026-10-06 the owner waived that gate, and the old core is deleted. The ported core has passed the Linux suites on GCE, but no GCE run timed it against the old one.
 -->
 
 ---

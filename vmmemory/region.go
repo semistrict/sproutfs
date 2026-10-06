@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/internal/ctxsync"
@@ -94,14 +93,7 @@ type MemoryRegion struct {
 	// ones its session's worker has not taken yet, both guarded by bindingsMu;
 	// coldCopied wakes that worker. See cold.go.
 	coldPages  map[uint64]*binding
-	coldCopies map[uint64]struct{}
 	coldCopied chan struct{}
-	// dirtySince is when the oldest write this memory region holds that no checkpoint
-	// covers landed, zero while it holds none. It is the loss window's own
-	// bookkeeping and is guarded by bindingsMu, because the transitions that
-	// put a page into the dirty set and take it out again are the transitions
-	// that start and end it.
-	dirtySince time.Time
 	// windowAsked is set once a store has asked for the checkpoint that ends
 	// this memory region's window, so the stores after it do not ask again. The
 	// checkpoint that seals the window, and one that gives it back, clear it.

@@ -34,11 +34,6 @@ type binding struct {
 	// from a checkpoint's held copy, from the name a fork point lent a private
 	// page, from another host's unpublished page or from zeros has none.
 	origin *resident
-	// coldAt is when the copy became cold, in Unix nanoseconds, which is how
-	// an eviction tells a copy the guest may still be about to store into from
-	// one it has had time to. See coldCopyAge. It is an integer rather than a
-	// time.Time because every page has one.
-	coldAt int64
 	mapped bool
 	zero   bool // explicit zero backing, independent of arena residency
 	dirty  bool
