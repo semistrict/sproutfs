@@ -30,5 +30,3 @@ func note(*MemoryRegion, uint64, string, int, int) {}
 func Ring(*MemoryRegion, uint64, uint64) []string { return nil }
 
 func caller() string { return "" }
-
-func publishReason(bool, pageKey, *Host, *resident) string { return "" }

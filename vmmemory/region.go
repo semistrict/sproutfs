@@ -263,17 +263,18 @@ func (h *Host) admit(ctx context.Context, memoryRegion MemoryRegionBacking, mapp
 	}
 	// Under the zircon core a memory region's own pages are a region layer
 	// of its own, however it attaches: here, or a session's Connect.
-	if z := h.zircon; z != nil {
-		zr, err := z.newRegion(r)
-		if err != nil {
-			h.mu.Lock()
-			h.logical -= int(count)
-			h.forgetFilesLocked(r)
-			h.mu.Unlock()
-			return nil, err
-		}
-		r.zircon = zr
+	z := h.zircon
+
+	zr, err := z.newRegion(r)
+	if err != nil {
+		h.mu.Lock()
+		h.logical -= int(count)
+		h.forgetFilesLocked(r)
+		h.mu.Unlock()
+		return nil, err
 	}
+	r.zircon = zr
+
 	// The dirty budget is shared, so relieving it is a choice among all the
 	// memory regions that hold it, not only the one whose store is waiting.
 	h.mu.Lock()
@@ -552,31 +553,6 @@ func (r *MemoryRegion) withoutMemoryRegion(ctx context.Context, read func() erro
 	return r.ready()
 }
 
-// reclaim takes one arena slot outside the memory region lock, reclaimNear takes one
-// near the page's neighbours, and reclaimPrivate the one the placement rule
-// gives a page this store is making private. Taking a slot can reclaim one,
-// which revokes a victim's mappings and writes its bytes to the spill file: a
-// vCPU pause must wait for neither, exactly as it must not wait for a backing
-// read.
-func (r *MemoryRegion) reclaim(ctx context.Context, f *arenaFile) (fileSlot, error) {
-	return r.reclaimWith(ctx, func() (fileSlot, error) {
-		return r.host.allocate(ctx, r, f, nil, evictPastAFreeSlot(ctx))
-	})
-}
-
-func (r *MemoryRegion) reclaimNear(ctx context.Context, f *arenaFile, index uint64) (fileSlot, error) {
-	return r.reclaimWith(ctx, func() (fileSlot, error) { return r.allocateNear(ctx, f, index) })
-}
-
-func (r *MemoryRegion) reclaimPrivate(ctx context.Context, index uint64) (fileSlot, error) {
-	return r.reclaimWith(ctx, func() (fileSlot, error) {
-		if reclaimSeam != nil {
-			reclaimSeam(index)
-		}
-		return r.allocatePrivate(ctx, index)
-	})
-}
-
 // reclaimWith takes one slot with the memory region given up. A slot it took is
 // given back if the memory region cannot be taken again, or is terminal once it
 // is: the fault that wanted the slot is over, and nothing else would ever
@@ -601,51 +577,6 @@ func (r *MemoryRegion) reclaimWith(ctx context.Context, take func() (fileSlot, e
 // fault that has already decided what the page it is serving is. Production
 // leaves it nil; a test installs one to end that page's dirty epoch there.
 var reclaimSeam func(index uint64)
-
-// loadWindow is a fault's backing read of the pages dst covers from offset,
-// taken outside the memory region lock, which answers a READ request of its
-// own (pagerequests.go).
-func (r *MemoryRegion) loadWindow(ctx context.Context, offset uint64, dst []byte) ([]bool, error) {
-	var unpublished []bool
-	ps := r.host.pageSize
-	err := r.withoutMemoryRegion(ctx, func() error {
-		return r.requested(offset/ps, uint64(len(dst))/ps, func() error {
-			var err error
-			unpublished, err = r.loadBacking(ctx, offset, dst)
-			return err
-		})
-	})
-	if err != nil {
-		return nil, err
-	}
-	return unpublished, nil
-}
-
-// loadRun is one fault's whole backing read, taken outside the memory region lock: the
-// pages of [first, first+len(wanted)) that wanted marks, into dst, which covers
-// the run whole. The pages it leaves out are the ones this memory region already holds
-// — nothing is read for them and the bytes of dst they cover are untouched. It
-// answers a READ request of the run (pagerequests.go).
-//
-// A backing that can be asked for part of a range is asked once, so what the
-// run costs is what the volume makes of it. Every other backing is read one
-// stretch of wanted pages at a time, which is what a fault used to cost for
-// every backing: a request per stretch, and a window's resident pages are what
-// cut it into stretches.
-func (r *MemoryRegion) loadRun(ctx context.Context, first uint64, wanted []bool, dst []byte) ([]bool, error) {
-	var unpublished []bool
-	err := r.withoutMemoryRegion(ctx, func() error {
-		return r.requested(first, uint64(len(wanted)), func() error {
-			var err error
-			unpublished, err = r.readRun(ctx, first, wanted, dst, &r.host.loadLatency)
-			return err
-		})
-	})
-	if err != nil {
-		return nil, err
-	}
-	return unpublished, nil
-}
 
 // histogram is what each backing read is timed into.
 func (r *MemoryRegion) readRun(ctx context.Context, first uint64, wanted []bool, dst []byte,
@@ -685,31 +616,6 @@ func (r *MemoryRegion) readRun(ctx context.Context, first uint64, wanted []bool,
 	return unpublished, nil
 }
 
-// readForCopy fills a store's private copy with the page's current bytes, and
-// reports whether those bytes are ones no checkpoint of this VM has. Bytes that
-// come from the backing are read outside the memory region lock; a resident page, a
-// spill slot or a checkpoint's copy is this host's own and is read in place, and
-// so is the page a store read in to copy away from, which the caller supplies
-// as pg without binding it to anything.
-//
-// Only the backing read can answer unpublished, and only a backing that fetches
-// from another host ever says yes: the store is then this memory region taking a page
-// that existed nowhere but there, which the caller reports installed once the
-// page is bound. Everything this host already holds is already its own.
-func (r *MemoryRegion) readForCopy(ctx context.Context, b *binding, pg *resident, dst []byte) (unpublished bool, err error) {
-	if pg != nil || b.zero || b.dirty {
-		return false, r.host.read(ctx, b, pg, dst)
-	}
-	err = r.withoutMemoryRegion(ctx, func() error {
-		return r.requested(b.index, 1, func() error {
-			fetched, err := r.loadBacking(ctx, b.index*r.host.pageSize, dst)
-			unpublished = len(fetched) > 0 && fetched[0]
-			return err
-		})
-	})
-	return unpublished, err
-}
-
 // Verify checks writer authority even when cached accesses never fault. It runs
 // Backing.Verify, which confirms that this host still owns the VM. The
 // supervisor must use a deadline and stop the VM on failure. It observes
@@ -717,28 +623,9 @@ func (r *MemoryRegion) readForCopy(ctx context.Context, b *binding, pg *resident
 // Faults continue while it runs. A memory region that has handed its volume off has no
 // authority to observe and reports success without touching it.
 func (r *MemoryRegion) Verify(ctx context.Context) error {
-	if z := r.zircon; z != nil {
-		return z.verify(ctx)
-	}
-	if err := r.mu.RLock(ctx); err != nil {
-		return err
-	}
-	defer r.mu.RUnlock()
-	if err := r.serving(); err != nil {
-		return err
-	}
-	if err := r.countAllocated(); err != nil {
-		return err
-	}
-	if r.handed {
-		// There is no authority left to observe: the volume is another host's,
-		// and this memory region only serves the pages it still holds.
-		return nil
-	}
-	if err := r.backing.Verify(ctx); err != nil {
-		return r.fail(err)
-	}
-	return nil
+	z := r.zircon
+
+	return z.verify(ctx)
 }
 
 // Detach requires all memory users stopped and KVM slots unregistered (or the
@@ -746,77 +633,7 @@ func (r *MemoryRegion) Verify(ctx context.Context) error {
 // checkpoint a publication may still be reading, and permits reuse after failed
 // mapping ACKs. The caller retains ownership of Backing and its lifetime.
 func (r *MemoryRegion) Detach(ctx context.Context) error {
-	if z := r.zircon; z != nil {
-		return z.detach(ctx)
-	}
-	// Faults in flight hold the memory region live, including across the backing reads
-	// they give the memory region lock up for, so the teardown waits for them here
-	// rather than meeting one halfway through.
-	if err := r.live.Lock(ctx); err != nil {
-		return err
-	}
-	defer r.live.Unlock()
-	// Its prefetches end before anything is taken away: they read its
-	// backing, which is the caller's to close once this returns.
-	if err := r.cancelPrefetches(ctx); err != nil {
-		return err
-	}
-	if err := r.mu.Lock(ctx); err != nil {
-		return err
-	}
-	defer r.mu.Unlock()
-	if r.closed {
-		return nil
-	}
-	h := r.host
-	for _, b := range r.bindings() {
-		if err := h.locked(ctx, b, func(pg *resident) error {
-			b.mapped = false
-			return h.unlink(ctx, b, pg)
-		}); err != nil {
-			return err
-		}
-		// A page this memory region's stores copied away from is reachable from no
-		// binding but this one, so this is where it goes: nothing else would
-		// ever release it, and detaching leaves no resident page behind.
-		if origin := b.origin; origin != nil {
-			r.bindingsMu.Lock()
-			r.uncoldLocked(b)
-			b.origin = nil
-			r.bindingsMu.Unlock()
-			if err := h.releaseOrigin(ctx, origin); err != nil {
-				return err
-			}
-		}
-		b.dirty, b.checkpoint, b.ahead = false, nil, false
-		if !b.spill.none() {
-			h.releaseSpill(b.spill)
-			b.spill = noReservation
-		}
-	}
-	if checkpoint := r.currentCheckpoint(); checkpoint != nil {
-		if err := r.discardCheckpoint(ctx, checkpoint); err != nil {
-			return err
-		}
-		r.setCheckpoint(nil)
-	}
-	h.mu.Lock()
-	h.logical -= r.pageCount
-	h.forgetExtents(r)
-	h.forgetFilesLocked(r)
-	delete(h.memoryRegions, r)
-	if r.hasZeros {
-		h.zeroMemoryRegions--
-		r.hasZeros = false
-	}
-	h.signal()
-	h.mu.Unlock()
-	r.closed = true
-	// No fault reads after this, so its source has no request to end.
-	r.reads.source.Close()
-	r.pages = zirconvm.NewPageList[binding](h.pageSize)
-	r.dirtyBindings = nil
-	r.dirtyRuns = newPageRuns(h.pageSize)
-	r.pageCount = 0
-	return nil
+	z := r.zircon
+
+	return z.detach(ctx)
 }

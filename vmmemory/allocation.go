@@ -283,101 +283,6 @@ func (h *Host) allocateFreeFrom(prefer fileSlot, want int) (fileSlot, int) {
 	return h.allocateFree(f, want)
 }
 
-// allocatePrivate takes the slot a private page of this index goes at: the
-// slot the placement rule gives it within its range's extent, evicting where
-// the page budget rather than the address is what is missing. A page the rule
-// has no slot for — a pager that places nothing, no extent left, or a slot
-// already holding the bytes a checkpoint froze — falls back to an ordinary one
-// beside its neighbours.
-func (r *MemoryRegion) allocatePrivate(ctx context.Context, index uint64) (fileSlot, error) {
-	if err := context.Cause(ctx); err != nil {
-		return fileSlot{}, err
-	}
-	if r.private != nil {
-		// A page of a private file has two places, and one of them is free or
-		// holds a page nothing maps.
-		return r.allocateOwn(ctx, index, false)
-	}
-	h := r.host
-	f := r.privateFile()
-	h.mu.Lock()
-	if h.err != nil {
-		err := h.err
-		h.mu.Unlock()
-		return fileSlot{}, err
-	}
-	at, placeable := h.place(r, index)
-	noExtent := !placeable && h.carving(f) && f.slots.FreeExtents() == 0
-	h.mu.Unlock()
-	if at.slot >= 0 {
-		return at, nil
-	}
-	if noExtent {
-		// The file's extents are held by the idle pages of memory regions that
-		// have gone; one is given back for this range.
-		freed, err := h.reclaimExtent(ctx, f)
-		if err != nil {
-			return fileSlot{}, err
-		}
-		if freed {
-			h.mu.Lock()
-			at, placeable = h.place(r, index)
-			h.mu.Unlock()
-			if at.slot >= 0 {
-				return at, nil
-			}
-		}
-	}
-	if !placeable {
-		return r.allocateNear(ctx, f, index)
-	}
-	return h.allocate(ctx, r, f, func() int {
-		at, _ := h.place(r, index)
-		return at.slot
-	}, evictPastAFreeSlot(ctx))
-}
-
-// Prefer extending a neighboring mapping's physical run before using the
-// first free slot of f. This consumes no speculative reservation and never
-// waits for a preferred slot; pressure falls back to ordinary bounded
-// reclamation.
-func (r *MemoryRegion) allocateNear(ctx context.Context, f *arenaFile, index uint64) (fileSlot, error) {
-	if err := context.Cause(ctx); err != nil {
-		return fileSlot{}, err
-	}
-	h := r.host
-	// Taking a victim while free slots are there is legal and merely wasteful:
-	// see evictPastAFreeSlot.
-	if evictPastAFreeSlot(ctx) {
-		return h.allocate(ctx, r, f, nil, true)
-	}
-	for _, delta := range []int64{-1, 1} {
-		neighbor := int64(index) + delta
-		if neighbor < 0 || neighbor >= int64(r.pageCount) {
-			continue
-		}
-		b := r.lookupBinding(uint64(neighbor))
-		if b == nil {
-			continue
-		}
-		h.mu.Lock()
-		if h.err != nil {
-			err := h.err
-			h.mu.Unlock()
-			return fileSlot{}, err
-		}
-		if pg := b.resident; pg != nil && pg.slot >= 0 && pg.file == f {
-			at := pg.plus(-int(delta))
-			if at.slot >= 0 && at.slot < f.slots.Offsets() && f.slots.IsFree(at.slot) && h.takeFree(at, 1) {
-				h.mu.Unlock()
-				return at, nil
-			}
-		}
-		h.mu.Unlock()
-	}
-	return h.allocate(ctx, r, f, nil, false)
-}
-
 // allocate returns one slot of f for a page of r, evicting a page by the
 // evictor's synchronous path when the arena is full. It waits for progress
 // rather than failing while every candidate is temporarily busy. See
@@ -481,17 +386,6 @@ func (h *Host) allocate(ctx context.Context, r *MemoryRegion, f *arenaFile, plac
 // eviction step, so a test can put another goroutine's work in that moment.
 var allocateSeam func()
 
-// fairLocked reports whether evicting pg to make room for a page of r leaves
-// every other protected memory region its pages. Caller holds h.mu.
-func (h *Host) fairLocked(pg *resident, r *MemoryRegion, share int) bool {
-	for b := range pg.aliases.all() {
-		if q := b.memoryRegion; q != r && h.protectedLocked(q, share) {
-			return false
-		}
-	}
-	return true
-}
-
 // protectedLocked reports a memory region whose pages an eviction for another
 // memory region leaves alone. Every attached memory region is owed share of the
 // arena's pages. One is protected while it holds no more than that and has
@@ -510,69 +404,6 @@ func (h *Host) protectedLocked(q *MemoryRegion, share int) bool {
 	return q.resident <= share && h.displaced-q.wanted < uint64(h.cfg.ResidentPages)
 }
 
-// takeIdleLocked locks and returns the oldest idle page it can take without
-// waiting, or nil where there is none. Caller holds h.mu.
-func (h *Host) takeIdleLocked() *resident { return h.takeIdleWhereLocked(nil) }
-
-// takeIdleWhereLocked is takeIdleLocked for the idle pages want accepts, or
-// any where want is nil. Caller holds h.mu.
-func (h *Host) takeIdleWhereLocked(want func(*resident) bool) *resident {
-	// A page in the don't-need queue is idle and pinned by no cold copy.
-	idle, ok := h.queues.PeekDontNeedWhere(func(pg *resident) bool {
-		if want != nil && !want(pg) {
-			return false
-		}
-		if !pg.mu.TryLock() {
-			return false
-		}
-		if pg.aliases.len() == 0 && pg.replacing == 0 {
-			return true
-		}
-		pg.mu.Unlock()
-		return false
-	})
-	if !ok {
-		return nil
-	}
-	return idle.Page
-}
-
-// dropIdle gives up one idle page takeIdleLocked returned locked: its identity
-// stops naming it, so the next memory region that inherits it reads it again, and its
-// slot is free.
-func (h *Host) dropIdle(ctx context.Context, pg *resident) error {
-	err := h.release(ctx, pg)
-	if err == nil {
-		h.mu.Lock()
-		h.stats.IdleDrops++
-		h.mu.Unlock()
-	}
-	h.unlockAll([]*resident{pg})
-	return err
-}
-
-// makeRoom gives up idle pages until want slots of f are free, or no idle
-// page is left. The allocations that take free slots only — a store's
-// write-ahead run, a load's read-ahead — never evict, so an arena full of idle
-// pages would otherwise shrink every one of them to the single page that may.
-func (h *Host) makeRoom(ctx context.Context, f *arenaFile, want int) error {
-	for {
-		h.mu.Lock()
-		if h.freeLocked(f) >= want {
-			h.mu.Unlock()
-			return nil
-		}
-		pg := h.takeIdleLocked()
-		h.mu.Unlock()
-		if pg == nil {
-			return nil
-		}
-		if err := h.dropIdle(ctx, pg); err != nil {
-			return err
-		}
-	}
-}
-
 // reclaimIdle is the host budget's cache eviction for this pager: it gives up
 // one idle page, reporting whether it did. The budget calls it for whichever
 // consumer is short, and that may be this pager, from inside an allocation
@@ -581,18 +412,9 @@ func (h *Host) makeRoom(ctx context.Context, f *arenaFile, want int) error {
 // idle pages itself, and another consumer that finds the lock taken waits for
 // the budget's next release, which a pager this busy is about to make.
 func (h *Host) reclaimIdle(ctx context.Context, _ int64) (bool, error) {
-	if z := h.zircon; z != nil {
-		return z.reclaimIdle(), nil
-	}
-	if !h.mu.TryLock() {
-		return false, nil
-	}
-	pg := h.takeIdleLocked()
-	h.mu.Unlock()
-	if pg == nil {
-		return false, nil
-	}
-	return true, h.dropIdle(ctx, pg)
+	z := h.zircon
+
+	return z.reclaimIdle(), nil
 }
 
 // DropIdle gives up every idle page this host can take without waiting, and
@@ -600,50 +422,7 @@ func (h *Host) reclaimIdle(ctx context.Context, _ int64) (bool, error) {
 // kept for the next VM to inherit calls it; so does a test whose machine must
 // fault every page from scratch.
 func (h *Host) DropIdle(ctx context.Context) (int, error) {
-	if z := h.zircon; z != nil {
-		return z.dropIdle(ctx)
-	}
-	dropped := 0
-	for {
-		h.mu.Lock()
-		pg := h.takeIdleLocked()
-		h.mu.Unlock()
-		if pg == nil {
-			return dropped, nil
-		}
-		if err := h.dropIdle(ctx, pg); err != nil {
-			return dropped, err
-		}
-		dropped++
-	}
-}
+	z := h.zircon
 
-// reclaimExtent gives up idle pages until an extent of f is free, where none
-// is, and reports whether it freed one. A published page stays at the slot the
-// placement rule gave it when it goes idle, so it keeps that slot's extent from
-// going back after the memory region that placed it has gone: a file full of
-// the idle pages of stopped VMs would otherwise have no extent left for a
-// running one, and every private page of it would be a page of its own
-// somewhere in the file.
-func (h *Host) reclaimExtent(ctx context.Context, f *arenaFile) (bool, error) {
-	orphaned := func(pg *resident) bool {
-		e := pg.file.leases[pg.slot].extent
-		return e != nil && e.file == f && h.extents[e.key] != e
-	}
-	for {
-		h.mu.Lock()
-		if !h.carving(f) || f.slots.FreeExtents() > 0 {
-			freed := h.carving(f) && f.slots.FreeExtents() > 0
-			h.mu.Unlock()
-			return freed, nil
-		}
-		pg := h.takeIdleWhereLocked(orphaned)
-		h.mu.Unlock()
-		if pg == nil {
-			return false, nil
-		}
-		if err := h.dropIdle(ctx, pg); err != nil {
-			return false, err
-		}
-	}
+	return z.dropIdle(ctx)
 }

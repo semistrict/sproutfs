@@ -251,9 +251,7 @@ func New(ctx context.Context, resources *resource.Budget, cfg Config, arena Aren
 		memoryRegions: make(map[*MemoryRegion]struct{}), highWater: highWater(cfg.DirtyPages),
 		io: make(chan struct{}, cfg.ConcurrentIO), writeback: make(chan struct{}, 1)}
 	h.evictor = newPagerEvictor(h)
-	if cfg.Core == CoreZircon {
-		h.zircon = newZirconHost(h)
-	}
+	h.zircon = newZirconHost(h)
 	if cfg.Arena == ArenaIsolated {
 		// Every file is made for a memory region or a tenant when the first one
 		// needs it.
@@ -296,13 +294,14 @@ func (h *Host) LogicalHeadroom() int {
 // spill handles and closes them after this succeeds. A failed punch retains
 // its reservation and can be retried; new attachments are no longer accepted.
 func (h *Host) Close(ctx context.Context) error {
-	if z := h.zircon; z != nil {
-		// The zircon core's pages are its roots', which go first and give
-		// their slots back as they go.
-		if err := z.close(); err != nil {
-			return err
-		}
+	z := h.zircon
+
+	// The zircon core's pages are its roots', which go first and give
+	// their slots back as they go.
+	if err := z.close(); err != nil {
+		return err
 	}
+
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.logical != 0 {
@@ -347,18 +346,6 @@ func (h *Host) changes() <-chan struct{} {
 	return h.changed
 }
 
-// revocations reports the signal the host's next revocation closes. A client
-// refuses a mapping command for want of mapping budget, and a revocation is the
-// only work of this pager's that gives a client budget back. Any other change
-// does not: a fault that waited for any change would be woken by the pages it
-// takes and gives back itself, and two refused faults would wake each other
-// for as long as their client refuses them.
-func (h *Host) revocations() <-chan struct{} {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.revoked
-}
-
 // revokedLocked records that a revocation landed. Caller holds h.mu.
 func (h *Host) revokedLocked() {
 	close(h.revoked)
@@ -389,21 +376,6 @@ func (h *Host) unlockAll(pages []*resident) {
 	h.mu.Lock()
 	h.signal()
 	h.mu.Unlock()
-}
-
-// unlockRun is unlock for a batch of pages: each is checked as unlock checks it,
-// and waiters are woken once for the lot.
-func (h *Host) unlockRun(pages []*resident) {
-	found := ""
-	for _, pg := range pages {
-		if f := h.probe.stable(context.Background(), h, pg, "unlock"); f != "" && found == "" {
-			found = f
-		}
-	}
-	h.unlockAll(pages)
-	if found != "" {
-		panic(found)
-	}
 }
 
 // locked runs fn under the binding's current page lock and always releases
@@ -465,32 +437,6 @@ func (h *Host) beginCheckpointIO(ctx context.Context) (func(), error) {
 		return h.endIO, nil
 	case <-ctx.Done():
 		return nil, context.Cause(ctx)
-	}
-}
-
-// tryCurrent acquires the binding's resident page without waiting for it. It
-// reports the locked page, or nil with reclaiming set when something else holds
-// it. A seal is what uses it: it owns the memory region exclusively, so a reclaim is the
-// only thing that can hold one of its pages, and a reclaim ends with the page
-// nonresident and its bytes in the page's own reservation.
-func (h *Host) tryCurrent(b *binding) (pg *resident, reclaiming bool) {
-	for {
-		h.mu.Lock()
-		pg = b.resident
-		h.mu.Unlock()
-		if pg == nil {
-			return nil, false
-		}
-		if !pg.mu.TryLock() {
-			return nil, true
-		}
-		h.mu.Lock()
-		same := b.resident == pg
-		h.mu.Unlock()
-		if same {
-			return pg, false
-		}
-		h.unlock(pg)
 	}
 }
 

@@ -30,34 +30,6 @@ func (r *MemoryRegion) revocationFailed(err error) error {
 	return r.fail(err)
 }
 
-// revokeLocked revokes a bounded set of this memory region's own bindings, holding
-// each one's current resident page across its revoke so no reclaim can change the
-// mapping underneath it. Caller owns the memory region exclusively.
-func (r *MemoryRegion) revokeLocked(ctx context.Context, bindings []*binding) error {
-	for len(bindings) > 0 {
-		count := min(len(bindings), revokeBatchPages)
-		var locked []*resident
-		err := func() error {
-			defer func() { r.host.unlockAll(locked) }()
-			for _, b := range bindings[:count] {
-				pg, err := r.host.current(ctx, b)
-				if err != nil {
-					return err
-				}
-				if pg != nil {
-					locked = append(locked, pg)
-				}
-			}
-			return r.revokeBindings(ctx, bindings[:count])
-		}()
-		if err != nil {
-			return err
-		}
-		bindings = bindings[count:]
-	}
-	return nil
-}
-
 // Callers own all resident transitions (or an unmapped binding's memory region lock).
 // Preserve possibly mapped state until the whole batch has a successful ACK.
 //

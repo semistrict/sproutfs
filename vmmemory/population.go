@@ -90,99 +90,9 @@ func (r *MemoryRegion) Populated() PopulateStats {
 // at most populationRuns runs of them. Call it once the mapping accepts commands
 // and before memory users start.
 func (r *MemoryRegion) Populate(ctx context.Context) error {
-	if z := r.zircon; z != nil {
-		return z.populate(ctx)
-	}
-	h := r.host
-	started := h.clock.Now()
-	var installed installedRuns
-	defer func() {
-		r.populated.Store(&PopulateStats{Commands: installed.commands, Runs: installed.runs,
-			Pages: installed.pages, DurationNS: h.clock.Since(started).Nanoseconds()})
-	}()
-	if err := r.mu.Lock(ctx); err != nil {
-		return err
-	}
-	if err := r.ready(); err != nil {
-		r.mu.Unlock()
-		return err
-	}
-	index := h.residentIndex(nil)
-	h.mu.Lock()
-	available := len(index.present) > 0 || h.zeroMemoryRegions > 0
-	h.mu.Unlock()
-	r.mu.Unlock()
-	if !available {
-		// There is no shared backing to populate. A first fault will discover
-		// cold data or zeros without making attachment wait for metadata.
-		return nil
-	}
-	// The budget is the whole memory region's, spent in page order. A run that straddles
-	// two of the windows below is two runs to this walk and may fall under the
-	// length the budget asks for; that costs a fault the populate could have
-	// saved, never a page.
-	//
-	// The walk ends where the budget does. Each window asks the volume for the
-	// identity of every page in it — four million of them for a 16 GiB guest at a
-	// 4 KiB page, decoded out of the index's segments — and a window reached with
-	// nothing left to spend can install no run of any kind, so every one of those
-	// answers would be metadata read before the guest runs for nothing at all.
-	budget := populationBudget{runs: populationRuns, pages: populationPages}
-	for start := uint64(0); start < uint64(r.pageCount) && budget.left(); {
-		end := min(start+max(populationWindowBytes/h.pageSize, 1), uint64(r.pageCount))
-		err := func() error {
-			if err := r.mu.Lock(ctx); err != nil {
-				return err
-			}
-			defer r.mu.Unlock()
-			if err := r.ready(); err != nil {
-				return err
-			}
-			if err := h.beginIO(ctx); err != nil {
-				return err
-			}
-			defer h.endIO()
-			plan, err := r.plan(ctx, start, end, end)
-			if err != nil {
-				return err
-			}
-			defer plan.unlock()
-			index = h.residentIndex(index)
-			if err := plan.bindResidents(ctx, index, &budget); err != nil {
-				return err
-			}
-			_, err = plan.install(ctx)
-			installed.add(plan.installed)
-			return err
-		}()
-		if err != nil {
-			return err
-		}
-		start = end
-	}
-	return nil
-}
+	z := r.zircon
 
-// residentIndex is a bounded checkpoint of the shared identities present after
-// a metadata lookup: a located extent then selects matching resident pages without
-// probing the host index once per logical page. Binding rechecks each identity
-// under its resident lock, so eviction cannot turn a candidate into stale data.
-type residentIndex struct {
-	version uint64
-	present map[control.Identity]bool
-}
-
-func (h *Host) residentIndex(previous *residentIndex) *residentIndex {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if previous != nil && previous.version == h.cleanVersion {
-		return previous
-	}
-	index := &residentIndex{version: h.cleanVersion, present: make(map[control.Identity]bool, len(h.clean))}
-	for key := range h.clean {
-		index.present[key.id] = true
-	}
-	return index
+	return z.populate(ctx)
 }
 
 // identityLess is a total order over every field of an identity, so opposing
@@ -225,28 +135,6 @@ type populateRun struct {
 	// reads the bytes back out of the child's own first checkpoint, so a named
 	// run takes the budget before any other.
 	named bool
-}
-
-// residentRuns groups the candidates into the runs one mapping command each
-// covers, and appends them to runs.
-//
-// The slots are read once, without taking any page's lock. Nothing here decides
-// what a page holds: an eviction or a publication between this reading and the
-// binding below can only make install send a kept run as two, or bind one page
-// fewer, which costs a command and a fault and never a page.
-func (p *windowPlan) residentRuns(candidates []candidate, runs []populateRun) []populateRun {
-	h := p.memoryRegion.host
-	slots := make([]fileSlot, len(candidates))
-	named := make([]bool, len(candidates))
-	h.mu.Lock()
-	for i, item := range candidates {
-		slots[i] = fileSlot{slot: -1}
-		if pg := h.clean[item.key]; pg != nil {
-			slots[i], named[i] = pg.fileSlot, pg.private
-		}
-	}
-	h.mu.Unlock()
-	return groupResidentRuns(candidates, slots, named, runs)
 }
 
 // groupResidentRuns groups candidates into the runs one mapping command each
@@ -307,10 +195,6 @@ func (b *populationBudget) spend(run populateRun) (populateRun, bool) {
 	return run, true
 }
 
-func (p *windowPlan) afford(runs []populateRun, budget *populationBudget) []populateRun {
-	return affordRuns(runs, budget, uint64(p.memoryRegion.populationRun()))
-}
-
 // affordRuns is afford for runs no shorter than least, which is the region's
 // population run.
 func affordRuns(runs []populateRun, budget *populationBudget, least uint64) []populateRun {
@@ -333,59 +217,4 @@ func affordRuns(runs []populateRun, budget *populationBudget, least uint64) []po
 	}
 	sort.Slice(kept, func(i, j int) bool { return kept[i].first < kept[j].first })
 	return kept
-}
-
-func (p *windowPlan) bindResidents(ctx context.Context, index *residentIndex, budget *populationBudget) error {
-	var candidates []candidate
-	var runs []populateRun
-	ps := p.memoryRegion.host.pageSize
-	for _, extent := range p.window.extents {
-		if err := context.Cause(ctx); err != nil {
-			return err
-		}
-		if extent.Identity.Zero {
-			// A hole is one run, however large: it owns no arena slot and needs
-			// no per-page identity lookup. It is observed whether or not this
-			// populate can afford to map it, because that is what lets a sibling
-			// attachment find holes without reading metadata of its own.
-			first := max((extent.Offset+ps-1)/ps, p.start)
-			last := min((extent.Offset+extent.Length)/ps, p.end)
-			if first < last {
-				p.observeZeros()
-				runs = append(runs, populateRun{first: first, last: last, zero: true})
-			}
-			continue
-		}
-		if extent.Identity.Ref.IsZero() || extent.Length < ps || !index.present[extent.Identity] {
-			continue
-		}
-		page := extent.Offset / ps
-		if extent.Identity.Page != page || page < p.start || page >= p.end || !p.eligible(page) {
-			continue
-		}
-		candidates = append(candidates, candidate{page: page, key: pageKey{id: extent.Identity}})
-	}
-	var kept []candidate
-	for _, run := range p.afford(p.residentRuns(candidates, runs), budget) {
-		if run.zero {
-			p.markZeros(run.first, run.last)
-			continue
-		}
-		kept = append(kept, candidates[run.from:run.to]...)
-	}
-	// Every population takes resident locks in the same immutable identity
-	// order. Logical page order may differ between related images; using it
-	// would deadlock opposing attachments once the host-wide queue is removed.
-	sort.Slice(kept, func(i, j int) bool {
-		if kept[i].key == kept[j].key {
-			return kept[i].page < kept[j].page
-		}
-		return identityLess(kept[i].key.id, kept[j].key.id)
-	})
-	for _, item := range kept {
-		if err := p.bindShared(ctx, item.page, true); err != nil {
-			return err
-		}
-	}
-	return nil
 }

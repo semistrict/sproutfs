@@ -1,8 +1,6 @@
 package vmmemory
 
 import (
-	"context"
-
 	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/vmmemory/internal/zirconvm"
 )
@@ -63,115 +61,6 @@ func newRequestSource() *requestSource {
 // newRequest is a READ request not in use, from the host's pool.
 func (h *Host) newRequest() *zirconvm.PageRequest {
 	return h.requests.Get().(*zirconvm.PageRequest)
-}
-
-// rootLocked is the source of an identity root, made if it has none, with one
-// more user. Caller holds h.mu.
-func (h *Host) rootLocked(key rootKey) *requestSource {
-	rs := h.roots[key]
-	if rs == nil {
-		rs = newRequestSource()
-		h.roots[key] = rs
-	}
-	rs.users++
-	return rs
-}
-
-// releaseRootLocked ends one use of a root's source. The last closes it,
-// which has no request left to end. Caller holds h.mu.
-func (h *Host) releaseRootLocked(key rootKey, rs *requestSource) {
-	rs.users--
-	if rs.users > 0 {
-		return
-	}
-	delete(h.roots, key)
-	rs.source.Close()
-}
-
-// readWaiter is a fault's READ request waiting on the prefetch reading its
-// page, in that page's root.
-type readWaiter struct {
-	root    rootKey
-	rs      *requestSource
-	request *zirconvm.PageRequest
-}
-
-// awaitReadLocked makes a READ request of the page key names wait on the
-// prefetch reading it, and returns it, or nil where no prefetch reads that
-// page. Caller holds h.mu, under which every request of a root is sent and
-// resolved, so the request it makes waits.
-func (h *Host) awaitReadLocked(key pageKey) *readWaiter {
-	root := rootOf(key)
-	rs := h.roots[root]
-	if rs == nil {
-		return nil
-	}
-	ps := h.pageSize
-	offset := key.id.Page * ps
-	var reading [1]zirconvm.RequestRange
-	if len(rs.source.AppendOutstanding(reading[:0], zirconvm.ReadRequest, offset, offset+ps)) == 0 {
-		return nil
-	}
-	request := h.newRequest()
-	_ = rs.source.GetPages(offset, ps, request)
-	if rs.proxy.Holds(request) {
-		panic("vmmemory: a fault's request to wait on a prefetch was sent")
-	}
-	rs.users++
-	return &readWaiter{root: root, rs: rs, request: request}
-}
-
-// wait waits for the prefetch's request to be supplied or failed, and gives
-// the waiting request back. Either way the fault plans again: a page a
-// prefetch failed to land is its fault's to read.
-func (w *readWaiter) wait(ctx context.Context, h *Host) error {
-	status := w.request.Wait(ctx)
-	h.mu.Lock()
-	h.releaseRootLocked(w.root, w.rs)
-	h.mu.Unlock()
-	h.requests.Put(w.request)
-	if status != nil && !zirconvm.IsValidInternalFailureCode(status) {
-		return context.Cause(ctx)
-	}
-	return nil
-}
-
-// readingIn answers, under the host lock, whether a prefetch is reading a
-// page of the window [start, end): it asks each identity root of the window
-// once, where its pages begin, for the requests outstanding in the window.
-type readingIn struct {
-	h          *Host
-	start, end uint64
-	asked      bool
-	root       rootKey
-	ranges     []zirconvm.RequestRange
-}
-
-func (h *Host) readingIn(start, end uint64) readingIn {
-	return readingIn{h: h, start: start, end: end}
-}
-
-// of reports whether a prefetch is reading the page key names, which is in
-// the window. Caller holds h.mu.
-func (in *readingIn) of(key pageKey) bool {
-	h := in.h
-	if len(h.roots) == 0 {
-		return false
-	}
-	ps := h.pageSize
-	if root := rootOf(key); !in.asked || root != in.root {
-		in.asked, in.root, in.ranges = true, root, in.ranges[:0]
-		if rs := h.roots[root]; rs != nil {
-			in.ranges = rs.source.AppendOutstanding(in.ranges, zirconvm.ReadRequest, in.start*ps, in.end*ps)
-		}
-	}
-	offset := key.id.Page * ps
-	for _, r := range in.ranges {
-		if offset >= r.Offset && offset-r.Offset < r.Len {
-			return true
-		}
-	}
-	return false
 }
 
 // sentRead is a READ request a fault sent to its memory region's source, which

@@ -47,15 +47,6 @@ func newPageQueues(pageSize uint64) *pageQueues {
 // plans/zircon-pager-port-2026-10-05.md).
 func (f *arenaFile) CanEvict() bool { return true }
 
-// queueLocked puts a page that has just been made into the newest reclaim
-// queue. Caller holds h.mu.
-func (h *Host) queueLocked(pg *resident) {
-	h.pinMu.Lock()
-	defer h.pinMu.Unlock()
-	h.queues.SetReclaim(pg, pg.file, uint64(pg.slot)*h.pageSize)
-	pg.queued = true
-}
-
 // dequeueLocked takes a page whose memory is going back out of the queues.
 // Caller holds h.mu.
 func (h *Host) dequeueLocked(pg *resident) {
@@ -119,14 +110,6 @@ func (h *Host) mappedLocked(pg *resident) {
 	}
 }
 
-// pinnedLocked moves a page a cold copy has just pinned into the zero-fork
-// queue. Caller holds h.pinMu.
-func (h *Host) pinnedLocked(pg *resident) {
-	if pg.queued {
-		h.queues.MoveAnonymousToAnonymousZeroFork(pg)
-	}
-}
-
 // unpinnedLocked moves a page the last cold copy compared with it has let go
 // of back where it belongs: the don't-need queue if it is idle, and the newest
 // reclaim queue if not. Caller holds h.pinMu.
@@ -140,6 +123,3 @@ func (h *Host) unpinnedLocked(pg *resident) {
 	}
 	h.queues.MoveToReclaim(pg)
 }
-
-// queuedLocked is how many resident pages the queues hold. Caller holds h.mu.
-func (h *Host) queuedLocked() int { return h.queues.QueueCounts().Total() }

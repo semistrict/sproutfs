@@ -4,11 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
 
 	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/internal/ctxsync"
-	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/vmmemory/internal/zirconvm"
 )
 
@@ -100,19 +98,6 @@ func (h *Host) read(ctx context.Context, b *binding, pg *resident, dst []byte) e
 	return err
 }
 
-// aliases reports the bindings one resident page is reachable from. The set can
-// grow while that page's lock is held, which is what joinReclaiming does, so a
-// reclaim reads it again rather than once.
-func (h *Host) aliases(pg *resident) []*binding {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	result := make([]*binding, 0, pg.aliases.len())
-	for b := range pg.aliases.all() {
-		result = append(result, b)
-	}
-	return result
-}
-
 func (h *Host) bind(b *binding, pg *resident) {
 	h.mu.Lock()
 	found := h.probe.bind(h, b, pg)
@@ -128,104 +113,6 @@ func (h *Host) bind(b *binding, pg *resident) {
 	if found != "" {
 		panic(found)
 	}
-}
-
-// bindRun is bind for pages[k] to bindings[k], under one host lock.
-func (h *Host) bindRun(bindings []*binding, pages []*resident) {
-	found := ""
-	h.mu.Lock()
-	for k, b := range bindings {
-		if f := h.probe.bind(h, b, pages[k]); f != "" && found == "" {
-			found = f
-		}
-		h.mappedLocked(pages[k])
-		aliasLocked(pages[k], b)
-		b.resident = pages[k]
-	}
-	h.mu.Unlock()
-	for k, b := range bindings {
-		note(b.memoryRegion, b.index, "bind-private", pages[k].slot, -1)
-	}
-	if found != "" {
-		panic(found)
-	}
-}
-
-// joinReclaiming makes a binding an alias of the resident page another binding
-// holds, without that page's lock. It is what a seal uses for a page a reclaim
-// is holding: the reclaim writes that page's bytes to the reservation the seal
-// has just handed to the checkpoint's copy, so the copy has to be in the alias set
-// the reclaim reads, or already have been when it read it.
-func (h *Host) joinReclaiming(held, b *binding) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if pg := b.resident; pg != nil {
-		h.mappedLocked(pg)
-		aliasLocked(pg, held)
-		held.resident = pg
-	}
-}
-
-// create fills an already reserved slot and returns its locked page, not yet
-// visible in the sharing index.
-func (h *Host) create(ctx context.Context, at fileSlot, data []byte, key pageKey, private bool, kind MemoryRegionKind) (*resident, error) {
-	if sim.Bug(ctx, "pager-zero-new-page") {
-		// The page is created without the bytes that were loaded or copied
-		// into it, which every later read of that page then sees as zeroes.
-		clear(data)
-	}
-	if err := at.file.Write(ctx, at.slot, data); err != nil {
-		return nil, h.abandonSlots(ctx, at, 1, err)
-	}
-	return h.adopt(at, key, private, kind), nil
-}
-
-// createZeros fills count consecutive reserved slots with zeros and returns
-// their locked private pages. Every free slot is punched, so it already reads
-// as zeros: a file that can make such a slot mappable without writing it does
-// so for the whole run at once, and only another file is written.
-func (h *Host) createZeros(ctx context.Context, at fileSlot, count int, kind MemoryRegionKind) ([]*resident, error) {
-	var err error
-	if zeroing, ok := at.file.ArenaFile.(ZeroFile); ok {
-		err = zeroing.Zero(ctx, at.slot, count)
-	} else {
-		zeros := make([]byte, h.pageSize)
-		for s := at.slot; s < at.slot+count && err == nil; s++ {
-			err = at.file.Write(ctx, s, zeros)
-		}
-	}
-	if err != nil {
-		return nil, h.abandonSlots(ctx, at, count, err)
-	}
-	return h.adoptRun(at, count, kind), nil
-}
-
-// createZeroRuns fills the slots of every run, which are slots of f, with
-// zeros and returns their locked private pages in page order, which is the
-// order the runs are in. A run that fails takes the runs after it and the pages
-// before it with it, so a store that could not have its whole run leaves the
-// arena exactly as it was.
-func (h *Host) createZeroRuns(ctx context.Context, f *arenaFile, runs []MapRun, kind MemoryRegionKind) ([]*resident, error) {
-	if len(runs) == 1 {
-		return h.createZeros(ctx, fileSlot{f, runs[0].Slot}, runs[0].Count, kind)
-	}
-	var pages []*resident
-	for i, run := range runs {
-		created, err := h.createZeros(ctx, fileSlot{f, run.Slot}, run.Count, kind)
-		if err == nil {
-			pages = append(pages, created...)
-			continue
-		}
-		for _, pg := range pages {
-			err = errors.Join(err, h.release(ctx, pg))
-			h.unlock(pg)
-		}
-		for _, rest := range runs[i+1:] {
-			err = errors.Join(err, h.abandonSlots(ctx, fileSlot{f, rest.Slot}, rest.Count, nil))
-		}
-		return nil, err
-	}
-	return pages, nil
 }
 
 // abandonSlots gives back reserved slots whose contents failed to arrive, or
@@ -248,45 +135,6 @@ func (h *Host) abandonSlots(ctx context.Context, at fileSlot, count int, err err
 	h.signal()
 	h.mu.Unlock()
 	return errors.Join(err, cleanup)
-}
-
-// adopt makes a filled slot a locked resident page, most recently used.
-func (h *Host) adopt(at fileSlot, key pageKey, private bool, kind MemoryRegionKind) *resident {
-	pg := &resident{mu: ctxsync.NewMutex(), fileSlot: at, key: key, private: private, kind: kind}
-	_ = pg.mu.Lock(context.Background())
-	h.mu.Lock()
-	if at.file.pages != nil {
-		at.file.pages[at.slot] = pg
-	}
-	h.queueLocked(pg)
-	h.signal()
-	h.mu.Unlock()
-	h.queues.AgeOnAccess()
-	return pg
-}
-
-// adoptRun is adopt for the private zero pages of count consecutive slots, in
-// slot order. A write-ahead run is thousands of pages that every other fault
-// of the host is waiting to see, so they join the newest reclaim queue under
-// one host lock, as one access, and wake waiters once.
-func (h *Host) adoptRun(at fileSlot, count int, kind MemoryRegionKind) []*resident {
-	pages := make([]*resident, count)
-	for i := range pages {
-		pg := &resident{mu: ctxsync.NewMutex(), fileSlot: at.plus(i), private: true, kind: kind}
-		_ = pg.mu.Lock(context.Background())
-		pages[i] = pg
-	}
-	h.mu.Lock()
-	for _, pg := range pages {
-		if at.file.pages != nil {
-			at.file.pages[pg.slot] = pg
-		}
-		h.queueLocked(pg)
-	}
-	h.signal()
-	h.mu.Unlock()
-	h.queues.AgeOnAccess()
-	return pages
 }
 
 func (h *Host) release(ctx context.Context, pg *resident) error {
@@ -320,22 +168,6 @@ func (h *Host) release(ctx context.Context, pg *resident) error {
 	return nil
 }
 
-// leave takes a binding's alias off the page it copied away from and leaves
-// that page in the arena, where unlink would release it once its last alias
-// went. The bytes stay under the identity they are published by, so the settle
-// has something to compare this copy against and something to re-share it onto,
-// and any other memory region that inherits that identity maps it instead of reading
-// it. Nothing is pinned by this: the page is clean, so the next reclaim short of
-// a slot takes it like any other. Caller holds the page's lock.
-func (h *Host) leave(b *binding, pg *resident) {
-	h.mu.Lock()
-	unaliasLocked(pg, b)
-	b.resident = nil
-	h.idleLocked(pg)
-	h.signal()
-	h.mu.Unlock()
-}
-
 // aliasLocked makes b an alias of pg, and counts pg against b's memory region
 // where no alias of that memory region counted it already. A page a memory
 // region reaches twice, from its binding and from a checkpoint's copy of it, is
@@ -354,15 +186,6 @@ func unaliasLocked(pg *resident, b *binding) {
 	}
 }
 
-// unaliasAllLocked takes every alias off pg, which an eviction does. Caller
-// holds h.mu.
-func unaliasAllLocked(pg *resident) {
-	for _, b := range slices.Collect(pg.aliases.all()) {
-		b.resident = nil
-		unaliasLocked(pg, b)
-	}
-}
-
 // mappedBy reports whether any alias of pg belongs to r. Caller holds h.mu.
 func mappedBy(pg *resident, r *MemoryRegion) bool {
 	for b := range pg.aliases.all() {
@@ -371,31 +194,6 @@ func mappedBy(pg *resident, r *MemoryRegion) bool {
 		}
 	}
 	return false
-}
-
-// releaseOrigin gives up a page a copy was made from once nothing maps it and
-// nothing names it any more, which is what detaching a memory region does with the
-// pages its stores left behind: a page no binding reaches is one nothing else
-// would ever release. A page something still maps, or one already evicted, is
-// left alone.
-func (h *Host) releaseOrigin(ctx context.Context, pg *resident) error {
-	if err := pg.mu.Lock(ctx); err != nil {
-		return err
-	}
-	defer h.unlock(pg)
-	h.mu.Lock()
-	keep := pg.slot < 0 || pg.aliases.len() > 0
-	if !keep && pg.replacing > 0 {
-		// A store of another memory region is replacing the guest's mapping of this
-		// page. Its memory goes back when that command lands, exactly as it
-		// would for the binding that store took away.
-		pg.dropped, keep = true, true
-	}
-	h.mu.Unlock()
-	if keep {
-		return nil
-	}
-	return h.release(ctx, pg)
 }
 
 func (h *Host) unlink(ctx context.Context, b *binding, pg *resident) error {
@@ -437,106 +235,11 @@ type storedPage struct {
 	stored bool
 }
 
-// storedIdentities reports that identity for every page of one retire batch,
-// located once per read-ahead window rather than once per page. It is volume
-// metadata, not a page transition, so it runs with neither the memory region nor any
-// page held; the batch's pages are in ascending order, so one window's extents
-// answer for the run of pages that falls in it.
-func (r *MemoryRegion) storedIdentities(ctx context.Context, held []*binding) (map[uint64]storedPage, error) {
-	result := make(map[uint64]storedPage, len(held))
-	var window *windowPlan
-	for _, checkpoint := range held {
-		if checkpoint.spill.none() {
-			continue
-		}
-		index := checkpoint.index
-		if window == nil || index < window.start || index >= window.end {
-			start, end := r.window(index)
-			var err error
-			if window, err = r.plan(ctx, start, end, end); err != nil {
-				return nil, err
-			}
-		}
-		id, stored := window.identity(index)
-		result[index] = storedPage{id, stored}
-	}
-	return result, nil
-}
-
-// publishLocked is publishClean with the page already locked, which is
-// what retiring a page of a checkpoint needs: it must not be reachable
-// from an unreserved binding for even a moment.
-//
-// sum is what the publication's read of the page hashed to, nil where it has
-// none. A page that stays in its memory region's private file keeps it, and is
-// named by its identity only with it: another memory region inherits the page
-// by a copy, which is checked against it.
-func (r *MemoryRegion) publishLocked(ctx context.Context, b *binding, pg *resident, id pageKey, stored bool, sum *digest) error {
-	h := r.host
-	drop := !stored || id.zero()
-	if !drop {
-		key := id
-		h.mu.Lock()
-		existing := h.clean[key]
-		checked := pg.file.owner == nil || sum != nil
-		if existing == nil {
-			pg.private, pg.key = false, key
-			if checked {
-				h.clean[key] = pg
-				h.cleanVersion++
-			}
-			if pg.file.owner != nil && sum != nil {
-				pg.file.digests[pg.slot] = *sum
-			}
-		}
-		h.mu.Unlock()
-		drop = existing != nil && existing != pg
-	}
-	if !drop {
-		return nil
-	}
-	note(r, b.index, "publish-dropped "+publishReason(stored, id, h, pg), pg.slot, -1)
-	// A page given up because the volume holds no object for it was checked and
-	// its mapping taken away together with every other page this retire batch
-	// hands back; see MemoryRegion.revokeHandedBack. What is left here is a page whose
-	// identity another resident already holds, which is the one hand-back that
-	// arrives alone — and one that arrives with its mapping already gone, which
-	// this skips.
-	if err := h.revoke(ctx, b); err != nil {
-		return err
-	}
-	return h.unlink(ctx, b, pg)
-}
-
 // ErrUndroppable reports a retire that would have given up the only copy of
 // bytes a guest wrote. It fails the retire rather than the VM: the checkpoint is
 // durable either way, the page stays sealed and the guest keeps its memory, and
 // the pager reports why its pages are still sealed.
 var ErrUndroppable = errors.New("a page the volume holds no object for is not zeros")
-
-// droppable refuses the one thing a retire may not get wrong. A page given up
-// here because the volume holds no object for it is a page the volume must be
-// able to reproduce without one, and the only such page is zeros: a publication
-// writes an all-zero page as a sparse hole and the volume reads it back as
-// zeros. A page with anything else in it holds bytes that exist nowhere but
-// here, so dropping it would hand the guest an older version of memory it wrote.
-//
-// It reads the page, which is why it runs only where a page is about to be
-// dropped rather than on every retire: that is a handful of pages per
-// checkpoint, against every page the checkpoint holds.
-func (h *Host) droppable(ctx context.Context, b *binding, pg *resident, stored bool, id pageKey) error {
-	if (stored && !id.zero()) || pg == nil || pg.slot < 0 {
-		return nil
-	}
-	data := make([]byte, h.pageSize)
-	if err := pg.file.Read(ctx, pg.slot, data); err != nil {
-		return err
-	}
-	if allZero(data) {
-		return nil
-	}
-	return fmt.Errorf("%w: page %d of %s", ErrUndroppable, b.index, b.memoryRegion.kind)
-}
 
 // share names a private page in the sharing index without ending its privacy:
 // the bytes are a seal's, immutable from the seal until it ends, and the guest
@@ -569,33 +272,6 @@ func (h *Host) unshare(pg *resident) {
 		h.cleanVersion++
 	}
 	pg.key = pageKey{}
-}
-
-// dropSharers takes a resident page away from every binding but the ones named.
-// Ending a seal that shared its pages does it for the pages the guest takes
-// back:
-// what the guest may store into in place must be its own, and a machine that
-// gives one up reads the page through its own backing again — which by then
-// holds those bytes, because a seal ends only once everything that inherited it
-// has copied, published or pulled the pages. Caller holds the page's lock.
-func (h *Host) dropSharers(ctx context.Context, pg *resident, keep ...*binding) error {
-	var sharers []*binding
-	h.mu.Lock()
-	for b := range pg.aliases.all() {
-		if !slices.Contains(keep, b) {
-			sharers = append(sharers, b)
-		}
-	}
-	h.mu.Unlock()
-	for _, b := range sharers {
-		if err := h.revoke(ctx, b); err != nil {
-			return err
-		}
-		if err := h.unlink(ctx, b, pg); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 // allZero reports whether a page a checkpoint read holds only zeros. It feeds

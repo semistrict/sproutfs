@@ -49,12 +49,6 @@ func (h *Host) blockSums(ctx context.Context, at fileSlot) ([]uint64, error) {
 	return sums, nil
 }
 
-// noteCopied records what a page held as it became private: the bytes of the
-// resident page it now owns, before the guest can store into them.
-func (r *MemoryRegion) noteCopied(ctx context.Context, index uint64, pg *resident) error {
-	return r.noteCopiedAt(ctx, index, pg.fileSlot)
-}
-
 // noteCopiedAt is noteCopied of the page at a slot.
 func (r *MemoryRegion) noteCopiedAt(ctx context.Context, index uint64, at fileSlot) error {
 	sums, err := r.host.blockSums(ctx, at)

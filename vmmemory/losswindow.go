@@ -9,40 +9,6 @@ import "time"
 // in one pause, so nothing is learnt by dating each page apart from the rest,
 // and one timestamp costs a memory region nothing.
 
-// noteDirty starts the window at the first store this memory region holds that no
-// checkpoint covers. Every later one is inside it, so the stamp is taken once
-// and kept until a checkpoint carries the pages away. Caller holds bindingsMu,
-// which is the lock the dirty set itself changes under: a page entering that set
-// and the window opening on it are one transition.
-func (r *MemoryRegion) noteDirtyLocked() {
-	if r.dirtySince.IsZero() {
-		r.dirtySince = r.host.clock.Now()
-	}
-}
-
-// takeDirtySince hands this memory region's window to the checkpoint that has just
-// sealed its dirty set. The memory region keeps nothing: every page it holds
-// unpublished is the checkpoint's now, and the next store into it opens a window
-// of its own.
-func (r *MemoryRegion) takeDirtySince() time.Time {
-	r.bindingsMu.Lock()
-	defer r.bindingsMu.Unlock()
-	since := r.dirtySince
-	r.dirtySince, r.windowAsked = time.Time{}, false
-	return since
-}
-
-// restoreDirtySince gives a checkpoint's window back to the memory region, which is
-// what an abandoned checkpoint and an unseal do: those pages are the guest's
-// dirty state again, and they are exactly as old as they were. The older of the
-// two stands — the guest has been storing since the seal, and neither half of
-// what the memory region now holds may be dated by the other.
-func (r *MemoryRegion) restoreDirtySince(since time.Time) {
-	r.bindingsMu.Lock()
-	defer r.bindingsMu.Unlock()
-	r.dirtySince, r.windowAsked = older(r.dirtySince, since), false
-}
-
 // SetUnpublishedAge dates the pages this memory region has inherited from another host,
 // which is what a migration destination does with the age the handoff carried:
 // the window moves with the pages, so a VM handed on cannot outrun its bound by
@@ -52,14 +18,10 @@ func (r *MemoryRegion) restoreDirtySince(since time.Time) {
 // that has been faulting since it resumed keeps the earlier of its own first
 // store and what it was handed.
 func (r *MemoryRegion) SetUnpublishedAge(age time.Duration) {
-	if z := r.zircon; z != nil {
-		z.setUnpublishedAge(age)
-		return
-	}
-	if age <= 0 {
-		return
-	}
-	r.restoreDirtySince(r.host.clock.Now().Add(-age))
+	z := r.zircon
+
+	z.setUnpublishedAge(age)
+	return
 }
 
 // OldestUnpublished is when the oldest write this memory region holds that no landed
@@ -71,16 +33,9 @@ func (r *MemoryRegion) SetUnpublishedAge(age time.Duration) {
 // It is what a host sums across the memory regions of one VM to answer Pressure.Oldest,
 // and what it reports that VM's loss window from.
 func (r *MemoryRegion) OldestUnpublished() time.Time {
-	if z := r.zircon; z != nil {
-		return z.oldestUnpublished()
-	}
-	r.bindingsMu.Lock()
-	since := r.dirtySince
-	r.bindingsMu.Unlock()
-	if _, draining := r.sealState(); draining != nil {
-		since = older(since, draining.since())
-	}
-	return since
+	z := r.zircon
+
+	return z.oldestUnpublished()
 }
 
 // unpublishedAge is how long this memory region has held its oldest unpublished write,
