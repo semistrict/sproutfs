@@ -14,6 +14,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/semistrict/sproutfs/checkpoint"
@@ -126,7 +128,26 @@ type driveConfig struct {
 	// publishes, when not zero, has the run publish each guest that many
 	// times, as VMs of their own, and read nothing.
 	publishes int
+	// publishPages, when set, is the guests a publishing run publishes, each
+	// of that many 2 MiB pages, in order, instead of a guest of each page
+	// size its cases name.
+	publishPages []uint64
+	// faultPages, when not zero, has a publishing run time chains of faults
+	// on the filling hosts (faulting): over a guest of that many 2 MiB pages
+	// that a third node published first, once with nothing publishing and
+	// once beside a further publication of each guest. faultHops is the most
+	// hops a chain takes.
+	faultPages uint64
+	faultHops  int
 }
+
+// faulting is the nodes a publishing run times chains of faults on: the
+// publisher, whose fills send the keeps, and the reader, one of their holders.
+var faulting = []int{0, 1}
+
+// victimNode publishes the guest the chains of faults read, so the
+// publisher's memory is its own publications'.
+const victimNode = 2
 
 // caseResult is one read of a guest.
 type caseResult struct {
@@ -182,6 +203,10 @@ type driveResult struct {
 	Cases       []caseResult            `json:"cases"`
 	// Publications is each publication of a run that only publishes.
 	Publications []publication `json:"publications,omitempty"`
+	// Victim is the publication of the guest the chains of faults read, and
+	// IdleFaults those chains with nothing publishing.
+	Victim     *publishReply `json:"victim,omitempty"`
+	IdleFaults []faultChain  `json:"idle_faults,omitempty"`
 }
 
 func runDrive(ctx context.Context, args []string) error {
@@ -206,16 +231,32 @@ func runDrive(ctx context.Context, args []string) error {
 	out := flags.String("out", "results.json", "where the results go")
 	profiles := flags.String("profiles", "profiles", "the directory the CPU profiles go in")
 	publishes := flags.Int("publishes", 0, "publish each guest the cases name this many times and read nothing")
+	publishPages := flags.String("publish-pages", "", "the guests a publishing run publishes, each as its "+
+		"count of 2 MiB pages and comma-separated, instead of a guest of each page size the cases name")
+	faultPages := flags.Uint64("fault-pages", 0, "time chains of faults on the publisher and the reader, over "+
+		"a guest of this many 2 MiB pages, with nothing publishing and beside a publication of each guest")
+	faultHops := flags.Int("fault-hops", 1000, "the most hops a chain of faults beside publications takes")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	config := driveConfig{pages: map[uint64]uint64{checkpoint.PageSize2MiB: *pages, checkpoint.PageSize4KiB: *smallPages},
 		code: *code, rounds: *rounds, reads: *reads, runReads: *runReads, lost: *lost, loseAfter: *loseAfter,
-		cleared: 20 * time.Second, seed: *seed, calibrate: *calibrateFor, tables: *tables, publishes: *publishes}
+		cleared: 20 * time.Second, seed: *seed, calibrate: *calibrateFor, tables: *tables, publishes: *publishes,
+		faultPages: *faultPages, faultHops: *faultHops}
 	if config.tables != tablesLazy && config.tables != tablesEager {
 		return fmt.Errorf("-tables %q: want %s or %s", config.tables, tablesLazy, tablesEager)
 	}
 	var err error
+	for field := range strings.SplitSeq(*publishPages, ",") {
+		if field == "" {
+			continue
+		}
+		pages, err := strconv.ParseUint(field, 10, 64)
+		if err != nil {
+			return fmt.Errorf("-publish-pages: %w", err)
+		}
+		config.publishPages = append(config.publishPages, pages)
+	}
 	if config.cases, err = parseCases(*cases); err != nil {
 		return err
 	}
@@ -261,6 +302,11 @@ func drive(ctx context.Context, nodes []controller, config driveConfig) (driveRe
 	if len(nodes) < 3 || config.lost < 2 || config.lost >= len(nodes) {
 		return driveResult{}, nil, errors.New(
 			"drive needs at least three nodes, and a lost node other than the publisher and the reader")
+	}
+	if config.faultPages > 0 && (config.publishes < 1 || config.faultHops < 1 ||
+		uint64(config.faultHops) > config.faultPages) {
+		return driveResult{}, nil, fmt.Errorf("chains of %d hops over %d pages: a run that times faults publishes, "+
+			"and its chains take at least one hop and at most one a page", config.faultHops, config.faultPages)
 	}
 	if err := followAll(ctx, nodes, config.code); err != nil {
 		return driveResult{}, nil, err
@@ -375,59 +421,241 @@ func drive(ctx context.Context, nodes []controller, config driveConfig) (driveRe
 
 // publication is one publication of a guest from the first node: what its
 // commit and its fills took, what each node's fills did meanwhile, the
-// publisher's first, and the most memory each node had held by its end.
+// publisher's first, the most memory each node had held by its end, and the
+// chains of faults timed beside it.
 type publication struct {
 	Round   int                    `json:"round"`
 	VM      string                 `json:"vm"`
 	Publish publishReply           `json:"publish"`
 	Fills   []checkpoint.FillStats `json:"fills"`
 	PeakRSS []int64                `json:"peak_rss_bytes"`
+	Faults  []faultChain           `json:"faults,omitempty"`
 }
 
-// publishRounds publishes a guest of each page size the cases read from the
-// first node, config.publishes times, each time as a VM of its own so every
-// window is new to the cluster, and reads nothing back. Unlike a run of
-// reads it does not stop at a dropped stripe: the drops are what it counts.
+// faultChain is one chain of faults through a pager on one node: every hop's
+// latency in nanoseconds, the hops that faulted, and their percentiles in
+// milliseconds. A hop that took less than faultFloor found its page already
+// in, brought by a prefetch, and is left out of the percentiles.
+type faultChain struct {
+	Node      int                `json:"node"`
+	Hops      int                `json:"hops"`
+	Faulted   int                `json:"faulted"`
+	Seconds   float64            `json:"seconds"`
+	Latency   map[string]float64 `json:"latency_ms"`
+	Latencies []int64            `json:"latencies_ns"`
+	Wrong     int                `json:"wrong"`
+	Failed    int                `json:"failed"`
+	Pager     *pagerStats        `json:"pager,omitempty"`
+}
+
+// faultFloor is the least a hop that faulted takes: a 2 MiB page read from
+// the cluster takes milliseconds, and a page already in is copied out in
+// about a tenth of one.
+const faultFloor = time.Millisecond
+
+// publishRounds publishes each guest the run names from the first node,
+// config.publishes times, each time as a VM of its own so every window is new
+// to the cluster, and reads nothing back. Unlike a run of reads it does not
+// stop at a dropped stripe: the drops are what it counts. A run that times
+// faults then times them with nothing publishing and beside one more
+// publication of each guest (publishFaulting).
 func publishRounds(ctx context.Context, nodes []controller, config driveConfig) (driveResult, error) {
 	result := driveResult{Code: config.code, Publish: make(map[string]publishReply)}
-	var sizes []uint64
-	for _, spec := range config.cases {
-		if !slices.Contains(sizes, spec.pageSize) {
-			sizes = append(sizes, spec.pageSize)
+	type sized struct {
+		name     string
+		pageSize uint64
+		pages    uint64
+	}
+	var guests []sized
+	for _, pages := range config.publishPages {
+		guests = append(guests, sized{name: fmt.Sprintf("2mib-%d", pages), pageSize: checkpoint.PageSize2MiB,
+			pages: pages})
+	}
+	if len(config.publishPages) == 0 {
+		for _, spec := range config.cases {
+			if !slices.ContainsFunc(guests, func(g sized) bool { return g.pageSize == spec.pageSize }) {
+				guests = append(guests, sized{name: strings.ToLower(pageSizeName(spec.pageSize)),
+					pageSize: spec.pageSize, pages: config.pages[spec.pageSize]})
+			}
 		}
 	}
 	for round := range config.publishes {
-		for _, size := range sizes {
-			g := guestRequest{VM: fmt.Sprintf("guest-%s-%d", strings.ToLower(pageSizeName(size)), round),
-				PageSize: size, Pages: config.pages[size]}
-			before, err := statsOf(ctx, nodes)
+		for _, size := range guests {
+			g := guestRequest{VM: fmt.Sprintf("guest-%s-%d", size.name, round), PageSize: size.pageSize,
+				Pages: size.pages}
+			one, err := publishOnce(ctx, nodes, g, round)
 			if err != nil {
 				return driveResult{}, err
 			}
-			slog.InfoContext(ctx, "drive: publishing", "vm", g.VM, "pages", g.Pages)
-			published, err := nodes[0].publish(ctx, g)
-			if err != nil {
-				return driveResult{}, err
-			}
-			after, err := statsOf(ctx, nodes)
-			if err != nil {
-				return driveResult{}, err
-			}
-			one := publication{Round: round, VM: g.VM, Publish: published}
-			for at := range nodes {
-				one.Fills = append(one.Fills, fillDelta(before[at].Fill, after[at].Fill))
-				one.PeakRSS = append(one.PeakRSS, after[at].PeakRSSBytes)
-			}
-			slog.InfoContext(ctx, "drive: published", "vm", g.VM, "seconds", published.Seconds,
-				"settled", published.Settled, "fill", fmt.Sprintf("%+v", one.Fills[0]))
 			result.Guests = append(result.Guests, g)
-			result.Publish[g.VM] = published
+			result.Publish[g.VM] = one.Publish
 			result.Publications = append(result.Publications, one)
+		}
+	}
+	if config.faultPages > 0 {
+		var guestsBeside []guestRequest
+		for _, size := range guests {
+			guestsBeside = append(guestsBeside, guestRequest{VM: fmt.Sprintf("guest-%s-faults", size.name),
+				PageSize: size.pageSize, Pages: size.pages})
+		}
+		if err := publishFaulting(ctx, nodes, config, guestsBeside, &result); err != nil {
+			return driveResult{}, err
 		}
 	}
 	var err error
 	result.Fills, err = statsOf(ctx, nodes)
 	return result, err
+}
+
+// publishFaulting times chains of faults on the faulting nodes: over a guest
+// victimNode publishes, first with nothing publishing and then beside a
+// publication of each of guests from the first node. Every node's memory
+// tiers and page cache are emptied before each, so each hop reads its page
+// from the disks that hold it.
+func publishFaulting(ctx context.Context, nodes []controller, config driveConfig, guests []guestRequest,
+	result *driveResult) error {
+	victim := guestRequest{VM: "victim-2mib", PageSize: checkpoint.PageSize2MiB, Pages: config.faultPages}
+	slog.InfoContext(ctx, "drive: publishing the guest the faults read", "vm", victim.VM, "pages", victim.Pages)
+	published, err := nodes[victimNode].publish(ctx, victim)
+	if err != nil {
+		return err
+	}
+	if published.Fill.Dropped != ([len(published.Fill.Dropped)]uint64{}) {
+		return fmt.Errorf("publishing %s dropped stripes, by reason %v: its faults would read the store",
+			victim.VM, published.Fill.Dropped)
+	}
+	result.Victim = &published
+	random := rand.New(rand.NewPCG(config.seed, 1))
+	chain := func(name string) readRequest {
+		return readRequest{Guest: victim, Sequence: published.Sequence, Source: sourceCluster,
+			Access: access{Pattern: patternChain, Unit: unitFault, Concurrency: 1, Reads: config.faultHops,
+				Seed: random.Uint64()}, Stop: name}
+	}
+	if err := dropAll(ctx, nodes); err != nil {
+		return err
+	}
+	if result.IdleFaults, err = faultChains(ctx, nodes, chain, nil); err != nil {
+		return err
+	}
+	for _, g := range guests {
+		if err := dropAll(ctx, nodes); err != nil {
+			return err
+		}
+		var one publication
+		chains, err := faultChains(ctx, nodes, chain, func(ctx context.Context) error {
+			var err error
+			one, err = publishOnce(ctx, nodes, g, config.publishes)
+			return err
+		})
+		if err != nil {
+			return err
+		}
+		one.Faults = chains
+		for _, c := range chains {
+			slog.InfoContext(ctx, "drive: faults beside a publication", "vm", g.VM, "node", c.Node,
+				"faulted", c.Faulted, "p50", c.Latency["p50"], "p99", c.Latency["p99"])
+		}
+		result.Guests = append(result.Guests, g)
+		result.Publish[g.VM] = one.Publish
+		result.Publications = append(result.Publications, one)
+	}
+	return nil
+}
+
+// faultChains runs a chain of faults, as chain names it, on each faulting
+// node at once. With work, the chains run beside it and end once it returns;
+// without, each takes all its hops.
+func faultChains(ctx context.Context, nodes []controller, chain func(name string) readRequest,
+	work func(context.Context) error) ([]faultChain, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	chains := make([]faultChain, len(faulting))
+	failures := make([]error, len(faulting))
+	names := make([]string, len(faulting))
+	var running sync.WaitGroup
+	for at, node := range faulting {
+		if work != nil {
+			names[at] = fmt.Sprintf("faults-%d-%d", node, chainNumber.Add(1))
+		}
+		request := chain(names[at])
+		running.Go(func() {
+			got, err := nodes[node].read(ctx, request)
+			if err == nil && got.Wrong > 0 {
+				err = fmt.Errorf("%d pages read back wrong", got.Wrong)
+			}
+			if err != nil {
+				failures[at] = fmt.Errorf("the chain of faults on node %d: %w", node, err)
+				cancel()
+				return
+			}
+			chains[at] = chainOf(node, got)
+		})
+	}
+	var worked error
+	if work != nil {
+		worked = work(ctx)
+		// Each chain ends at its next hop. A stop that comes before its read
+		// ends the read's chain before its first.
+		for at, node := range faulting {
+			if _, err := nodes[node].stop(context.WithoutCancel(ctx), stopRequest{Name: names[at]}); err != nil {
+				worked = errors.Join(worked, err)
+			}
+		}
+	}
+	running.Wait()
+	return chains, errors.Join(append(failures, worked)...)
+}
+
+// chainNumber names each chain of faults that runs beside a publication.
+var chainNumber atomic.Uint64
+
+// chainOf is what a chain of faults on node read.
+func chainOf(node int, got readReply) faultChain {
+	var faulted []int64
+	for _, latency := range got.Latencies {
+		if latency >= int64(faultFloor) {
+			faulted = append(faulted, latency)
+		}
+	}
+	latency, _ := shape(faulted)
+	return faultChain{Node: node, Hops: len(got.Latencies), Faulted: len(faulted), Seconds: got.Seconds,
+		Latency: latency, Latencies: got.Latencies, Wrong: got.Wrong, Failed: got.Failed, Pager: got.Pager}
+}
+
+// publishOnce publishes g from the first node, and reads what every node's
+// fills did meanwhile and the most memory each had held by its end.
+func publishOnce(ctx context.Context, nodes []controller, g guestRequest, round int) (publication, error) {
+	before, err := statsOf(ctx, nodes)
+	if err != nil {
+		return publication{}, err
+	}
+	slog.InfoContext(ctx, "drive: publishing", "vm", g.VM, "pages", g.Pages)
+	published, err := nodes[0].publish(ctx, g)
+	if err != nil {
+		return publication{}, err
+	}
+	after, err := statsOf(ctx, nodes)
+	if err != nil {
+		return publication{}, err
+	}
+	one := publication{Round: round, VM: g.VM, Publish: published}
+	for at := range nodes {
+		one.Fills = append(one.Fills, fillDelta(before[at].Fill, after[at].Fill))
+		one.PeakRSS = append(one.PeakRSS, after[at].PeakRSSBytes)
+	}
+	slog.InfoContext(ctx, "drive: published", "vm", g.VM, "seconds", published.Seconds,
+		"settled", published.Settled, "fill", fmt.Sprintf("%+v", one.Fills[0]))
+	return one, nil
+}
+
+// dropAll empties every node's memory tiers and page cache.
+func dropAll(ctx context.Context, nodes []controller) error {
+	for _, n := range nodes {
+		if _, err := n.drop(ctx, struct{}{}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // fillDelta is what a node's fills did between two readings. The queue's
@@ -492,10 +720,8 @@ type readResult struct {
 // case counts all it did and the next begins on a quiet cluster.
 func readCase(ctx context.Context, nodes []controller, config driveConfig, request readRequest,
 	lose bool) (readResult, error) {
-	for _, n := range nodes {
-		if _, err := n.drop(ctx, struct{}{}); err != nil {
-			return readResult{}, err
-		}
+	if err := dropAll(ctx, nodes); err != nil {
+		return readResult{}, err
 	}
 	before, err := statsOf(ctx, nodes)
 	if err != nil {

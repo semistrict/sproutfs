@@ -22,6 +22,7 @@ type controller interface {
 	back(context.Context, struct{}) (struct{}, error)
 	drop(context.Context, struct{}) (struct{}, error)
 	settle(context.Context, struct{}) (struct{}, error)
+	stop(context.Context, stopRequest) (struct{}, error)
 	stats(context.Context, struct{}) (statsReply, error)
 	calibrate(context.Context, calibrateRequest) (calibration, error)
 }
@@ -38,6 +39,7 @@ func (n *node) handler() http.Handler {
 	route(mux, "back", n.back)
 	route(mux, "drop", n.drop)
 	route(mux, "settle", n.settle)
+	route(mux, "stop", n.stop)
 	route(mux, "stats", n.stats)
 	route(mux, "calibrate", n.calibrate)
 	return mux
@@ -98,6 +100,10 @@ func (r remote) drop(ctx context.Context, request struct{}) (struct{}, error) {
 
 func (r remote) settle(ctx context.Context, request struct{}) (struct{}, error) {
 	return call[struct{}](ctx, r, "settle", request)
+}
+
+func (r remote) stop(ctx context.Context, request stopRequest) (struct{}, error) {
+	return call[struct{}](ctx, r, "stop", request)
 }
 
 func (r remote) stats(ctx context.Context, request struct{}) (statsReply, error) {

@@ -35,6 +35,13 @@
 # page size the cases name that many times, each as a VM of its own, and read
 # nothing: what each publication took and what its fills dropped
 # (docs/measurements/gce-fill-backpressure-2026-10-04.md).
+# SPROUTFS_RESTORE_PUBLISH_PAGES names those guests instead, as counts of
+# 2 MiB pages, comma-separated. SPROUTFS_RESTORE_FAULT_PAGES, when set, also
+# times chains of faults on the publisher and on a holder, of at most
+# SPROUTFS_RESTORE_FAULT_HOPS hops (1000 by default), over a guest of that many
+# 2 MiB pages a third host publishes: with nothing publishing, and beside one
+# more publication of each guest
+# (docs/measurements/gce-fill-defaults-2026-10-06.md).
 #
 # `all` always deletes the hosts. `create`, `run` and `delete` expose the same
 # steps. Each host also deletes itself after three hours.
@@ -53,7 +60,9 @@ platform=${SPROUTFS_RESTORE_PLATFORM:-Intel Cascade Lake}
 # The drive's cases and sources, as its flags take them.
 drive_flags=""
 for setting in cases:SPROUTFS_RESTORE_CASES sources:SPROUTFS_RESTORE_SOURCES profile:SPROUTFS_RESTORE_PROFILE \
-    tables:SPROUTFS_RESTORE_TABLES publishes:SPROUTFS_RESTORE_PUBLISHES; do
+    tables:SPROUTFS_RESTORE_TABLES publishes:SPROUTFS_RESTORE_PUBLISHES \
+    publish-pages:SPROUTFS_RESTORE_PUBLISH_PAGES fault-pages:SPROUTFS_RESTORE_FAULT_PAGES \
+    fault-hops:SPROUTFS_RESTORE_FAULT_HOPS; do
     name=${setting#*:}
     value=${!name:-}
     [[ $value =~ ^[A-Za-z0-9/,-]*$ ]] || { echo "$name is a comma-separated list of cases or sources" >&2; exit 2; }
@@ -67,6 +76,10 @@ done
 # own default.
 fill_queue=${SPROUTFS_RESTORE_FILL_QUEUE_BYTES:-67108864}
 [[ $fill_queue =~ ^[0-9]+$ ]] || { echo "SPROUTFS_RESTORE_FILL_QUEUE_BYTES is a number" >&2; exit 2; }
+# SPROUTFS_RESTORE_FILL_BYTES_PER_SECOND is every host's rate of keeps, 4 GiB/s
+# by default, which binds nothing.
+fill_rate=${SPROUTFS_RESTORE_FILL_BYTES_PER_SECOND:-4294967296}
+[[ $fill_rate =~ ^[0-9]+$ ]] || { echo "SPROUTFS_RESTORE_FILL_BYTES_PER_SECOND is a number" >&2; exit 2; }
 bucket=${SPROUTFS_GCE_BUCKET:-}
 account=${SPROUTFS_GCE_SERVICE_ACCOUNT:-}
 [[ -n $bucket && -n $account ]] || { echo "Set SPROUTFS_GCE_BUCKET and SPROUTFS_GCE_SERVICE_ACCOUNT." >&2; exit 2; }
@@ -179,6 +192,7 @@ run() {
         git -C "$repo" status --porcelain=v1 -- cmd/sproutfs-restorebench checkpoint peer rank stripe vmmemory | sed 's/^/changed /'
         (cd "$staging" && shasum -a 256 sproutfs-restorebench)
         echo "machine $machine ($platform), pages $pages and $small_pages, rounds $rounds,$drive_flags," \
+            "fill queue $fill_queue, fill rate $fill_rate," \
             "objects gs://$bucket/$run_objects"
     } > "$results/source.txt"
     for index in "${!hosts[@]}"; do
@@ -200,7 +214,7 @@ run() {
                 sudo mkfs.ext4 -q -F \$ssd; sudo mkdir -p /mnt/ssd; sudo mount \$ssd /mnt/ssd; \
                 sudo systemd-run --unit=sproutfs-node --property=LimitNOFILE=65536 \
                 \$HOME/sproutfs-restorebench node -advertise $ip:7500 -bucket $bucket -prefix $run_objects -dir /mnt/ssd \
-                -fill-queue-bytes $fill_queue"
+                -fill-queue-bytes $fill_queue -fill-bytes-per-second $fill_rate"
         } >> "$results/remote.log" 2>&1
         nodes+="${nodes:+,}$ip:7600"
     done

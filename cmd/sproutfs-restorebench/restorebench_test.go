@@ -73,7 +73,7 @@ func TestAChainReadsWhereTheBytesItReadLink(t *testing.T) {
 		return nil
 	}
 	got, err := walk(t.Context(), g, access{Pattern: patternChain, Unit: unitPage, Concurrency: 1, Reads: 5, Seed: 3},
-		sevenOn)
+		sevenOn, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +105,7 @@ func TestAChainOfRunsFollowsTheRunLinks(t *testing.T) {
 			}
 			offsets = append(offsets, offset)
 			return read(ctx, offset, dst)
-		})
+		}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +128,7 @@ func TestAChainOfRunsFollowsTheRunLinks(t *testing.T) {
 func TestRandomAndSequentialReadsReadEachUnitOnce(t *testing.T) {
 	g := mustGuest(t, "guest-4k", checkpoint.PageSize4KiB, 4096)
 	random, err := walk(t.Context(), g, access{Pattern: patternRandom, Unit: unitPage, Concurrency: 4, Reads: 4096,
-		Seed: 1}, faithful(g))
+		Seed: 1}, faithful(g), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +140,7 @@ func TestRandomAndSequentialReadsReadEachUnitOnce(t *testing.T) {
 		t.Fatalf("a random read of every page read %v..., want every page once, out of order", random.Units[:8])
 	}
 	again, err := walk(t.Context(), g, access{Pattern: patternRandom, Unit: unitPage, Concurrency: 1, Reads: 8,
-		Seed: 1}, faithful(g))
+		Seed: 1}, faithful(g), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +148,7 @@ func TestRandomAndSequentialReadsReadEachUnitOnce(t *testing.T) {
 		t.Fatalf("a seed's first eight reads were %v, then %v", random.Units[:8], again.Units)
 	}
 	sequential, err := walk(t.Context(), g, access{Pattern: patternSequential, Unit: unitRun, Concurrency: 1},
-		faithful(g))
+		faithful(g), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +156,7 @@ func TestRandomAndSequentialReadsReadEachUnitOnce(t *testing.T) {
 		t.Fatalf("a sequential read of runs read %v, wrong %d and %d", sequential.Units, sequential.Wrong, random.Wrong)
 	}
 	if _, err := walk(t.Context(), g, access{Pattern: patternRandom, Unit: unitRun, Concurrency: 1, Reads: 3},
-		faithful(g)); err == nil || err.Error() != "3 reads of 2 units: a random reads each unit at most once" {
+		faithful(g), nil); err == nil || err.Error() != "3 reads of 2 units: a random reads each unit at most once" {
 		t.Fatalf("three reads of two runs: %v", err)
 	}
 }
@@ -235,7 +235,8 @@ func simNodes(t *testing.T, ctx context.Context, runtime *sim.Runtime, hot platf
 		n, err := newNode(ctx, nodeConfig{address: address, listen: address, dialFrom: platform.Address(name),
 			network: runtime.Network(), objects: runtime.ObjectStore(), file: file, cacheBytes: 512 << 20,
 			deployment:  checkpoint.CacheDeployment{Store: "sim", Bucket: "bench", Prefix: "run"},
-			memoryBytes: 64 << 20, fillQueueBytes: 1 << 30, serveRate: 500 << 20,
+			memoryBytes: 64 << 20, fillQueueBytes: 1 << 30, fillBytesPerSecond: 4 << 30,
+			serveRate:     500 << 20,
 			dropPageCache: func() error { return nil }, hotObjects: hot, disk: disk})
 		if err != nil {
 			t.Fatal(err)
@@ -359,6 +360,110 @@ func TestAPublishingRunCountsEachPublicationsFills(t *testing.T) {
 			}
 		}
 	})
+}
+
+// A publishing run that times faults publishes the guest they read from the
+// third node, publishes each guest it names alone, times a chain of faults on
+// the publisher and on the reader with nothing publishing, which takes all
+// its hops, and then beside one more publication of each guest, which outlasts
+// its four hops.
+func TestAPublishingRunTimesFaultsBesideItsPublications(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		runtime := sim.New(sim.Config{})
+		ctx := sim.WithRuntime(t.Context(), runtime)
+		nodes := simNodes(t, ctx, runtime, nil)
+		result, _, err := drive(ctx, nodes, driveConfig{pages: map[uint64]uint64{}, code: "4+2", lost: 3,
+			publishes: 1, publishPages: []uint64{16, 32}, faultPages: 64, faultHops: 4, seed: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Victim == nil || result.Victim.Fill.FromPublications != 65 {
+			t.Fatalf("the faults' guest was published as %+v, want its 64 pages' windows and its segment", result.Victim)
+		}
+		var got []string
+		for _, c := range result.IdleFaults {
+			got = append(got, fmt.Sprintf("idle on %d: %d hops, wrong %d, failed %d", c.Node, c.Hops, c.Wrong, c.Failed))
+		}
+		for _, one := range result.Publications {
+			got = append(got, fmt.Sprintf("%s: %d windows, dropped %v", one.VM, one.Fills[0].FromPublications,
+				one.Fills[0].Dropped))
+			for _, c := range one.Faults {
+				got = append(got, fmt.Sprintf("beside on %d: %d hops, wrong %d, failed %d", c.Node, c.Hops, c.Wrong,
+					c.Failed))
+			}
+		}
+		want := []string{
+			"idle on 0: 4 hops, wrong 0, failed 0",
+			"idle on 1: 4 hops, wrong 0, failed 0",
+			"guest-2mib-16-0: 17 windows, dropped [0 0 0 0 0 0 0 0 0]",
+			"guest-2mib-32-0: 33 windows, dropped [0 0 0 0 0 0 0 0 0]",
+			"guest-2mib-16-faults: 17 windows, dropped [0 0 0 0 0 0 0 0 0]",
+			"beside on 0: 4 hops, wrong 0, failed 0",
+			"beside on 1: 4 hops, wrong 0, failed 0",
+			"guest-2mib-32-faults: 33 windows, dropped [0 0 0 0 0 0 0 0 0]",
+			"beside on 0: 4 hops, wrong 0, failed 0",
+			"beside on 1: 4 hops, wrong 0, failed 0",
+		}
+		if !slices.Equal(got, want) {
+			t.Fatalf("the run did\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+		}
+	})
+}
+
+// A stop that comes before its read ends the read's chain before its first
+// hop.
+func TestAStopBeforeItsReadEndsTheChainAtOnce(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		runtime := sim.New(sim.Config{})
+		ctx := sim.WithRuntime(t.Context(), runtime)
+		nodes := simNodes(t, ctx, runtime, nil)
+		if err := followAll(ctx, nodes, "4+2"); err != nil {
+			t.Fatal(err)
+		}
+		g := guestRequest{VM: "guest", PageSize: checkpoint.PageSize2MiB, Pages: 16}
+		published, err := nodes[0].publish(ctx, g)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := nodes[1].stop(ctx, stopRequest{Name: "early"}); err != nil {
+			t.Fatal(err)
+		}
+		got, err := nodes[1].read(ctx, readRequest{Guest: g, Sequence: published.Sequence, Source: sourceCluster,
+			Access: access{Pattern: patternChain, Unit: unitFault, Concurrency: 1, Reads: 16, Seed: 1}, Stop: "early"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got.Latencies) != 0 || len(got.Units) != 0 {
+			t.Fatalf("the stopped chain took %d hops, want none", len(got.Latencies))
+		}
+		// A second stop of the same read is no error.
+		if _, err := nodes[1].stop(ctx, stopRequest{Name: "early"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+// A stop part way through a chain ends it before its next hop, with the hops
+// it took.
+func TestAStopEndsAChainAtItsNextHop(t *testing.T) {
+	g := mustGuest(t, "guest-2m", checkpoint.PageSize2MiB, 64)
+	stop := make(chan struct{})
+	hops := 0
+	read := faithful(g)
+	got, err := walk(t.Context(), g, access{Pattern: patternChain, Unit: unitPage, Concurrency: 1, Reads: 16, Seed: 2},
+		func(ctx context.Context, offset uint64, dst []byte) error {
+			if hops++; hops == 3 {
+				close(stop)
+			}
+			return read(ctx, offset, dst)
+		}, stop)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Units) != 3 || len(got.Latencies) != 3 || got.Wrong != 0 {
+		t.Fatalf("the chain took %d hops, timed %d and read %d wrong, want 3, 3 and none", len(got.Units),
+			len(got.Latencies), got.Wrong)
+	}
 }
 
 // A walk reads the same chain of pages from the regional bucket, the cluster

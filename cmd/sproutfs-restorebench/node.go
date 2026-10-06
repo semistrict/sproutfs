@@ -45,10 +45,12 @@ type nodeConfig struct {
 	file       platform.File
 	cacheBytes int64
 	deployment checkpoint.CacheDeployment
-	// memoryBytes is each cache's memory tier, and fillQueueBytes what the
-	// cache holds of the fills it has not sent yet.
-	memoryBytes    int64
-	fillQueueBytes int64
+	// memoryBytes is each cache's memory tier, fillQueueBytes what the cache
+	// holds of the fills it has not sent yet, and fillBytesPerSecond the rate
+	// of keeps it sends its peers.
+	memoryBytes        int64
+	fillQueueBytes     int64
+	fillBytesPerSecond int64
 	// serveRate is the peer server's serving bandwidth for stripes.
 	serveRate int64
 	// dropPageCache drops the kernel's page cache, so the next read of the
@@ -90,6 +92,9 @@ type node struct {
 	served peer.ServerStats
 	// guests is the memory of each guest this node has published or read.
 	guests map[string]*guest
+	// stops is closed, by the name a read gives it, when that read's chain is
+	// to end.
+	stops map[string]chan struct{}
 }
 
 func runNode(ctx context.Context, args []string) error {
@@ -106,6 +111,7 @@ func runNode(ctx context.Context, args []string) error {
 	cacheBytes := flags.Int64("cache-bytes", 40<<30, "bytes of disk the cache may hold")
 	memoryBytes := flags.Int64("memory-bytes", 1<<30, "bytes of memory each cache's memory tier may hold")
 	fillQueueBytes := flags.Int64("fill-queue-bytes", 4<<30, "bytes of fills the cache holds before it drops them")
+	fillRate := flags.Int64("fill-bytes-per-second", 4<<30, "the rate of keeps the cache sends its peers")
 	bucket := flags.String("bucket", "", "the regional bucket")
 	prefix := flags.String("prefix", "", "prefix of this run's objects in the bucket")
 	serveRate := flags.Int64("serve-bytes-per-second", 500<<20, "the peer server's serving bandwidth for stripes")
@@ -160,8 +166,8 @@ func runNode(ctx context.Context, args []string) error {
 		network: adapters.NewNetwork(), disk: disk,
 		objects: store, file: file, cacheBytes: *cacheBytes,
 		deployment:  checkpoint.CacheDeployment{Store: where.provider, Bucket: *bucket, Prefix: *prefix},
-		memoryBytes: *memoryBytes, fillQueueBytes: *fillQueueBytes, serveRate: *serveRate,
-		dropPageCache: dropPageCache, hotObjects: hotObjects})
+		memoryBytes: *memoryBytes, fillQueueBytes: *fillQueueBytes, fillBytesPerSecond: *fillRate,
+		serveRate: *serveRate, dropPageCache: dropPageCache, hotObjects: hotObjects})
 	if err != nil {
 		return err
 	}
@@ -212,7 +218,8 @@ func newNode(ctx context.Context, config nodeConfig) (*node, error) {
 	if err != nil {
 		return nil, err
 	}
-	n := &node{config: config, objects: metered, guests: make(map[string]*guest)}
+	n := &node{config: config, objects: metered, guests: make(map[string]*guest),
+		stops: make(map[string]chan struct{})}
 	opened := false
 	defer func() {
 		if !opened {
@@ -237,7 +244,7 @@ func newNode(ctx context.Context, config nodeConfig) (*node, error) {
 	// guest.
 	n.cache, err = checkpoint.NewCache(ctx, memory, checkpoint.CacheConfig{Disk: config.file,
 		DiskBytes: config.cacheBytes, Deployment: config.deployment, ClusterPercent: 100, Peers: n.table,
-		FillQueueBytes: config.fillQueueBytes, FillBytesPerSecond: 4 << 30})
+		FillQueueBytes: config.fillQueueBytes, FillBytesPerSecond: config.fillBytesPerSecond})
 	if err != nil {
 		return nil, err
 	}
@@ -541,6 +548,8 @@ type readRequest struct {
 	// tablesEager, every segment once the checkpoint is open and before the
 	// reads, which is what a host that loaded them at open would do.
 	Tables string `json:"tables,omitempty"`
+	// Stop names the read, where a stop of that name is to end its chain.
+	Stop string `json:"stop,omitempty"`
 }
 
 // When a read loads the page tables of its volume.
@@ -616,7 +625,7 @@ func (n *node) read(ctx context.Context, request readRequest) (readReply, error)
 	}
 	out.Profile, err = profiled(request.Profile, func() error {
 		var err error
-		out.walked, err = walk(ctx, g, request.Access, read)
+		out.walked, err = walk(ctx, g, request.Access, read, n.stopOf(request.Stop))
 		return err
 	})
 	if pager != nil {
@@ -679,6 +688,42 @@ func profiled(enabled bool, work func() error) ([]byte, error) {
 	err := work()
 	pprof.StopCPUProfile()
 	return profile.Bytes(), err
+}
+
+// stopOf is what ends the chain of the read named name: nil, which never
+// closes, for a read with no name.
+func (n *node) stopOf(name string) <-chan struct{} {
+	if name == "" {
+		return nil
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.stops[name] == nil {
+		n.stops[name] = make(chan struct{})
+	}
+	return n.stops[name]
+}
+
+// stopRequest names the read whose chain is to end.
+type stopRequest struct {
+	Name string `json:"name"`
+}
+
+// stop ends the chain of the read request names, at its next hop. A stop that
+// comes before its read ends the read's chain before its first hop.
+func (n *node) stop(_ context.Context, request stopRequest) (struct{}, error) {
+	if request.Name == "" {
+		return struct{}{}, errors.New("a stop names its read")
+	}
+	stop := n.stopOf(request.Name)
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	select {
+	case <-stop:
+	default:
+		close(n.stops[request.Name])
+	}
+	return struct{}{}, nil
 }
 
 func (n *node) lose(context.Context, struct{}) (struct{}, error) {

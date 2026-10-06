@@ -92,8 +92,9 @@ type reader func(ctx context.Context, offset uint64, dst []byte) error
 
 // walk reads g's memory through read as a says. It checks every page it read
 // against the guest's, after the reads, so what a read is timed by is the
-// read and a CRC-32C of what it read.
-func walk(ctx context.Context, g *guest, a access, read reader) (walked, error) {
+// read and a CRC-32C of what it read. A chain also ends early once stop is
+// closed, with the hops it took; a nil stop never closes.
+func walk(ctx context.Context, g *guest, a access, read reader, stop <-chan struct{}) (walked, error) {
 	if err := a.check(); err != nil {
 		return walked{}, err
 	}
@@ -138,7 +139,14 @@ func walk(ctx context.Context, g *guest, a access, read reader) (walked, error) 
 		random := rand.New(rand.NewPCG(a.Seed, units))
 		unit := random.Uint64N(units)
 		buffer := make([]byte, unitBytes)
+	hops:
 		for at := range reads {
+			select {
+			case <-stop:
+				out.Units, out.Latencies = out.Units[:at], out.Latencies[:at]
+				break hops
+			default:
+			}
 			if err := one(at, unit, buffer); err != nil {
 				return walked{}, fmt.Errorf("hop %d of the chain, at unit %d: %w", at, unit, err)
 			}
