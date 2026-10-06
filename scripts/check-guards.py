@@ -14,9 +14,6 @@ does not count as a kill. --repeat runs the guarded tests that many times, and
 every run must fail. An entry with a "goos" runs only on that system, and one
 with "root" only as root: its tests skip themselves anywhere else.
 
-An entry runs under each pager core, current and zircon, while the zircon core
-runs beside the current one, and must be killed under each; one whose "cores"
-names fewer runs under those alone.
 """
 
 import argparse
@@ -32,11 +29,10 @@ import tempfile
 import time
 
 
-def run(binary, directory, pattern, bug, core, timeout):
-    """Runs one test binary under one pager core and reports passed, failed,
+def run(binary, directory, pattern, bug, timeout):
+    """Runs one test binary and reports passed, failed,
     no-tests, timeout or process-error."""
     env = {k: v for k, v in os.environ.items() if not k.startswith("SPROUTFS_")}
-    env["SPROUTFS_PAGER_CORE"] = core
     if bug:
         env["SPROUTFS_SIM_BUG"] = bug
     started = time.monotonic()
@@ -72,34 +68,29 @@ def check(guards, root, logs, repeat, jobs, timeout):
         binaries[package] = binary
 
     def one(job):
-        guard, core = job
+        guard = job
         binary, directory = binaries[guard["package"]], root / guard["package"]
-        name = f"{guard['id']}.{core}"
-        status, seconds, output = run(binary, directory, guard["run"], None, core, timeout)
+        name = guard["id"]
+        status, seconds, output = run(binary, directory, guard["run"], None, timeout)
         if status != "passed":
             (logs / f"{name}.clean.log").write_text(output)
-            return guard, core, f"clean-{status}", seconds
+            return guard, f"clean-{status}", seconds
         for attempt in range(1, repeat + 1):
-            status, took, output = run(binary, directory, guard["run"], guard["id"], core, timeout)
+            status, took, output = run(binary, directory, guard["run"], guard["id"], timeout)
             seconds += took
             (logs / f"{name}.{attempt}.log").write_text(output)
             if status != "failed":
-                return guard, core, {"passed": "SURVIVED"}.get(status, status), seconds
-        return guard, core, "killed", seconds
+                return guard, {"passed": "SURVIVED"}.get(status, status), seconds
+        return guard, "killed", seconds
 
     failures = []
-    jobs_list = [(guard, core) for guard in guards for core in cores(guard)]
+    jobs_list = list(guards)
     with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
-        for guard, core, outcome, seconds in pool.map(one, jobs_list):
-            print(f"{outcome:>16} {seconds:7.1f}s  {guard['id']} ({core} core)", flush=True)
+        for guard, outcome, seconds in pool.map(one, jobs_list):
+            print(f"{outcome:>16} {seconds:7.1f}s  {guard['id']}", flush=True)
             if outcome != "killed":
-                failures.append((guard, core, outcome))
+                failures.append((guard, outcome))
     return failures, len(jobs_list)
-
-
-def cores(guard):
-    """The pager cores a guard is checked under."""
-    return guard.get("cores", ["current", "zircon"])
 
 
 def main():
@@ -120,9 +111,6 @@ def main():
     duplicates = sorted({i for i in ids if ids.count(i) > 1})
     if duplicates:
         parser.error(f"duplicate guard IDs: {duplicates}")
-    unknown_cores = sorted({c for g in guards for c in cores(g)} - {"current", "zircon"})
-    if unknown_cores:
-        parser.error(f"unknown pager cores: {unknown_cores}")
     if args.guard:
         unknown = set(args.guard) - set(ids)
         if unknown:
@@ -151,8 +139,8 @@ def main():
         if args.logs is None:
             shutil.rmtree(logs)
         return
-    for guard, core, outcome in failures:
-        print(f"{outcome}: SPROUTFS_PAGER_CORE={core} SPROUTFS_SIM_BUG={guard['id']} "
+    for guard, outcome in failures:
+        print(f"{outcome}: SPROUTFS_SIM_BUG={guard['id']} "
               f"go test ./{guard['package']} -run '{guard['run']}' -count=1", file=sys.stderr)
     sys.exit(f"logs in {logs}")
 

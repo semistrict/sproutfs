@@ -76,7 +76,7 @@ func TestConnectionCancellationDuringAttachment(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer spill.Close()
-			h, err := vmmemory.New(t.Context(), testresource.New(), vmmemory.Config{PageSize: hugePageSize, ResidentPages: 1, LogicalPages: 2, DirtyPages: 1, Arena: suiteArena, Core: suiteCore}, a, spill)
+			h, err := vmmemory.New(t.Context(), testresource.New(), vmmemory.Config{PageSize: hugePageSize, ResidentPages: 1, LogicalPages: 2, DirtyPages: 1, Arena: suiteArena}, a, spill)
 			if err != nil {
 				t.Fatal(err)
 			}

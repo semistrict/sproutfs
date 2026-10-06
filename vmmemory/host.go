@@ -183,9 +183,6 @@ func New(ctx context.Context, resources *resource.Budget, cfg Config, arena Aren
 		(cfg.Arena != ArenaShared && cfg.Arena != ArenaIsolated) {
 		return nil, ErrConfig
 	}
-	if !cfg.Core.known() {
-		return nil, fmt.Errorf("%w: pager core %s", ErrConfig, cfg.Core)
-	}
 	if cfg.Ephemeral && (cfg.DirtyPages != cfg.LogicalPages || cfg.LossWindow != 0) {
 		return nil, fmt.Errorf("%w: an ephemeral pager's dirty budget must be its logical budget, and it keeps no loss window",
 			ErrConfig)

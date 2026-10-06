@@ -19,7 +19,6 @@ import (
 	"github.com/semistrict/sproutfs/internal/knobs"
 	"github.com/semistrict/sproutfs/internal/testarena"
 	"github.com/semistrict/sproutfs/internal/testbacking"
-	"github.com/semistrict/sproutfs/internal/testcore"
 	"github.com/semistrict/sproutfs/internal/testpager"
 	"github.com/semistrict/sproutfs/internal/testresource"
 	"github.com/semistrict/sproutfs/peer"
@@ -175,7 +174,7 @@ func newPager(t *testing.T, c *cluster, name string) *pager {
 	mode := testarena.Mode(t)
 	a := testpager.NewArena(mode)
 	host, err := vmmemory.New(t.Context(), testresource.New(), vmmemory.Config{
-		PageSize: pageSize, Arena: mode, Core: testcore.Core(t),
+		PageSize: pageSize, Arena: mode,
 		ResidentPages: c.knobs.ResidentPages, LogicalPages: c.knobs.LogicalPages,
 		DirtyPages: c.knobs.DirtyPages, ReadAheadPages: c.knobs.ReadAheadPages,
 		WriteAheadPages: c.knobs.WriteAheadPages, ConcurrentIO: c.knobs.ConcurrentIO}, a, spill)

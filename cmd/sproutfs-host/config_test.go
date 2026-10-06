@@ -481,38 +481,6 @@ func TestConfigRefusesAnUnknownArenaMode(t *testing.T) {
 	}
 }
 
-// A pod that names no pager core runs the current one, and one that names the
-// zircon core gets it.
-func TestConfigReadsThePagerCore(t *testing.T) {
-	config, err := loadConfig(environ(minimal()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if config.PagerCore != vmmemory.CoreZircon {
-		t.Fatalf("an unset pager core configured %s, want zircon", config.PagerCore)
-	}
-	values := minimal()
-	values["SPROUTFS_PAGER_CORE"] = "current"
-	config, err = loadConfig(environ(values))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if config.PagerCore != vmmemory.CoreCurrent {
-		t.Fatalf("SPROUTFS_PAGER_CORE=current configured %s, want current", config.PagerCore)
-	}
-}
-
-// A core the pager does not have is refused at startup rather than read as the
-// default.
-func TestConfigRefusesAnUnknownPagerCore(t *testing.T) {
-	values := minimal()
-	values["SPROUTFS_PAGER_CORE"] = "freebsd"
-	_, err := loadConfig(environ(values))
-	if err == nil || !strings.Contains(err.Error(), `SPROUTFS_PAGER_CORE is "freebsd", want current or zircon`) {
-		t.Fatalf("an unknown pager core gave %v", err)
-	}
-}
-
 // A window of zero is how a deployment turns the bound off, which the host
 // spells as a negative value: zero there is the default rather than nothing at
 // all, and a pod that asked for no window must not be given five minutes of one.

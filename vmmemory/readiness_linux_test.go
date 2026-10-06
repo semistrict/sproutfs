@@ -53,7 +53,7 @@ func pipeConnection(t testing.TB, kind vmmemory.MemoryRegionKind, backing vmmemo
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = spill.Close() })
-	h, err := vmmemory.New(t.Context(), testresource.New(), vmmemory.Config{PageSize: hugePageSize, ResidentPages: 1, LogicalPages: int(backing.Size() / hugePageSize), DirtyPages: 1, Arena: suiteArena, Core: suiteCore}, a, spill)
+	h, err := vmmemory.New(t.Context(), testresource.New(), vmmemory.Config{PageSize: hugePageSize, ResidentPages: 1, LogicalPages: int(backing.Size() / hugePageSize), DirtyPages: 1, Arena: suiteArena}, a, spill)
 	if err != nil {
 		t.Fatal(err)
 	}

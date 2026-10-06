@@ -339,7 +339,7 @@ func newHostileFixtureReading(t testing.TB, mode vmmemory.ArenaMode, regions, re
 	t.Helper()
 	cfg := vmmemory.Config{PageSize: hostilePage, ResidentPages: regions * hostilePages,
 		LogicalPages: regions * hostilePages, DirtyPages: regions * hostilePages, ReadAheadPages: readAhead,
-		WriteAheadPages: 1, Arena: mode, Core: suiteCore}
+		WriteAheadPages: 1, Arena: mode}
 	h, arena := kernelHostArenaIn(t, cfg)
 	fx := &hostileFixture{h: h, arena: arena}
 	var provided []vmmemory.Backing

@@ -10,7 +10,6 @@ import (
 
 	"github.com/semistrict/sproutfs/checkpoint"
 	"github.com/semistrict/sproutfs/control"
-	"github.com/semistrict/sproutfs/internal/testcore"
 	"github.com/semistrict/sproutfs/internal/testresource"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/platform/sim"
@@ -261,7 +260,7 @@ func planPager(t *testing.T, name string, ephemeral bool) *vmmemory.Host {
 	}
 	h, err := vmmemory.New(t.Context(), testresource.New(), vmmemory.Config{
 		PageSize: checkpoint.PageSize2MiB, ResidentPages: 1, LogicalPages: 64, DirtyPages: dirty,
-		Ephemeral: ephemeral, Core: testcore.Core(t)}, planArena{}, spill)
+		Ephemeral: ephemeral}, planArena{}, spill)
 	if err != nil {
 		t.Fatal(err)
 	}

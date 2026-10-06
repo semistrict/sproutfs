@@ -286,9 +286,6 @@ func kernelHostArena(t testing.TB, cfg vmmemory.Config) (*vmmemory.Host, *vmmemo
 	if cfg.Arena == vmmemory.ArenaShared {
 		cfg.Arena = suiteArena
 	}
-	if cfg.Core == vmmemory.CoreCurrent {
-		cfg.Core = suiteCore
-	}
 	return kernelHostArenaIn(t, cfg)
 }
 
@@ -354,15 +351,15 @@ func requireKernelBytes(t *testing.T, b *kernelBacking, want []byte) {
 	}
 }
 
-// Every memory region a session attaches runs in its pager's core, as a region
-// Attach makes does. A session's region once ran the current core under a
-// zircon pager, whose host-wide work then never saw its pages.
-func TestASessionsMemoryRegionRunsInItsPagersCore(t *testing.T) {
+// Every memory region a session attaches has the region layer, as a region
+// Attach makes does. A session's region once had none, and ran the old core
+// under the new one, whose host-wide work then never saw its pages.
+func TestASessionsMemoryRegionHasTheRegionLayer(t *testing.T) {
 	h := kernelHost(t, 8, 16)
 	p := startNative(t, h, 4)
 	for region := range p.connections {
-		if got := p.memoryRegion(region).Core(); got != suiteCore {
-			t.Fatalf("memory region %d of the session runs the %s core, want its pager's %s", region, got, suiteCore)
+		if !p.memoryRegion(region).Layered() {
+			t.Fatalf("memory region %d of the session has no region layer", region)
 		}
 	}
 	p.request("fill 1 0 1 7", "filled")

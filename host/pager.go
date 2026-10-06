@@ -138,10 +138,10 @@ func newPager(ctx context.Context, disk platform.Disk, resources *resource.Budge
 }
 
 // assembled is what a supervisor logs of a pager it has built, beside what its
-// arena reports: its kind, the core it runs and the bounds the node chose for
-// it, so what a host gave each kind is on the record.
+// arena reports: its kind and the bounds the node chose for it, so what a host
+// gave each kind is on the record.
 func assembled(kind pagerSlot, cfg vmmemory.Config) []any {
-	return []any{"kind", string(kind), "core", cfg.Core.String(),
+	return []any{"kind", string(kind),
 		"page_bytes", cfg.PageSize, "resident_pages", cfg.ResidentPages,
 		"arena", cfg.Arena.String(), "arena_offsets", cfg.Offsets(),
 		"logical_pages", cfg.LogicalPages, "dirty_pages", cfg.DirtyPages,
@@ -202,7 +202,6 @@ func pagerBounds(config SupervisorConfig, pageSize uint64, arenaBytes int64, log
 		ResidentPages:  resident,
 		ArenaOffsets:   arenaOffsets(pageSize, resident, logical),
 		Arena:          config.Arena,
-		Core:           config.PagerCore,
 		LogicalPages:   logical,
 		DirtyPages:     dirty,
 		ConcurrentIO:   concurrentIO(resident, readAhead),

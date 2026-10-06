@@ -6,13 +6,9 @@ import (
 	"time"
 )
 
-// Core is the core this memory region's pages are served in.
-func (r *MemoryRegion) Core() Core {
-	if r.zircon != nil {
-		return CoreZircon
-	}
-	return CoreCurrent
-}
+// Layered reports whether this memory region's pages are served by the
+// ported region layer, which every memory region must be.
+func (r *MemoryRegion) Layered() bool { return r.zircon != nil }
 
 // ColdCopyAge is how old a cold copy is before its session gives it back and
 // before an eviction may.

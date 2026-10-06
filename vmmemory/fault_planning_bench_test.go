@@ -90,7 +90,7 @@ func newConfiguredBenchPager(b *testing.B, ctx context.Context, runtime *sim.Run
 	if err != nil {
 		b.Fatal(err)
 	}
-	cfg.PageSize, cfg.Core = checkpoint.PageSize4KiB, suiteCore
+	cfg.PageSize = checkpoint.PageSize4KiB
 	a := newArena(checkpoint.PageSize4KiB)
 	host, err := vmmemory.New(ctx, testresource.New(), cfg, a, spill)
 	if err != nil {

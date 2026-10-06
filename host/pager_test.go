@@ -18,27 +18,6 @@ func deploymentConfig() SupervisorConfig {
 	}
 }
 
-// Every pager of a host runs the core the host names, and says so in the line
-// the supervisor logs when it builds one.
-func TestEveryPagerRunsTheCoreItsHostNames(t *testing.T) {
-	config := deploymentConfig()
-	config.Ephemeral.DiskBytes = 1 << 30
-	if got := pagerConfig(config, vmmemory.Ram).Core; got != vmmemory.CoreZircon {
-		t.Fatalf("a host naming no core gives its RAM pager the %s core, want zircon", got)
-	}
-	configs := map[pagerSlot]vmmemory.Config{ramPager: pagerConfig(config, vmmemory.Ram),
-		pmemPager: pagerConfig(config, vmmemory.Pmem), ephemeralPager: *ephemeralPagerConfig(config)}
-	for kind, cfg := range configs {
-		if cfg.Core != vmmemory.CoreZircon {
-			t.Fatalf("the %s pager of a zircon host runs the %s core", kind, cfg.Core)
-		}
-		logged := assembled(kind, cfg)
-		if logged[2] != "core" || logged[3] != "zircon" {
-			t.Fatalf("the %s pager is logged as %v, want its core zircon third", kind, logged[:4])
-		}
-	}
-}
-
 // Both runs are stated in bytes and converted by each pager, so the two get a
 // run of the same size rather than the same number of pages: 8 MiB is four
 // 2 MiB pages and 2,048 4 KiB ones.

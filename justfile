@@ -17,7 +17,7 @@ test-race:
     go test -race ./...
 
 # Everything a push has to pass; .github/workflows/check.yml runs these recipes.
-check: determinism check-go check-zircon-core check-guards check-proto check-shell test-shell check-rust check-spec
+check: determinism check-go check-guards check-proto check-shell test-shell check-rust check-spec
 
 # test-knobs runs the campaigns with a seed's own tunables rather than the
 # deployment's: part sizes, pager budgets, intervals and holds drawn per seed,
@@ -45,12 +45,6 @@ check-go:
     GOOS=darwin go vet ./...
     go test ./...
     SPROUTFS_ARENA=shared go test ./vmmemory/... ./host/... ./vmmigrate/... ./internal/simtest/... ./vmmachine/...
-
-# check-zircon-core runs the suites that build pagers under the zircon pager
-# core, in both arena modes, while that core runs beside the current one
-# (plans/zircon-pager-port-2026-10-05.md).
-check-zircon-core:
-    python3 scripts/test-pager-core.py
 
 # check-guards runs every in-tree bug guard in scripts/mutation/guards.json
 # against the tests it names and fails if those tests pass with it on: a guard

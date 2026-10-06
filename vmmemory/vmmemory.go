@@ -488,9 +488,6 @@ type Config struct {
 	// Arena is how this pager divides its resident pages between the files of
 	// its arena. The zero value is ArenaIsolated.
 	Arena ArenaMode
-	// Core is the fault and checkpoint core this pager runs. The zero value
-	// is CoreCurrent; see Core.
-	Core Core
 	// LogicalPages bounds all per-memory-region metadata, including never-faulted pages.
 	LogicalPages int
 	// DirtyPages bounds volatile private state on RAM and spill combined.

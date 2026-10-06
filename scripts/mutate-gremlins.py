@@ -31,8 +31,6 @@ def main():
     parser.add_argument("--file", action="append", default=[],
                         help="mutate only this file of the package, named relative to it; repeatable")
     parser.add_argument("--run", help="Go test name pattern each mutation runs, for a full suite")
-    parser.add_argument("--pager-core", choices=("current", "zircon"),
-                        help="the pager core each mutation's tests build their pagers in (SPROUTFS_PAGER_CORE)")
     parser.add_argument("--seeds", type=int, default=3)
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--dry-run", action="store_true")
@@ -85,8 +83,6 @@ def main():
         flags += " -run=" + args.run
     env.update(GOFLAGS=flags, GOMAXPROCS="4",
                GOWORK="off", SPROUTFS_OVERLAP_TRACE_SEEDS=str(args.seeds))
-    if args.pager_core:
-        env["SPROUTFS_PAGER_CORE"] = args.pager_core
     real_go = shutil.which("go")
     if real_go is None:
         parser.error("Go must be available on PATH")
@@ -121,8 +117,7 @@ def main():
                 "go": subprocess.check_output(["go", "version"], text=True).strip(),
                 "gremlins": subprocess.check_output([tool, "--version"], text=True).strip(),
                 "audit_helper_sha256": hashlib.sha256((audit_bin / "go").read_bytes()).hexdigest(),
-                "environment": {k: env[k] for k in ("GOFLAGS", "GOMAXPROCS", "GOWORK", "SPROUTFS_OVERLAP_TRACE_SEEDS",
-                                                     "SPROUTFS_PAGER_CORE") if k in env}}
+                "environment": {k: env[k] for k in ("GOFLAGS", "GOMAXPROCS", "GOWORK", "SPROUTFS_OVERLAP_TRACE_SEEDS") if k in env}}
     if launcher:
         shutil.copyfile(launcher, output / "go-test-exec")
         (output / "go-test-exec").chmod(0o755)
