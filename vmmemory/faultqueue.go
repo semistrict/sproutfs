@@ -85,3 +85,18 @@ func (q *faultQueue) finish(page uint64) bool {
 	_, again := q.pending[page]
 	return again
 }
+
+// requeue queues a fault a worker gave back, merged with any access to its page
+// that trapped since, so the delay is measured against the access that has
+// waited longest.
+func (q *faultQueue) requeue(page uint64, entry queuedFault) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if existing, ok := q.pending[page]; ok {
+		entry.write = entry.write || existing.write
+		if existing.at.Before(entry.at) {
+			entry.at = existing.at
+		}
+	}
+	q.pending[page] = entry
+}

@@ -116,7 +116,7 @@ type prefetch struct {
 	// order, each with its identity and the free slot reserved for it.
 	start, end uint64
 	pages      []prefetchPage
-	cancel   context.CancelCauseFunc
+	cancel     context.CancelCauseFunc
 	// reading is set from the split until the read has ended, and holding
 	// until every slot is settled: given back, or holding a page that landed,
 	// idle. Until then a slot is neither free nor a page, and an allocation

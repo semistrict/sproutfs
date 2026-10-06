@@ -462,3 +462,15 @@ func (h *Host) current(ctx context.Context, b *binding) (*resident, error) {
 		h.unlock(pg)
 	}
 }
+
+// revocations reports the signal the host's next revocation closes. A client
+// refuses a mapping command for want of mapping budget, and a revocation is the
+// only work of this pager's that gives a client budget back. Any other change
+// does not: a fault that waited for any change would be woken by the pages it
+// takes and gives back itself, and two refused faults would wake each other
+// for as long as their client refuses them.
+func (h *Host) revocations() <-chan struct{} {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.revoked
+}

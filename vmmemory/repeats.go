@@ -53,3 +53,17 @@ func (b *repeatBudget) spend(now time.Time) time.Duration {
 	b.spent = b.spent.Add(repeatInterval)
 	return max(b.spent.Sub(now), 0)
 }
+
+// paceRepeat charges one repeated fault to this memory region's budget and
+// reports how long the fault waits before it is served.
+func (r *MemoryRegion) paceRepeat() time.Duration {
+	h := r.host
+	wait := r.repeats.spend(h.clock.Now())
+	h.mu.Lock()
+	h.stats.RepeatedFaults++
+	if wait > 0 {
+		h.stats.PacedFaults++
+	}
+	h.mu.Unlock()
+	return wait
+}

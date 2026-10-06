@@ -118,3 +118,9 @@ func (r *MemoryRegion) GiveBackColdCopies(ctx context.Context) (int, error) {
 
 	return z.giveBackColdCopies(ctx)
 }
+
+// takeColdCopies is the cold copies recorded since it was last called, in page
+// order. A session's worker takes them and gives them back coldCopyAge later.
+func (r *MemoryRegion) takeColdCopies() []uint64 {
+	return r.zircon.takeColdCopies()
+}
