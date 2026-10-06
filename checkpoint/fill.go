@@ -96,10 +96,16 @@ import (
 // Defaults of a cache's fills.
 const (
 	// DefaultFillQueueBytes bounds the host's queue of writes to its own disk.
+	// A larger queue publishes no faster once the rate binds, and costs the
+	// publisher several times its bytes in memory
+	// (docs/measurements/gce-fill-defaults-2026-10-06.md).
 	DefaultFillQueueBytes = 64 << 20
 	// DefaultFillBytesPerSecond is the rate of keeps a host sends its peers,
-	// with a burst of one second of it.
-	DefaultFillBytesPerSecond = 128 << 20
+	// with a burst of one second of it. It is the fastest rate measured that
+	// kept the faults on a publishing host as fast as at 128 MiB/s; at
+	// 256 MiB/s and above their p99 was that of unpaced fills
+	// (docs/measurements/gce-fill-defaults-2026-10-06.md).
+	DefaultFillBytesPerSecond = 192 << 20
 	// DefaultFillRightInterval is how long a window's fill right, once given,
 	// is not given again.
 	DefaultFillRightInterval = 10 * time.Second

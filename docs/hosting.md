@@ -1529,7 +1529,7 @@ it, and its peers' keeps, in one queue, `CacheConfig.FillQueueBytes` (64 MiB
 by default). One worker decides the fills, in the order they were handed
 over, and each fill's holders in rank order. It asks for a read's fill right.
 It takes each keep's bytes of a rate per host,
-`CacheConfig.FillBytesPerSecond` (128 MiB/s by default, with a burst of one
+`CacheConfig.FillBytesPerSecond` (192 MiB/s by default, with a burst of one
 second of it), and its room in the host's background budget. Then it hands
 the keep to the lane of the member that serves the holder's disk. This host's
 own stripes go to a lane of their own. The lanes carry their keeps side by
@@ -1577,6 +1577,17 @@ time, it dropped none, and took 69 s instead of 33 s
 With its keeps side by side it drops none and commits in 38 s, and in 28 s
 with a 1 GiB queue, which costs 3.1 GiB of memory rather than 5.6
 ([the measurement](measurements/gce-fill-side-by-side-2026-10-04.md)).
+
+**The defaults protect faults.** The rate is there for the faults of the
+guests on a publishing host. On GCE a chain of faults on the publisher took
+12 ms at p99 with nothing publishing. Beside an 8 GiB publication paced at
+128 MiB/s it took 27 ms, and unpaced 45 ms. At 192 MiB/s it took 31 ms, and
+the publication committed in 54 s rather than 84 s. At 256 MiB/s the faults
+paid as much as unpaced. So the rate is 192 MiB/s. The holders' faults paid
+little at any rate. The queue stays at 64 MiB: once the rate binds, a larger
+queue only waits less. At 256 MiB/s a 1 GiB queue committed 3 s sooner and
+cost the publisher 2.5 GiB more
+([the measurement](measurements/gce-fill-defaults-2026-10-06.md)).
 
 **A read's fill never waits behind a publication's.** The last quarter of the
 queue is left to the fills of reads, repairs and peers' keeps, which never

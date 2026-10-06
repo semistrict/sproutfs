@@ -567,6 +567,13 @@ a third: the host Deployment rolls at `maxSurge: 0` and `maxUnavailable: 1`,
 taking a pod down before it starts its replacement and leaving the other pod up
 while it does.
 
+A host's publications also hold their fills in memory: a queue of 64 MiB
+(`CacheConfig.FillQueueBytes`) and the parts waiting behind it. The host sends
+their keeps at 192 MiB/s at most (`CacheConfig.FillBytesPerSecond`). On GCE
+the bench's publisher of an 8 GiB guest peaked at 1.8 GiB with them. A 1 GiB
+queue took it to 4.3 GiB and published no faster
+([the measurement](../docs/measurements/gce-fill-defaults-2026-10-06.md)).
+
 That other pod is what the preStop drain needs: a destination to migrate its VMs
 to. Deleting both pods at once — a `Recreate` strategy, or an eviction that took
 them together — leaves the drain nowhere to put anything and makes every rollout
