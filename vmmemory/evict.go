@@ -24,14 +24,50 @@ import (
 //   - the least recently faulted page of all;
 //   - a page a cold copy will be compared with, last.
 //
-// The split is ReclaimPage's: an identity's clean page is dropped and read
-// again, a memory region's own page is spilled (D2 of the port), and a cold
-// copy the guest did not change goes back to its origin.
+// A cold copy the guest did not change goes back to its origin rather than be
+// spilled (giveback.go).
 //
 // The evictor's asynchronous path is not used. Nothing here evicts ahead of a
 // shortage: an idle page is kept for the next VM that inherits its identity
 // (see Idle pages in docs/vm-memory.md), and evicting it early would cost that
 // VM a read.
+
+// The evictor's synchronous path runs over the node's page queues, with the
+// fair share as a filter on its candidates. The split is ReclaimPage's with D2
+// of the port: a root's page is dropped and read again
+// (ReclaimRangeForEviction's case), and a page of a region's layer, Dirty,
+// AwaitingClean or Clean, has its bytes written to the reservations of the
+// bindings it is the state of (ReclaimPageForCompression's case) and is taken
+// out of the layer. The reservation, the reference, stays in the binding
+// beside the layer: the frame's bytes are the pager's to move, and the layer's
+// node keeps no storage of its own. Revoking every alias before the slot goes
+// back is RangeChangeUpdateLocked with UnmapAndHarvest over every region in
+// the alias set.
+
+// The pages are ordered for reclaim by Zircon's page queues
+// (internal/zirconvm/pagequeues.go):
+//
+//   - Every page a memory region may map is in a reclaim queue, or in the
+//     standard isolate queue once it has aged out of them. The queues age one
+//     generation for each page a fault creates or touches (AgeOnAccess), so an
+//     eviction walks them in the order a fault last touched each page. Fault
+//     order is the only recency the pager has: it sees no access through a
+//     page table it has filled.
+//   - An idle page, which no memory region maps, is in the don't-need queue,
+//     which Zircon's peek takes first. The evictor takes its victims by
+//     peeking these queues.
+//   - A page a cold copy will be compared with is in the zero-fork queue. In
+//     Zircon that queue holds the pages a write fault copied from the zero page,
+//     outside the reclaim queues until the scanner has compared them with zero.
+//     Here the comparison's other side is a page of the arena rather than the
+//     zero page, and it is that page which must wait outside the reclaim
+//     queues, so it is the page queued there; an eviction takes it only when
+//     nothing else can go. See cold.go.
+//
+// A page's queue is decided by whether it is idle and whether it is pinned,
+// which are both changed under Host.pinMu, so its moves between the queues are
+// made under it too. Host.mu is taken before pinMu, and the queues' own locks
+// after both.
 
 // pagerEvictor is the evictor of the pager's resident pages.
 type pagerEvictor = zirconvm.Evictor[*evictionRequest]
@@ -124,8 +160,7 @@ func (h *Host) reclaimStep(ctx context.Context, req *evictionRequest, _ bool, _ 
 		}
 	}
 	// A slot that came free after the allocation looked, as a cancelled
-	// prefetch's do when it settles, is taken rather than a page a guest
-	// maps, as in the current core.
+	// prefetch's do when it settles, is taken rather than a page a guest maps.
 	if !req.preferEviction && req.file != nil && h.freeLocked(req.file) > 0 &&
 		!sim.Bug(ctx, "pager-evict-past-a-freed-slot") {
 		req.freed = true
@@ -153,19 +188,6 @@ func (h *Host) reclaimStep(ctx context.Context, req *evictionRequest, _ bool, _ 
 // take a seal exactly there.
 var evictionSeam func(slot int)
 
-// Eviction over the zircon core: the evictor's synchronous path
-// (evictor.go) over the node's page queues, with the fair share as a filter
-// on its candidates, as the current core's. The split is ReclaimPage's with
-// D2: a root's page is dropped and read again (ReclaimRangeForEviction's
-// case), and a page of a region's layer, Dirty, AwaitingClean or Clean, has
-// its bytes written to the reservations of the bindings it is the state of
-// (ReclaimPageForCompression's case) and is taken out of the layer. The
-// reservation, the reference, stays in the binding beside the layer: the
-// frame's bytes are the pager's to move, and the layer's node keeps no
-// storage of its own. Revoking every alias before the slot goes back is
-// RangeChangeUpdateLocked with UnmapAndHarvest over every region in the
-// alias set.
-
 // queuedLocked is how many pages of the arena the queues hold: every page of
 // every object, less the pages of a temporary root, which name another's
 // frame. Caller holds h.mu.
@@ -174,10 +196,10 @@ func (h *Host) queuedLocked() int {
 	return counts.Total() - counts.Wired
 }
 
-// peekVictimLocked is Host.peekVictimLocked over the node's queues: the
-// least recently faulted page that leaves every protected region its pages,
-// then the least recently faulted of all, then a page a cold copy pins, each
-// returned locked. Caller holds h.mu.
+// peekVictimLocked is the victim the node's queues give: the least recently
+// faulted page that leaves every protected region its pages, then the least
+// recently faulted of all, then a page a cold copy pins, each returned locked.
+// Caller holds h.mu.
 func (h *Host) peekVictimLocked(req *evictionRequest) *zirconvm.VmPage {
 	share := h.cfg.ResidentPages / max(len(h.memoryRegions), 1)
 	candidate := func(fair bool) func(*zirconvm.VmPage) bool {
@@ -212,7 +234,9 @@ func (h *Host) peekVictimLocked(req *evictionRequest) *zirconvm.VmPage {
 	return nil
 }
 
-// fairLocked is Host.fairLocked over a frame's aliases. Caller holds h.mu.
+// fairLocked reports whether evicting f leaves every protected memory region
+// other than r its pages: no alias of f is a protected region's. Caller holds
+// h.mu.
 func (h *Host) fairLocked(f *frame, r *MemoryRegion, share int) bool {
 	for b := range f.aliases.all() {
 		if q := b.region; q != r && h.protectedLocked(q, share) {
@@ -275,21 +299,19 @@ func (h *Host) aliasesOf(f *frame) []*binding {
 	return result
 }
 
-// spillTarget is binding.spillTarget over the zircon core: the reservation
-// b's bytes go to, and whether a page that names none has them held
-// elsewhere: by the checkpoint's copy, or because the page is not b's
-// region's own state at all.
+// spillTarget is the reservation b's bytes go to, and whether a page that
+// names none has them held elsewhere: by the checkpoint's copy, or because the
+// page is not b's region's own state at all.
 func (r *MemoryRegion) spillTarget(b *binding) (spill reservation, elsewhere bool) {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
 	return b.spill, !b.dirty || b.checkpoint != nil
 }
 
-// evictPage is Host.evictPage over the zircon core: it revokes every alias
-// of a locked victim before reading its bytes, writes a region's own page to
-// the reservations of the bindings it is the state of, takes it out of its
-// object, and gives its slot back. The slot goes back only once the spill
-// has succeeded.
+// evictPage evicts a locked victim: it revokes every alias before reading its
+// bytes, writes a region's own page to the reservations of the bindings it is
+// the state of, takes it out of its object, and gives its slot back. The slot
+// goes back only once the spill has succeeded.
 func (h *Host) evictPage(ctx context.Context, page *zirconvm.VmPage) error {
 	f := frameOf(page)
 	// The reservations the page's bytes go to are read as the alias set
@@ -419,29 +441,3 @@ func (h *Host) dropAliasesLocked(f *frame) {
 		}
 	}
 }
-
-// The resident pages are ordered for reclaim by Zircon's page queues
-// (internal/zirconvm/pagequeues.go), which take the place of the recency list,
-// the idle list and the pins of cold copies the pager kept itself:
-//
-//   - Every page a memory region may map is in a reclaim queue, or in the
-//     standard isolate queue once it has aged out of them. The queues age one
-//     generation for each page a fault creates or touches (AgeOnAccess), so an
-//     eviction walks them in the order a fault last touched each page, as it
-//     walked the recency list. Fault order is the only recency the pager has:
-//     it sees no access through a page table it has filled.
-//   - An idle page, which no memory region maps, is in the don't-need queue,
-//     which Zircon's peek takes first, as the pager took the idle list first.
-//     The evictor (evictor.go) takes its victims by peeking these queues.
-//   - A page a cold copy will be compared with is in the zero-fork queue. In
-//     Zircon that queue holds the pages a write fault copied from the zero page,
-//     outside the reclaim queues until the scanner has compared them with zero.
-//     Here the comparison's other side is a page of the arena rather than the
-//     zero page, and it is that page which must wait outside the reclaim
-//     queues, so it is the page queued there; an eviction takes it only when
-//     nothing else can go. See cold.go.
-//
-// A page's queue is decided by whether it is idle and whether it is pinned,
-// which are both changed under Host.pinMu, so its moves between the queues are
-// made under it too. Host.mu is taken before pinMu, and the queues' own locks
-// after both.

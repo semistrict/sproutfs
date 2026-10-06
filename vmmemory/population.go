@@ -196,7 +196,7 @@ type populateRun struct {
 // groupResidentRuns groups candidates into the runs one mapping command each
 // covers, given the slot of each candidate's resident page (slot -1 for one
 // with none) and whether a fork point named it, nil for none named, and
-// appends them to runs. Both cores' populates group their candidates so.
+// appends them to runs.
 func groupResidentRuns(candidates []candidate, slots []fileSlot, named []bool, runs []populateRun) []populateRun {
 	isNamed := func(i int) bool { return named != nil && named[i] }
 	for first := 0; first < len(candidates); first++ {
@@ -275,10 +275,9 @@ func affordRuns(runs []populateRun, budget *populationBudget, least uint64) []po
 	return kept
 }
 
-// bindResidents is windowPlan.bindResidents over the identity roots: the
-// window's holes and its pages a root holds, grouped into the runs one
-// mapping command covers each, as many of them as the budget affords, taken
-// into the plan.
+// bindResidents takes into the plan the window's holes and its pages a root
+// holds, grouped into the runs one mapping command covers each, as many of
+// them as the budget affords.
 func (p *plan) bindResidents(ctx context.Context, budget *populationBudget) error {
 	r := p.region
 	h := r.host
@@ -318,8 +317,7 @@ func (p *plan) bindResidents(ctx context.Context, budget *populationBudget) erro
 		}
 		kept = append(kept, candidates[run.from:run.to]...)
 	}
-	// Every population takes the pages' locks in the same order of
-	// identities, as the current core's does.
+	// Every population takes the pages' locks in the same order of identities.
 	sort.Slice(kept, func(i, j int) bool {
 		if kept[i].key == kept[j].key {
 			return kept[i].page < kept[j].page

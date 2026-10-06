@@ -226,11 +226,10 @@ func (r *MemoryRegion) shareOrigin(b *binding, page, origin *zirconvm.VmPage) er
 	return nil
 }
 
-// giveBackSpilled is MemoryRegion.giveBackSpilled over the zircon core: a
-// spilled cold copy, read back from the spill, compared with its origin. An
-// unchanged one goes back to the origin, unmapped, and its reservation is
-// freed; a changed one stops being cold. Caller holds the page's window, the
-// region shared and the origin.
+// giveBackSpilled compares a spilled cold copy, read back from the spill, with
+// its origin. An unchanged one goes back to the origin, unmapped, and its
+// reservation is freed; a changed one stops being cold. Caller holds the
+// page's window, the region shared and the origin.
 func (r *MemoryRegion) giveBackSpilled(ctx context.Context, b *binding, origin *zirconvm.VmPage, buffers *settler) (bool, error) {
 	h := r.host
 	if buffers.first == nil {
@@ -267,11 +266,10 @@ func (r *MemoryRegion) giveBackSpilled(ctx context.Context, b *binding, origin *
 	return true, nil
 }
 
-// giveBackToVolume is MemoryRegion.giveBackToVolume over the zircon core: a
-// cold copy whose origin has gone is compared with its volume's bytes, and an
-// unchanged one is dropped, so the guest's next access reads the page again
-// as any first access does. Caller holds the page's window and the region
-// shared.
+// giveBackToVolume compares a cold copy whose origin has gone with its
+// volume's bytes, and an unchanged one is dropped, so the guest's next access
+// reads the page again as any first access does. Caller holds the page's
+// window and the region shared.
 func (r *MemoryRegion) giveBackToVolume(ctx context.Context, b *binding, buffers *settler) (bool, error) {
 	h := r.host
 	ps := h.pageSize
@@ -314,12 +312,11 @@ func (r *MemoryRegion) giveBackToVolume(ctx context.Context, b *binding, buffers
 	return true, nil
 }
 
-// giveBackVictim is Host.giveBackVictim over the zircon core: an eviction's
-// victim that is a cold copy the guest has not changed goes back to its
-// origin instead of the spill. A reclaim holds none of the locks a give-back
-// takes before the victim's, so it takes each without waiting, and gives up
-// where one is held: the copy is then spilled, and compared from there.
-// Caller holds page's lock.
+// giveBackVictim gives an eviction's victim that is a cold copy the guest has
+// not changed back to its origin instead of the spill. A reclaim holds none of
+// the locks a give-back takes before the victim's, so it takes each without
+// waiting, and gives up where one is held: the copy is then spilled, and
+// compared from there. Caller holds page's lock.
 func (h *Host) giveBackVictim(ctx context.Context, page *zirconvm.VmPage) (bool, error) {
 	f := frameOf(page)
 	h.mu.Lock()
@@ -365,11 +362,10 @@ func (h *Host) giveBackVictim(ctx context.Context, page *zirconvm.VmPage) (bool,
 	return r.giveBackCopy(ctx, b, origin, page, &buffers)
 }
 
-// mapInPlace is MemoryRegion.mapInPlace over the zircon core: to, read-only,
-// where b is mapped, in one MAP, installed in the region's page tables, so
-// the guest reads on without a fault. It reports ErrMappingRefused where the
-// client refused the MAP, having changed nothing. Caller holds b's page and
-// to.
+// mapInPlace maps to, read-only, where b is mapped, in one MAP, installed in
+// the region's page tables, so the guest reads on without a fault. It reports
+// ErrMappingRefused where the client refused the MAP, having changed nothing.
+// Caller holds b's page and to.
 func (r *MemoryRegion) mapInPlace(ctx context.Context, b *binding, to *zirconvm.VmPage) error {
 	h := r.host
 	return r.underProtection(ctx, func() error {

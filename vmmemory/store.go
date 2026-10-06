@@ -8,20 +8,18 @@ import (
 	"github.com/semistrict/sproutfs/vmmemory/internal/zirconvm"
 )
 
-// Stores over the zircon core. A store makes a page of the region's own layer
-// Dirty, as a write makes a page of a VMO a user pager backs Dirty: the pager
-// fills a frame with the bytes the page holds now, at the offset of the
-// region's private file the placement rule gives it, supplies it to the
-// layer, and makes it Dirty there (zirconvm DirtyPages, zx_pager_op_range's
-// DIRTY). The layer's page then shadows the identity root's, as a
-// snapshot-on-write child's copy shadows its parent's. A store into fresh
-// zeros makes its whole write-ahead run Dirty at once. Which pages a store
-// makes private, write-ahead, placement and the two rules are the current
-// core's (fault.go, placement.go, rules.go), and move as they are.
+// A store makes a page of the region's own layer Dirty, as a write makes a
+// page of a VMO a user pager backs Dirty: the pager fills a frame with the
+// bytes the page holds now, at the offset of the region's private file the
+// placement rule gives it, supplies it to the layer, and makes it Dirty there
+// (zirconvm DirtyPages, zx_pager_op_range's DIRTY). The layer's page then
+// shadows the identity root's, as a snapshot-on-write child's copy shadows its
+// parent's. A store into fresh zeros makes its whole write-ahead run Dirty at
+// once. Which pages a store makes private, write-ahead, placement and the two
+// rules are the pager's own (placement.go, rules.go).
 //
-// The dirty reservation a page is admitted under is kept in its binding
-// beside the layer, which the spill writes the page's bytes to (D5,
-// zircon_evict.go).
+// The dirty reservation a page is admitted under is kept in its binding beside
+// the layer, which the spill writes the page's bytes to (D5, evict.go).
 
 // writable reports whether the guest may store into a page where it is: the
 // region's own Dirty page.
@@ -52,9 +50,12 @@ func (r *MemoryRegion) holdsOwn(index uint64) bool {
 // a store decides this before it competes for one, and decides again after.
 func (r *MemoryRegion) needsPrivatePage(index uint64) bool { return !r.writable(index) }
 
-// fresh is MemoryRegion.fresh over the bindings beside the layer: zero where
-// the page is mapped to zero, untouched where the region holds nothing of it
-// at all.
+// fresh reports what a store may assume about a page whose lock it does not
+// hold: zero where the page is mapped to zero, untouched where the region
+// holds nothing of it at all, no mapping included, so that its bytes are
+// whatever the volume holds. Either way it owns no memory, no private state
+// and no checkpoint, and nothing needs fencing before a private page takes its
+// place. Caller holds the page's fault stripe.
 func (r *MemoryRegion) fresh(index uint64) (zero, untouched bool) {
 	r.bindingsMu.Lock()
 	b, zeroRun := r.lookupLocked(index)
@@ -88,8 +89,13 @@ func (r *MemoryRegion) store(ctx context.Context, index uint64, spill *reservati
 	return r.copyOnWrite(ctx, index, spill)
 }
 
-// storeFresh is MemoryRegion.storeFresh over the zircon core: a store into a
-// page whose bytes are known zeros and that the region holds nothing of.
+// storeFresh serves a store into a page whose bytes are known zeros and that
+// the region holds nothing of: a zero-mapped page, or a hole in the volume the
+// guest has never touched. For any other page it reports false having done
+// nothing. There is no memory to copy and nothing to fence, so nothing is
+// revoked: one mapping command puts fresh pages where the zeros or the trap
+// were. Write-ahead makes the fresh zero pages around it private in that same
+// command.
 func (r *MemoryRegion) storeFresh(ctx context.Context, index uint64, spill *reservation) (bool, error) {
 	zero, untouched := r.fresh(index)
 	if !zero && !untouched {
@@ -116,7 +122,11 @@ func (r *MemoryRegion) storeFresh(ctx context.Context, index uint64, spill *rese
 	return true, r.storeZeros(ctx, index, first, last, spill)
 }
 
-// zeroRun is MemoryRegion.zeroRun over the zircon core.
+// zeroRun bounds the run a store into index makes private: index, the fresh
+// zero pages after it up to the end of its read-ahead window, then those
+// before it, at most WriteAheadPages together. A page is fresh zeros when it
+// is zero-mapped or, by the plan's extents when the store has them, an
+// untouched hole.
 func (r *MemoryRegion) zeroRun(index uint64, plan *plan) (uint64, uint64) {
 	start, end := r.window(index)
 	limit := uint64(r.host.cfg.WriteAheadPages)
@@ -138,11 +148,10 @@ func (r *MemoryRegion) zeroRun(index uint64, plan *plan) (uint64, uint64) {
 	return first, last
 }
 
-// storeZeros is MemoryRegion.storeZeros over the zircon core: the fresh zero
-// pages [first, last), which hold index, become Dirty pages of the layer in
-// fresh frames, mapped writable. The faulting page brings its own dirty
-// reservation; the rest of the run takes only free reservations and free
-// slots, and shrinks to what it finds.
+// storeZeros makes the fresh zero pages [first, last), which hold index,
+// become Dirty pages of the layer in fresh frames, mapped writable. The
+// faulting page brings its own dirty reservation; the rest of the run takes
+// only free reservations and free slots, and shrinks to what it finds.
 func (r *MemoryRegion) storeZeros(ctx context.Context, index, first, last uint64, spill *reservation) error {
 	h := r.host
 	extras := h.takeFreeSpill(int(last-first) - 1)
@@ -176,9 +185,9 @@ func (r *MemoryRegion) storeZeros(ctx context.Context, index, first, last uint64
 		h.signal()
 		h.mu.Unlock()
 	}()
-	// The run is supplied and made Dirty a run of slots at a time, and bound
-	// a lock at a time for the whole of it, as the current core binds it: a
-	// boot's vCPUs fault runs of thousands of pages at once.
+	// The run is supplied and made Dirty a run of slots at a time, and bound a
+	// lock at a time for the whole of it: a boot's vCPUs fault runs of
+	// thousands of pages at once.
 	page := first
 	for k, run := range runs {
 		if err := r.supplyDirty(ctx, page, frames[k]); err != nil {
@@ -225,10 +234,10 @@ func (r *MemoryRegion) storeZeros(ctx context.Context, index, first, last uint64
 	return nil
 }
 
-// allocateRun is MemoryRegion.allocateRun over the zircon core: slots of the
-// region's private file for the run [first, last), which holds index, by the
-// placement rule first, then free consecutive slots, then index alone, which
-// is the one slot that may give up idle pages for it.
+// allocateRun takes slots of the region's private file for the run [first,
+// last), which holds index, by the placement rule first, then free consecutive
+// slots, then index alone, which is the one slot that may give up idle pages
+// for it.
 func (r *MemoryRegion) allocateRun(ctx context.Context, index, first, last uint64) (uint64, []MapRun, error) {
 	h := r.host
 	f := r.privateFile()
@@ -461,9 +470,9 @@ func (r *MemoryRegion) takePrivate(ctx context.Context, index uint64, frame *zir
 	r.bindingsMu.Lock()
 	b := r.bindingLocked(index)
 	r.bindingsMu.Unlock()
-	// The page the guest maps is held across the change, as the current
-	// core holds it, so no eviction revokes the guest's mapping of it after
-	// the store's command put the copy there.
+	// The page the guest maps is held across the change, so no eviction
+	// revokes the guest's mapping of it after the store's command put the copy
+	// there.
 	old, err := r.host.lockedPage(ctx, b)
 	if err != nil {
 		return err
@@ -689,11 +698,12 @@ func (r *MemoryRegion) copyOnWrite(ctx context.Context, index uint64, spill *res
 	return false, nil
 }
 
-// reclaimExtent is Host.reclaimExtent over the zircon core: idle pages are
-// given up until an extent of f is free, where none is, and it reports
-// whether it freed one. A published page stays at the slot the placement rule
-// gave it when it goes idle, so it keeps that slot's extent from going back
-// after the region that placed it has gone.
+// reclaimExtent gives up idle pages until an extent of f is free, where none
+// is, and reports whether it freed one. A published page stays at the slot the
+// placement rule gave it when it goes idle, so it keeps that slot's extent
+// from going back after the region that placed it has gone: a file full of the
+// idle pages of stopped VMs would otherwise have no extent left for a running
+// one.
 func (h *Host) reclaimExtent(f *arenaFile) bool {
 	orphaned := func(frame *frame) bool {
 		e := frame.file.leases[frame.slot].extent
@@ -759,10 +769,9 @@ func (r *MemoryRegion) readForCopy(ctx context.Context, index uint64, src *zirco
 // has none, and the store reads its copy from the backing. It reports again
 // where the fault must look again.
 //
-// A peer backing's store reads its page alone, as the current core's does: a
-// load is what answers that the source still holds a page, which is per page,
-// and nothing may be shared under the name of a page it gives that answer
-// for.
+// A peer backing's store reads its page alone: a load is what answers that the
+// source still holds a page, which is per page, and nothing may be shared
+// under the name of a page it gives that answer for.
 func (r *MemoryRegion) readIn(ctx context.Context, index uint64) (*zirconvm.VmPage, bool, error) {
 	var plan *plan
 	var err error
@@ -814,7 +823,12 @@ func (r *MemoryRegion) readIn(ctx context.Context, index uint64) (*zirconvm.VmPa
 	return origin, false, nil
 }
 
-// closeAround is MemoryRegion.closeAround over the zircon core.
+// closeAround is what a store does after the page it faulted on is private: it
+// makes the shared pages the two rules name private too and reports the run of
+// pages the store maps, which is one mapping command because the whole of it
+// sits at consecutive offsets of one extent. A store the placement rule had no
+// offset for is its own page and nothing else: without the extent there is no
+// run to be part of.
 func (r *MemoryRegion) closeAround(ctx context.Context, index uint64, at fileSlot, replaced *replacement) (first, last uint64, err error) {
 	h := r.host
 	h.mu.Lock()
@@ -847,7 +861,10 @@ func (r *MemoryRegion) closeAround(ctx context.Context, index uint64, at fileSlo
 	return first, last, nil
 }
 
-// nearbyLocked is Host.nearby over the zircon core. Caller holds h.mu.
+// nearbyLocked reports the pages one store makes private by the gap rule: the
+// faulting page, and the pages between it and the nearest page of its range
+// the guest already stores into at that page's own offset, where that page is
+// within gapPages. Caller holds h.mu.
 func (r *MemoryRegion) nearbyLocked(index uint64) (first, last uint64) {
 	h := r.host
 	if !r.pressed.Load() {
@@ -873,9 +890,14 @@ func (r *MemoryRegion) nearbyLocked(index uint64) (first, last uint64) {
 	return first, last
 }
 
-// placedPrivateAtLocked is Host.placedPrivateAt over the zircon core: the
-// region's own Dirty page, at the offset its range's extent gives it. Caller
-// holds h.mu.
+// placedPrivateAtLocked reports the one thing every rule asks of a page: that
+// the region may store into it where the placement rule put it. That is its
+// own Dirty page, held by no checkpoint, at the offset its range's extent
+// gives it, which is exactly what one store's mapping command can cover, so a
+// run ends at the first page that is not it. The offset alone answers nothing:
+// a retire leaves a page published at the offset it was sealed at, and reading
+// that offset as the page's own would put a run's mapping over a page the
+// region no longer stores into. Caller holds h.mu.
 func (r *MemoryRegion) placedPrivateAtLocked(e *extent, page uint64) bool {
 	if e == nil {
 		return false
@@ -887,7 +909,9 @@ func (r *MemoryRegion) placedPrivateAtLocked(e *extent, page uint64) bool {
 	return dirty && b.page != nil && frameOf(b.page).fileSlot == r.host.slotIn(e, page)
 }
 
-// placedRun is Host.placedRun over the zircon core.
+// placedRun reports the longest run of pages around index that one mapping
+// command covers, within [first, last): every page of it is the region's own
+// at a consecutive offset of one extent.
 func (r *MemoryRegion) placedRun(index, first, last uint64) (uint64, uint64) {
 	h := r.host
 	h.mu.Lock()
@@ -911,7 +935,12 @@ func (r *MemoryRegion) joinsRun(page uint64) bool {
 	return r.placedPrivateAtLocked(h.extents[extentKey{r, page / uint64(h.extentPages)}], page)
 }
 
-// takeShared is MemoryRegion.takeShared over the zircon core.
+// takeShared makes the pages either side of the faulting one the region's own
+// dirty state, at the offset the placement rule gives each. It works outward
+// from the faulting page and stops on each side at the first page that cannot
+// join the store's run, so what it takes is exactly what the caller's one
+// mapping command covers. It never waits, never evicts and reads nothing this
+// host does not hold.
 func (r *MemoryRegion) takeShared(ctx context.Context, first, index, last uint64, replaced *replacement) error {
 	for page := index + 1; page < last; page++ {
 		joined, err := r.takeOneShared(ctx, page, replaced)
@@ -934,9 +963,9 @@ func (r *MemoryRegion) takeShared(ctx context.Context, first, index, last uint64
 	return nil
 }
 
-// takeOneShared is MemoryRegion.takeOneShared over the zircon core: one page
-// made private for a rule, from bytes this host holds, at the offset of its
-// own, never waiting and never evicting.
+// takeOneShared makes one page private for a rule, from bytes this host holds,
+// at the offset of its own, never waiting and never evicting. It reports
+// whether the page is one the store's run now covers.
 func (r *MemoryRegion) takeOneShared(ctx context.Context, page uint64, replaced *replacement) (bool, error) {
 	h := r.host
 	if r.writable(page) {
@@ -1015,9 +1044,11 @@ func (r *MemoryRegion) takeOneShared(ctx context.Context, page uint64, replaced 
 	return true, nil
 }
 
-// makeWhole is MemoryRegion.makeWhole over the zircon core: the mapping
-// budget's backstop, which copies every page of one range into the holes of
-// its extent and maps the range with one command.
+// makeWhole is the mapping budget's backstop, which a client's refusal of a
+// store's mapping command reaches: it copies every page of one range into the
+// holes of its extent and maps the range with one command, so the mappings the
+// range was costing that process go and the store is served again. It reports
+// whether it took anything.
 func (r *MemoryRegion) makeWhole(ctx context.Context, index uint64) (bool, error) {
 	h := r.host
 	span := uint64(h.extentPages)

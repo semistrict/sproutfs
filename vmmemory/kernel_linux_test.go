@@ -352,8 +352,8 @@ func requireKernelBytes(t *testing.T, b *kernelBacking, want []byte) {
 }
 
 // Every memory region a session attaches has the region layer, as a region
-// Attach makes does. A session's region once had none, and ran the old core
-// under the new one, whose host-wide work then never saw its pages.
+// Attach makes does. A session's region once had none, and the pager's
+// host-wide work then never saw its pages.
 func TestASessionsMemoryRegionHasTheRegionLayer(t *testing.T) {
 	h := kernelHost(t, 8, 16)
 	p := startNative(t, h, 4)

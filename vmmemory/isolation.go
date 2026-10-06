@@ -389,13 +389,12 @@ func (h *Host) punchUnheldLocked(f *arenaFile) error {
 	})
 }
 
-// The isolated arena over the zircon core, as isolation.go keeps it for the
-// current core: which object a page belongs to changes with the port, and the
-// file and slot it sits in, and what each VMM is given, do not. A page a
-// region cannot map where it is, because it is in another region's private
-// file, is moved into the file its identity's pages live in, with the digest
-// of its upload checked, or for a page a fork point lends, copied into that
-// point's file; the root then holds the copy in its place.
+// Which object a page belongs to is Zircon's; the file and slot it sits in,
+// and what each VMM is given, are the isolated arena's. A page a region cannot
+// map where it is, because it is in another region's private file, is moved
+// into the file its identity's pages live in, with the digest of its upload
+// checked, or for a page a fork point lends, copied into that point's file;
+// the root then holds the copy in its place.
 
 // reachable reports whether this region's process may map page where it is.
 func (r *MemoryRegion) reachable(page *zirconvm.VmPage) bool {
@@ -408,13 +407,13 @@ func (r *MemoryRegion) reachable(page *zirconvm.VmPage) bool {
 	return r.mapsLocked(frameOf(page).file)
 }
 
-// reach is MemoryRegion.reach over the zircon core: a page this region may
-// map in place of page, a root's page holding key's bytes, which the caller
-// holds locked. It is page itself where this region's process may read its
-// file; a fork point's file is given to the process first. A page another
-// region's private file holds is moved or copied out of it, and the copy
-// comes back locked in its place, page unlocked. Where neither can be, it
-// reports nil, page unlocked, and the region reads its own copy.
+// reach is a page this region may map in place of page, a root's page holding
+// key's bytes, which the caller holds locked. It is page itself where this
+// region's process may read its file; a fork point's file is given to the
+// process first. A page another region's private file holds is moved or copied
+// out of it, and the copy comes back locked in its place, page unlocked. Where
+// neither can be, it reports nil, page unlocked, and the region reads its own
+// copy.
 func (r *MemoryRegion) reach(ctx context.Context, page *zirconvm.VmPage, key pageKey) (*zirconvm.VmPage, error) {
 	h := r.host
 	f := frameOf(page)
@@ -440,11 +439,11 @@ func (r *MemoryRegion) reach(ctx context.Context, page *zirconvm.VmPage, key pag
 	return r.move(ctx, page, key)
 }
 
-// forkCopy is MemoryRegion.forkCopy over the zircon core: a page a fork point
-// lends is copied into that point's file, at the page's own index, so a child
-// on this host maps the copy and never its parent's private file. The copy
-// takes the lent page's place in the point's temporary root, for every later
-// child. Caller holds lent, a page of that root naming its parent's frame.
+// forkCopy copies a page a fork point lends into that point's file, at the
+// page's own index, so a child on this host maps the copy and never its
+// parent's private file. The copy takes the lent page's place in the point's
+// temporary root, for every later child. Caller holds lent, a page of that
+// root naming its parent's frame.
 func (r *MemoryRegion) forkCopy(ctx context.Context, lent *zirconvm.VmPage, key pageKey) (*zirconvm.VmPage, error) {
 	h := r.host
 	parent := frameOf(lent)
@@ -515,14 +514,13 @@ func (r *MemoryRegion) forkCopy(ctx context.Context, lent *zirconvm.VmPage, key 
 	return copied, nil
 }
 
-// move is MemoryRegion.move over the zircon core: a published page in the
-// private file it was published in is copied into the file its identity's
-// pages live in, because another region inherits it, checked against the
-// digest of the bytes its upload read. The copy takes its place in its root,
-// the owner's mapping of it is replaced by one of the copy, and its slot goes
-// back. A page that cannot be moved at once stops being its root's: it is the
-// owner's own page again, and the region that wants it reads it from its own
-// volume. Caller holds page.
+// move copies a published page in the private file it was published in into
+// the file its identity's pages live in, because another region inherits it,
+// checked against the digest of the bytes its upload read. The copy takes its
+// place in its root, the owner's mapping of it is replaced by one of the copy,
+// and its slot goes back. A page that cannot be moved at once stops being its
+// root's: it is the owner's own page again, and the region that wants it reads
+// it from its own volume. Caller holds page.
 func (r *MemoryRegion) move(ctx context.Context, page *zirconvm.VmPage, key pageKey) (*zirconvm.VmPage, error) {
 	h := r.host
 	f := frameOf(page)
@@ -629,10 +627,10 @@ func (h *Host) unindex(ctx context.Context, page *zirconvm.VmPage, key pageKey) 
 	h.releaseFrame(page)
 }
 
-// rebind is Host.rebind over the zircon core: to, which holds the same bytes,
-// in place of every mapping of from, and each of from's aliases bound to to.
-// A region that can neither be given to nor have its mapping taken away keeps
-// the page it has, which is then its alone. Caller holds both pages.
+// rebind puts to, which holds the same bytes, in place of every mapping of
+// from, and binds each of from's aliases to to. A region that can neither be
+// given to nor have its mapping taken away keeps the page it has, which is
+// then its alone. Caller holds both pages.
 func (h *Host) rebind(ctx context.Context, from, to *zirconvm.VmPage) error {
 	h.moveCold(from, to)
 	byRegion := make(map[*MemoryRegion][]*binding)
@@ -670,10 +668,9 @@ func (h *Host) rebind(ctx context.Context, from, to *zirconvm.VmPage) error {
 	return nil
 }
 
-// remap is MemoryRegion.remap over the zircon core: to, read-only, wherever
-// this region maps one of bindings, installed so the guest reads on without
-// a fault; where the client refuses the mapping, the mappings are taken
-// away instead.
+// remap maps to, read-only, wherever this region maps one of bindings,
+// installed so the guest reads on without a fault; where the client refuses
+// the mapping, the mappings are taken away instead.
 func (r *MemoryRegion) remap(ctx context.Context, bindings []*binding, to *zirconvm.VmPage) error {
 	for _, b := range bindings {
 		err := r.mapInPlace(ctx, b, to)

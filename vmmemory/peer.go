@@ -7,18 +7,16 @@ import (
 	"github.com/semistrict/sproutfs/vmmemory/internal/zirconvm"
 )
 
-// A migration destination's peer backing over the zircon core, as the
-// current core takes it (window.go, fault.go): a page the backing serves
-// from the source's own dirty pages is the guest's state since the source's
-// last checkpoint, which no checkpoint has, so it enters the region as its
-// own dirty state, a Dirty page of its layer under a dirty reservation, and
-// the backing is told the region went on to hold it.
+// A migration destination's peer backing: a page the backing serves from the
+// source's own dirty pages is the guest's state since the source's last
+// checkpoint, which no checkpoint has, so it enters the region as its own
+// dirty state, a Dirty page of its layer under a dirty reservation, and the
+// backing is told the region went on to hold it.
 
 // publishPrivate takes one page a load brought in and the backing reported
-// another host's, as windowPlan.publish's private case does. The faulting
-// page brings the reservation the waiting path admitted it under; any other
-// page takes only one that is free now, and is left to a later fault where
-// none is.
+// another host's, which publishRead hands it. The faulting page brings the
+// reservation the waiting path admitted it under; any other page takes only
+// one that is free now, and is left to a later fault where none is.
 func (p *plan) publishPrivate(ctx context.Context, page uint64, data []byte) error {
 	r := p.region
 	h := r.host
@@ -88,8 +86,8 @@ func (p *plan) publishPrivate(ctx context.Context, page uint64, data []byte) err
 	return nil
 }
 
-// ownInstead is windowPlan.ownInstead over the zircon core: a page's slot
-// moves from a file another region may read to the region's own file. It
+// ownInstead moves a page's slot from a file another region may read to the
+// region's own file, which a page the load found another host's needs. It
 // takes nothing it cannot have at once.
 func (p *plan) ownInstead(page uint64) (fileSlot, bool) {
 	r := p.region

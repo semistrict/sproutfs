@@ -159,10 +159,9 @@ func TestTheProbeRemembersOnePageAtATimePerGuest(t *testing.T) {
 	}
 }
 
-// The zircon core hands the audit its own pages and bindings: a frame a
-// region's layer holds is that region's unnamed state, and a root's frame is a
-// published page. A guest given a frame to store into is never handed an older
-// one back.
+// A frame a region's layer holds is that region's unnamed state, and a root's
+// frame is a published page. A guest given a frame to store into is never
+// handed an older one back.
 func TestTheProbeRefusesAnOlderFrameUntilItsBindingIsRetired(t *testing.T) {
 	var p probeState
 	b := &binding{index: 7}
@@ -181,9 +180,9 @@ func TestTheProbeRefusesAnOlderFrameUntilItsBindingIsRetired(t *testing.T) {
 	}
 }
 
-// Under the zircon core a page of one region's layer reached from another is
-// a guest writing into another's memory, unless a fork point lends it, which
-// is the sharing working.
+// A page of one region's layer reached from another is a guest writing into
+// another's memory, unless a fork point lends it, which is the sharing
+// working.
 func TestTheProbeAllowsTwoRegionsToShareALentFrame(t *testing.T) {
 	var p probeState
 	parent, child := &MemoryRegion{}, &MemoryRegion{}

@@ -18,7 +18,7 @@ Three parts of `vmmemory` are nested packages that only `vmmemory` can import:
 - `internal/slots` holds the arena free set and the consecutive runs of it that
   one mapping command covers.
 - `internal/zirconvm` is the Go port of the page layer of Zircon's VM, which
-  is replacing the pager's own (TASK-92,
+  replaced the pager's own (TASK-92,
   [the plan](../plans/zircon-pager-port-2026-10-05.md)). Its code is copied from
   Zircon's kernel, which is under the MIT licence, so the directory keeps
   Zircon's `LICENSE` beside it. Every Go file in it begins with the copyright
@@ -47,85 +47,111 @@ Three parts of `vmmemory` are nested packages that only `vmmemory` can import:
   prefetch answers one: see [page requests](#page-requests). The pager's
   bindings use the page list, and its dirty reservations are references of
   the spill storage. The region's layer and the identity roots are what the
-  pager's core runs over (below).
+  pager runs over (below).
 
-The pager's core is the fault and checkpoint code: what a fault maps, what a
-store copies, what a seal takes. It runs over the region's layer and the
-identity roots (`zircon.go` and the `zircon_*.go` files). During the port it
-was built beside the pager's own core and the two ran behind a switch; on
-2026-10-06 the owner kept the ported core and the old one was deleted
-(TASK-92.14). Every exported method of `Host` and `MemoryRegion` that reaches
-the page layer calls it. What is the pager's own is unchanged: the arena and
-its files, isolation, placement, pressure and the loss window, the flush, the
-connection and the statistics' clock.
+The pager's fault and checkpoint code decides what a fault maps, what a store
+copies and what a seal takes. It runs over the region's layer and the identity
+roots. During the port it was built beside the pager's own core, and the two
+ran behind a switch. On 2026-10-06 the owner kept the ported core, and the old
+one was deleted (TASK-92.14). The package now has one layout. `Host` and
+`MemoryRegion` hold the state, and each subject has one file:
 
-Under the zircon core a page is a `zirconvm.VmPage` whose `Frame` is a slot
-of an arena file, which stands where Zircon has a physical address
-(`zircon_frames.go`). The arena is the node's `Pmm`, but it makes no page
-itself: the pager fills every page where its placement and isolation put it
-and supplies it, as a user pager supplies a VMO. A published checkpoint's
-pages of one volume are an identity root, made when a region first locates
-one of its pages and kept until the pager closes. A region's own pages are
-its layer, whose resolver names the root of each page the fault has located
-and a root holds. What Zircon keeps in page tables, whether a page is mapped
-and which page it maps, is a binding beside the layer (`zircon_bindings.go`);
-a run of zeros is an Untracked zero interval of the same page list, as the
-current core's compressed zero runs are.
+- `host.go` and `region.go`: the pager and a memory region, attach, verify,
+  detach and close. `vmmemory.go` holds the interfaces and `Config`.
+- `frames.go`: a page's frame, the arena as the node's `Pmm`, the identity
+  roots and their resolver, a frame's aliases, and idle pages.
+- `bindings.go`: the binding beside the layer, and the page list of them.
+- `fault.go`, `faultfirst.go`, `window.go`, `prefetch.go`, `population.go`
+  and `pagerequests.go`: what a fault reads, in what order, and how a window
+  is planned, read and mapped.
+- `store.go`, `replacement.go`, `placement.go` and `rules.go`: what a store
+  copies and where it puts the copy.
+- `checkpoint.go` and `settle.go`: seal, read, share, retire, abandon, and the
+  settle of unchanged pages.
+- `evict.go`, `allocation.go`, `spill.go` and `pressure.go`: slots, the
+  evictor, the spill and the dirty budget.
+- `cold.go` and `giveback.go`: cold copies and their give-back.
+- `isolation.go`, `revocation.go`, `serve.go`, `peer.go`, `stats.go`,
+  `losswindow.go` and `flush.go`: the isolated arena, revocations, serving a
+  migration, a peer backing, the statistics, the loss window and flushes.
+- `connection_linux.go` and `linux.go`: the userfaultfd connection and the
+  Linux arena.
+- `faultqueue.go`, `repeats.go`, `guestfaults.go`, `changes.go`,
+  `pageruns.go`, `aliases.go` and the `probe` files: the fault queue, repeated
+  faults, the faults a guest waited for, changed blocks, runs of pages, a
+  frame's alias set and the probe build's audit.
+
+What is the pager's own is unchanged by the port: the arena and its files,
+isolation, placement, pressure and the loss window, the flush, the connection
+and the statistics' clock.
+
+A page is a `zirconvm.VmPage` whose `Frame` is a slot of an arena file, which
+stands where Zircon has a physical address (`frames.go`). The arena is the
+node's `Pmm`, but it makes no page itself: the pager fills every page where
+its placement and isolation put it and supplies it, as a user pager supplies
+a VMO. A published checkpoint's pages of one volume are an identity root,
+made when a region first locates one of its pages and kept until the pager
+closes. A region's own pages are its layer, whose resolver names the root of
+each page the fault has located and a root holds. What Zircon keeps in page
+tables, whether a page is mapped and which page it maps, is a binding beside
+the layer (`bindings.go`). A run of zeros is an Untracked zero interval of the
+same page list.
 
 A read fault's lookup is the layer's lookup cursor (`RequireReadPage`). A page
 an object holds is bound under that object's lock, so no idle drop takes it
 between the lookup and the binding. A page no root holds is the region's own
 to read: the lookup sends a READ request on the region's own page source,
 which the fault answers by reading the page into a frame and supplying it to
-its root. So a fault's own read is not in flight for prefetches to see, as in
-the current core, and a fault that meets a page a prefetch is reading waits on
-the prefetch's request in the root first (`zircon_fault.go`). Which pages a
-fault reads and in what order is the current core's policy, moved as it is
-(`zircon_window.go`, `zircon_prefetch.go`, `zircon_population.go`), with the
-same sites, probes, guards and controlled points. A fault holds no object lock
-while it reads or while its mapping commands run: it takes its pages under the
-locks and issues the commands after, and its window's stripe keeps the
-commands of one window in order. A page no region maps is idle: it stays in
-its root, in the don't-need queue, and an allocation short of a slot gives it
-up by Zircon's eviction of a clean page (`ReclaimRangeForEviction`).
+its root. So a fault's own read is not in flight for prefetches to see. A
+fault that meets a page a prefetch is reading waits on the prefetch's request
+in the root first (`fault.go`). Which pages a fault reads and in what order is
+the pager's policy (`faultfirst.go`, `window.go`, `prefetch.go`,
+`population.go`), with its sites, probes, guards and controlled points. A
+fault holds no object lock while it reads or while its mapping commands run:
+it takes its pages under the locks and issues the commands after, and its
+window's stripe keeps the commands of one window in order. A page no region
+maps is idle: it stays in its root, in the don't-need queue, and an
+allocation short of a slot gives it up by Zircon's eviction of a clean page
+(`ReclaimRangeForEviction`).
 
-A store makes a page of the region's layer Dirty (`zircon_store.go`). The
-layer's page source traps dirty transitions, as a VMO whose pager tracks its
-writes does, so a page becomes Dirty only when the pager says so: the store
-takes its dirty reservation first, fills a frame with the bytes the page holds
-now at the offset of the region's private file the placement rule gives it,
+A store makes a page of the region's layer Dirty (`store.go`). The layer's
+page source traps dirty transitions, as a VMO whose pager tracks its writes
+does, so a page becomes Dirty only when the pager says so. The store takes
+its dirty reservation first, fills a frame with the bytes the page holds now
+at the offset of the region's private file the placement rule gives it,
 supplies it to the layer and makes it Dirty there (`DirtyPages`). The layer's
 page then shadows its root's. A store into fresh zeros makes its write-ahead
-run Dirty in fresh frames at once, and the gap and half-private rules copy the
-pages around a store as the current core's do. The page a store copied from
-stays bound to its binding until the store's one mapping command replaces the
-guest's mapping of it, so no idle drop takes it before then. A page the region
+run Dirty in fresh frames at once, and the gap and half-private rules copy
+the pages around a store. The page a store copied from stays bound to its
+binding until the store's one mapping command replaces the guest's mapping of
+it, so no idle drop takes it before then (`replacement.go`). A page the region
 read with no identity is its own already, and a store dirties it in place.
 The reservation stays the pager's, in the binding beside the layer.
 
 A seal write-protects the region's Dirty runs and starts writeback on each of
-them (`zircon_checkpoint.go`). The layer's pages become AwaitingClean, and
-each binding's checkpoint copy is a detached binding that holds the page and
-its reservation, as the current core's checkpoint copy does. A store into a
-page the checkpoint holds splits it: the pager fills its own copy and the
-layer takes it in the page's place (`SplitAwaitingClean`), so the checkpoint
-keeps the bytes it took. The settle ends writeback: a page whose bytes the
-checkpoint published leaves the layer and goes into the root of its new
-identity, and a guest still on it maps it there. An abandoned checkpoint
-gives its pages back to the layer Dirty. Dirty pages age in the page queues
-with the clean ones, as they do where the pager spills them.
+them (`checkpoint.go`). The layer's pages become AwaitingClean, and each
+binding's checkpoint copy is a detached binding that holds the page and its
+reservation. A store into a page the checkpoint holds splits it: the pager
+fills its own copy and the layer takes it in the page's place
+(`SplitAwaitingClean`), so the checkpoint keeps the bytes it took. The retire
+ends writeback: a page whose bytes the checkpoint published leaves the layer
+and goes into the root of its new identity, and a guest still on it maps it
+there. The settle drops from the checkpoint a page whose bytes are still its
+origin's (`settle.go`). An abandoned checkpoint gives its pages back to the
+layer Dirty. Dirty pages age in the page queues with the clean ones, as they
+do where the pager spills them.
 
-Eviction takes the oldest page of the queues (`zircon_evict.go`). It revokes
-every mapping of the page, in every region that maps it, spills a dirty page
-to its reservation and takes the page out of its object, which is then free.
-A page shared at a fork point is an alias of the same frame, so the
-revocation covers each region that forked from it. Cold copies and the
-give-back are the current core's (`zircon_cold.go`), over the frame a binding
-maps. Isolation moves a page whose frame a region may no longer reach, and a
-fork file's page is copied on its first store only (`zircon_isolation.go`).
-Serving a migration reads a region's resident pages and its unpublished ones
-(`zircon_serve.go`), and a page a peer backing reports the source's own
-enters the layer Dirty under a dirty reservation (`zircon_peer.go`).
+Eviction takes the oldest page of the queues (`evict.go`). It revokes every
+mapping of the page, in every region that maps it, spills a dirty page to its
+reservation and takes the page out of its object, which is then free. A page
+shared at a fork point is an alias of the same frame, so the revocation
+covers each region that forked from it. Cold copies are compared with the
+frame a binding maps (`cold.go`), and given back without a checkpoint
+(`giveback.go`). Isolation moves a page whose frame a region may no longer
+reach, and a fork file's page is copied on its first store only
+(`isolation.go`). Serving a migration reads a region's resident pages and its
+unpublished ones (`serve.go`), and a page a peer backing reports the source's
+own enters the layer Dirty under a dirty reservation (`peer.go`).
 
 The histograms of the fault path are in `internal/latency`, outside `vmmemory`.
 None of these packages uses any pager state: no host lock, no memory region and
@@ -2447,7 +2473,7 @@ fault of the hog evicted one of them. A neighbour then held the arena only in
 proportion to how often it faulted, which is to say only by thrashing.
 
 The order is kept by Zircon's page queues, ported in `internal/zirconvm`
-(`vmmemory/queues.go`). A resident page is in a reclaim queue, by age, or in
+(`vmmemory/evict.go`). A resident page is in a reclaim queue, by age, or in
 the standard isolate queue once it has aged out of them. The queues age one
 generation for each page a fault creates or touches, so they hold the pages in
 fault order. Zircon ages them on a timer and by the accessed bits of page
@@ -2457,7 +2483,7 @@ with is in the zero-fork queue, which is taken last.
 
 An allocation short of a slot evicts one page by the synchronous path of
 Zircon's evictor, ported in `internal/zirconvm/evictor.go`. The evictor calls
-the pager's reclaim step (`vmmemory/evictor.go`) until a page is freed or
+the pager's reclaim step (`vmmemory/evict.go`) until a page is freed or
 the step finds nothing to take. Each step takes the oldest idle page; or, while
 prefetches hold slots, cancels them and waits for those slots; or else the
 least recently faulted page the fair share lets it take, the least recently

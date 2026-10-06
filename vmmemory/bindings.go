@@ -2,6 +2,61 @@ package vmmemory
 
 import "github.com/semistrict/sproutfs/vmmemory/internal/zirconvm"
 
+// The bindings beside a region's layer: what Zircon keeps in page tables it
+// can read back, and the pager cannot. A page has a binding once the region
+// maps it or maps from it; a run of pages mapped to zero with nothing else is
+// an Untracked zero interval of the same page list, which costs nothing per
+// page.
+
+// binding is what a memory region keeps beside its layer for one page: whether
+// its mapping is installed, and the page it maps, which Zircon keeps in page
+// tables it can read back and the pager cannot; and of a page the region has
+// stored into, what Zircon has no place for: the dirty reservation it was
+// admitted under, the checkpoint's copy it shares, the page it was copied
+// from, whether it is cold, and whether write-ahead made it.
+//
+// A checkpoint's copy of a page is a binding too, detached from the page list
+// beside the layer: it aliases the page the guest had at the seal,
+// AwaitingClean in the layer, and owns the reservation that page was admitted
+// under (D1, D5). The guest's binding shares it until a store copies away from
+// it.
+type binding struct {
+	region *MemoryRegion
+	index  uint64
+	// page is the page this region maps here, nil where it maps none or a
+	// zero: a page of an identity root, or of the region's own layer. Guarded
+	// by Host.mu, as the page's aliases are.
+	page *zirconvm.VmPage
+	// mapped is whether the mapping is installed, and zero whether it is a
+	// zero. inZeroRun marks a bound page a compressed zero run maps: its
+	// binding is clean and holds no page, and the run's mapping becomes the
+	// page's own state when the page is next bound. A slot of the page list
+	// holds a binding or lies in an interval, never both, so the run keeps
+	// such a page here. Guarded by MemoryRegion.bindingsMu.
+	mapped, zero, inZeroRun bool
+	// dirty marks a page that is the region's own state and not yet its
+	// volume's: Dirty in the layer, AwaitingClean while it shares the
+	// checkpoint's copy, or spilled. spill is the dirty reservation it was
+	// admitted under, which a seal hands to checkpoint, the copy it then
+	// shares until a store copies away from it. origin is the root's page it
+	// was copied from, cold marks a copy a store trap made of origin that is
+	// not yet known to be the guest's state, from coldAt (Unix nanoseconds),
+	// and ahead marks one write-ahead made before any store. Guarded by
+	// MemoryRegion.bindingsMu. The marks sit beside the reservation, which
+	// leaves them room, so that a binding, which every page a region touches
+	// has, is 64 bytes.
+	dirty       bool
+	spill       reservation
+	cold, ahead bool
+	checkpoint  *binding
+	origin      *zirconvm.VmPage
+	coldAt      int64
+}
+
+// writable reports whether the guest may store into b's page where it is: its
+// own dirty state, which no checkpoint still holds.
+func (b *binding) writable() bool { return b.dirty && b.checkpoint == nil }
+
 // repeated reports whether a fault on index for this access would be a repeated
 // fault: this memory region already maps the page for it. See repeats.go.
 func (r *MemoryRegion) repeated(index uint64, write bool) bool {
@@ -21,12 +76,6 @@ func (r *MemoryRegion) dirtyCount() int {
 	defer r.bindingsMu.Unlock()
 	return len(r.dirtySet)
 }
-
-// The bindings beside a region's layer: what Zircon keeps in page tables it
-// can read back, and the pager cannot. A page has a binding once the region
-// maps it or maps from it; a run of pages mapped to zero with nothing else is
-// an Untracked zero interval of the same page list, which costs nothing per
-// page, as the current core's compressed zero runs do (bindings.go).
 
 // bindingLocked is the binding of one page, made where the page has none. A
 // page that leaves a compressed zero run takes the run's mapping with it.
@@ -118,8 +167,7 @@ func (r *MemoryRegion) eligibleBinding(b *binding) bool {
 
 // eligibleIn is eligible of every page of [first, last) by its binding, under
 // one walk of the bindings. A page of a compressed zero run has none and is
-// eligible, as in the current core: a plan finds it a hole, and its install
-// finds it mapped.
+// eligible: a plan finds it a hole, and its install finds it mapped.
 func (r *MemoryRegion) eligibleIn(first, last uint64) []bool {
 	result := make([]bool, last-first)
 	for i := range result {
@@ -155,8 +203,7 @@ func (r *MemoryRegion) mapped(index uint64) bool {
 }
 
 // setMapped records whether the pages of [first, last) are mapped. A page
-// recorded mapped is retained across an ambiguous answer, as the current
-// core's are.
+// recorded mapped is retained across an ambiguous answer.
 func (r *MemoryRegion) setMapped(first, last uint64, mapped bool) {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
@@ -225,52 +272,6 @@ func (r *MemoryRegion) unmapRuns(runs []MapRun) {
 		})
 	}
 }
-
-// binding is what a memory region keeps beside its layer for one page:
-// whether its mapping is installed, and the page it maps, which Zircon keeps
-// in page tables it can read back and the pager cannot; and of a page the
-// region has stored into, what Zircon has no place for: the dirty reservation
-// it was admitted under, the checkpoint's copy it shares, the page it was
-// copied from, whether it is cold, and whether write-ahead made it.
-//
-// A checkpoint's copy of a page is a binding too, detached from the page
-// list beside the layer, as the current core's is: it aliases the page the
-// guest had at the seal, AwaitingClean in the layer, and owns the reservation
-// that page was admitted under (D1, D5). The guest's binding shares it until
-// a store copies away from it.
-type binding struct {
-	region *MemoryRegion
-	index  uint64
-	// page is the page this region maps here, nil where it maps none or a
-	// zero: a page of an identity root, or of the region's own layer. Guarded
-	// by Host.mu, as the page's aliases are.
-	page *zirconvm.VmPage
-	// mapped is whether the mapping is installed, and zero whether it is a
-	// zero. inZeroRun marks a bound page a compressed zero run maps, as the
-	// current core's binding does. Guarded by MemoryRegion.bindingsMu.
-	mapped, zero, inZeroRun bool
-	// dirty marks a page that is the region's own state and not yet its
-	// volume's: Dirty in the layer, AwaitingClean while it shares the
-	// checkpoint's copy, or spilled. spill is the dirty reservation it was
-	// admitted under, which a seal hands to checkpoint, the copy it then
-	// shares until a store copies away from it. origin is the root's page it
-	// was copied from, cold marks a copy a store trap made of origin that is
-	// not yet known to be the guest's state, from coldAt (Unix nanoseconds),
-	// and ahead marks one write-ahead made before any store. Guarded by
-	// MemoryRegion.bindingsMu. The marks sit beside the reservation, which leaves
-	// them room, so that a binding, which every page a region touches has, is
-	// 64 bytes.
-	dirty       bool
-	spill       reservation
-	cold, ahead bool
-	checkpoint  *binding
-	origin      *zirconvm.VmPage
-	coldAt      int64
-}
-
-// writable reports whether the guest may store into b's page where it is:
-// its own dirty state, which no checkpoint still holds.
-func (b *binding) writable() bool { return b.dirty && b.checkpoint == nil }
 
 // noteDirtyLocked puts b in the dirty set, Dirty and writable where it is,
 // and starts the region's loss window where it held none. Caller holds r.bindingsMu.

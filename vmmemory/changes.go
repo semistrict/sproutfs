@@ -29,7 +29,7 @@ type changeSums struct{ sums []uint64 }
 type changes struct {
 	mu     sync.Mutex
 	byPage map[uint64]changeSums
-	// byHeld is keyed by the checkpoint's copy, a *binding or a *binding.
+	// byHeld is keyed by the checkpoint's copy.
 	byHeld map[any]changeSums
 }
 
@@ -112,7 +112,10 @@ func (r *MemoryRegion) takeSums(held any) (changeSums, bool) {
 	return sums, ok
 }
 
-// changedBlocks is settler.changedBlocks over the zircon core.
+// changedBlocks counts the blocks of one sealed page whose bytes differ from
+// what the page held as it became private, and reports false where that is not
+// known: a page private since before it was measured, one another host made
+// private, or one spilled since the seal.
 func (r *MemoryRegion) changedBlocks(ctx context.Context, held *binding) (int, bool, error) {
 	h := r.host
 	was, ok := r.takeSums(held)

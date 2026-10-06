@@ -77,14 +77,13 @@ func (r *MemoryRegion) takeColdCopies() []uint64 {
 	return pages
 }
 
-// Cold copies and the give-back over the zircon core, as cold.go and
-// giveback.go keep them for the current core. A copy a store trap made of a
-// root's page is not yet known to be the guest's state: it is cold, and pins
-// the page it was copied from in the zero-fork queue, outside the reclaim
-// queues an eviction takes from while anything else can go, until it is
-// compared with it. The give-back is Zircon's zero-page scan widened to the
-// origin (DedupZeroPage, vm_cow_pages.cc:1363-1437): it checks the copy,
-// write-protects it, checks again, and puts the guest back on the origin.
+// A copy a store trap made of a root's page is not yet known to be the guest's
+// state: it is cold, and pins the page it was copied from in the zero-fork
+// queue, outside the reclaim queues an eviction takes from while anything else
+// can go, until it is compared with it. The give-back (giveback.go) is
+// Zircon's zero-page scan widened to the origin (DedupZeroPage,
+// vm_cow_pages.cc:1363-1437): it checks the copy, write-protects it, checks
+// again, and puts the guest back on the origin.
 
 // pin keeps origin in the arena while b's cold copy is compared with it: the
 // first pin moves it to the zero-fork queue. Caller holds origin's lock.
@@ -300,10 +299,9 @@ func (r *MemoryRegion) endDirty(b *binding) reservation {
 	return spill
 }
 
-// leaveOutColdCopies is MemoryRegion.leaveOutColdCopies over the zircon core:
-// every cold copy of the set a seal took that still holds its origin's bytes
-// is left out of it, and stays the guest's, cold and writable. Caller holds
-// the region exclusively.
+// leaveOutColdCopies leaves out of the set a seal took every cold copy that
+// still holds its origin's bytes, which stays the guest's, cold and writable.
+// Caller holds the region exclusively.
 func (r *MemoryRegion) leaveOutColdCopies(ctx context.Context, pending map[uint64]*binding) (int, error) {
 	h := r.host
 	r.bindingsMu.Lock()
@@ -410,10 +408,10 @@ func (r *MemoryRegion) unprotectMapped(ctx context.Context, bindings []*binding)
 	return nil
 }
 
-// volumeHolds is MemoryRegion.volumeHolds over the zircon core: whether a
-// cold copy whose origin has gone holds exactly the bytes its volume holds
-// for its page. A backing that may answer with another host's bytes has no
-// such guarantee, and the copy is reported changed.
+// volumeHolds reports whether a cold copy whose origin has gone holds exactly
+// the bytes its volume holds for its page. A backing that may answer with
+// another host's bytes has no such guarantee, and the copy is reported
+// changed.
 func (r *MemoryRegion) volumeHolds(ctx context.Context, b *binding, buffers *settler) (bool, error) {
 	h := r.host
 	if r.peer {

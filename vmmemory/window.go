@@ -89,22 +89,23 @@ func pagesOf(runs []MapRun) uint64 {
 	return pages
 }
 
-// plan is windowPlan over the zircon core: the pages of one window a fault or
-// a populate maps together, the slots it took to read pages into, and what is
-// left to map. It holds no lock of a page: Zircon's pages are its objects',
-// and a page the plan takes is bound to the region at once, under its root's
-// lock, which keeps it out of every idle drop until the region lets it go.
+// plan is the pages of one window a fault or a populate maps together, the
+// slots it took to read pages into, and what is left to map. It holds no lock
+// of a page: Zircon's pages are its objects', and a page the plan takes is
+// bound to the region at once, under its root's lock, which keeps it out of
+// every idle drop until the region lets it go.
 type plan struct {
 	region       *MemoryRegion
 	start, end   uint64
 	fault, store uint64
-	// window and alone are windowPlan's: the plan's pages located whole once
-	// located says so, and the faulting page alone before that.
+	// window is the plan's pages located whole, once located says so, and
+	// alone the faulting page located alone before that.
 	window  locations
 	located bool
 	alone   locations
 	reading reading
-	// provisional is windowPlan's provisional run.
+	// provisional is the run of slots a fault that reads its page first took
+	// for its window (reserveProvisional).
 	provisional provisionalRun
 	// pages is the page the plan maps at each page of the window, by
 	// page-start, and reserved the slot each page's read has, or slot -1.
@@ -201,7 +202,8 @@ func (p *plan) locationsOf(page uint64) *locations {
 	return &p.window
 }
 
-// identity is windowPlan.identity.
+// identity reports the store page whose bytes this page reads, which is the
+// whole of what names it: a page is published whole or not at all.
 func (p *plan) identity(page uint64) (pageKey, bool) {
 	return identityAt(p.locationsOf(page), page)
 }
@@ -268,8 +270,10 @@ func (p *plan) reserve(page uint64, at fileSlot) {
 	p.fresh[page-p.start] = true
 }
 
-// fileOf is windowPlan.fileOf: the public file for a page of a public
-// template, the region's shared file for any other.
+// fileOf is the file a read of this page by its identity goes in: the public
+// file for a page of a public template, the region's shared file for any
+// other. A public page is never in a tenant's file, and only a public page is
+// in the public file, so every VMM may be given it.
 func (p *plan) fileOf(page uint64) *arenaFile {
 	r := p.region
 	if r.public != nil {
@@ -290,8 +294,8 @@ func (p *plan) files() []*arenaFile {
 }
 
 // own reports a page an isolated arena reads into the region's own file: one
-// whose bytes no identity names. This core takes no fork point's and no
-// other host's page yet.
+// whose bytes no identity names. The pager takes no fork point's and no other
+// host's page here yet.
 func (p *plan) own(page uint64) bool {
 	h := p.region.host
 	if !h.isolated() {
@@ -306,7 +310,9 @@ func (p *plan) own(page uint64) bool {
 	return !named || h.lends(id)
 }
 
-// observeZeros is windowPlan.observeZeros.
+// observeZeros records that this memory region knows about explicit zeros,
+// which is what lets a sibling attachment map them eagerly without any
+// metadata of its own. It is idempotent per plan.
 func (p *plan) observeZeros() {
 	if p.observedZeros {
 		return
@@ -393,7 +399,8 @@ func (p *plan) take(ctx context.Context, page uint64, key pageKey) (*zirconvm.Vm
 	}
 }
 
-// survey is survey over the zircon core.
+// survey is what one look at the rest of a located plan finds: for every page
+// the file a read must bring it into, nil where no read must.
 type survey struct {
 	into []*arenaFile
 }
@@ -531,7 +538,11 @@ func (f *fileFinder) of(id pageKey) *arenaFile {
 	return r.sharedFile()
 }
 
-// reserveAround is windowPlan.reserveAround.
+// reserveAround reserves free slots for the run of pages that need reading
+// around the faulting page, so the run can become one mapping. When fewer
+// slots are free than the run needs, the pages from the faulting one forward
+// take them. Nothing is evicted; the page may remain unreserved. The run is of
+// pages whose reads go in the faulting page's file.
 func (p *plan) reserveAround(index uint64) {
 	file := p.fileOf(index)
 	into := p.survey(index, false).into
@@ -553,7 +564,10 @@ func (p *plan) reserveAround(index uint64) {
 	}
 }
 
-// reserveProvisional is windowPlan.reserveProvisional.
+// reserveProvisional takes the faulting page's slot, from a run of free slots
+// for its whole window where the fault reads its page first. When fewer are
+// free than the window, the run holds the faulting page and the pages after it
+// first. Nothing is evicted; the page may remain unreserved.
 func (p *plan) reserveProvisional(index uint64) {
 	file := p.fileOf(index)
 	first, last := index, index+1
@@ -571,7 +585,9 @@ func (p *plan) reserveProvisional(index uint64) {
 	}
 }
 
-// keepProvisional is windowPlan.keepProvisional.
+// keepProvisional settles the provisional run once the window is located: each
+// slot stays reserved for its page where the prefetch will read that page into
+// that file (survey), and goes back otherwise.
 func (p *plan) keepProvisional(into []*arenaFile) {
 	run := p.provisional
 	p.provisional = provisionalRun{}
@@ -595,7 +611,13 @@ func (p *plan) keepProvisional(into []*arenaFile) {
 	h.mu.Unlock()
 }
 
-// reserveRuns is windowPlan.reserveRuns.
+// reserveRuns takes free slots, without evicting, for the pages into says to
+// read into a file (survey) that hold no reservation yet. Runs of consecutive
+// pages prefer consecutive slots so a later mapping installs them as one
+// range. Idle pages are given up first to make those slots free, which is not
+// an eviction: nothing maps them. When free slots cannot cover the window even
+// so, the pages after the faulting one come first: access tends to continue
+// forward.
 func (p *plan) reserveRuns(ctx context.Context, from uint64, into []*arenaFile) error {
 	for _, file := range p.files() {
 		if err := p.reserveRunsIn(ctx, from, file, into); err != nil {
@@ -605,7 +627,7 @@ func (p *plan) reserveRuns(ctx context.Context, from uint64, into []*arenaFile) 
 	return nil
 }
 
-// reserveRunsIn is windowPlan.reserveRunsIn.
+// reserveRunsIn is reserveRuns for the pages whose reads go in one file.
 func (p *plan) reserveRunsIn(ctx context.Context, from uint64, file *arenaFile, into []*arenaFile) error {
 	h := p.region.host
 	needs := func(page uint64) bool { return into[page-p.start] == file && p.reserved[page-p.start].slot < 0 }
@@ -672,7 +694,7 @@ func (p *plan) reserveOwn() {
 }
 
 // loadReserved reads the reserved pages of the window with one backing read
-// and supplies them, as windowPlan.loadReserved does.
+// (readRun) and supplies them.
 func (p *plan) loadReserved(ctx context.Context) error {
 	h := p.region.host
 	first, last := p.end, p.start
@@ -710,9 +732,9 @@ func (p *plan) loadReserved(ctx context.Context) error {
 	return p.publishRead(ctx, first, wanted, data, unpublished)
 }
 
-// unpublished is windowPlan.unpublished: the window's extents say this
-// page's bytes belong to no object of its volume, which for a backing that
-// fetches from another host means that host still holds them.
+// unpublished reports whether the window's extents say this page's bytes
+// belong to no object of its volume, which for a backing that fetches from
+// another host means that host still holds them.
 func (p *plan) unpublished(page uint64) bool {
 	if !p.region.peer {
 		return false
@@ -874,10 +896,11 @@ func (p *plan) supplyRun(ctx context.Context, page uint64, id pageKey, shared bo
 	return nil
 }
 
-// install maps every planned page and resolves the faulting one, as
-// windowPlan.install does. The commands are issued with no object lock held:
-// a plan holds none, its pages being bound to the region already. The
-// region's own Dirty pages are mapped writable, in runs of their own.
+// install maps every planned page and resolves the faulting one. Consecutive
+// slots and explicit zero ranges coalesce into runs, sent in bounded batches.
+// The commands are issued with no object lock held: a plan holds none, its
+// pages being bound to the region already. The region's own Dirty pages are
+// mapped writable, in runs of their own.
 func (p *plan) install(ctx context.Context) (bool, error) {
 	r := p.region
 	h := r.host

@@ -283,8 +283,8 @@ func (h *Host) allocateFreeFrom(prefer fileSlot, want int) (fileSlot, int) {
 
 // allocate returns one slot of f for a page of r, evicting a page by the
 // evictor's synchronous path when the arena is full. It waits for progress
-// rather than failing while every candidate is temporarily busy. See
-// evictor.go for which page goes.
+// rather than failing while every candidate is temporarily busy. See evict.go
+// for which page goes.
 //
 // place, where it is not nil, is where the slot must be: the placement rule has
 // already decided this page's slot, so only the page budget is at stake and

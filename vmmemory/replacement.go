@@ -6,10 +6,10 @@ import (
 	"github.com/semistrict/sproutfs/vmmemory/internal/zirconvm"
 )
 
-// replacement is replacement over the zircon core: the pages a store's copy
-// replaces the guest's mapping of, which no eviction may take and no idle
-// drop may give up before the command that replaces them lands, and the
-// pages the store made, which it holds the locks of until then too.
+// replacement is the pages a store's copy replaces the guest's mapping of,
+// which no eviction may take and no idle drop may give up before the command
+// that replaces them lands, and the pages the store made, which it holds the
+// locks of until then too.
 type replacement struct {
 	region *MemoryRegion
 	pages  []*zirconvm.VmPage

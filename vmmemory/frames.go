@@ -44,13 +44,12 @@ import (
 // frame is where one page's bytes are, and who maps it.
 type frame struct {
 	fileSlot
-	// mu is the page's lock, as the current core's resident page has one: an
-	// eviction holds it across revoking every mapping of the page and writing
-	// its bytes away, and whatever else changes what a page holds or who
-	// holds it takes it first, so that neither meets the other halfway. It is
-	// taken outside every object's lock and Host.mu. Every page a fault makes
-	// has one, so it is a LazyMutex, which allocates nothing until something
-	// waits for it.
+	// mu is the page's lock: an eviction holds it across revoking every
+	// mapping of the page and writing its bytes away, and whatever else
+	// changes what a page holds or who holds it takes it first, so that
+	// neither meets the other halfway. It is taken outside every object's lock
+	// and Host.mu. Every page a fault makes has one, so it is a LazyMutex,
+	// which allocates nothing until something waits for it.
 	mu ctxsync.LazyMutex
 	// kind is what the memory region that made this page maps it as, which
 	// every region that ever maps it agrees on.
@@ -66,8 +65,7 @@ type frame struct {
 	// it (lentFrame), nil where no fork point names it. Guarded by Host.mu.
 	lent *zirconvm.VmPage
 	// coldCopies is every cold copy that will be compared with this page,
-	// which keeps it in the zero-fork queue (zircon_cold.go). Guarded by
-	// Host.pinMu.
+	// which keeps it in the zero-fork queue (cold.go). Guarded by Host.pinMu.
 	coldCopies map[*binding]struct{}
 	// replacing counts the stores whose copy took a binding off this page and
 	// whose mapping command has not replaced the guest's mapping of it yet:
@@ -90,7 +88,7 @@ type frame struct {
 // its own that names the parent's frame; it is never the root's to give back.
 type lentFrame struct{ frame *frame }
 
-// frameOf is the frame of a page this core made.
+// frameOf is the frame of a page the pager made.
 func frameOf(p *zirconvm.VmPage) *frame {
 	if lent, ok := p.Frame.(lentFrame); ok {
 		return lent.frame
@@ -107,7 +105,7 @@ func isLent(p *zirconvm.VmPage) bool {
 
 // errPagerAllocates refuses the one allocation Zircon makes for itself. Every
 // page here is the pager's to make, at the slot its placement and isolation
-// choose, so a path that reaches the node's Pmm for a page is one this core
+// choose, so a path that reaches the node's Pmm for a page is one the pager
 // does not take.
 var errPagerAllocates = errors.New("vmmemory: the pager makes every page itself")
 
@@ -142,10 +140,9 @@ func (p *arenaPmm) CountFreePages() uint64 {
 }
 
 // newFrame fills a slot the caller took with data and reports the page that
-// holds it, in no object yet, and locked, as the current core's create
-// reports a locked page: no eviction takes it before the caller has put it
-// where it goes and given its lock back. A write that fails gives the slot
-// back.
+// holds it, in no object yet, and locked: no eviction takes it before the
+// caller has put it where it goes and given its lock back. A write that fails
+// gives the slot back.
 func (h *Host) newFrame(ctx context.Context, at fileSlot, data []byte, kind MemoryRegionKind) (*zirconvm.VmPage, error) {
 	if sim.Bug(ctx, "pager-zero-new-page") {
 		// The page is created without the bytes that were loaded or copied
@@ -216,9 +213,9 @@ func probeFrame(p *zirconvm.VmPage) probePage {
 	return frameOf(p)
 }
 
-// lockedPage is the page b names, locked, nil where it names none: Host.current
-// over the zircon core. It takes the page's lock with no other lock held, and
-// looks again where an eviction or a move took the page from b meanwhile.
+// lockedPage is the page b names, locked, nil where it names none. It takes
+// the page's lock with no other lock held, and looks again where an eviction
+// or a move took the page from b meanwhile.
 func (h *Host) lockedPage(ctx context.Context, b *binding) (*zirconvm.VmPage, error) {
 	for {
 		h.mu.Lock()
@@ -240,10 +237,10 @@ func (h *Host) lockedPage(ctx context.Context, b *binding) (*zirconvm.VmPage, er
 	}
 }
 
-// releaseFrame gives a page's slot back to the arena. Nothing maps it: a
-// page is mapped only while a binding holds it, and Zircon frees only a page
-// it holds no more. A slot the arena will not punch makes the host terminal
-// and is kept, as the current core's release does.
+// releaseFrame gives a page's slot back to the arena. Nothing maps it: a page
+// is mapped only while a binding holds it, and Zircon frees only a page it
+// holds no more. A slot the arena will not punch makes the host terminal and
+// is kept.
 func (h *Host) releaseFrame(p *zirconvm.VmPage) {
 	f := frameOf(p)
 	if f.slot < 0 {
@@ -317,9 +314,9 @@ func (h *Host) notIdleLocked(f *frame) {
 // object whose pages are Clean and never change, which the layers of the
 // memory regions that read them fall through to. Its offsets are the pages'
 // own, because a page is shared under its identity only at the page its
-// identity names (windowPlan.identity). Its page source is the pager, and a
-// READ request of it is the read of its missing pages, which a fault or a
-// prefetch answers.
+// identity names (plan.identity). Its page source is the pager, and a READ
+// request of it is the read of its missing pages, which a fault or a prefetch
+// answers.
 type identityRoot struct {
 	key    rootKey
 	object *zirconvm.ObjectPaged
@@ -397,12 +394,11 @@ func (h *Host) supply(ctx context.Context, object *zirconvm.ObjectPaged, first u
 // lookup reaches only offsets it has located.
 //
 // A root is named only where it holds the page. A page no root holds is the
-// region's own to read, so the layer's lookup asks the layer's own page
-// source for it, which is the region's: a fault's own read is not in flight
-// for prefetches to see, as in the current core (pagerequests.go, and the
-// step 8 decision of TASK-92). A fault that meets a page a prefetch is
-// reading waits on the prefetch's request in the root before it looks
-// (plan.inFlight).
+// region's own to read, so the layer's lookup asks the layer's own page source
+// for it, which is the region's: a fault's own read is not in flight for
+// prefetches to see (pagerequests.go, and the step 8 decision of TASK-92). A
+// fault that meets a page a prefetch is reading waits on the prefetch's
+// request in the root before it looks (plan.inFlight).
 type rootResolver struct {
 	region *MemoryRegion
 	// located is what the fault holding the layer's lock located, nil
@@ -445,8 +441,8 @@ func (res *rootResolver) Locate(offset uint64) (*zirconvm.CowPages, uint64, bool
 	return pages, offset, true
 }
 
-// identityAt is windowPlan.identity of a page of located: the store page whose
-// bytes it reads, which a page is shared under only at its own number.
+// identityAt is the identity of a page of located: the store page whose bytes
+// it reads, which a page is shared under only at its own number.
 func identityAt(loc *locations, page uint64) (pageKey, bool) {
 	e, found := loc.extent(page)
 	if !found {
@@ -581,9 +577,8 @@ func (h *Host) evictIdle(root *zirconvm.CowPages, offset uint64) bool {
 }
 
 // dropOrigin gives up a page a region's stores copied from once nothing maps
-// it, which detaching the region does, as the current core's releaseOrigin
-// does: nothing else would ever give it up ahead of the pages other regions
-// still read.
+// it, which detaching the region does: nothing else would ever give it up
+// ahead of the pages other regions still read.
 func (h *Host) dropOrigin(page *zirconvm.VmPage) {
 	h.mu.Lock()
 	mapped := frameOf(page).aliases.len() > 0

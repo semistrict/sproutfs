@@ -175,7 +175,9 @@ func (r *MemoryRegion) forgetWindowAsk() {
 	r.windowAsked = false
 }
 
-// takeDirtySince is MemoryRegion.takeDirtySince over the zircon core.
+// takeDirtySince takes the region's loss window off it and reports it, which a
+// seal does to hand the window to its checkpoint. The next store that holds a
+// write no checkpoint covers starts a window of its own.
 func (r *MemoryRegion) takeDirtySince() time.Time {
 	r.bindingsMu.Lock()
 	since := r.dirtySince
@@ -187,7 +189,8 @@ func (r *MemoryRegion) takeDirtySince() time.Time {
 	return since
 }
 
-// restoreDirtySince is MemoryRegion.restoreDirtySince over the zircon core.
+// restoreDirtySince hands a window back to the region, which an abandoned
+// checkpoint does: the older of it and the region's own stands.
 func (r *MemoryRegion) restoreDirtySince(since time.Time) {
 	r.bindingsMu.Lock()
 	r.dirtySince = older(r.dirtySince, since)

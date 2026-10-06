@@ -40,7 +40,7 @@ type Host struct {
 	// pinMu guards every resident page's coldCopies, which pin it, and the
 	// page's moves between the page queues, which its pins and its being idle
 	// decide. It is taken inside any other lock of the pager, and around none
-	// but the page queues' own. See queues.go and cold.go.
+	// but the page queues' own. See evict.go and cold.go.
 	pinMu sync.Mutex
 	cfg   Config
 	// clock times the fault path. It is Config.Clock, or the wall clock.
@@ -86,8 +86,8 @@ type Host struct {
 	// flushed is what a guest's flush of a memory region is handed to. See SetFlushed.
 	flushed           func(*MemoryRegion, func(error))
 	zeroMemoryRegions int // attached memory regions retaining knowledge of explicit zeros
-	// evictor frees a slot for an allocation short of one, taking its
-	// victims from queues. See evictor.go.
+	// evictor frees a slot for an allocation short of one, taking its victims
+	// from the page queues. See evict.go.
 	evictor *pagerEvictor
 	// idlePages counts the resident pages no memory region maps: published
 	// pages kept for the next memory region that inherits their identity, and

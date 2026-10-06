@@ -263,8 +263,7 @@ func (h *Host) Stats(ctx context.Context) (Stats, error) {
 	return h.snapshot()
 }
 
-// snapshot is the pager's counters as Stats reports them, which both cores
-// keep.
+// snapshot is the pager's counters as Stats reports them.
 func (h *Host) snapshot() (Stats, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -292,11 +291,10 @@ func (h *Host) snapshot() (Stats, error) {
 	return stats, h.err
 }
 
-// eachBinding is MemoryRegion.eachBinding over the zircon core: every page
-// with a binding, in ascending order, with the host lock and then the
-// region's held, a batch at a time, so a large region holds up no page
-// transition for the whole of a scan. Caller holds the region lock, which
-// keeps the bindings in existence.
+// eachBinding visits every page with a binding, in ascending order, with the
+// host lock and then the region's held, a batch at a time, so a large region
+// holds up no page transition for the whole of a scan. Caller holds the region
+// lock, which keeps the bindings in existence.
 func (r *MemoryRegion) eachBinding(visit func(*binding)) {
 	h := r.host
 	for from, more := uint64(0), true; more; {

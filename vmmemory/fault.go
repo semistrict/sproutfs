@@ -35,9 +35,9 @@ func (r *MemoryRegion) Fault(ctx context.Context, index uint64, write bool) erro
 	reserve := false
 	for range faultAttempts {
 		// A store that needs a page of its own takes its dirty reservation
-		// before any region, page or I/O resource, as in the current core,
-		// and so does a read of a page only another host holds, which the
-		// load makes the region's own dirty state.
+		// before any region, page or I/O resource, and so does a read of a
+		// page only another host holds, which the load makes the region's own
+		// dirty state.
 		var spill reservation
 		if reserve || (write && r.needsPrivatePage(index)) {
 			taken, err := r.host.takeSpill(ctx, r)
@@ -102,9 +102,8 @@ func (r *MemoryRegion) faultOnce(ctx context.Context, index uint64, write bool, 
 		return false, err
 	}
 	defer r.live.RUnlock()
-	// The window's stripe comes before the memory region, as in the current
-	// core: a fault gives the region up across its backing read and takes it
-	// again.
+	// The window's stripe comes before the memory region: a fault gives the
+	// region up across its backing read and takes it again.
 	if err := r.stripe(index).Lock(ctx); err != nil {
 		return false, err
 	}
@@ -236,14 +235,13 @@ func (r *MemoryRegion) isPrivate(b *binding) bool {
 	return b.dirty || b.checkpoint != nil
 }
 
-// refault is loadOnce's spilled private page, reloaded alone, as the current
-// core's: its bytes are read from the reservation that holds them, which is
-// the checkpoint's copy's where the page shares it, into a page of the
-// region's private file, which goes back into the layer Dirty, or
-// AwaitingClean where it shares the copy. A page the checkpoint holds maps
-// read-only, so the next store copies away from it. It reports whether the
-// fault was resolved: a seal or a retire taken while the region was given up
-// for the slot is decided again from the top.
+// refault is loadOnce's spilled private page, reloaded alone: its bytes are
+// read from the reservation that holds them, which is the checkpoint's copy's
+// where the page shares it, into a page of the region's private file, which
+// goes back into the layer Dirty, or AwaitingClean where it shares the copy. A
+// page the checkpoint holds maps read-only, so the next store copies away from
+// it. It reports whether the fault was resolved: a seal or a retire taken
+// while the region was given up for the slot is decided again from the top.
 func (r *MemoryRegion) refault(ctx context.Context, b *binding) (bool, error) {
 	h := r.host
 	ps := h.pageSize
@@ -310,8 +308,11 @@ func (r *MemoryRegion) refault(ctx context.Context, b *binding) (bool, error) {
 	return true, nil
 }
 
-// planFault is MemoryRegion.planFault over the zircon core, with the same
-// policy and the same guards.
+// planFault plans the window of the page index for the faulting page fault, or
+// the window's end for none, as far as the fault will read it: the whole
+// window, located at once, for a fault that reads its run first; the window,
+// with the faulting page located alone, for one that reads its page first; and
+// the faulting page alone for one at random.
 func (r *MemoryRegion) planFault(ctx context.Context, index, fault uint64) (*plan, error) {
 	start, end := r.window(index)
 	var p *plan
@@ -352,7 +353,9 @@ func (p *plan) read(ctx context.Context, index uint64) error {
 	}
 }
 
-// readAlone is windowPlan.readAlone over the zircon core.
+// readAlone reads the faulting page of a fault at random, where it needs
+// reading. The read is the fault's own, as a run read first is: nothing is
+// planned beside it.
 func (p *plan) readAlone(ctx context.Context, index uint64) error {
 	p.survey(index, false)
 	if p.reserved[index-p.start].slot >= 0 {
@@ -365,9 +368,9 @@ func (p *plan) readAlone(ctx context.Context, index uint64) error {
 	return p.loadReserved(ctx)
 }
 
-// readFirst is windowPlan.readFirst over the zircon core: the faulting page's
-// read starts first, the rest of the window is planned while it runs, and
-// the rest is prefetched behind it.
+// readFirst serves the faulting page of a fault that reads its page first: the
+// page's read starts first, the rest of the window is planned while it runs,
+// and the rest is prefetched behind it.
 func (p *plan) readFirst(ctx context.Context, index uint64) error {
 	r := p.region
 	if sim.Bug(ctx, "pager-plan-the-window-first") {
@@ -407,12 +410,12 @@ func (p *plan) readFirst(ctx context.Context, index uint64) error {
 	return read.land(ctx, p)
 }
 
-// takeFaulting takes the faulting page into the plan before any other, by
-// the layer's lookup of it: a page an object holds is bound, a hole is a
-// zero, and a missing page is a READ request on the region's own source,
-// which this plan answers and takes a slot for, as windowPlan.takeFaulting
-// does. It reports again where the lookup met a request of a root that a
-// read answered meanwhile, and the fault must look again.
+// takeFaulting takes the faulting page into the plan before any other, by the
+// layer's lookup of it: a page an object holds is bound, a hole is a zero, and
+// a missing page is a READ request on the region's own source, which this plan
+// answers and takes a slot for. It reports again where the lookup met a
+// request of a root that a read answered meanwhile, and the fault must look
+// again.
 func (p *plan) takeFaulting(ctx context.Context, index uint64) (again bool, err error) {
 	r := p.region
 	i := index - p.start
@@ -497,7 +500,10 @@ func (p *plan) takeFaulting(ctx context.Context, index uint64) (again bool, err 
 	return false, nil
 }
 
-// planRest is windowPlan.planRest over the zircon core.
+// planRest locates the whole window of a fault that reads its page first, in
+// one lookup, once the faulting page is in the plan, and takes free slots,
+// never an eviction, for the pages the prefetch reads. It reports the file
+// each of those pages goes in (survey).
 func (p *plan) planRest(ctx context.Context, index uint64) ([]*arenaFile, error) {
 	if err := p.locateWindow(ctx); err != nil {
 		return nil, err
@@ -507,9 +513,9 @@ func (p *plan) planRest(ctx context.Context, index uint64) ([]*arenaFile, error)
 	return found.into, p.reserveRuns(ctx, index, found.into)
 }
 
-// takeRun is windowPlan.takeRun over the zircon core: the run read first
-// takes its resident pages and slots for the rest, and places in the
-// region's own file for the pages read there.
+// takeRun takes the rest of a run read first into the plan: its resident pages
+// and slots for the rest, and places in the region's own file for the pages
+// read there.
 func (p *plan) takeRun(ctx context.Context, index uint64) error {
 	found := p.survey(index, false)
 	if err := p.reserveRuns(ctx, index, found.into); err != nil {
@@ -649,12 +655,11 @@ func (r *MemoryRegion) requestOf(multi *zirconvm.MultiPageRequest) *readRequest 
 }
 
 // inFlight is a READ request of the faulting page waiting on the prefetch
-// reading that page, nil where none is: windowPlan.inFlight over the zircon
-// core's roots. The in-tree bug that reads such a page again reports none.
-// Every request of a root is sent and answered under h.mu but a supply's,
-// which answers under the root's lock: a request this sends that its root's
-// proxy then holds met no read, because a supply answered it between the
-// look and the send, and it is answered at once.
+// reading that page, nil where none is. The in-tree bug that reads such a page
+// again reports none. Every request of a root is sent and answered under h.mu
+// but a supply's, which answers under the root's lock: a request this sends
+// that its root's proxy then holds met no read, because a supply answered it
+// between the look and the send, and it is answered at once.
 func (p *plan) inFlight(ctx context.Context, page uint64) *waiter {
 	key, named := p.identity(page)
 	if !named || key.zero() || sim.Bug(ctx, "pager-read-in-flight-again") {
@@ -702,9 +707,9 @@ func (r *MemoryRegion) awaitRead(ctx context.Context, waiter *waiter) error {
 	})
 }
 
-// faultRead is faultRead over the zircon core: the faulting page's backing
-// read, under way on a task of its own while the fault plans the rest of its
-// window. The fault supplies what it read, which answers the page's request.
+// faultRead is the faulting page's backing read, under way on a task of its
+// own while the fault plans the rest of its window. The fault supplies what it
+// read, which answers the page's request.
 type faultRead struct {
 	host   *Host
 	page   uint64
@@ -777,8 +782,8 @@ func (read *faultRead) release() {
 	read.host.putWindow(read.buffer)
 }
 
-// reclaim takes one slot of f with the region given up, as the current core's
-// reclaim does, evicting where the arena is full.
+// reclaim takes one slot of f with the region given up, evicting where the
+// arena is full.
 func (r *MemoryRegion) reclaim(ctx context.Context, f *arenaFile) (fileSlot, error) {
 	return r.reclaimWith(ctx, func() (fileSlot, error) { return r.host.allocate(ctx, r, f, nil, evictPastAFreeSlot(ctx)) })
 }
@@ -789,11 +794,10 @@ func (r *MemoryRegion) reclaimOwn(ctx context.Context, index uint64) (fileSlot, 
 	return r.reclaimWith(ctx, func() (fileSlot, error) { return r.allocateOwn(ctx, index, true) })
 }
 
-// allocateOwn is MemoryRegion.allocateOwn over the zircon core: a place of
-// page index in the region's own file, evicting where the page budget rather
-// than the place is missing. A page never needs a third place: where both are
-// taken, one holds a root's page nothing maps, published from this region
-// and idle since, which is given up.
+// allocateOwn takes a place of page index in the region's own file, evicting
+// where the page budget rather than the place is missing. A page never needs a
+// third place: where both are taken, one holds a root's page nothing maps,
+// published from this region and idle since, which is given up.
 func (r *MemoryRegion) allocateOwn(ctx context.Context, index uint64, clean bool) (fileSlot, error) {
 	h := r.host
 	places := r.ownPlaces(index, clean)

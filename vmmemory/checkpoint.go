@@ -15,6 +15,31 @@ import (
 	"github.com/semistrict/sproutfs/vmmemory/internal/zirconvm"
 )
 
+// A checkpoint is Zircon's writeback with the plan's departures
+// (plans/zircon-pager-port-2026-10-05.md, "Dirty tracking, seal, checkpoint
+// and flush").
+//
+//   - The seal is WritebackBegin with D3: the pause write-protects the runs
+//     of the dirty set and takes the set whole, and the walk behind it, with
+//     the guest running and the region held, makes each resident page of the
+//     set AwaitingClean in the region's layer and hands its reservation to
+//     the checkpoint's copy of it, a binding beside the layer.
+//   - A store into a page the checkpoint holds splits it (D1): the store's copy
+//     is the Dirty page, and the checkpoint keeps the page of its pause
+//     beside the page list (zirconvm SplitAwaitingClean).
+//   - The retire of a published checkpoint is WritebackEnd and a move of each
+//     page out of the layer into the identity root of the checkpoint that
+//     published it. A page the volume holds no object for is given back.
+//   - The abandon of one that did not land is D4: WritebackAbandon makes each
+//     page Dirty again with its own reservation, and its read-only mapping
+//     goes.
+//   - The settle stays the pager's: a sealed page whose bytes are its origin's
+//     leaves the checkpoint, and the guest maps the origin again.
+//
+// Every transition holds the region: the walk and each batch of a retire, an
+// abandon or a settle hold it exclusively, so no fault of the region decides
+// meanwhile.
+
 // checkpointBatchPages bounds how many pages one seal or retire transition
 // holds the memory region for at a time, so a large dirty set costs a bounded number
 // of long-held page locks and a bounded hold of the memory region.
@@ -505,34 +530,9 @@ func allZero(data []byte) bool {
 	return true
 }
 
-// Checkpoints over the zircon core: Zircon's writeback with the plan's
-// departures (plans/zircon-pager-port-2026-10-05.md, "Dirty tracking, seal,
-// checkpoint and flush").
-//
-//   - The seal is WritebackBegin with D3: the pause write-protects the runs
-//     of the dirty set and takes the set whole, and the walk behind it, with
-//     the guest running and the region held, makes each resident page of the
-//     set AwaitingClean in the region's layer and hands its reservation to
-//     the checkpoint's copy of it, a binding beside the layer.
-//   - A store into a page the checkpoint holds splits it (D1): the store's copy
-//     is the Dirty page, and the checkpoint keeps the page of its pause
-//     beside the page list (zirconvm SplitAwaitingClean).
-//   - The retire of a published checkpoint is WritebackEnd and a move of each
-//     page out of the layer into the identity root of the checkpoint that
-//     published it. A page the volume holds no object for is given back.
-//   - The abandon of one that did not land is D4: WritebackAbandon makes each
-//     page Dirty again with its own reservation, and its read-only mapping
-//     goes.
-//   - The settle stays the pager's: a sealed page whose bytes are its origin's
-//     leaves the checkpoint, and the guest maps the origin again.
-//
-// Every transition holds the region as the current core's does: the walk and
-// each batch of a retire, an abandon or a settle hold it exclusively, so no
-// fault of the region decides meanwhile.
-
 // protectDirtyRuns is the whole of the pause: the runs of the dirty set,
-// write-protected, with the region's protection held exclusively, as
-// MemoryRegion.protectDirtyRuns holds it.
+// write-protected, with the region's protection held exclusively, so no
+// revocation runs beside it.
 func (r *MemoryRegion) protectDirtyRuns(ctx context.Context) ([]PageRun, error) {
 	if err := r.protectMu.Lock(ctx); err != nil {
 		return nil, err
@@ -680,8 +680,8 @@ func (r *MemoryRegion) holdInCheckpointLocked(b, held *binding) {
 	r.noteSealableLocked(b)
 }
 
-// copiesOf is the checkpoint's copies under the zircon core, in ascending
-// page order, once the walk behind the pause has made them.
+// copiesOf is the checkpoint's copies, in ascending page order, once the walk
+// behind the pause has made them.
 func (c *MemoryRegionCheckpoint) copiesOf() []*binding {
 	<-c.taken
 	c.mu.Lock()
@@ -808,9 +808,9 @@ func (r *MemoryRegion) restoreFromCheckpointLocked(b, held *binding) {
 	r.noteSealableLocked(b)
 }
 
-// storedIdentities is MemoryRegion.storedIdentities over the zircon core:
-// the identity the volume now gives each page of one retire batch, located
-// once per read-ahead window, with neither the region nor any page held.
+// storedIdentities is the identity the volume now gives each page of one
+// retire batch, located once per read-ahead window, with neither the region
+// nor any page held.
 func (r *MemoryRegion) storedIdentities(ctx context.Context, batch []*binding) (map[uint64]storedPage, error) {
 	result := make(map[uint64]storedPage, len(batch))
 	var window *plan
@@ -887,10 +887,18 @@ func (r *MemoryRegion) finalizeCheckpoint(ctx context.Context, c *MemoryRegionCh
 	return nil
 }
 
-// revokeHandedBack is MemoryRegion.revokeHandedBack over the zircon core: the
-// guest's mapping of every page of one retire batch the volume holds no
-// object for goes, one command per run, before the walk, once the page is
-// known to be zeros.
+// revokeHandedBack takes the guest's mapping away from every page of one
+// retire batch the retire is about to hand back: the volume holds no object
+// for it, so it is a hole again and there is nothing to put in that mapping's
+// place. It goes as one command per run of consecutive pages, before the walk,
+// once each page is known to be zeros (droppable).
+//
+// What a retire hands back at a 4 KiB page is the write-ahead pages the guest
+// never stored into, and write-ahead makes them in runs: thousands of pages in
+// one checkpoint, where a round trip each, serialized on the mapping lock, is
+// a stall the guest feels. A GCE fan-out of two forks on 2026-09-23 spent
+// 12,428 revocations against 15,477 write-ahead pages on exactly that, one
+// command per page.
 func (r *MemoryRegion) revokeHandedBack(ctx context.Context, batch []*binding, identities map[uint64]storedPage) error {
 	var guests []*binding
 	for _, held := range batch {
@@ -915,8 +923,14 @@ func (r *MemoryRegion) revokeHandedBack(ctx context.Context, batch []*binding, i
 	return r.revokeBindings(ctx, guests)
 }
 
-// droppable is Host.droppable over the zircon core: a page given up because
-// the volume holds no object for it must be zeros.
+// droppable refuses the one thing a retire may not get wrong. A page given up
+// because the volume holds no object for it is a page the volume must be able
+// to reproduce without one, and the only such page is zeros: a publication
+// writes an all-zero page as a sparse hole and the volume reads it back as
+// zeros. A page with anything else in it holds bytes that exist nowhere but
+// here, so dropping it would hand the guest an older version of memory it
+// wrote. It reads the page, which is why it runs only where a page is about to
+// be dropped.
 func (r *MemoryRegion) droppable(ctx context.Context, held *binding, now storedPage) error {
 	h := r.host
 	if now.stored && !now.id.zero() {
@@ -1063,12 +1077,11 @@ func (h *Host) adopt(ctx context.Context, from *MemoryRegion, page *zirconvm.VmP
 	return true
 }
 
-// abandonCopies is MemoryRegion.abandonPages over the zircon core (D4): a
-// page the guest still shares with the checkpoint takes its copy's
-// reservation back and is Dirty again in the layer, and its read-only
-// mapping goes so the next store maps it writable; a page the guest copied
-// away from needs only its own newer state, so the checkpoint's copy goes.
-// Caller holds the region exclusively.
+// abandonCopies abandons the copies of one batch (D4): a page the guest still
+// shares with the checkpoint takes its copy's reservation back and is Dirty
+// again in the layer, and its read-only mapping goes so the next store maps it
+// writable; a page the guest copied away from needs only its own newer state,
+// so the checkpoint's copy goes. Caller holds the region exclusively.
 func (r *MemoryRegion) abandonCopies(ctx context.Context, batch []*binding) error {
 	h := r.host
 	ps := h.pageSize

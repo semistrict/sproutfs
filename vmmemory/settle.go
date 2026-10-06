@@ -275,7 +275,7 @@ func (r *MemoryRegion) reshareBatch(ctx context.Context, copies []*binding, equa
 		applying = append(applying, entry)
 	}
 	// The guest's mapping of the copy it is losing is taken away rather than
-	// swapped underneath it, as the current core's settle does.
+	// swapped underneath it: see dropCopy.
 	if err := r.revokeBindings(ctx, guests); err != nil {
 		return err
 	}
@@ -288,8 +288,16 @@ func (r *MemoryRegion) reshareBatch(ctx context.Context, copies []*binding, equa
 	return nil
 }
 
-// dropCopy takes one unchanged page out of the checkpoint. A guest that
-// still shares the checkpoint's copy goes back on the origin and is clean.
+// dropCopy takes one unchanged page out of the checkpoint. A guest that still
+// shares the checkpoint's copy goes back on the origin and is clean. Its
+// mapping of the copy has already been taken away by the batch's revocation,
+// because the page a guest maps is taken away and never swapped underneath it:
+// a revocation installs no page table and wakes nothing, and the guest's next
+// access reaches the origin through the fault path, under the window that
+// orders every mapping of that page. Revoking rather than installing the
+// origin lowered the rate of a fan-out panic whose cause was elsewhere: see "A
+// post-copy child's own published pages" in docs/migration.md.
+//
 // The copy's page leaves the layer, AwaitingClean in its page list or held
 // beside it, and goes back, and so does its reservation. Caller holds the
 // region exclusively and both pages.
@@ -332,8 +340,11 @@ func (r *MemoryRegion) dropCopy(ctx context.Context, held *binding, page, origin
 	return nil
 }
 
-// forgetCopies rebuilds the checkpoint's copies without those a settle
-// dropped, as forget does for the current core's.
+// forgetCopies rebuilds the copies this checkpoint lists without those a
+// settle dropped, in the order it had them, so the result is the workers'
+// outcome and not their order. A checkpoint left holding nothing holds no
+// unpublished write either, so the window it took off the memory region at the
+// seal ends here.
 func (c *MemoryRegionCheckpoint) forgetCopies(dropped []bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

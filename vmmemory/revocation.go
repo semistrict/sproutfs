@@ -42,16 +42,14 @@ func (r *MemoryRegion) underProtection(ctx context.Context, revoke func() error)
 	return revoke()
 }
 
-// Revocations over the zircon core, as revocation.go issues them for the
-// current core: Zircon's Unmap and UnmapAndHarvest are RevokeBatch here, and
-// each command is issued with the region's protection held shared, so a
-// seal's write-protect commands and a revocation never overlap.
+// Zircon's Unmap and UnmapAndHarvest are RevokeBatch here, and each command is
+// issued with the region's protection held shared, so a seal's write-protect
+// commands and a revocation never overlap.
 
-// revokeBindings is MemoryRegion.revokeBindings over the zircon core: the
-// mapped pages of bindings, every one this region's, revoked by one command
-// per run of consecutive pages where the client takes batches. An error is
-// ambiguous for every run, so the pages stay recorded as mapped and the
-// region is terminal.
+// revokeBindings revokes the mapped pages of bindings, every one this
+// region's, by one command per run of consecutive pages where the client takes
+// batches. An error is ambiguous for every run, so the pages stay recorded as
+// mapped and the region is terminal.
 func (r *MemoryRegion) revokeBindings(ctx context.Context, bindings []*binding) error {
 	h := r.host
 	batch, ok := r.mapping.(BatchRevocation)
@@ -98,8 +96,7 @@ func (r *MemoryRegion) revokeBindings(ctx context.Context, bindings []*binding) 
 	})
 }
 
-// revoke is Host.revoke over the zircon core: one page's mapping, where it is
-// installed.
+// revoke takes one page's mapping away, where it is installed.
 func (r *MemoryRegion) revoke(ctx context.Context, b *binding) error {
 	h := r.host
 	if !r.isMapped(b) {

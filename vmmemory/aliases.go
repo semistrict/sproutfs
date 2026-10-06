@@ -2,12 +2,12 @@ package vmmemory
 
 import "iter"
 
-// aliasSet is the bindings that map one resident page: the current core's
-// bindings, or the zircon core's. Almost every page has exactly one — a page
-// is a guest's own until a fork shares it — so that one is held inline, and
-// only a page with two or more keeps a map of them: a map for every page was
-// the largest thing a resident page cost the host's heap after the page struct
-// itself. It is protected by Host.mu, as the page's aliases always were.
+// aliasSet is the bindings that map one page. Almost every page has exactly
+// one — a page is a guest's own until a fork shares it — so that one is held
+// inline, and only a page with two or more keeps a map of them: a map for
+// every page was the largest thing a resident page cost the host's heap after
+// the page struct itself. It is protected by Host.mu, as the page's aliases
+// always were.
 type aliasSet[B comparable] struct {
 	one  B
 	more map[B]struct{}

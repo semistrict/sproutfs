@@ -147,7 +147,7 @@ func (r *MemoryRegion) SettlePrefetches(ctx context.Context) error {
 }
 
 // settlePrefetchesCounted waits for this memory region's count of running
-// prefetches to reach zero, which both cores keep.
+// prefetches to reach zero.
 func (r *MemoryRegion) settlePrefetchesCounted(ctx context.Context) error {
 	h := r.host
 	for {
@@ -173,8 +173,8 @@ func (h *Host) SettlePrefetches(ctx context.Context) error {
 	return h.settlePrefetchesCounted(ctx)
 }
 
-// settlePrefetchesCounted waits for the host's count of running prefetches
-// to reach zero, which both cores keep.
+// settlePrefetchesCounted waits for the host's count of running prefetches to
+// reach zero.
 func (h *Host) settlePrefetchesCounted(ctx context.Context) error {
 	for {
 		h.mu.Lock()
@@ -266,25 +266,33 @@ func (r *MemoryRegion) followsRecent(start uint64) bool {
 	return follows
 }
 
-// prefetch is prefetch over the zircon core: the rest of one fault's run,
-// read behind the fault, as READ requests on the identity roots of its pages
-// that it answers by supplying them, which is Zircon's PrefetchRange with a
-// pager that reads ahead. Which faults prefetch, the bound on prefetches in
-// flight, the bulk class of their reads and mapping what landed into the
-// region that asked stay the pager's (prefetch.go), and so do its sites,
-// probes and controlled points, by the same names.
+// prefetch is the rest of one fault's run, read behind the fault, as READ
+// requests on the identity roots of its pages that it answers by supplying
+// them, which is Zircon's PrefetchRange with a pager that reads ahead. Which
+// faults prefetch, the bound on prefetches in flight, the bulk class of their
+// reads and mapping what landed into the region that asked are the pager's.
 type prefetch struct {
-	region     *MemoryRegion
+	region *MemoryRegion
+	// start and end are the window, and pages the pages it reads, in page
+	// order, each with its identity and the free slot reserved for it.
 	start, end uint64
 	pages      []prefetchPage
-	// requests are the READ requests it sent, one for each run of its pages
-	// in one root. Guarded by Host.mu.
+	// requests are the READ requests it sent, one for each run of its pages in
+	// one root, which it answers when it finishes: every fault waiting on one
+	// of its pages waits on one of them. Guarded by Host.mu.
 	requests []prefetchRequest
 	cancel   context.CancelCauseFunc
-	// reading, holding, cancelled and finished are prefetch's. Guarded by
-	// Host.mu.
+	// reading is set from the split until the read has ended, and holding
+	// until every slot is settled: given back, or holding a page that landed,
+	// idle. Until then a slot is neither free nor a page, and an allocation
+	// short of one waits for it rather than evict (cancelPrefetchesLocked).
+	// cancelled marks one an allocation has cancelled already, and finished
+	// one whose read has ended (finish). All are guarded by Host.mu.
 	reading, holding, cancelled, finished bool
-	ctx                                   context.Context
+	// ctx is what the prefetch runs under: the values of the context of the
+	// fault that split it off, a task of its own in a controlled run, and the
+	// prefetch mark; cancel ends it.
+	ctx context.Context
 }
 
 // prefetchRequest is one READ request a prefetch sent, and the range it
@@ -295,7 +303,9 @@ type prefetchRequest struct {
 	offset, length uint64
 }
 
-// readingIn is readingIn over the zircon core's roots.
+// readingIn answers, under the host lock, whether a prefetch is reading a page
+// of the window [start, end): it asks each identity root of the window once,
+// where its pages begin, for the requests outstanding in the window.
 type readingIn struct {
 	host       *Host
 	start, end uint64
@@ -331,7 +341,12 @@ func (in *readingIn) of(key pageKey) bool {
 	return false
 }
 
-// splitPrefetch is windowPlan.splitPrefetch over the zircon core.
+// splitPrefetch takes every reservation of the window but the faulting page's
+// out of the plan, which is left to read the faulting page alone. The pages
+// that can land as clean shared pages, which into names the file of
+// (planRest), become a prefetch, which the caller starts; every other
+// reservation goes back, and its page is left to its own fault. It returns nil
+// where nothing is prefetched.
 func (p *plan) splitPrefetch(ctx context.Context, index uint64, into []*arenaFile) *prefetch {
 	r := p.region
 	h := r.host
@@ -763,8 +778,11 @@ func (p *plan) bindLanded(page prefetchPage) bool {
 	return true
 }
 
-// cancelPrefetchesLocked is Host.cancelPrefetchesLocked over the zircon
-// core's prefetches. Caller holds h.mu.
+// cancelPrefetchesLocked cancels every prefetch still reading, whose slots an
+// allocation that would otherwise evict a page a guest maps takes instead. It
+// reports whether any prefetch still holds slots, reading, cancelled, or
+// giving them back or landing its pages in them: the allocation waits for
+// those slots to come back free or as idle pages. Caller holds h.mu.
 func (h *Host) cancelPrefetchesLocked(ctx context.Context) bool {
 	holding := false
 	for pf := range h.prefetches {

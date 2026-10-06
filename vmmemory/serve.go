@@ -6,6 +6,10 @@ import (
 	"time"
 )
 
+// Serving a migration's destination and handing a region off: the pages a
+// region holds are its bindings' pages, resident or spilled, and those that
+// are its own dirty state are what no checkpoint has.
+
 // ErrHandedOff reports a memory region whose volume belongs to another host now. Its
 // pages are still served; nothing that would read or write the volume is.
 var ErrHandedOff = errors.New("managed-memory-region handed its volume off")
@@ -242,8 +246,3 @@ func (r *MemoryRegion) Stats(ctx context.Context) (MemoryRegionStats, error) {
 // eachBindingBatch is how many bindings eachBinding visits under one hold of
 // its locks.
 const eachBindingBatch = 256
-
-// Serving a migration's destination and handing a region off, over the
-// zircon core, as serve.go does for the current core: the pages a region
-// holds are its bindings' pages, resident or spilled, and those that are its
-// own dirty state are what no checkpoint has.

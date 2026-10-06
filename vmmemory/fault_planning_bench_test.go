@@ -80,8 +80,7 @@ func newBenchPager(b *testing.B, ctx context.Context, runtime *sim.Runtime, back
 		PrefetchRuns: 1})
 }
 
-// newConfiguredBenchPager is a benchmark's 4 KiB pager as cfg shapes it, in the
-// suite's core.
+// newConfiguredBenchPager is a benchmark's 4 KiB pager as cfg shapes it.
 func newConfiguredBenchPager(b *testing.B, ctx context.Context, runtime *sim.Runtime, backing vmmemory.Backing,
 	number int, cfg vmmemory.Config) *benchPager {
 	b.Helper()
