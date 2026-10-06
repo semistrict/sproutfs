@@ -1846,6 +1846,14 @@ tier (`SPROUTFS_HOT_TIER`) and a cluster share above 0
 in the same way, and `checkpoint.NewStore` refuses a hot tier beside a cache
 that fills the cluster.
 
+**Off by default.** A host has a hot tier only when its deployment names one.
+With `SPROUTFS_HOT_TIER` unset, a host has none, and its reads go from its
+disk straight to the regional bucket. The manifests under `deploy/` do not set
+it. Only the hot tier benches turn one on, through
+`sproutfs-restorebench -hot-bucket`. This was decided on 2026-10-06. On AWS
+the cluster cache on gp3 volumes was faster than an S3 Express hot tier, at
+the same cost or less. The code stays, with its tests.
+
 **Configured by a URL.** `SPROUTFS_HOT_TIER` is `gs://bucket/prefix` or
 `s3://bucket/prefix`. An `endpoint` query parameter points the client at an
 emulator or an S3-compatible server. The hot tier is reached through the same
@@ -1871,7 +1879,7 @@ and 4 KiB pages at 4.2 ms, against 102 and 26 ms from regional S3 Standard and
 
 1. this host's memory tier, then the pager's arena, as before;
 2. the page cache's disk, where it holds what a pull copied;
-3. the hot tier;
+3. the hot tier, where one is configured;
 4. the regional bucket.
 
 A read runs against the hot tier under a bound, 500 ms by default

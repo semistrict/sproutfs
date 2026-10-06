@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-03 18:46'
-updated_date: '2026-10-06 15:42'
+updated_date: '2026-10-06 16:02'
 labels:
   - storage
   - performance
@@ -70,4 +70,6 @@ AWS run 2026-10-04 (docs/measurements/aws-hot-tier-2026-10-04.md, scripts/bench-
 2026-10-05: AWS run (docs/measurements/aws-hot-tier-2026-10-04.md): gp3 shards beat the S3 Express hot tier (6.2 vs 16.9 ms at 2 MiB, 1.2 vs 4.2 ms at 4 KiB) at equal or lower cost. Coordinator recommends removing the hot tier; owner to decide keep / off by default / remove.
 
 2026-10-06 owner decision: keep the hot tier, off by default.
+
+2026-10-06 off by default: nothing enabled the hot tier before this either. sproutfs-host reads SPROUTFS_HOT_TIER and has none when it is unset (cmd/sproutfs-host/config.go); host.Config.HotTier with a nil Store is none; no manifest under deploy/ sets it; restorebench needs -hot-bucket, which only scripts/bench-hot-tier-aws.sh and -gce.sh pass; simtest World.HotTier is false unless a test asks. Added tests pinning it: TestAHostGivenNoHotTierRunsWithoutOne (host/hottier_test.go: two hosts with no hot tier round-trip a VM through the regional bucket and report no hot tier), HotTier nil in TestConfigTakesTheDocumentedDefaults and TestTheHostManifestConfiguresAHost. docs/hosting.md has an 'Off by default' paragraph; deploy/README.md says the manifests do not set it. Hot tier code and tests kept.
 <!-- SECTION:NOTES:END -->
