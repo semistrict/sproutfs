@@ -48,8 +48,6 @@ import (
 	"context"
 	"fmt"
 	"hash/crc32"
-	"runtime"
-	"strings"
 	"sync"
 	"time"
 )
@@ -323,16 +321,6 @@ type probeRing struct {
 
 var ring probeRing
 
-// note records one event. It takes no page lock and no host lock, so it may be
-// called from anywhere the pager is already holding something.
-func note(r *MemoryRegion, page uint64, what string, slot, other int) {
-	ring.mu.Lock()
-	ring.events[ring.next%ringEvents] = ringEvent{
-		at: time.Now(), memoryRegion: r, page: page, what: what, slot: slot, other: other}
-	ring.next++
-	ring.mu.Unlock()
-}
-
 // Ring reports, oldest first, everything the pager did to the pages within
 // radius of page in this memory region, and everything it did to every arena slot
 // those pages ever occupied — a slot handed to another page is how a guest
@@ -378,43 +366,4 @@ func Ring(r *MemoryRegion, page uint64, radius uint64) []string {
 		lines = append(lines, line)
 	}
 	return lines
-}
-
-// caller names the pager's own function that reached a recorded event, which is
-// what tells one unlink from another in a ring dump.
-func caller() string {
-	var pcs [1]uintptr
-	if runtime.Callers(3, pcs[:]) == 0 {
-		return "?"
-	}
-	frame, _ := runtime.CallersFrames(pcs[:]).Next()
-	name := frame.Function
-	if at := strings.LastIndex(name, "."); at >= 0 {
-		name = name[at+1:]
-	}
-	return fmt.Sprintf("%s:%d", name, frame.Line)
-}
-
-// publishReason says why a retiring page was dropped rather than published
-// under the identity its volume now gives it. A page dropped because another
-// resident page already holds that identity is a guest being sent to somebody
-// else's memory for its own page, which is the one reason that is not routine.
-func publishReason(stored bool, id pageKey, h *Host, pg *resident) string {
-	if !stored {
-		return "the volume holds no object for it"
-	}
-	if id.zero() {
-		return "the volume calls it a hole"
-	}
-	h.mu.Lock()
-	existing := h.clean[id]
-	h.mu.Unlock()
-	if existing == nil {
-		return "the identity went between the lookup and here"
-	}
-	if existing == pg {
-		return "it is already the identity's page"
-	}
-	return fmt.Sprintf("identity %+v is already held by slot %d, and this page is slot %d",
-		id.id, existing.slot, pg.slot)
 }

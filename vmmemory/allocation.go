@@ -34,8 +34,9 @@ type arenaFile struct {
 	owner *MemoryRegion
 	// The rest belongs to an isolated arena and is guarded by Host.mu; see
 	// isolation.go. shared marks a tenant's shared file, and tenant names the
-	// tenant. pages is the resident page at each held slot of a private or a
-	// fork file, which are the files the pager looks into by slot. digests is
+	// tenant. frames is the page at each held slot of a private or a fork
+	// file, which are the files the pager looks into by slot, and nil for
+	// every other file. digests is
 	// what the upload read of each published page of a private file hashed
 	// to. holders is every memory region a shared or a fork file was given to,
 	// by the number it was given under. orphaned marks a file nothing will be
@@ -44,13 +45,10 @@ type arenaFile struct {
 	// ended. Such a file is given back with its last page.
 	shared   bool
 	tenant   string
-	pages    map[int]*resident
+	frames   map[int]*zirconvm.VmPage
 	digests  map[int][32]byte
 	holders  map[*MemoryRegion]int
 	orphaned bool
-	// frames is the zircon core's page at each held slot of a private or a
-	// fork file, as pages is the current core's. Guarded by Host.mu.
-	frames map[int]*zirconvm.VmPage
 }
 
 // keepFile keeps one file the arena made, whose offsets space says which hold

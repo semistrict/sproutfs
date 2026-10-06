@@ -3,7 +3,6 @@ package vmmemory
 import (
 	"context"
 	"errors"
-	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -52,8 +51,7 @@ type MemoryRegionCheckpoint struct {
 	// mu guards the set and the window below, which a settle takes pages out
 	// of. Everything else here is fixed when the walk closes taken. The set is
 	// in ascending page order, which is how a page of it is found.
-	mu    sync.Mutex
-	pages []*binding
+	mu sync.Mutex
 	// dirtySince is the memory region's loss window at the seal: when the oldest of
 	// these pages was written. The seal takes it off the memory region, so that what
 	// the memory region reports from here is its own new writes; an abandoned
@@ -70,9 +68,8 @@ type MemoryRegionCheckpoint struct {
 	// pages to children on this host in. Both are guarded by mu.
 	digests map[uint64]digest
 	fork    *arenaFile
-	// copies is the set under the zircon core, in ascending page order: the
-	// checkpoint's copy of each page, beside the region's layer. Guarded by
-	// mu, as pages is.
+	// copies is the set, in ascending page order: the checkpoint's copy of
+	// each page, beside the region's layer. Guarded by mu.
 	copies []*zbinding
 	done   chan struct{}
 	err    error // read only after done is closed
@@ -227,16 +224,7 @@ func (r *MemoryRegion) protect(ctx context.Context, runs []PageRun) ([]PageRun, 
 // pager page is a store page, so these are the store pages a checkpoint
 // republishes.
 func (c *MemoryRegionCheckpoint) DirtyPages() []uint64 {
-	if z := c.zircon(); z != nil {
-		return z.dirtyPages(c)
-	}
-	held := c.sealedPages()
-	pages := make([]uint64, 0, len(held))
-	for _, held := range held {
-		pages = append(pages, held.index)
-	}
-	sort.Slice(pages, func(i, j int) bool { return pages[i] < pages[j] })
-	return pages
+	return c.zircon().dirtyPages(c)
 }
 
 // UnpublishedAge is how long the oldest write this checkpoint holds has gone
@@ -267,31 +255,7 @@ func (c *MemoryRegionCheckpoint) UnpublishedAge() time.Duration {
 // inherits it reads the page through its own backing, which reaches these same
 // pages through the seal.
 func (c *MemoryRegionCheckpoint) Share(ctx context.Context, ref control.Ref, volume string) error {
-	if z := c.zircon(); z != nil {
-		return z.share(ctx, c, ref, volume)
-	}
-	h := c.memoryRegion.host
-	if err := c.memoryRegion.inTenant(ref); err != nil {
-		return err
-	}
-	c.held.Store(true)
-	if h.isolated() {
-		// A child on this host maps these pages from a file of this point's own,
-		// which is made the first time one does.
-		h.mu.Lock()
-		h.lent[lentKey{ref, volume}] = c
-		h.mu.Unlock()
-	}
-	for _, held := range c.sealedPages() {
-		key := pageKey{id: control.Identity{Ref: ref, Volume: volume, Page: held.index}}
-		if err := h.locked(ctx, held, func(pg *resident) error {
-			h.share(pg, key)
-			return nil
-		}); err != nil {
-			return err
-		}
-	}
-	return nil
+	return c.zircon().share(ctx, c, ref, volume)
 }
 
 // ReadDirty fills dst, exactly one pager page, with the bytes the seal froze. A
@@ -300,62 +264,7 @@ func (c *MemoryRegionCheckpoint) Share(ctx context.Context, ref control.Ref, vol
 // memory region's: the guest goes on faulting and storing while a checkpoint reads its
 // checkpoint.
 func (c *MemoryRegionCheckpoint) ReadDirty(ctx context.Context, page uint64, dst []byte) error {
-	if z := c.zircon(); z != nil {
-		return z.readDirty(ctx, c, page, dst)
-	}
-	h := c.memoryRegion.host
-	if uint64(len(dst)) != h.pageSize {
-		return ErrRange
-	}
-	select {
-	case <-c.done:
-		// Retired, abandoned or discarded: these pages are the guest's own
-		// state again or the volume's, and the memory behind them holds whatever
-		// has happened since, which is not what this checkpoint holds. A memory region
-		// that discarded it reports why it ended.
-		if c.err != nil {
-			return c.err
-		}
-		return ErrNotSealed
-	default:
-	}
-	held := c.heldPage(page)
-	if held == nil {
-		return ErrRange
-	}
-	release, err := h.beginCheckpointIO(ctx)
-	if err != nil {
-		return err
-	}
-	defer release()
-	pg, err := h.current(ctx, held)
-	if err != nil {
-		return err
-	}
-	if pg != nil {
-		defer h.unlock(pg)
-	}
-	if err := h.read(ctx, held, pg, dst); err != nil {
-		return err
-	}
-	if h.isolated() {
-		// The digest is of exactly what the upload is given. A published page
-		// that another memory region inherits is copied out of this region's
-		// private file and checked against it.
-		sum := digestOf(dst)
-		c.mu.Lock()
-		if c.digests == nil {
-			c.digests = make(map[uint64]digest)
-		}
-		c.digests[page] = sum
-		c.mu.Unlock()
-	}
-	if held.ahead && allZero(dst) {
-		h.mu.Lock()
-		h.stats.WriteAheadZeroPages++
-		h.mu.Unlock()
-	}
-	return nil
+	return c.zircon().readDirty(ctx, c, page, dst)
 }
 
 // Retire ends the seal this checkpoint holds. published reports that the

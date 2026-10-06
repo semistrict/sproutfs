@@ -2,8 +2,6 @@ package vmmemory
 
 import (
 	"context"
-	"maps"
-	"slices"
 	"time"
 )
 
@@ -56,58 +54,6 @@ import (
 
 // coldCopyAge is how old a cold copy is before its session gives it back.
 var coldCopyAge = 200 * time.Millisecond
-
-// unpin is the reverse of pin: the last unpin moves origin back to the queue
-// it belongs in.
-func (h *Host) unpin(origin *resident, b *binding) {
-	h.pinMu.Lock()
-	defer h.pinMu.Unlock()
-	if _, pinned := origin.coldCopies[b]; !pinned {
-		return
-	}
-	delete(origin.coldCopies, b)
-	if len(origin.coldCopies) == 0 {
-		h.unpinnedLocked(origin)
-	}
-}
-
-// uncoldLocked ends b's copy being cold, if it is: a comparison found it
-// changed, it was given back, or its dirty epoch or its origin ended some other
-// way. Every transition that changes a page's origin or ends its dirty epoch
-// calls it first. Caller holds bindingsMu.
-func (r *MemoryRegion) uncoldLocked(b *binding) {
-	if !b.cold {
-		return
-	}
-	b.cold = false
-	delete(r.coldPages, b.index)
-	if b.origin != nil {
-		r.host.unpin(b.origin, b)
-	}
-}
-
-// dropCold lets every cold copy compared with pg go on without it: pg is
-// going although it is pinned, because an eviction had nothing else to take,
-// its identity was dropped, or a move put its bytes elsewhere. The copies stay
-// cold, and are compared with the bytes their volume holds for their page
-// instead, which are what pg held: see volumeHolds. Caller holds pg's lock.
-func (h *Host) dropCold(pg *resident) {
-	h.pinMu.Lock()
-	copies := slices.Collect(maps.Keys(pg.coldCopies))
-	pg.coldCopies = nil
-	if len(copies) > 0 {
-		h.unpinnedLocked(pg)
-	}
-	h.pinMu.Unlock()
-	for _, b := range copies {
-		r := b.memoryRegion
-		r.bindingsMu.Lock()
-		if b.cold && b.origin == pg {
-			b.origin = nil
-		}
-		r.bindingsMu.Unlock()
-	}
-}
 
 // GiveBackColdCopies gives back at once the cold copies recorded and not yet
 // taken, and reports how many went back: see giveback.go. A session takes

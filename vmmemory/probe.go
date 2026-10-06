@@ -32,24 +32,6 @@ type probeBinding interface {
 	probeRegion() any
 }
 
-func (pg *resident) probeAbsent() bool    { return pg == nil }
-func (pg *resident) probeSlot() fileSlot  { return pg.fileSlot }
-func (pg *resident) probePublished() bool { return pg.published() }
-func (pg *resident) probeUnnamed() bool   { return pg.private && pg.key == (pageKey{}) }
-func (pg *resident) probeName() string    { return fmt.Sprintf("%+v", pg.key.id) }
-
-func (pg *resident) probeOther(region any) (uint64, bool) {
-	for other := range pg.aliases.all() {
-		if other.memoryRegion != region {
-			return other.index, true
-		}
-	}
-	return 0, false
-}
-
-func (b *binding) probeIndex() uint64 { return b.index }
-func (b *binding) probeRegion() any   { return b.memoryRegion }
-
 func (f *zframe) probeAbsent() bool   { return f == nil }
 func (f *zframe) probeSlot() fileSlot { return f.fileSlot }
 

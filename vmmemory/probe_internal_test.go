@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/vmmemory/internal/zirconvm"
 )
 
@@ -25,8 +24,14 @@ func (a slotArena) Write(_ context.Context, slot int, src []byte) error {
 }
 func (a slotArena) Release(context.Context, int) error { return nil }
 
-func page(slot int, private bool) *resident {
-	return &resident{fileSlot: fileSlot{slot: slot}, private: private}
+// page is a frame at slot: a region's own page where private, and a root's
+// page where not.
+func page(slot int, private bool) *zframe {
+	f := &zframe{fileSlot: fileSlot{slot: slot}}
+	if private {
+		f.layer = &zirconRegion{}
+	}
+	return f
 }
 
 func wantFinding(t *testing.T, got, contains string) {
@@ -43,7 +48,7 @@ func wantFinding(t *testing.T, got, contains string) {
 // been given a page to store into must never be handed an older one back.
 func TestTheProbeRefusesToInstallAPageOlderThanTheGuestWasGiven(t *testing.T) {
 	var p probeState
-	b := &binding{index: 7}
+	b := &zbinding{index: 7}
 	origin, copied := page(1, false), page(2, true)
 	p.granted(b, copied, origin)
 
@@ -62,7 +67,7 @@ func TestTheProbeRefusesToInstallAPageOlderThanTheGuestWasGiven(t *testing.T) {
 // the pager cannot vouch for. It is reported at that binding's next transition.
 func TestTheProbeReportsAPageInstalledOverAGuestsOwnMemory(t *testing.T) {
 	var p probeState
-	b := &binding{index: 7}
+	b := &zbinding{index: 7}
 	p.granted(b, page(2, true), page(1, false))
 
 	// A post-copy or a read-ahead putting a page it loaded over the one the
@@ -77,7 +82,7 @@ func TestTheProbeReportsAPageInstalledOverAGuestsOwnMemory(t *testing.T) {
 // guest nothing newer, and chooses what it maps by identity from then on.
 func TestTheProbeStopsOwingAGuestOnceItsPageIsRetired(t *testing.T) {
 	var p probeState
-	b := &binding{index: 7}
+	b := &zbinding{index: 7}
 	origin, copied := page(1, false), page(2, true)
 	p.granted(b, copied, origin)
 	p.retired(b)
@@ -92,16 +97,17 @@ func TestTheProbeStopsOwingAGuestOnceItsPageIsRetired(t *testing.T) {
 // an unnamed one is a guest writing into another's memory.
 func TestTheProbeAllowsTwoMemoryRegionsToShareANamedPrivatePage(t *testing.T) {
 	var p probeState
-	parent, child := &MemoryRegion{}, &MemoryRegion{}
+	parent, child := &zirconRegion{}, &zirconRegion{}
 	shared := page(1, true)
-	held := &binding{memoryRegion: parent, index: 7}
+	shared.layer = parent
+	held := &zbinding{region: parent, index: 7}
 	shared.aliases.add(held)
 
-	wantFinding(t, p.bind(nil, &binding{memoryRegion: child, index: 7}, shared),
+	wantFinding(t, p.bind(nil, &zbinding{region: child, index: 7}, shared),
 		"reached from two memory regions")
 
-	shared.key = pageKey{id: control.Identity{Volume: "fork-point", Page: 7}}
-	if found := p.bind(nil, &binding{memoryRegion: child, index: 7}, shared); found != "" {
+	shared.lent = zirconvm.NewFramePage(zlent{frame: shared})
+	if found := p.bind(nil, &zbinding{region: child, index: 7}, shared); found != "" {
 		t.Fatalf("a fork point's named page was reported as %q", found)
 	}
 }
@@ -114,7 +120,7 @@ func TestTheProbeChecksTheSettlesReShareByItsBytes(t *testing.T) {
 	file := &arenaFile{ArenaFile: arena}
 	h := &Host{pageSize: 8, files: []*arenaFile{file}}
 	var p probeState
-	b := &binding{index: 7}
+	b := &zbinding{index: 7}
 	origin, copied := page(1, false), page(2, true)
 	origin.file, copied.file = file, file
 	copy(arena[1], []byte("abcdefgh"))
@@ -141,7 +147,7 @@ func TestTheProbeChecksTheSettlesReShareByItsBytes(t *testing.T) {
 // the faults.
 func TestTheProbeRemembersOnePageAtATimePerGuest(t *testing.T) {
 	var p probeState
-	b := &binding{index: 7}
+	b := &zbinding{index: 7}
 	for range 100 {
 		p.granted(b, page(2, true), page(1, false))
 	}

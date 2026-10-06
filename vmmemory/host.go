@@ -65,9 +65,7 @@ type Host struct {
 	lent map[lentKey]*MemoryRegionCheckpoint
 	// spill is the dirty budget: the spill file as the storage of a
 	// reservation per private page this pager admits. See spill.go.
-	spill        *zirconvm.SpillStorage
-	clean        map[pageKey]*resident
-	cleanVersion uint64
+	spill *zirconvm.SpillStorage
 	// requests are the READ requests not in use (pagerequests.go).
 	// prefetching counts the prefetches still reading, and prefetchRunning
 	// those whose goroutines have not ended, mapping their pages included.
@@ -88,8 +86,6 @@ type Host struct {
 	// flushed is what a guest's flush of a memory region is handed to. See SetFlushed.
 	flushed           func(*MemoryRegion, func(error))
 	zeroMemoryRegions int // attached memory regions retaining knowledge of explicit zeros
-	// queues order every resident page for reclaim. See queues.go.
-	queues *pageQueues
 	// evictor frees a slot for an allocation short of one, taking its
 	// victims from queues. See evictor.go.
 	evictor *pagerEvictor
@@ -236,9 +232,8 @@ func New(ctx context.Context, resources *resource.Budget, cfg Config, arena Aren
 		arena:       arena,
 		extents:     make(map[extentKey]*extent),
 		extentPages: extentPages,
-		clean:       make(map[pageKey]*resident), changed: make(chan struct{}), revoked: make(chan struct{}),
+		changed:     make(chan struct{}), revoked: make(chan struct{}),
 		requests:      sync.Pool{New: func() any { return zirconvm.NewPageRequest() }},
-		queues:        newPageQueues(pageSize),
 		memoryRegions: make(map[*MemoryRegion]struct{}), highWater: highWater(cfg.DirtyPages),
 		io: make(chan struct{}, cfg.ConcurrentIO), writeback: make(chan struct{}, 1)}
 	h.evictor = newPagerEvictor(h)
@@ -343,44 +338,6 @@ func (h *Host) revokedLocked() {
 	h.revoked = make(chan struct{})
 }
 
-func (h *Host) unlock(pg *resident) {
-	found := h.probe.stable(context.Background(), h, pg, "unlock")
-	pg.mu.Unlock()
-	h.mu.Lock()
-	h.signal()
-	h.mu.Unlock()
-	if found != "" {
-		panic(found)
-	}
-}
-
-// unlockAll releases a batch of pages and wakes waiters once rather than once
-// per page. A seal, a revoke and a plan each release many at a time, and a
-// waiter rechecks everything the batch changed whichever wake reaches it.
-func (h *Host) unlockAll(pages []*resident) {
-	if len(pages) == 0 {
-		return
-	}
-	for _, pg := range pages {
-		pg.mu.Unlock()
-	}
-	h.mu.Lock()
-	h.signal()
-	h.mu.Unlock()
-}
-
-// locked runs fn under the binding's current page lock and always releases
-// that lock. A binding with no resident page is a no-op.
-func (h *Host) locked(ctx context.Context, b *binding, fn func(pg *resident) error) error {
-	pg, err := h.current(ctx, b)
-	if err != nil || pg == nil {
-		return err
-	}
-	err = fn(pg)
-	h.unlock(pg)
-	return err
-}
-
 // takeWindow lends a fault the bytes its window read fills, of the given pages
 // of this pager. A window read covers the whole span of the pages it is
 // fetching, holes and all, so a fault that wants two pages at opposite ends of
@@ -428,29 +385,6 @@ func (h *Host) beginCheckpointIO(ctx context.Context) (func(), error) {
 		return h.endIO, nil
 	case <-ctx.Done():
 		return nil, context.Cause(ctx)
-	}
-}
-
-// current acquires the page lock without holding the host lock, then validates
-// that eviction did not replace the binding while the caller waited.
-func (h *Host) current(ctx context.Context, b *binding) (*resident, error) {
-	for {
-		h.mu.Lock()
-		pg := b.resident
-		h.mu.Unlock()
-		if pg == nil {
-			return nil, nil
-		}
-		if err := pg.mu.Lock(ctx); err != nil {
-			return nil, err
-		}
-		h.mu.Lock()
-		same := b.resident == pg
-		h.mu.Unlock()
-		if same {
-			return pg, nil
-		}
-		h.unlock(pg)
 	}
 }
 

@@ -143,15 +143,12 @@ func (z *zirconHost) newFrame(ctx context.Context, at fileSlot, data []byte, kin
 // is where an allocation of an isolated arena finds it.
 func (z *zirconHost) noteFrame(page *zirconvm.VmPage) {
 	f := frameOf(page)
-	if f.file.pages == nil {
+	if f.file.frames == nil {
 		return
 	}
 	h := z.host
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if f.file.frames == nil {
-		f.file.frames = make(map[int]*zirconvm.VmPage)
-	}
 	f.file.frames[f.slot] = page
 }
 

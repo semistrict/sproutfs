@@ -9,6 +9,7 @@ import (
 
 	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/vmmemory/internal/slots"
+	"github.com/semistrict/sproutfs/vmmemory/internal/zirconvm"
 	"lukechampine.com/blake3"
 )
 
@@ -159,7 +160,7 @@ func (h *Host) newPrivateFile(ctx context.Context, r *MemoryRegion) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	f := h.keepFile(file, slots.NewSparse(offsets, min(h.cfg.ResidentPages, offsets)))
-	f.owner, f.pages, f.digests = r, make(map[int]*resident), make(map[int]digest)
+	f.owner, f.frames, f.digests = r, make(map[int]*zirconvm.VmPage), make(map[int]digest)
 	h.files = append(h.files, f)
 	r.private = f
 	return nil
@@ -298,7 +299,7 @@ func (c *MemoryRegionCheckpoint) forkFile(ctx context.Context) (*arenaFile, erro
 	}
 	h.mu.Lock()
 	f := h.keepFile(file, slots.NewSparse(offsets, min(h.cfg.ResidentPages, offsets)))
-	f.pages, f.holders = make(map[int]*resident), make(map[*MemoryRegion]int)
+	f.frames, f.holders = make(map[int]*zirconvm.VmPage), make(map[*MemoryRegion]int)
 	h.files = append(h.files, f)
 	h.mu.Unlock()
 	c.fork = f
