@@ -547,9 +547,12 @@ func startNativeOptions(t testing.TB, h *vmmemory.Host, tenant string, pages int
 				p.backing = append(p.backing, kernel)
 			}
 		} else {
-			kernel := newKernelBacking(byte(i+1), pages*hugePageSize)
+			// The backing is in the host's page, which the client declares
+			// each memory region in.
+			page := int(h.PageSize())
+			kernel := newPagedKernelBacking(byte(i+1), pages*page, uint64(page))
 			for j := range kernel.data {
-				kernel.data[j] = byte(1 + i*32 + j/hugePageSize)
+				kernel.data[j] = byte(1 + i*32 + j/page)
 			}
 			p.backing = append(p.backing, kernel)
 			b = kernel
