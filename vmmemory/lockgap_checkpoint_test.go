@@ -334,6 +334,48 @@ func TestAForkFileIsGivenUnderNoNumberAnotherIsDroppedFrom(t *testing.T) {
 	})
 }
 
+// A publication's read of a spilled page of a checkpoint holds the region
+// live, so a detach that discards the checkpoint waits for the read, and the
+// read returns the bytes the seal froze. Before 2026-10-07 the read held
+// nothing of the region, and a detach between its look at the reservation
+// and its read of it freed the reservation under it.
+func TestADetachWaitsForAPublicationsReadOfASpilledPage(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 2, LogicalPages: 16, DirtyPages: 8,
+			ReadAheadPages: 1})
+		r, m, _ := f.memoryRegion(4)
+		access(t, r, m, 0, true)[0] = 0xab
+		if err := r.Seal(f.ctx); err != nil {
+			t.Fatal(err)
+		}
+		// Reading the rest of the region spills the sealed page.
+		for page := uint64(1); page < 4; page++ {
+			access(t, r, m, page, false)
+		}
+		if s := hostStats(t, f); s.Spills != 1 {
+			t.Fatalf("the region spilled %d pages, want the sealed one", s.Spills)
+		}
+		checkpoint := r.Checkpoint()
+		detached := make(chan error, 1)
+		vmmemory.SetReadSpillSeam(t, func() {
+			// The guest's VMM has gone, and the region detaches while the
+			// publication reads the sealed page.
+			f.a.mu.Lock()
+			clear(m.pages)
+			f.a.mu.Unlock()
+			go func() { detached <- r.Detach(f.ctx) }()
+			synctest.Wait()
+		})
+		data := make([]byte, f.pageSize)
+		if err := checkpoint.ReadDirty(f.ctx, 0, data); err != nil || data[0] != 0xab {
+			t.Fatalf("the publication read %#x at page 0 and %v, want the 0xab the seal froze", data[0], err)
+		}
+		if err := <-detached; err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
 // A page a journal capture took stays write-protected through a seal that is
 // abandoned, so the guest's next store into it traps and makes it
 // unjournaled, and the next flush takes it. Before 2026-10-07 the seal

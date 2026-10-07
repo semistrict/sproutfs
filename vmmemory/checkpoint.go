@@ -399,6 +399,17 @@ func (c *MemoryRegionCheckpoint) ReadDirty(ctx context.Context, page uint64, dst
 	if uint64(len(dst)) != h.pageSize {
 		return ErrRange
 	}
+	// The region is held live from the look at the seal to the read's end: a
+	// detach discards the seal and frees its reservations, and it waits for
+	// this, so the copy read is never one it has freed. A read after the
+	// detach finds the seal over. Nothing here waits for what a detach holds
+	// first: it takes the region live before anything else.
+	if !sim.Bug(ctx, "pager-read-dirty-beside-a-detach") {
+		if err := r.live.RLock(ctx); err != nil {
+			return err
+		}
+		defer r.live.RUnlock()
+	}
 	select {
 	case <-c.done:
 		if c.err != nil {
@@ -777,14 +788,21 @@ func (r *MemoryRegion) readHeld(ctx context.Context, held *binding, dst []byte) 
 	// The copy was spilled. A refault may give it a page again before the
 	// reservation is read, and that page holds the reservation's bytes, which
 	// the copy keeps: only a settle, the end of the seal and a detach take the
-	// reservation away. A publication reads before the first two. A detach
-	// discards the seal whatever reads it, and a read it overtakes here finds
-	// the reservation freed.
+	// reservation away. A publication reads before the first two, and every
+	// caller holds the region live, which keeps the third out.
 	r.bindingsMu.Lock()
 	spill := held.spill
 	r.bindingsMu.Unlock()
+	if readSpillSeam != nil {
+		readSpillSeam()
+	}
 	return h.readSpill(ctx, spill, dst)
 }
+
+// readSpillSeam runs in a read of a spilled checkpoint copy between taking
+// its reservation and reading it. It is nil in production; a test detaches
+// the region there.
+var readSpillSeam func()
 
 // lentRoot is the temporary identity root of what c lends under key, made
 // where there is none.
@@ -843,6 +861,13 @@ func (h *Host) unlend(ctx context.Context, page *zirconvm.VmPage) {
 		// The bug leaves the name until the seal ends.
 		return
 	}
+	h.dropLentName(page)
+}
+
+// dropLentName takes the page naming page in a fork point's temporary root
+// out of that root, where there is one: unlend's work, which a page leaving
+// every object does too (removeFromObject). Caller holds the page's lock.
+func (h *Host) dropLentName(page *zirconvm.VmPage) {
 	f := frameOf(page)
 	h.mu.Lock()
 	lent := f.lent
