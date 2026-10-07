@@ -53,6 +53,99 @@ static uint64_t monotonic(void) {
     return (uint64_t)now.tv_sec * 1000000000u + (uint64_t)now.tv_nsec;
 }
 
+// pattern_word is word `word` of 4 KiB page `page` of a pattern region under
+// `mark`: 0 for a template's bytes, and a fork's own mark for a page it stamps.
+// Every word of every page differs, so a reader can name each page whose bytes
+// are not the ones it should hold, and a page read from the wrong place, or
+// from the right place at the wrong offset, is never right by chance. The host
+// computes the same words (vmmachine's templatePatternWord) to check the sum.
+static uint64_t pattern_word(uint64_t mark, uint64_t page, uint64_t word) {
+    uint64_t x = (mark << 48) ^ (page << 9) ^ word ^ 0x9e3779b97f4a7c15ULL;
+    x ^= x >> 30; x *= 0xbf58476d1ce4e5b9ULL;
+    x ^= x >> 27; x *= 0x94d049bb133111ebULL;
+    return x ^ (x >> 31);
+}
+
+// pattern_region is the memory the pattern commands work on: pattern fills it
+// with a template's bytes, stamp stores a mark over some of its pages, and
+// verify reads every page back.
+static struct {
+    volatile uint64_t *words;
+    size_t pages;
+    uint64_t mark, stride, phase;
+} pattern_region;
+
+enum { patternWords = 4096 / sizeof(uint64_t), patternFirst = 16 };
+
+// pattern_mark is the mark page `page` should hold: the fork's own where it
+// stamped, and the template's everywhere else.
+static uint64_t pattern_mark(size_t page) {
+    if (pattern_region.mark && page % pattern_region.stride == pattern_region.phase) return pattern_region.mark;
+    return 0;
+}
+
+// pattern_fill writes the template's bytes over `mib` MiB of fresh memory.
+static void pattern_fill(unsigned long mib) {
+    if (pattern_region.words || !mib || mib > 1024) { errno = EINVAL; fail("pattern size"); }
+    size_t bytes = (size_t)mib << 20;
+    void *region = mmap(NULL, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (region == MAP_FAILED) fail("pattern mmap");
+    pattern_region.words = region;
+    pattern_region.pages = bytes / 4096;
+    for (size_t page = 0; page < pattern_region.pages; page++) {
+        for (size_t word = 0; word < patternWords; word++) {
+            pattern_region.words[page * patternWords + word] = pattern_word(0, page, word);
+        }
+    }
+    printf("SPROUTFS_PATTERN pages=%zu\n", pattern_region.pages);
+}
+
+// pattern_stamp stores `mark` over every page whose index is `phase` modulo
+// `stride`, once: a fork's own stores into pages it inherited.
+static void pattern_stamp(unsigned long mark, unsigned long stride, unsigned long phase) {
+    if (!pattern_region.words || pattern_region.mark || !mark || mark > 0xffff || !stride || phase >= stride) {
+        errno = EINVAL; fail("stamp");
+    }
+    pattern_region.mark = mark; pattern_region.stride = stride; pattern_region.phase = phase;
+    size_t stamped = 0;
+    for (size_t page = phase; page < pattern_region.pages; page += stride) {
+        for (size_t word = 0; word < patternWords; word++) {
+            pattern_region.words[page * patternWords + word] = pattern_word(mark, page, word);
+        }
+        stamped++;
+    }
+    printf("SPROUTFS_STAMP mark=%lu pages=%zu\n", mark, stamped);
+}
+
+// pattern_verify reads every word of every page and reports how many pages
+// differ from what they should hold, the first of them, the wrapping sum of
+// every word read, and how long the read took on the guest's own clock.
+static void pattern_verify(void) {
+    if (!pattern_region.words) { errno = EINVAL; fail("verify without a pattern"); }
+    uint64_t began = monotonic(), sum = 0;
+    size_t bad = 0, stamped = 0, first[patternFirst] = {0};
+    for (size_t page = 0; page < pattern_region.pages; page++) {
+        uint64_t mark = pattern_mark(page);
+        int wrong = 0;
+        for (size_t word = 0; word < patternWords; word++) {
+            uint64_t got = pattern_region.words[page * patternWords + word];
+            sum += got;
+            wrong |= got != pattern_word(mark, page, word);
+        }
+        if (mark) stamped++;
+        if (wrong) {
+            if (bad < patternFirst) first[bad] = page;
+            bad++;
+        }
+    }
+    char list[patternFirst * 21 + 2] = "-";
+    for (size_t at = 0, used = 0; at < bad && at < patternFirst; at++) {
+        used += (size_t)snprintf(list + used, sizeof(list) - used, at ? ",%zu" : "%zu", first[at]);
+    }
+    printf("SPROUTFS_VERIFY pages=%zu stamped=%zu bad=%zu sum=%llu ns=%llu first=%s\n", pattern_region.pages,
+           stamped, bad, (unsigned long long)sum, (unsigned long long)(monotonic() - began), list);
+}
+
 // reseeds counts the kernel's records of reseeding its random pool from a new
 // VM generation ID, which its VMGenID driver does each time the VMM gives the
 // guest one. The records are in the kernel's log whatever the console's level,
@@ -375,6 +468,14 @@ int main(void) {
                 }
             }
             printf("SPROUTFS_PRESSURE_OK bytes=%zu\n", pressure_bytes);
+        } else if (sscanf(line, "pattern %lu", &value) == 1) {
+            pattern_fill(value);
+        } else if (!strncmp(line, "stamp ", 6)) {
+            unsigned long mark, stride, phase;
+            if (sscanf(line, "stamp %lu %lu %lu", &mark, &stride, &phase) != 3) { errno = EINVAL; fail("stamp command"); }
+            pattern_stamp(mark, stride, phase);
+        } else if (!strncmp(line, "verify", 6)) {
+            pattern_verify();
         } else if (!strncmp(line, "scan", 4)) {
             // Read every page of the PMEM device, which is the whole of the
             // root volume behind it. A child of a fork reaches every page of

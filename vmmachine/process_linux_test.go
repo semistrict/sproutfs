@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -91,6 +92,24 @@ type hostPagersConfig struct {
 	// Isolated builds both pagers in the isolated arena whatever mode the
 	// suite runs in, for a test whose subject is what that arena does.
 	Isolated bool
+	// HostReadAhead gives each pager the read-ahead run, the prefetch rule and
+	// the I/O bound a host gives it (host/pager.go, pagerBounds): an 8 MiB run,
+	// a prefetch behind a fault at random where the page is 2 MiB, and reads in
+	// flight bounded by the node's processors and the runs the arena holds. The
+	// suites' own default is a 2 MiB run with no prefetch at random.
+	HostReadAhead bool
+}
+
+// hostReadAheadBytes is a host's read-ahead run (host/pager.go,
+// readAheadBytes), which this package cannot import.
+const hostReadAheadBytes = 8 << 20
+
+// hostConcurrentIO is the bound a host puts on a pager's reads in flight
+// (host/pager.go, concurrentIO): four a processor, at least 16 and at most 256,
+// and never more runs than the arena holds.
+func hostConcurrentIO(resident, readAhead int) int {
+	permits := min(max(4*runtime.NumCPU(), 16), 256)
+	return max(1, min(permits, resident/max(readAhead, 1)))
 }
 
 // ramPageBytes and pmemPageBytes are the pages the two pagers of these suites
@@ -191,6 +210,11 @@ func newConfiguredHostPagers(t testing.TB, ctx context.Context, cfg hostPagersCo
 			Arena:           testarena.Mode(t)}
 		if cfg.Isolated {
 			pagerConfig.Arena = vmmemory.ArenaIsolated
+		}
+		if cfg.HostReadAhead {
+			pagerConfig.ReadAheadPages = int(max(hostReadAheadBytes/page, 1))
+			pagerConfig.PrefetchAtRandom = vmmemory.PrefetchesAtRandom(page)
+			pagerConfig.ConcurrentIO = hostConcurrentIO(resident, pagerConfig.ReadAheadPages)
 		}
 		if kind == vmmemory.Pmem {
 			pagerConfig.LossWindow = cfg.LossWindow

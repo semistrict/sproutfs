@@ -167,6 +167,10 @@ if [[ ${SPROUTFS_GCE_QUALIFY:-0} == 1 ]]; then
         qualify vmmemory "$work/build/vmmemory.test" -test.v -test.timeout=20m
         qualify pool-exhaustion env SPROUTFS_HUGETLB_EXHAUSTION=1 "$work/build/vmmemory.test" -test.v \
             -test.run '^TestLinuxArenaPoolExhaustionReturnsError$' -test.timeout=1m
+    elif [[ -n ${SPROUTFS_VMMEMORY_RUN:-} ]]; then
+        # A narrowed run may still ask for the pager's own Linux suite, or
+        # the part of it its pattern selects.
+        qualify vmmemory "$work/build/vmmemory.test" -test.v -test.timeout=20m -test.run "$SPROUTFS_VMMEMORY_RUN"
     fi
     # The Firecracker suites' root: the init, the deployment's guest agent and
     # witness, and busybox for the shell the agent runs commands through.

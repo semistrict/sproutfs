@@ -310,10 +310,21 @@ type migrationCluster struct {
 
 func newMigrationCluster(t *testing.T, ctx context.Context) *migrationCluster {
 	t.Helper()
+	return newMigrationClusterOver(t, ctx, instantObjectStore)
+}
+
+// instantObjectStore is an object store that costs nothing to reach, which is
+// what a suite whose subject is not the store runs over.
+var instantObjectStore = sim.ObjectStoreConfig{HeadLatency: time.Nanosecond,
+	GetLatency: time.Nanosecond, PutLatency: time.Nanosecond, ListLatency: time.Nanosecond,
+	DeleteLatency: time.Nanosecond, BytesPerSecond: 1 << 50}
+
+// newMigrationClusterOver is newMigrationCluster over an object store of the
+// given latencies, for a suite whose pages must take a store's time to read.
+func newMigrationClusterOver(t *testing.T, ctx context.Context, objects sim.ObjectStoreConfig) *migrationCluster {
+	t.Helper()
 	network := testnet.New()
-	runtime := sim.New(sim.Config{ObjectStore: sim.ObjectStoreConfig{HeadLatency: time.Nanosecond,
-		GetLatency: time.Nanosecond, PutLatency: time.Nanosecond, ListLatency: time.Nanosecond,
-		DeleteLatency: time.Nanosecond, BytesPerSecond: 1 << 50}})
+	runtime := sim.New(sim.Config{ObjectStore: objects})
 	store, err := checkpoint.NewStore(checkpoint.Config{ObjectStore: runtime.ObjectStore()})
 	if err != nil {
 		t.Fatal(err)
