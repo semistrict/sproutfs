@@ -1336,6 +1336,22 @@ chance of that by luck is about 1 in 70,000. The panic is rarer than the grant
 (about 1 lane in 50 there, 1 in 8 on an eight-core machine), and 0 of 150 lanes
 panicked after.
 
+### A run read decides again after its reclaim
+
+A run read can give the region up in its reclaim, between locating its window
+and taking the window's pages. A checkpoint that publishes and retires there
+names a page the guest stored into anew, so the window's old name for it is its
+parent's. The plan records which pages the region held nothing at when it
+located the window (`plan.free`), and takes only those by their located names.
+`TestARunReadTakesNoPageByANameAPublicationReplaced` runs the checkpoint inside
+the reclaim; before the fix the guest read its parent's byte after its own
+store.
+
+A plan that holds a page of the region's own layer reads nothing more: it would
+give the region up for the read with that page's lock held, and a retire that
+holds the region waits for the lock. The rest of its run is left to its own
+faults (`TestARunReadHoldingItsRegionsOwnPageLetsARetireRun`).
+
 ## Ownership
 
 The Go pager owns:
@@ -1849,6 +1865,11 @@ pager and the checkpoint cache take them before they wait. A memory region that
 finds no free extent gives up the idle pages of an extent whose memory region has
 gone. `DropIdle` gives up all idle pages at once. `Stats.IdlePages` is the number
 of idle pages, and `Stats.IdleDrops` the number given up.
+
+An idle page chosen under the host's lock is looked at again under its own
+lock before it is given up (`evictIfIdle`): a settle may hand it back to a
+region in between, and an eviction's look ages a mapped page as readily as an
+idle one.
 
 ## Eviction ordering
 

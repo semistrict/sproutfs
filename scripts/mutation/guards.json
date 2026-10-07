@@ -1208,5 +1208,35 @@
     "package": "vmmemory",
     "run": "^TestAnUnindexWhoseOwnerDetachesGivesThePageBack$",
     "purpose": "Look at whether a published page's owner maps it before its detach is kept out, so a detach in between leaves the page to be supplied to a destroyed layer: the pager panics."
+  },
+  {
+    "id": "pager-survey-by-a-stale-name",
+    "package": "vmmemory",
+    "run": "^TestARunReadTakesNoPageByANameAPublicationReplaced$",
+    "purpose": "Survey a run read's window by the names located before its region was given up, so a page a retire named anew joins by its parent's name."
+  },
+  {
+    "id": "pager-read-holding-its-own-page",
+    "package": "vmmemory",
+    "run": "^TestARunReadHoldingItsRegionsOwnPageLetsARetireRun$",
+    "purpose": "Give the region up for a run's read while the plan holds the region's own page, which a retire waits for with the region held."
+  },
+  {
+    "id": "pager-refault-maps-by-a-stale-protection",
+    "package": "vmmemory",
+    "run": "^TestARefaultMapsAPageACaptureProtectedWhileItReclaimedReadOnly$",
+    "purpose": "Map a refaulted page by the protection read before the region was given up for its slot. A capture taken meanwhile that journaled and protected the page leaves it mapped writable and not unjournaled, so the guest's next store reaches no flush."
+  },
+  {
+    "id": "pager-give-up-an-own-place-as-chosen",
+    "package": "vmmemory",
+    "run": "^TestAStoreGivesUpNoOwnPlaceASettleHandedBackWhileItLocked$",
+    "purpose": "Give up the idle page allocateOwn chose under h.mu once its lock is taken, without asking again whether it is idle. A page a settle handed back to the region meanwhile, and an eviction's look aged, is freed while the region names it: the pager panics."
+  },
+  {
+    "id": "pager-seal-drops-the-cold-copies-before-a-failed-compare",
+    "package": "vmmemory",
+    "run": "^TestASealWhoseColdCopyCompareFailsKeepsTheCopiesItComparedBefore$",
+    "purpose": "Leave the cold copies a seal found unchanged out of both its set and the region's dirty set when a later compare fails. A store into one is then dirty in no set, and no checkpoint holds it."
   }
 ]
