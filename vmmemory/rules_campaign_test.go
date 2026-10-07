@@ -59,7 +59,9 @@ func TestTheMappingRulesSurviveTheirCampaign(t *testing.T) {
 // detached.
 func rulesWorld(t *testing.T, ctx context.Context, seed uint64, disk *sim.Disk, forks, vcpus int) vmmemory.Stats {
 	logical := rulesPages * (forks + 2)
-	f, err := newFixtureOn(t, ctx, disk, vmmemory.Config{PageSize: checkpoint.PageSize4KiB, Arena: suiteArena,
+	// The isolated arena: in the shared one no store of this campaign is
+	// placed at its own offset, so the rules never act.
+	f, err := newFixtureOn(t, ctx, disk, vmmemory.Config{PageSize: checkpoint.PageSize4KiB, Arena: vmmemory.ArenaIsolated,
 		ResidentPages: logical * 3 / 4, ArenaOffsets: 2 * logical, LogicalPages: logical, DirtyPages: logical,
 		ReadAheadPages: 16, WriteAheadPages: 1, PrefetchRuns: 2})
 	if err != nil {
