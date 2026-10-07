@@ -42,6 +42,15 @@ func SetPrefetchSettleSeam(t *testing.T, seam func()) {
 	t.Cleanup(func() { prefetchSettleSeam = previous })
 }
 
+// SetPrefetchUnlockSeam installs what a prefetch that landed runs as it gives
+// each of its pages up, once that page is given up and before the next is. It
+// is restored when the test ends.
+func SetPrefetchUnlockSeam(t *testing.T, seam func(page uint64)) {
+	previous := prefetchUnlockSeam
+	prefetchUnlockSeam = seam
+	t.Cleanup(func() { prefetchUnlockSeam = previous })
+}
+
 // SetAllocateSeam installs what an allocation runs between its look for a
 // free slot and its eviction step. It is restored when the test ends.
 func SetAllocateSeam(t *testing.T, seam func()) {

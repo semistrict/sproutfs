@@ -795,7 +795,7 @@ func (r *MemoryRegion) readIn(ctx context.Context, index uint64) (*zirconvm.VmPa
 		return nil, false, nil
 	}
 	if waiter := plan.inFlight(ctx, index); waiter != nil {
-		return nil, true, r.awaitRead(ctx, waiter)
+		return nil, true, r.awaitRead(ctx, waiter, index)
 	}
 	again, err := plan.takeFaulting(ctx, index)
 	if err != nil || again {

@@ -272,12 +272,93 @@ func TestAGuestReadingForwardsStillReadsItsMemoryInRuns(t *testing.T) {
 		}
 		s := hostStats(t, f)
 		if s.Faults != 6 || s.Loads != 6 || s.LoadedPages != 24 || s.Prefetches != 3 || s.PrefetchWaits != 3 {
-			t.Fatalf("faults %d, loads %d of %d pages, prefetches %d, waits %d; want 6, 6 of 24, 3, 3",
-				s.Faults, s.Loads, s.LoadedPages, s.Prefetches, s.PrefetchWaits)
+			t.Fatalf("faults %d, loads %d of %d pages, prefetches %d, waits %d; want 6, 6 of 24, 3, 3; "+
+				"the faults read %v and the prefetches %v, landing %d pages, mapping %d and dropping %d; probes %v",
+				s.Faults, s.Loads, s.LoadedPages, s.Prefetches, s.PrefetchWaits, b.readsOf(false),
+				b.readsOf(true), s.PrefetchedPages, s.PrefetchMapped, s.PrefetchDropped,
+				sim.RuntimeFrom(f.ctx).Probes())
 		}
 		if reads := b.readsOf(true); len(reads) != 3 || reads[0] != (slowRead{1, 7, true}) ||
 			reads[1] != (slowRead{9, 7, true}) || reads[2] != (slowRead{17, 7, true}) {
 			t.Fatalf("the prefetches read %v, want the seven pages after each run's first", reads)
+		}
+	})
+}
+
+// A fault beside a prefetch that has landed its run but not yet given all of
+// its pages up reads none of them again: a page something else holds is left
+// to its own fault. Before 2026-10-07 the fault read the held pages again, and
+// the prefetch's copies were dropped as duplicates, which a guest reading
+// forwards met when it reached a page of the run between two of its pages
+// being given up (TestAGuestReadingForwardsStillReadsItsMemoryInRuns, under
+// load).
+func TestAFaultBesideALandingPrefetchReadsNothingAgain(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := newConfiguredFixture(t, prefetchConfig())
+		b := f.slowBacking(8)
+		r, m := f.attach(b)
+		var faulted error
+		vmmemory.SetPrefetchUnlockSeam(t, func(page uint64) {
+			// Page 3 is given up and pages 4 to 7 are still held.
+			if page == 3 {
+				faulted = r.Fault(f.ctx, 3, false)
+			}
+		})
+		if err := r.Fault(f.ctx, 0, false); err != nil {
+			t.Fatal(err)
+		}
+		if err := r.SettlePrefetches(f.ctx); err != nil {
+			t.Fatal(err)
+		}
+		if faulted != nil {
+			t.Fatal(faulted)
+		}
+		for page := range uint64(8) {
+			requirePage(t, m, page)
+		}
+		s := hostStats(t, f)
+		if reads := b.readsOf(true); len(reads) != 1 || reads[0] != (slowRead{1, 7, true}) || s.PrefetchDropped != 0 {
+			t.Fatalf("the prefetches read %v and dropped %d pages, want the seven pages after the first read once",
+				reads, s.PrefetchDropped)
+		}
+	})
+}
+
+// A fault that waited for a prefetch maps the whole run the prefetch landed
+// before it returns, even when it wakes while the prefetch still holds the
+// pages: it waits for them to be given up. Before 2026-10-07 it planned again
+// at once, took its own page alone, and left the rest to the prefetch's own
+// mapping, behind which a guest reading forwards faulted again.
+func TestAFaultThatWaitedForAPrefetchMapsItsWholeRun(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := newConfiguredFixture(t, prefetchConfig())
+		b := f.slowBacking(8)
+		r, m := f.attach(b)
+		vmmemory.SetPrefetchUnlockSeam(t, func(page uint64) {
+			// The waiting fault has woken; the prefetch still holds pages 2
+			// to 7 until everything else is blocked.
+			if page == 1 {
+				synctest.Wait()
+			}
+		})
+		if err := r.Fault(f.ctx, 0, false); err != nil {
+			t.Fatal(err)
+		}
+		waited := make(chan error, 1)
+		go func() { waited <- r.Fault(f.ctx, 1, false) }()
+		if err := <-waited; err != nil {
+			t.Fatal(err)
+		}
+		for page := range uint64(8) {
+			if _, ok := m.mappedPage(page); !ok {
+				t.Fatalf("page %d is not mapped once the fault that waited for its run returned", page)
+			}
+		}
+		if s := hostStats(t, f); s.Faults != 2 || s.PrefetchWaits != 1 {
+			t.Fatalf("faults %d, waits %d; want 2 and 1", s.Faults, s.PrefetchWaits)
+		}
+		if err := r.SettlePrefetches(f.ctx); err != nil {
+			t.Fatal(err)
 		}
 	})
 }

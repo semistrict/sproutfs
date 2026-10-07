@@ -1100,5 +1100,17 @@
     "package": "host",
     "run": "^TestADestinationJournalsNothingUntilItsPostCopyEnds$",
     "purpose": "Drop the source's journal from the record at a checkpoint paused before the post-copy ended, which may not hold every page the source held."
+  },
+  {
+    "id": "pager-read-a-held-page-again",
+    "package": "vmmemory",
+    "run": "^TestAFaultBesideALandingPrefetchReadsNothingAgain$",
+    "purpose": "Read again a page of the window that a prefetch has landed but not yet given up, so the prefetch's copy is dropped as a duplicate."
+  },
+  {
+    "id": "pager-replan-before-the-prefetch-lets-go",
+    "package": "vmmemory",
+    "run": "^TestAFaultThatWaitedForAPrefetchMapsItsWholeRun$",
+    "purpose": "Plan a fault that waited for a prefetch again as soon as the prefetch's supply wakes it, while the prefetch still holds the run, so the fault maps its own page alone."
   }
 ]

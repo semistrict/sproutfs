@@ -138,6 +138,11 @@ func streaming(ctx context.Context) bool {
 // landed. A test holds a prefetch there to put an allocation in that moment.
 var prefetchSettleSeam func()
 
+// prefetchUnlockSeam runs as a prefetch that landed gives each of its pages
+// up, once that page is given up and before the next is. A test puts a fault
+// there, which finds the pages after it still held.
+var prefetchUnlockSeam func(page uint64)
+
 // SettlePrefetches returns once none of this memory region's prefetches is
 // running: each has landed or dropped its pages and mapped what it could.
 // Nothing waits on a prefetch; this is what a test of a guest that reads only
@@ -657,8 +662,11 @@ func (pf *prefetch) landRun(ctx context.Context, pages []prefetchPage, frames []
 	lock.Unlock()
 	// The frames were held from their making; a landed one is idle in its
 	// root now, and one the supply gave back is gone.
-	for _, frame := range frames {
+	for k, frame := range frames {
 		frameOf(frame).mu.Unlock()
+		if prefetchUnlockSeam != nil {
+			prefetchUnlockSeam(pages[k].page)
+		}
 	}
 	return landed
 }

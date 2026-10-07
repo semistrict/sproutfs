@@ -413,7 +413,7 @@ type survey struct {
 // identity, unless its bytes go in the region's own file or a prefetch is
 // reading it already; where prefetched says the read is a prefetch's, a page
 // with no identity is left to its own fault.
-func (p *plan) survey(except uint64, prefetched bool) survey {
+func (p *plan) survey(ctx context.Context, except uint64, prefetched bool) survey {
 	r := p.region
 	found := survey{into: make([]*arenaFile, p.end-p.start)}
 	eligible := r.eligibleIn(p.start, p.end)
@@ -451,10 +451,10 @@ func (p *plan) survey(except uint64, prefetched bool) survey {
 			}
 			last++
 		}
-		taken, elsewhere := p.takeRootRun(page, last, eligible)
+		taken, left := p.takeRootRun(ctx, page, last, eligible)
 		for q := page; q < last; q++ {
 			i := q - p.start
-			if taken[q-page] || elsewhere[q-page] || p.pages[i] != nil || p.zeros[i] || p.reserved[i].slot >= 0 || !eligible[i] {
+			if taken[q-page] || left[q-page] || p.pages[i] != nil || p.zeros[i] || p.reserved[i].slot >= 0 || !eligible[i] {
 				continue
 			}
 			key, _ := p.identity(q)
@@ -474,15 +474,16 @@ func (p *plan) survey(except uint64, prefetched bool) survey {
 
 // takeRootRun takes every page of [first, last), all of one root, that the root
 // holds and that may join the plan, under one hold of the root's lock, and
-// reports which it took, and which the root holds where this region's process
-// may not map them: those are their own faults' to reach.
-func (p *plan) takeRootRun(first, last uint64, eligible []bool) (taken, elsewhere []bool) {
+// reports which it took, and which it left: those the root holds where this
+// region's process may not map them, and those something else holds. They are
+// their own faults' to reach.
+func (p *plan) takeRootRun(ctx context.Context, first, last uint64, eligible []bool) (taken, left []bool) {
 	r := p.region
 	h := r.host
 	key, _ := p.identity(first)
 	root := r.host.root(rootOf(key))
 	marks := make([]bool, 2*(last-first))
-	taken, elsewhere = marks[:last-first:last-first], marks[last-first:]
+	taken, left = marks[:last-first:last-first], marks[last-first:]
 	hits := uint64(0)
 	lock := root.pages.Lock()
 	lock.Lock()
@@ -496,10 +497,14 @@ func (p *plan) takeRootRun(first, last uint64, eligible []bool) (taken, elsewher
 			continue
 		}
 		if !r.reachable(found) {
-			elsewhere[page-first] = true
+			left[page-first] = true
 			continue
 		}
 		if !p.hold(found) {
+			// Something else holds the page: a prefetch that landed it and
+			// has not given it up yet, a fault, an eviction. It is left to
+			// its own fault, as an unreachable one is, and never read again.
+			left[page-first] = !sim.Bug(ctx, "pager-read-a-held-page-again")
 			continue
 		}
 		r.host.node.PageQueues().MarkAccessed(found)
@@ -513,7 +518,7 @@ func (p *plan) takeRootRun(first, last uint64, eligible []bool) (taken, elsewher
 		h.stats.IdentityHits += hits
 		h.mu.Unlock()
 	}
-	return taken, elsewhere
+	return taken, left
 }
 
 // fileFinder is fileFinder over a plan.
@@ -543,9 +548,9 @@ func (f *fileFinder) of(id pageKey) *arenaFile {
 // slots are free than the run needs, the pages from the faulting one forward
 // take them. Nothing is evicted; the page may remain unreserved. The run is of
 // pages whose reads go in the faulting page's file.
-func (p *plan) reserveAround(index uint64) {
+func (p *plan) reserveAround(ctx context.Context, index uint64) {
 	file := p.fileOf(index)
-	into := p.survey(index, false).into
+	into := p.survey(ctx, index, false).into
 	needs := func(page uint64) bool { return into[page-p.start] == file }
 	first, last := index, index+1
 	for first > p.start && needs(first-1) {

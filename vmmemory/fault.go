@@ -194,7 +194,7 @@ func (r *MemoryRegion) loadOnce(ctx context.Context, index uint64, spill *reserv
 	if waiter := plan.inFlight(ctx, index); waiter != nil {
 		// A prefetch is reading this page already; the fault plans again
 		// once it has landed or failed. The plan holds nothing yet.
-		return false, r.awaitRead(ctx, waiter)
+		return false, r.awaitRead(ctx, waiter, index)
 	}
 	if plan.unpublished(index) && spill.none() {
 		// The extents say another host still holds this page, so the load
@@ -364,7 +364,7 @@ func (p *plan) read(ctx context.Context, index uint64) error {
 // reading. The read is the fault's own, as a run read first is: nothing is
 // planned beside it.
 func (p *plan) readAlone(ctx context.Context, index uint64) error {
-	p.survey(index, false)
+	p.survey(ctx, index, false)
 	if p.reserved[index-p.start].slot >= 0 {
 		h := p.region.host
 		h.mu.Lock()
@@ -492,7 +492,7 @@ func (p *plan) takeFaulting(ctx context.Context, index uint64) (again bool, err 
 		return false, nil
 	}
 	if p.reading == readRun {
-		p.reserveAround(index)
+		p.reserveAround(ctx, index)
 	} else {
 		p.reserveProvisional(index)
 	}
@@ -515,7 +515,7 @@ func (p *plan) planRest(ctx context.Context, index uint64) ([]*arenaFile, error)
 	if err := p.locateWindow(ctx); err != nil {
 		return nil, err
 	}
-	found := p.survey(index, true)
+	found := p.survey(ctx, index, true)
 	p.keepProvisional(found.into)
 	return found.into, p.reserveRuns(ctx, index, found.into)
 }
@@ -524,7 +524,7 @@ func (p *plan) planRest(ctx context.Context, index uint64) ([]*arenaFile, error)
 // and slots for the rest, and places in the region's own file for the pages
 // read there.
 func (p *plan) takeRun(ctx context.Context, index uint64) error {
-	found := p.survey(index, false)
+	found := p.survey(ctx, index, false)
 	if err := p.reserveRuns(ctx, index, found.into); err != nil {
 		return err
 	}
@@ -696,9 +696,12 @@ func (p *plan) inFlight(ctx context.Context, page uint64) *waiter {
 }
 
 // awaitRead waits, with the region given up as a backing read gives it up,
-// for the prefetch reading the faulting page to land or drop it. The fault
-// then plans its window again from the top.
-func (r *MemoryRegion) awaitRead(ctx context.Context, waiter *waiter) error {
+// for the prefetch reading the faulting page to land or drop it, and then for
+// every prefetch of the region whose run holds page to give its pages up. The
+// fault then plans its window again from the top, and takes the whole run
+// that landed: a plan made while the prefetch still held its pages would
+// leave them to faults of their own.
+func (r *MemoryRegion) awaitRead(ctx context.Context, waiter *waiter, page uint64) error {
 	h := r.host
 	h.mu.Lock()
 	h.stats.PrefetchWaits++
@@ -708,10 +711,41 @@ func (r *MemoryRegion) awaitRead(ctx context.Context, waiter *waiter) error {
 		if err := waiter.wait(ctx); err != nil {
 			return err
 		}
+		if !sim.Bug(ctx, "pager-replan-before-the-prefetch-lets-go") {
+			if err := r.awaitLanded(ctx, page); err != nil {
+				return err
+			}
+		}
 		// Every fault waiting on this prefetch is released at once. In a
 		// controlled run they go on one at a time, in the order it chooses.
 		return sim.Admit(ctx, "vmmemory/prefetch-wait")
 	})
+}
+
+// awaitLanded waits until no prefetch of this region whose run holds page is
+// still landing: each has given every page it landed up, or dropped it.
+func (r *MemoryRegion) awaitLanded(ctx context.Context, page uint64) error {
+	h := r.host
+	for {
+		h.mu.Lock()
+		landing := false
+		for pf := range h.prefetches {
+			if pf.region == r && pf.holding && pf.start <= page && page < pf.end {
+				landing = true
+				break
+			}
+		}
+		changed := h.changed
+		h.mu.Unlock()
+		if !landing {
+			return nil
+		}
+		select {
+		case <-changed:
+		case <-ctx.Done():
+			return context.Cause(ctx)
+		}
+	}
 }
 
 // faultRead is the faulting page's backing read, under way on a task of its
