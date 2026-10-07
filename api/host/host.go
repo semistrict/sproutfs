@@ -931,6 +931,10 @@ type MemberDisk struct {
 	// State is the disk's state in the membership the host holds: attaching,
 	// serving, releasing or released, and empty where it is not listed.
 	State string `json:"state,omitempty"`
+	// Kind is "journal" for a journal disk, and empty for a cache disk. Empty
+	// marks a journal disk that holds no live entry.
+	Kind  string `json:"kind,omitempty"`
+	Empty bool   `json:"empty,omitempty"`
 }
 
 // Membership is the generation of the membership a host holds and how it
@@ -961,7 +965,11 @@ func MemberOf(self membership.Host, held membership.Membership) Member {
 	member := Member{Identity: self.ID.String(), Address: string(self.Address), Disks: []MemberDisk{},
 		Machine: self.Machine, Generation: held.Generation()}
 	for _, disk := range self.Disks {
-		reported := MemberDisk{Identity: disk.ID.String(), Volume: disk.Volume, Weight: disk.Weight}
+		reported := MemberDisk{Identity: disk.ID.String(), Volume: disk.Volume, Weight: disk.Weight,
+			Empty: disk.Empty}
+		if disk.Kind == membership.Journal {
+			reported.Kind = disk.Kind.String()
+		}
 		if listed, ok := held.Disk(disk.ID); ok {
 			reported.State = listed.State.String()
 		}
@@ -983,7 +991,11 @@ func (m Member) Host() (membership.Host, error) {
 		if err != nil {
 			return membership.Host{}, err
 		}
-		if disk.Weight == 0 {
+		kind, err := membership.ParseDiskKind(disk.Kind)
+		if err != nil {
+			return membership.Host{}, err
+		}
+		if disk.Weight == 0 && kind == membership.Cache {
 			return membership.Host{}, fmt.Errorf("%w: disk %s has no weight", rank.ErrInvalid, disk.Identity)
 		}
 		state, err := membership.ParseDiskState(disk.State)
@@ -991,7 +1003,7 @@ func (m Member) Host() (membership.Host, error) {
 			return membership.Host{}, err
 		}
 		host.Disks = append(host.Disks, membership.Disk{ID: identity, Volume: disk.Volume, Weight: disk.Weight,
-			State: state})
+			State: state, Kind: kind, Empty: disk.Empty})
 	}
 	return host, nil
 }

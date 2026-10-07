@@ -164,7 +164,9 @@ func (m Membership) Let(disk, member rank.Identity) (Membership, error) {
 
 // Assign assigns a disk to a member, attaching, at the next generation, which
 // is the generation its member's replies will name. Step refuses it unless
-// the disk is released: a disk is released before it is assigned again.
+// the disk is released: a disk is released before it is assigned again. A
+// journal disk assigned is no longer empty: its member may write it, and it
+// is empty again only once its holder says so.
 func (m Membership) Assign(disk, member rank.Identity) (Membership, error) {
 	found, ok := m.Disk(disk)
 	switch {
@@ -174,6 +176,52 @@ func (m Membership) Assign(disk, member rank.Identity) (Membership, error) {
 		return Membership{}, ErrUnchanged
 	}
 	found.Member, found.State, found.Assigned = member, Attaching, m.generation+1
+	if found.Kind == Journal {
+		found.Empty = false
+	}
+	return m.next(m.Members(), put(m.Disks(), found))
+}
+
+// Reserve reserves a released journal disk for machine, which the member on
+// that machine is then assigned as its own journal; an empty machine clears
+// the reservation.
+func (m Membership) Reserve(disk rank.Identity, machine string) (Membership, error) {
+	found, ok := m.Disk(disk)
+	switch {
+	case !ok || found.Kind != Journal:
+		return Membership{}, fmt.Errorf("%w: disk %s is not a listed journal disk", ErrInvalid, disk)
+	case found.Machine == machine:
+		return Membership{}, ErrUnchanged
+	}
+	found.Machine = machine
+	return m.next(m.Members(), put(m.Disks(), found))
+}
+
+// MarkEmpty records whether a journal disk's holder found it holding no live
+// entry.
+func (m Membership) MarkEmpty(disk rank.Identity, empty bool) (Membership, error) {
+	found, ok := m.Disk(disk)
+	switch {
+	case !ok || found.Kind != Journal:
+		return Membership{}, fmt.Errorf("%w: disk %s is not a listed journal disk", ErrInvalid, disk)
+	case found.Empty == empty:
+		return Membership{}, ErrUnchanged
+	}
+	found.Empty = empty
+	return m.next(m.Members(), put(m.Disks(), found))
+}
+
+// Delete marks a released journal disk deleting, which the cloud then
+// deletes and Remove then takes out.
+func (m Membership) Delete(disk rank.Identity) (Membership, error) {
+	found, ok := m.Disk(disk)
+	switch {
+	case !ok || found.Kind != Journal:
+		return Membership{}, fmt.Errorf("%w: disk %s is not a listed journal disk", ErrInvalid, disk)
+	case found.State == Deleting:
+		return Membership{}, ErrUnchanged
+	}
+	found.State = Deleting
 	return m.next(m.Members(), put(m.Disks(), found))
 }
 
@@ -242,6 +290,10 @@ func put(disks []Disk, disk Disk) []Disk {
 //     that is draining.
 //   - A disk is removed only once released, and a member only once it is
 //     draining and assigned no disk.
+//   - A journal disk is deleting only from released and empty, and never
+//     comes back from it; it is removed only once deleting. It is reserved
+//     only while released, it keeps its kind, and it is assigned no longer
+//     empty.
 func Step(ctx context.Context, current, next Membership) error {
 	if next.generation != current.generation+1 {
 		return fmt.Errorf("%w: generation %d cannot follow %d", ErrInvalid, next.generation, current.generation)
@@ -253,8 +305,11 @@ func Step(ctx context.Context, current, next Membership) error {
 		}
 	}
 	for _, disk := range current.disks {
-		if _, kept := next.Disk(disk.ID); !kept && disk.State != Released {
+		if _, kept := next.Disk(disk.ID); !kept && disk.State != Released && disk.State != Deleting {
 			return fmt.Errorf("%w: disk %s is removed while %s", ErrInvalid, disk.ID, disk.State)
+		}
+		if _, kept := next.Disk(disk.ID); !kept && disk.Kind == Journal && disk.State != Deleting {
+			return fmt.Errorf("%w: journal disk %s is removed without being deleted", ErrInvalid, disk.ID)
 		}
 	}
 	for _, member := range current.members {
@@ -270,6 +325,9 @@ func Step(ctx context.Context, current, next Membership) error {
 
 // stepDisk checks one disk of next against what it was.
 func stepDisk(ctx context.Context, next Membership, was Disk, listed bool, disk Disk) error {
+	if err := stepJournal(ctx, was, listed, disk); err != nil {
+		return err
+	}
 	assigning := disk.State == Attaching && (!listed || was.Member != disk.Member)
 	switch {
 	case assigning:
@@ -295,11 +353,37 @@ func stepDisk(ctx context.Context, next Membership, was Disk, listed bool, disk 
 			return fmt.Errorf("%w: disk %s is released while %s", ErrInvalid, disk.ID, was.State)
 		}
 		return nil
+	case disk.State == Deleting:
+		return nil
 	case disk.Member != was.Member || disk.Assigned != was.Assigned:
 		return fmt.Errorf("%w: disk %s changes from %s at %d to %s at %d without being released", ErrInvalid, disk.ID,
 			was.Member, was.Assigned, disk.Member, disk.Assigned)
 	case disk.State < was.State:
 		return fmt.Errorf("%w: disk %s goes back from %s to %s", ErrInvalid, disk.ID, was.State, disk.State)
+	}
+	return nil
+}
+
+// stepJournal checks what one generation may do to a journal disk: keep its
+// kind, be assigned no longer empty, be deleted only once released and empty
+// and never come back, and be reserved or have its reservation moved only
+// while released.
+func stepJournal(ctx context.Context, was Disk, listed bool, disk Disk) error {
+	switch {
+	case !listed:
+		return nil
+	case disk.Kind != was.Kind:
+		return fmt.Errorf("%w: disk %s changes from a %s disk to a %s disk", ErrInvalid, disk.ID, was.Kind, disk.Kind)
+	case disk.State == Deleting && was.State != Deleting &&
+		(was.State != Released || !was.Empty) && !sim.Bug(ctx, "membership-delete-a-live-journal"):
+		return fmt.Errorf("%w: journal disk %s is deleted while %s, empty %v", ErrInvalid, disk.ID, was.State, was.Empty)
+	case disk.State == Attaching && was.State == Released && disk.Empty:
+		return fmt.Errorf("%w: journal disk %s is assigned still marked empty", ErrInvalid, disk.ID)
+	case was.State == Deleting && disk.State != Deleting:
+		return fmt.Errorf("%w: journal disk %s comes back from deleting as %s", ErrInvalid, disk.ID, disk.State)
+	case disk.Machine != was.Machine && was.State != Released:
+		return fmt.Errorf("%w: journal disk %s is reserved for %q while %s", ErrInvalid, disk.ID, disk.Machine,
+			was.State)
 	}
 	return nil
 }

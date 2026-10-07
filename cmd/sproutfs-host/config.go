@@ -47,6 +47,11 @@ type config struct {
 	// ShardDevices the directory the node's disks are named in,
 	// SPROUTFS_SHARD_DEVICE_DIR, /dev/disk/by-id when unset.
 	Shards, Machine, ShardDevices string
+	// DurableFlush is the cloud whose network disks carry this host's
+	// journal: SPROUTFS_DURABLE_FLUSH, gce, or empty for durable flush off.
+	// On, a guest's flush is answered once its changed blocks are on the
+	// journal disk reserved for Machine, and fails where they cannot be.
+	DurableFlush string
 	// APIPort serves this process's HTTP API.
 	APIPort int
 }
@@ -256,6 +261,19 @@ func loadConfig(lookup func(string) string) (config, error) {
 		fail("SPROUTFS_SHARDS is %q, want gce or nothing", c.Shards)
 	case c.Machine == "":
 		fail("SPROUTFS_SHARDS needs SPROUTFS_NODE_NAME, the node the host runs on, which its shards are attached to")
+	case c.ShardDevices != "" && !filepath.IsAbs(c.ShardDevices):
+		fail("SPROUTFS_SHARD_DEVICE_DIR is %q, want an absolute directory", c.ShardDevices)
+	}
+	// Durable flush is off unless SPROUTFS_DURABLE_FLUSH names the cloud of
+	// the journal disks. The journal disk of a machine is attached to it as
+	// shards are, so it needs the node too, and shares the device directory.
+	c.DurableFlush = text("SPROUTFS_DURABLE_FLUSH", "")
+	switch {
+	case c.DurableFlush == "":
+	case c.DurableFlush != "gce":
+		fail("SPROUTFS_DURABLE_FLUSH is %q, want gce or nothing", c.DurableFlush)
+	case c.Machine == "":
+		fail("SPROUTFS_DURABLE_FLUSH needs SPROUTFS_NODE_NAME, the node the host runs on, which its journal disk is attached to")
 	case c.ShardDevices != "" && !filepath.IsAbs(c.ShardDevices):
 		fail("SPROUTFS_SHARD_DEVICE_DIR is %q, want an absolute directory", c.ShardDevices)
 	}

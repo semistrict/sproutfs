@@ -20,7 +20,8 @@ import (
 // generations and the lease in the disk's header are the others.
 
 // ErrInUse reports a network disk the cloud will not attach to a machine
-// because it is attached to another.
+// because it is attached to another, or will not delete because it is
+// attached to one.
 var ErrInUse = errors.New("the network disk is attached to another machine")
 
 // NetworkDisk is what the cloud says of one network disk now.
@@ -29,6 +30,22 @@ type NetworkDisk struct {
 	Bytes int64
 	// Machines is every machine the disk is attached to, which for a
 	// single-writer disk is at most one.
+	Machines []string
+}
+
+// NetworkDiskSpec is a network disk to create: its name, size and labels, in
+// the zone and of the kind the adapter is configured with.
+type NetworkDiskSpec struct {
+	Name   string
+	Bytes  int64
+	Labels map[string]string
+}
+
+// ListedDisk is one network disk a List found.
+type ListedDisk struct {
+	Name     string
+	Bytes    int64
+	Labels   map[string]string
 	Machines []string
 }
 
@@ -42,6 +59,14 @@ type NetworkDisks interface {
 	Describe(ctx context.Context, volume string) (NetworkDisk, error)
 	Attach(ctx context.Context, volume, machine string) error
 	Detach(ctx context.Context, volume, machine string) error
+	// List is every network disk labelled key=value, in name order.
+	List(ctx context.Context, key, value string) ([]ListedDisk, error)
+	// Create makes a disk and returns once the cloud has it. A disk of that
+	// name already there is ErrAlreadyExists.
+	Create(ctx context.Context, spec NetworkDiskSpec) error
+	// Delete removes a disk and returns once the cloud has. A disk the cloud
+	// does not have is ErrNotFound; one attached to a machine is ErrInUse.
+	Delete(ctx context.Context, volume string) error
 }
 
 // Devices opens the network disks attached to one machine, as block devices.

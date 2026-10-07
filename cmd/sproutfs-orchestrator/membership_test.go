@@ -487,3 +487,34 @@ func TestTheCodeIsConfigured(t *testing.T) {
 			config.CacheEarlierCodes, err)
 	}
 }
+
+// Durable flush is off unless SPROUTFS_DURABLE_FLUSH names gce, and a journal
+// disk is 32 GiB unless SPROUTFS_JOURNAL_BYTES says otherwise.
+func TestTheConfigurationReadsDurableFlush(t *testing.T) {
+	environment := map[string]string{"SPROUTFS_BUCKET": "bucket"}
+	lookup := func(name string) string { return environment[name] }
+	config, err := loadConfig(lookup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.DurableFlush != "" || config.JournalBytes != 32<<30 {
+		t.Fatalf("with nothing set durable flush is %q with %d-byte journals, want off and 32 GiB",
+			config.DurableFlush, config.JournalBytes)
+	}
+	environment["SPROUTFS_DURABLE_FLUSH"], environment["SPROUTFS_JOURNAL_BYTES"] = "gce", "17179869184"
+	if config, err = loadConfig(lookup); err != nil {
+		t.Fatal(err)
+	}
+	if config.DurableFlush != "gce" || config.JournalBytes != 16<<30 {
+		t.Fatalf("durable flush is %q with %d-byte journals, want gce and 16 GiB", config.DurableFlush,
+			config.JournalBytes)
+	}
+	for name, value := range map[string]string{"SPROUTFS_DURABLE_FLUSH": "on", "SPROUTFS_JOURNAL_BYTES": "4096"} {
+		before := environment[name]
+		environment[name] = value
+		if _, err := loadConfig(lookup); err == nil {
+			t.Fatalf("%s=%s was accepted", name, value)
+		}
+		environment[name] = before
+	}
+}

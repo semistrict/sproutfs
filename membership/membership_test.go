@@ -207,7 +207,7 @@ func TestTheObjectReadsBackAndRefusesWhatItDoesNotKnow(t *testing.T) {
 	for name, damaged := range map[string][]byte{
 		"truncated":       data[:len(data)/2],
 		"unknown field":   append(append([]byte{}, data...), 0xf8, 0x07, 0x01),
-		"another version": append([]byte{0x08, 0x02}, data[2:]...),
+		"another version": append([]byte{0x08, 0x01}, data[2:]...),
 	} {
 		if _, err := Unmarshal(damaged); !errors.Is(err, ErrCorrupt) {
 			t.Errorf("%s: Unmarshal said %v, want ErrCorrupt", name, err)

@@ -96,3 +96,28 @@ func TestAnImportGoesToOneReadyHost(t *testing.T) {
 		t.Fatalf("the deployment did %v, want %v", d.log, want)
 	}
 }
+
+// A host with durable flush on takes no VM until it serves a journal disk:
+// every flush of a VM placed there before would fail.
+func TestAHostTakesNoVMUntilItServesItsJournal(t *testing.T) {
+	d := newDeployment(t, map[string][]string{"host-0": {}, "host-1": {}})
+	d.hosts["host-0"].arena(1024, 0)
+	d.hosts["host-1"].arena(1024, 0)
+	d.hosts["host-1"].commit(512 << 21)
+	for _, h := range d.hosts {
+		h.templates = []host.Template{{Name: "workload", MemoryBytes: 512 << 20, Imported: true}}
+		h.journal = host.Journal{DurableFlush: true}
+	}
+	d.hosts["host-1"].journal.Served = true
+	created, err := d.orchestrator.Create(t.Context(), orch.CreateRequest{Template: "workload"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Host != "host-1" {
+		t.Fatalf("the VM went to %s, want host-1, the one host that serves its journal", created.Host)
+	}
+	d.hosts["host-1"].journal.Served = false
+	if _, err := d.orchestrator.Create(t.Context(), orch.CreateRequest{Template: "workload"}); !errors.Is(err, errNoHost) {
+		t.Fatalf("a create while no host serves its journal = %v, want errNoHost", err)
+	}
+}

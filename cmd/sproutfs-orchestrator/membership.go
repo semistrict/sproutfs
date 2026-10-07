@@ -43,9 +43,16 @@ func (o *orchestrator) noteMembers(ctx context.Context, hosts []liveHost) {
 	}
 	o.leaving = make(map[string]bool)
 	listed := make(map[string]bool, len(hosts))
+	machines := make(map[string]bool)
 	for index := range hosts {
 		report := &hosts[index].report
 		listed[report.Name] = true
+		// A machine stays in the pool while any host pod is listed on it, a
+		// terminating one too: a pod replaced on its node keeps the node's
+		// journal disk reserved for the pod that follows.
+		if report.Node != "" {
+			machines[report.Node] = true
+		}
 		if report.Terminating && !sim.Bug(ctx, "orchestrator-keep-terminating-host") {
 			o.leaving[report.Name] = true
 		}
@@ -65,6 +72,7 @@ func (o *orchestrator) noteMembers(ctx context.Context, hosts []liveHost) {
 			delete(o.reported, name)
 		}
 	}
+	o.pool = slices.Sorted(maps.Keys(machines))
 }
 
 // want is what the membership is moved towards: every host pod the
@@ -77,8 +85,12 @@ func (o *orchestrator) want(ctx context.Context) membership.Want {
 	o.memberMu.Lock()
 	reported := maps.Clone(o.reported)
 	leaving := maps.Clone(o.leaving)
+	pool := slices.Clone(o.pool)
 	o.memberMu.Unlock()
 	var want membership.Want
+	if o.shards != nil && o.shards.Journals != nil {
+		want.Pool = pool
+	}
 	owners := make(map[rank.Identity]string, len(reported))
 	disks := 0
 	for _, name := range slices.Sorted(maps.Keys(reported)) {

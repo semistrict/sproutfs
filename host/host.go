@@ -254,6 +254,7 @@ type Host struct {
 	minimumInterval time.Duration
 	machines        machines
 	journals        journals
+	journalDisks    *journalDisks
 	// activity is what this host has done since it started; see Activity.
 	activity  activity
 	closeOnce sync.Once
@@ -469,6 +470,20 @@ func StartHost(ctx context.Context, config Config) (*Host, error) {
 		h.self = membership.Host{Address: config.Migration.Address, Machine: config.Shards.Machine}
 		h.entropy.Fill(h.self.ID[:])
 	}
+	if config.Journal.Devices != nil {
+		// A host given journal disks is a member on its machine. One with
+		// neither a cache disk nor shards is a member under an identity this
+		// process alone has, as a shard host is.
+		if !config.Journal.DurableFlush || config.Migration.Address == "" || config.Journal.Machine == "" {
+			return nil, fmt.Errorf("%w: journal disks need durable flush, a migration address and a machine",
+				ErrInvalidConfig)
+		}
+		if h.self.ID.IsZero() {
+			h.self = membership.Host{Address: config.Migration.Address}
+			h.entropy.Fill(h.self.ID[:])
+		}
+		h.self.Machine = config.Journal.Machine
+	}
 	members, err := membership.NewStore(membership.Config{ObjectStore: config.ObjectStore,
 		ObjectPrefix: config.ObjectPrefix, Entropy: h.entropy})
 	if err != nil {
@@ -489,6 +504,10 @@ func StartHost(ctx context.Context, config Config) (*Host, error) {
 	if serving {
 		region := cmp.Or(sizing.DiskRegionBytes, checkpoint.DefaultDiskRegionBytes)
 		h.shards = newShardServer(hostCtx, config.Shards, h.self.ID, h.view, h.cache, h.clock, region)
+	}
+	if config.Journal.Devices != nil {
+		h.journalDisks = newJournalDisks(hostCtx, h, config.Journal.Devices, config.Journal.Machine,
+			config.Journal.Interval)
 	}
 	// Publication encodes and the fault path decodes through pools of their
 	// own, so a guest's page fault never waits behind a checkpoint's encoding.
@@ -871,6 +890,10 @@ func (h *Host) shutdown() {
 	if h.shards != nil {
 		// Nothing serves the shards any more, so each closes with its table.
 		h.shards.stop()
+	}
+	if h.journalDisks != nil {
+		// No VM runs here any more, so no flush writes the journal.
+		h.journalDisks.stop()
 	}
 	if h.volumes != nil {
 		errs = append(errs, h.volumes.Close(context.Background()))

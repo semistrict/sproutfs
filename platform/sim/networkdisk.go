@@ -23,13 +23,16 @@ import (
 // The cloud's API has sites of its own, so a controller meets an attach or a
 // detach that is slow, that fails before the cloud does it, and that the
 // cloud did although its caller was told it failed: the attached-but-not-
-// recorded crash point.
+// recorded crash point. A create may be slow or fail, and so may a delete.
 type NetworkDisks struct {
 	runtime *Runtime
 	config  NetworkDisksConfig
 
 	mu    sync.Mutex
 	disks map[string]*networkDisk
+	// made is, by name, how many disks of that name the cloud has made, so
+	// each one made again after a delete has a simulated disk of its own.
+	made map[string]int
 }
 
 // NetworkDisksConfig is how long the cloud takes, and what each disk's
@@ -38,6 +41,9 @@ type NetworkDisksConfig struct {
 	// AttachLatency and DetachLatency are how long an attach and a detach
 	// take, and DescribeLatency a read of a disk's state.
 	AttachLatency, DetachLatency, DescribeLatency time.Duration
+	// CreateLatency and DeleteLatency are how long a create and a delete
+	// take, and ListLatency a list of disks by label.
+	CreateLatency, DeleteLatency, ListLatency time.Duration
 	// Device is each disk's device: its latencies and its faults. Its space
 	// is the disk's size.
 	Device DiskConfig
@@ -59,19 +65,38 @@ const (
 	BuggifyDetachFails = "sim/network-disk/detach-fails"
 	// BuggifyDescribeFails fails a read of a disk's state.
 	BuggifyDescribeFails = "sim/network-disk/describe-fails"
+	// BuggifyCreateSlow holds a create for up to half a minute.
+	BuggifyCreateSlow = "sim/network-disk/create-slow"
+	// BuggifyCreateFails fails a create before the cloud makes the disk.
+	BuggifyCreateFails = "sim/network-disk/create-fails"
+	// BuggifyDeleteFails fails a delete before the cloud removes the disk.
+	BuggifyDeleteFails = "sim/network-disk/delete-fails"
 )
 
 // NetworkDiskSites is every site of the cloud's network disks.
 func NetworkDiskSites() []string {
+	return append(NetworkDiskAttachSites(), NetworkDiskLifecycleSites()...)
+}
+
+// NetworkDiskAttachSites is the sites a controller meets when it moves disks
+// that already exist: describe, attach and detach.
+func NetworkDiskAttachSites() []string {
 	return []string{BuggifyAttachSlow, BuggifyAttachFails, BuggifyAttachReplyLost, BuggifyDetachSlow,
 		BuggifyDetachFails, BuggifyDescribeFails}
 }
 
-// networkDisk is one volume: its device, and the machine it is attached to,
-// empty for none.
+// NetworkDiskLifecycleSites is the sites a controller meets when it creates
+// and deletes disks.
+func NetworkDiskLifecycleSites() []string {
+	return []string{BuggifyCreateSlow, BuggifyCreateFails, BuggifyDeleteFails}
+}
+
+// networkDisk is one volume: its device, its labels, and the machine it is
+// attached to, empty for none.
 type networkDisk struct {
 	name    string
 	bytes   int64
+	labels  map[string]string
 	backing *Disk
 	machine string
 }
@@ -81,24 +106,36 @@ const deviceName = "device"
 
 // NewNetworkDisks is a cloud with no disks yet, in this runtime.
 func (r *Runtime) NewNetworkDisks(config NetworkDisksConfig) *NetworkDisks {
-	return &NetworkDisks{runtime: r, config: config, disks: make(map[string]*networkDisk)}
+	return &NetworkDisks{runtime: r, config: config, disks: make(map[string]*networkDisk), made: make(map[string]int)}
 }
 
-// Create makes a volume of bytes, attached to nothing, every byte of it
-// zero and durable.
-func (n *NetworkDisks) Create(ctx context.Context, volume string, bytes int64) error {
+// Provision makes a volume of bytes as an operator does before a run: at
+// once, with no fault, attached to nothing and with no labels, every byte of
+// it zero and durable.
+func (n *NetworkDisks) Provision(ctx context.Context, volume string, bytes int64) error {
+	return n.make(ctx, platform.NetworkDiskSpec{Name: volume, Bytes: bytes})
+}
+
+// make makes a disk, attached to nothing, every byte of it zero and durable.
+func (n *NetworkDisks) make(ctx context.Context, spec platform.NetworkDiskSpec) error {
+	volume, bytes := spec.Name, spec.Bytes
 	if volume == "" || bytes <= 0 {
 		return fmt.Errorf("%w: a network disk named %q of %d bytes", platform.ErrInvalidPath, volume, bytes)
 	}
 	n.mu.Lock()
 	if _, exists := n.disks[volume]; exists {
 		n.mu.Unlock()
-		return platform.ErrAlreadyExists
+		return fmt.Errorf("%w: network disk %q", platform.ErrAlreadyExists, volume)
 	}
 	config := n.config.Device
 	config.Space = SpaceConfig{TotalBytes: 2 * bytes}
-	backing := n.runtime.NewDisk("network-disk/"+volume, config)
-	disk := &networkDisk{name: volume, bytes: bytes, backing: backing}
+	id := "network-disk/" + volume
+	if made := n.made[volume]; made > 0 {
+		id = fmt.Sprintf("%s/%d", id, made)
+	}
+	n.made[volume]++
+	backing := n.runtime.NewDisk(id, config)
+	disk := &networkDisk{name: volume, bytes: bytes, labels: maps.Clone(spec.Labels), backing: backing}
 	n.disks[volume] = disk
 	n.mu.Unlock()
 	file, err := backing.Open(ctx, deviceName, platform.OpenOptions{Create: true})
@@ -170,6 +207,74 @@ func (n *NetworkDisks) Describe(ctx context.Context, volume string) (platform.Ne
 		described.Machines = []string{disk.machine}
 	}
 	return described, nil
+}
+
+// List is every disk labelled key=value, in name order.
+func (n *NetworkDisks) List(ctx context.Context, key, value string) ([]platform.ListedDisk, error) {
+	if err := n.runtime.sleep(ctx, n.config.ListLatency); err != nil {
+		return nil, err
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	var listed []platform.ListedDisk
+	for _, volume := range slices.Sorted(maps.Keys(n.disks)) {
+		disk := n.disks[volume]
+		if label, ok := disk.labels[key]; !ok || label != value {
+			continue
+		}
+		found := platform.ListedDisk{Name: volume, Bytes: disk.bytes, Labels: maps.Clone(disk.labels)}
+		if disk.machine != "" {
+			found.Machines = []string{disk.machine}
+		}
+		listed = append(listed, found)
+	}
+	return listed, nil
+}
+
+// Create makes a disk with its labels, attached to nothing, every byte of it
+// zero. A disk of that name already there is platform.ErrAlreadyExists.
+func (n *NetworkDisks) Create(ctx context.Context, spec platform.NetworkDiskSpec) error {
+	if err := n.wait(ctx, "create", spec.Name, n.config.CreateLatency, BuggifyCreateSlow); err != nil {
+		return err
+	}
+	if n.runtime.buggifyHere(BuggifyCreateFails, 0.1) {
+		n.trace("create", spec.Name, "failed")
+		return fmt.Errorf("%w: creating network disk %q", platform.ErrUnavailable, spec.Name)
+	}
+	if err := n.make(ctx, spec); err != nil {
+		n.trace("create", spec.Name, "refused")
+		return err
+	}
+	n.trace("create", spec.Name, "ok")
+	return nil
+}
+
+// Delete removes a disk and everything on it. A disk attached to a machine
+// is refused with platform.ErrInUse.
+func (n *NetworkDisks) Delete(ctx context.Context, volume string) error {
+	if err := n.runtime.sleep(ctx, n.config.DeleteLatency); err != nil {
+		return err
+	}
+	if n.runtime.buggifyHere(BuggifyDeleteFails, 0.1) {
+		n.trace("delete", volume, "failed")
+		return fmt.Errorf("%w: deleting network disk %q", platform.ErrUnavailable, volume)
+	}
+	n.mu.Lock()
+	disk := n.disks[volume]
+	switch {
+	case disk == nil:
+		n.mu.Unlock()
+		return fmt.Errorf("%w: network disk %q", platform.ErrNotFound, volume)
+	case disk.machine != "":
+		machine := disk.machine
+		n.mu.Unlock()
+		n.trace("delete", volume, "in use")
+		return fmt.Errorf("%w: %q is attached to %s", platform.ErrInUse, volume, machine)
+	}
+	delete(n.disks, volume)
+	n.mu.Unlock()
+	n.trace("delete", volume, "ok")
+	return nil
 }
 
 // Attach attaches a volume to machine, which then opens it. It is refused

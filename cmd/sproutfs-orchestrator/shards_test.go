@@ -35,7 +35,7 @@ func newShardFixture(t *testing.T, names []string, shards int) *shardFixture {
 		DetachLatency: time.Second})
 	for n := range shards {
 		volume := fmt.Sprintf("projects/p/zones/z/disks/shard-%d", n)
-		if err := f.cloud.Create(f.ctx, volume, 64<<30); err != nil {
+		if err := f.cloud.Provision(f.ctx, volume, 64<<30); err != nil {
 			t.Fatal(err)
 		}
 		f.volumes = append(f.volumes, volume)

@@ -23,6 +23,8 @@ type Seconds = host.Seconds
 type Host struct {
 	// Name is the pod's name, which is what the CLI names a host by.
 	Name string `json:"name"`
+	// Node is the machine the pod is scheduled on.
+	Node string `json:"node,omitempty"`
 	// API is the origin of the host's HTTP API and Page the address its
 	// peer server is reached at.
 	API  string `json:"api"`

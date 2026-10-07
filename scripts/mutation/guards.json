@@ -1052,5 +1052,29 @@
     "package": "vmmemory/internal/zirconvm",
     "run": "^TestAnAbandonedWritebackMakesEveryPageDirtyAgain$",
     "purpose": "Leave the pages of an abandoned writeback AwaitingClean, as Zircon has no abandon, against D4. The failed checkpoint keeps its pages and the copies it held, and the mappings it protected stay."
+  },
+  {
+    "id": "membership-attach-journal-late",
+    "package": "membership",
+    "run": "^TestCarryAttachesAReservedJournalDiskAtOnce$",
+    "purpose": "Attach a journal disk reserved for a machine only once its member is assigned it, so a new host waits a whole attach before it serves durable flush."
+  },
+  {
+    "id": "membership-create-no-journal",
+    "package": "membership",
+    "run": "^TestJournalDisksFollowTheMachines$",
+    "purpose": "Make no journal disk for a machine of the pool that has none, so its host never serves durable flush."
+  },
+  {
+    "id": "membership-delete-a-live-journal",
+    "package": "membership",
+    "run": "^TestAnExpiredJournalDiskIsDeletedAndRemoved$",
+    "purpose": "Let a step mark deleting a journal disk that is not released and empty, so flushed writes not yet in a checkpoint are deleted with it."
+  },
+  {
+    "id": "host-open-a-journal-as-a-shard",
+    "package": "host",
+    "run": "^TestEachHostServesTheJournalDiskMadeForItsMachine$",
+    "purpose": "Open a journal disk assigned to this host as a cache shard, which empties it of its flushed writes."
   }
 ]

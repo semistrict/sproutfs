@@ -495,6 +495,27 @@ most 240 MiB/s. A shard moved off a removed host in 13 to 15 s with a
 controller passing every second, about 10 s of it Compute Engine's detach and
 attach calls.
 
+## Durable flush
+
+Durable flush is optional and off by default. On, a guest's flush is answered
+once the blocks it changed are on a journal disk, not at the next checkpoint
+([durable flush](../plans/fsync-journal-2026-10-06.md)). Each node a host runs
+on has one journal disk. The orchestrator makes the disks through Compute
+Engine's API, labelled `sproutfs-journal` with the namespace, attaches each to
+its node, and deletes one that has been unused for an hour. A flush that cannot
+be journaled fails with an I/O error in the guest, and a host places no VM
+until its journal disk is served.
+
+```
+kubectl -n sproutfs patch configmap sproutfs-demo --type merge -p '{"data":{"durable_flush":"gce"}}'
+kubectl -n sproutfs rollout restart deployment/sproutfs-orchestrator deployment/sproutfs-host
+```
+
+A journal disk is 32 GiB unless `SPROUTFS_JOURNAL_BYTES` on the orchestrator
+says otherwise. Besides the shards' permissions above, the orchestrator needs
+`compute.disks.list`, `compute.disks.create`, `compute.disks.setLabels` and
+`compute.disks.delete` in the nodes' zone. The hosts need nothing new.
+
 ## Resources
 
 | | host (each of two pods) | orchestrator |

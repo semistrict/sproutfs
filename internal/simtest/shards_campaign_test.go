@@ -33,8 +33,8 @@ var shardProbes = []string{
 }
 
 // shardSites is every site the shard campaign must fire across its seeds: the
-// cloud's and the hosts'.
-var shardSites = append(sim.NetworkDiskSites(), "host/shard-open-fails", "host/shard-close-slow")
+// cloud's attach sites and the hosts'.
+var shardSites = append(sim.NetworkDiskAttachSites(), "host/shard-open-fails", "host/shard-close-slow")
 
 // shardCampaign is one seed of the campaign: a world of six hosts and six
 // shards under 4+2, driven through a seeded schedule of the things that

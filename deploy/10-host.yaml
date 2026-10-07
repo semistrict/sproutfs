@@ -126,6 +126,17 @@ spec:
                   name: sproutfs-demo
                   key: shards
                   optional: true
+            # Durable flush: a guest's flush is answered once its changed
+            # blocks are on the journal disk the orchestrator attaches to this
+            # node, and fails where they cannot be. The ConfigMap's
+            # durable_flush key, gce, turns it on; without it a flush waits
+            # for a checkpoint. deploy/README.md, "Durable flush".
+            - name: SPROUTFS_DURABLE_FLUSH
+              valueFrom:
+                configMapKeyRef:
+                  name: sproutfs-demo
+                  key: durable_flush
+                  optional: true
             - name: SPROUTFS_NODE_NAME
               valueFrom:
                 fieldRef:

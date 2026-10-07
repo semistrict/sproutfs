@@ -30,6 +30,9 @@ type shardCluster struct {
 	// started counts the hosts started, each with entropy of its own, as
 	// every process draws its own.
 	started int
+	// journals turns durable flush on: each host opens the journal disk the
+	// controller keeps for its machine.
+	journals bool
 }
 
 // shardHost is one host: its machine, its clock, and whether it is leaving.
@@ -56,7 +59,7 @@ func newShardCluster(t *testing.T, shards int) *shardCluster {
 	c.control = &membership.ShardControl{Store: store, Disks: c.cloud}
 	for n := range shards {
 		volume := fmt.Sprintf("shard-%d", n)
-		if err := c.cloud.Create(c.ctx, volume, testShardBytes); err != nil {
+		if err := c.cloud.Provision(c.ctx, volume, testShardBytes); err != nil {
 			t.Fatal(err)
 		}
 		c.control.Volumes = append(c.control.Volumes, volume)
@@ -86,6 +89,9 @@ func (c *shardCluster) startOn(name, machine string) *shardHost {
 		Shards:             host.ShardsConfig{Devices: c.cloud.Devices(machine), Machine: machine},
 		Migration:          host.MigrationConfig{Address: platform.Address(name + "-pages")},
 		MembershipInterval: -1, CheckpointInterval: -1, EpochInterval: -1}
+	if c.journals {
+		config.Journal = host.JournalConfig{DurableFlush: true, Devices: c.cloud.Devices(machine), Machine: machine}
+	}
 	started, err := host.StartHost(c.ctx, config)
 	if err != nil {
 		c.t.Fatal(err)
@@ -113,6 +119,9 @@ func (c *shardCluster) want() membership.Want {
 		self, _ := h.host.Member()
 		self.Leaving = h.leaving
 		want.Hosts = append(want.Hosts, self)
+		if c.journals {
+			want.Pool = append(want.Pool, h.machine)
+		}
 	}
 	return want
 }

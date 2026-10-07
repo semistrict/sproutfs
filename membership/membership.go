@@ -82,6 +82,8 @@ const (
 	Releasing
 	// Released is a disk assigned to nobody.
 	Released
+	// Deleting is a journal disk being deleted, assigned to nobody.
+	Deleting
 )
 
 func (s DiskState) String() string {
@@ -94,8 +96,46 @@ func (s DiskState) String() string {
 		return "releasing"
 	case Released:
 		return "released"
+	case Deleting:
+		return "deleting"
 	}
 	return fmt.Sprintf("disk-state-%d", uint8(s))
+}
+
+// DiskKind is what a disk is for.
+type DiskKind uint8
+
+const (
+	// Cache is a disk of the cluster's cache: windows are ranked over it.
+	Cache DiskKind = iota
+	// Journal is a host's journal disk, which holds the blocks its VMs'
+	// flushes wrote until a checkpoint covers them
+	// (plans/fsync-journal-2026-10-06.md). It ranks no window. A member
+	// writes the journal disk reserved for its machine, and may hold others
+	// for reading after their writers were lost.
+	Journal
+)
+
+func (k DiskKind) String() string {
+	switch k {
+	case Cache:
+		return "cache"
+	case Journal:
+		return "journal"
+	}
+	return fmt.Sprintf("disk-kind-%d", uint8(k))
+}
+
+// ParseDiskKind reads a disk's kind as String writes it, and the empty
+// string as a cache disk.
+func ParseDiskKind(text string) (DiskKind, error) {
+	switch text {
+	case "", "cache":
+		return Cache, nil
+	case "journal":
+		return Journal, nil
+	}
+	return 0, fmt.Errorf("%w: no disk kind %q", ErrInvalid, text)
 }
 
 // ParseDiskState reads a disk's state as String writes it, and the empty
@@ -104,7 +144,7 @@ func ParseDiskState(text string) (DiskState, error) {
 	if text == "" {
 		return 0, nil
 	}
-	for state := Attaching; state <= Released; state++ {
+	for state := Attaching; state <= Deleting; state++ {
 		if state.String() == text {
 			return state, nil
 		}
@@ -125,7 +165,8 @@ type Member struct {
 	State   MemberState
 }
 
-// Disk is one cache disk, a shard of the cluster's cache.
+// Disk is one disk the membership assigns: a cache disk, which is a shard of
+// the cluster's cache, or a journal disk.
 type Disk struct {
 	// ID is the identity in the header of the disk's cache file. Windows are
 	// ranked by it.
@@ -144,6 +185,13 @@ type Disk struct {
 	// names it, and a member that lost the disk can never name the
 	// generation that assigned it again.
 	Assigned uint64
+	// Kind is what the disk is for. Machine is the machine a journal disk is
+	// reserved for, empty for none, and Empty marks a journal disk whose last
+	// holder closed it with no live entry: a disk just made, or one whose
+	// holder was lost, is not empty until a holder has read it and said so.
+	Kind    DiskKind
+	Machine string
+	Empty   bool
 }
 
 // Membership is one generation of the membership. It is a value: a change
@@ -193,7 +241,9 @@ func New(generation uint64, code rank.Code, members []Member, disks []Disk, earl
 		if err := m.checkDisk(disk); err != nil {
 			return Membership{}, err
 		}
-		caches = append(caches, rank.Cache{Identity: disk.ID, Weight: disk.Weight, Address: m.served(disk)})
+		if disk.Kind == Cache {
+			caches = append(caches, rank.Cache{Identity: disk.ID, Weight: disk.Weight, Address: m.served(disk)})
+		}
 	}
 	list, err := rank.NewList(code, caches, earlier...)
 	if err != nil {
@@ -206,11 +256,16 @@ func New(generation uint64, code rank.Code, members []Member, disks []Disk, earl
 // checkDisk refuses a disk no host could route by.
 func (m Membership) checkDisk(disk Disk) error {
 	switch {
-	case disk.ID.IsZero() || disk.Weight == 0:
+	case disk.ID.IsZero() || disk.Weight == 0 && disk.Kind == Cache:
 		return fmt.Errorf("%w: disk %s of weight %d, want an identity and a weight", ErrInvalid, disk.ID, disk.Weight)
-	case disk.State < Attaching || disk.State > Released:
+	case disk.Kind > Journal:
+		return fmt.Errorf("%w: disk %s is a %s", ErrInvalid, disk.ID, disk.Kind)
+	case disk.Kind == Cache && (disk.Machine != "" || disk.Empty || disk.State == Deleting):
+		return fmt.Errorf("%w: cache disk %s is %s, reserved for %q, empty %v", ErrInvalid, disk.ID, disk.State,
+			disk.Machine, disk.Empty)
+	case disk.State < Attaching || disk.State > Deleting:
 		return fmt.Errorf("%w: disk %s is %s", ErrInvalid, disk.ID, disk.State)
-	case disk.State == Released:
+	case disk.State == Released || disk.State == Deleting:
 		if !disk.Member.IsZero() || disk.Assigned != 0 {
 			return fmt.Errorf("%w: disk %s is released and assigned to %s at %d", ErrInvalid, disk.ID, disk.Member,
 				disk.Assigned)

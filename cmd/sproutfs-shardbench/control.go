@@ -70,7 +70,7 @@ func runControl(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	disks, err := adapters.NewGCENetworkDisks(ctx, "", "", "")
+	disks, err := adapters.NewGCENetworkDisks(ctx, adapters.GCENetworkDisksConfig{})
 	if err != nil {
 		return err
 	}

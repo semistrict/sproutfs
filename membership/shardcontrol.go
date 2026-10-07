@@ -7,6 +7,7 @@ import (
 	"log/slog"
 
 	"github.com/semistrict/sproutfs/platform"
+	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/rank"
 )
 
@@ -23,6 +24,10 @@ type ShardControl struct {
 	// Volumes is the deployment's shards, by the names the cloud knows them
 	// by: a fixed set, changed only when the cache is resized on purpose.
 	Volumes []string
+	// Journals, where it is not nil, has the pass keep a journal disk
+	// reserved for every machine of want's pool too: it lists the disks,
+	// creates the ones the pool needs and deletes the expired ones.
+	Journals *JournalControl
 }
 
 // Describe reads where the cloud has each of the deployment's shards, and its
@@ -62,11 +67,30 @@ func (c *ShardControl) Pass(ctx context.Context, want Want) (Membership, bool, e
 		return Membership{}, false, err
 	}
 	want.Shards = c.Describe(ctx, current)
+	if c.Journals != nil {
+		want.Journals, want.JournalsKnown = c.Journals.Describe(ctx)
+		want.Expired = c.Journals.Expired(current)
+	}
 	next, changed, err := c.Store.Reconcile(ctx, want)
 	if err != nil {
 		return next, changed, err
 	}
 	var failed []error
+	if c.Journals != nil && want.JournalsKnown {
+		// The cloud's side of the journal disks: what the membership left
+		// deleting goes, and one disk is made for a machine that has none,
+		// which the next pass adds and reserves. A crash between any two of
+		// these is a pass that does what is left.
+		if err := c.Journals.Delete(ctx, next, want.Journals); err != nil {
+			failed = append(failed, err)
+		}
+		if needed := NeedsJournal(next, want); len(needed) > 0 && !sim.Bug(ctx, "membership-create-no-journal") {
+			if _, err := c.Journals.Create(ctx); err != nil {
+				failed = append(failed, err)
+			}
+			changed = true
+		}
+	}
 	actions := Carry(ctx, next, want)
 	changed = changed || len(actions) > 0
 	for _, action := range actions {

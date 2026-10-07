@@ -273,6 +273,7 @@ func Start(ctx context.Context, config SupervisorConfig) (Service, error) {
 		DiskLimiter:        s.disk,
 		CacheVolume:        s.cacheFile,
 		Shards:             config.Shards,
+		Journal:            config.Journal,
 		CheckpointInterval: config.CheckpointInterval,
 		LossWindow:         config.LossWindow,
 		FlushBound:         config.FlushBound,

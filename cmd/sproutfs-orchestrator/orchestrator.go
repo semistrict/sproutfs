@@ -34,6 +34,8 @@ type pod struct {
 	// Terminating is a pod being deleted, as a node the autoscaler removes
 	// has its pods deleted: it still answers, and drains.
 	Terminating bool
+	// Node is the machine the pod is scheduled on, empty while it is not.
+	Node string
 }
 
 // pods is where the hosts are. The orchestrator holds no roster of its own: it
@@ -185,6 +187,10 @@ type orchestrator struct {
 	// leaving is each host pod that is terminating, by name, from the last
 	// survey: its member drains, and its shards move off it.
 	leaving map[string]bool
+	// pool is the machines the host pods are scheduled on, from the last
+	// survey: each keeps a journal disk reserved for it while durable flush
+	// is on.
+	pool []string
 	// shards carries out the membership's shards through the cloud's attach
 	// API, nil for a deployment whose hosts keep disks of their own, and
 	// shardVolumes lists the shards' volumes from their claims.
@@ -241,6 +247,9 @@ type liveHost struct {
 	// templates are the guest images this host can create VMs from, which is
 	// what says how much memory a VM created here would need.
 	templates []host.Template
+	// journal is what the host said of durable flush: whether it is on, and
+	// whether a journal disk is served there.
+	journal host.Journal
 }
 
 // free is the memory a VM placed on this host has to fit into: its arena, less
@@ -409,7 +418,7 @@ func (o *orchestrator) fanOut(ctx context.Context, remember bool) ([]liveHost, e
 	hosts := make([]liveHost, len(found))
 	var wg sync.WaitGroup
 	for index, p := range found {
-		report := orch.Host{Name: p.Name, Ready: p.Ready, Terminating: p.Terminating, Running: []string{},
+		report := orch.Host{Name: p.Name, Node: p.Node, Ready: p.Ready, Terminating: p.Terminating, Running: []string{},
 			Serving: []string{}, Receiving: []string{}}
 		if p.IP != "" {
 			report.API = "http://" + net.JoinHostPort(p.IP, strconv.Itoa(o.apiPort))
@@ -438,6 +447,7 @@ func (o *orchestrator) fanOut(ctx context.Context, remember bool) ([]liveHost, e
 			hosts[index].report.Store = status.Store
 			hosts[index].vms = status.VMs
 			hosts[index].templates = status.Templates
+			hosts[index].journal = status.Journal
 			hosts[index].report.Member = status.Member
 			if status.PageAddress != "" {
 				hosts[index].report.Page = status.PageAddress
@@ -851,9 +861,12 @@ func destinations(hosts []liveHost, exclude string, need uint64) []liveHost {
 }
 
 // ready reports a host that answered this survey and says it is ready, which
-// is every host a VM may be placed on.
+// is every host a VM may be placed on. With durable flush on, a host serves
+// no journal disk until the membership has assigned it one, and every flush
+// of a VM placed there before would fail: it takes none until it does.
 func ready(h liveHost) bool {
-	return h.client != nil && h.report.Error == "" && h.report.Ready
+	served := !h.journal.DurableFlush || h.journal.Served
+	return h.client != nil && h.report.Error == "" && h.report.Ready && served
 }
 
 // admits reports whether one named host can hold a VM of need bytes, which is

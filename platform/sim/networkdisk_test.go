@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"testing"
 	"testing/synctest"
@@ -20,7 +21,7 @@ func newCloud(t *testing.T, runtime *sim.Runtime) *sim.NetworkDisks {
 	t.Helper()
 	cloud := runtime.NewNetworkDisks(sim.NetworkDisksConfig{AttachLatency: 2 * time.Second,
 		DetachLatency: time.Second, DescribeLatency: 50 * time.Millisecond})
-	if err := cloud.Create(t.Context(), "shard-0", networkDiskBytes); err != nil {
+	if err := cloud.Provision(t.Context(), "shard-0", networkDiskBytes); err != nil {
 		t.Fatal(err)
 	}
 	return cloud
@@ -79,7 +80,7 @@ func TestANetworkDiskIsAttachedToOneMachineAndOpenedByOneProcess(t *testing.T) {
 		if _, err := first.WriteAt(ctx, []byte("last"), networkDiskBytes-4); err != nil {
 			t.Fatalf("writing the device's last bytes: %v", err)
 		}
-		if err := cloud.Create(ctx, "empty", 0); !errors.Is(err, platform.ErrInvalidPath) {
+		if err := cloud.Provision(ctx, "empty", 0); !errors.Is(err, platform.ErrInvalidPath) {
 			t.Fatalf("making a disk of no bytes: %v, want ErrInvalidPath", err)
 		}
 		synced, unsynced := []byte("synced"), []byte("unsynced")
@@ -130,7 +131,7 @@ func TestAMachineThatCrashesKeepsItsDisksAndLosesTheirHandles(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx := t.Context()
 		cloud := newCloud(t, sim.New(sim.Config{}))
-		if err := cloud.Create(ctx, "shard-1", networkDiskBytes); err != nil {
+		if err := cloud.Provision(ctx, "shard-1", networkDiskBytes); err != nil {
 			t.Fatal(err)
 		}
 		if err := cloud.Attach(ctx, "shard-0", "machine-a"); err != nil {
@@ -213,7 +214,194 @@ func TestTheCloudsSitesFireAndNeverAttachADiskTwice(t *testing.T) {
 			}
 		})
 	}
-	for _, site := range sim.NetworkDiskSites() {
+	for _, site := range sim.NetworkDiskAttachSites() {
+		if !fired[site] {
+			t.Errorf("site %s never fired", site)
+		}
+	}
+	if t.Failed() {
+		t.Log(fmt.Sprint(fired))
+	}
+}
+
+// The cloud makes a disk with its labels, lists disks by label in name order,
+// and refuses a second disk of a name it has.
+func TestTheCloudMakesDisksAndListsThemByLabel(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx := t.Context()
+		cloud := sim.New(sim.Config{}).NewNetworkDisks(sim.NetworkDisksConfig{CreateLatency: 3 * time.Second,
+			ListLatency: time.Second})
+		if err := cloud.Provision(ctx, "shard-0", networkDiskBytes); err != nil {
+			t.Fatal(err)
+		}
+		east := map[string]string{"sproutfs-journal": "east"}
+		began := time.Now()
+		for _, spec := range []platform.NetworkDiskSpec{
+			{Name: "journal-b", Bytes: networkDiskBytes, Labels: east},
+			{Name: "journal-a", Bytes: 2 * networkDiskBytes, Labels: east},
+			{Name: "journal-c", Bytes: networkDiskBytes, Labels: map[string]string{"sproutfs-journal": "west"}},
+		} {
+			if err := cloud.Create(ctx, spec); err != nil {
+				t.Fatal(err)
+			}
+		}
+		// Each create also writes the new device's zeroes, which takes the
+		// simulated disk a few milliseconds.
+		if took := time.Since(began); took.Round(time.Second) != 9*time.Second {
+			t.Fatalf("three creates took %v, want the cloud's 3s each", took)
+		}
+		described, err := cloud.Describe(ctx, "journal-a")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := (platform.NetworkDisk{Bytes: 2 * networkDiskBytes}); !reflect.DeepEqual(described, want) {
+			t.Fatalf("a new disk is described as %+v, want %+v", described, want)
+		}
+		if err := cloud.Attach(ctx, "journal-b", "machine-a"); err != nil {
+			t.Fatal(err)
+		}
+		listed, err := cloud.List(ctx, "sproutfs-journal", "east")
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []platform.ListedDisk{
+			{Name: "journal-a", Bytes: 2 * networkDiskBytes, Labels: east},
+			{Name: "journal-b", Bytes: networkDiskBytes, Labels: east, Machines: []string{"machine-a"}},
+		}
+		if !reflect.DeepEqual(listed, want) {
+			t.Fatalf("the cloud lists %+v, want %+v", listed, want)
+		}
+		listed, err = cloud.List(ctx, "sproutfs-journal", "north")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if listed != nil {
+			t.Fatalf("listing a label no disk has: %+v, want nothing", listed)
+		}
+		again := platform.NetworkDiskSpec{Name: "journal-c", Bytes: networkDiskBytes}
+		if err := cloud.Create(ctx, again); !errors.Is(err, platform.ErrAlreadyExists) {
+			t.Fatalf("creating a disk of a name the cloud has: %v, want ErrAlreadyExists", err)
+		}
+		if err := cloud.Create(ctx, platform.NetworkDiskSpec{Name: "journal-d"}); !errors.Is(err, platform.ErrInvalidPath) {
+			t.Fatalf("creating a disk of no bytes: %v, want ErrInvalidPath", err)
+		}
+	})
+}
+
+// The cloud deletes a disk attached to nothing, refuses one attached to a
+// machine, and makes a new disk of a deleted one's name with nothing on it.
+func TestTheCloudDeletesOnlyADiskAttachedToNothing(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx := t.Context()
+		cloud := sim.New(sim.Config{}).NewNetworkDisks(sim.NetworkDisksConfig{DeleteLatency: 2 * time.Second})
+		spec := platform.NetworkDiskSpec{Name: "journal-a", Bytes: networkDiskBytes,
+			Labels: map[string]string{"sproutfs-journal": "east"}}
+		if err := cloud.Create(ctx, spec); err != nil {
+			t.Fatal(err)
+		}
+		if err := cloud.Attach(ctx, "journal-a", "machine-a"); err != nil {
+			t.Fatal(err)
+		}
+		old, err := cloud.Devices("machine-a").Open(ctx, "journal-a")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := old.WriteAt(ctx, []byte("entry"), 0); err != nil {
+			t.Fatal(err)
+		}
+		if err := old.Sync(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if err := old.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if err := cloud.Delete(ctx, "journal-a"); !errors.Is(err, platform.ErrInUse) {
+			t.Fatalf("deleting an attached disk: %v, want ErrInUse", err)
+		}
+		if err := cloud.Detach(ctx, "journal-a", "machine-a"); err != nil {
+			t.Fatal(err)
+		}
+		began := time.Now()
+		if err := cloud.Delete(ctx, "journal-a"); err != nil {
+			t.Fatal(err)
+		}
+		if took := time.Since(began); took != 2*time.Second {
+			t.Fatalf("a delete took %v, want the cloud's 2s", took)
+		}
+		if _, err := cloud.Describe(ctx, "journal-a"); !errors.Is(err, platform.ErrNotFound) {
+			t.Fatalf("describing a deleted disk: %v, want ErrNotFound", err)
+		}
+		if err := cloud.Delete(ctx, "journal-a"); !errors.Is(err, platform.ErrNotFound) {
+			t.Fatalf("deleting a disk the cloud does not have: %v, want ErrNotFound", err)
+		}
+		listed, err := cloud.List(ctx, "sproutfs-journal", "east")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if listed != nil {
+			t.Fatalf("the cloud lists %+v after the delete, want nothing", listed)
+		}
+		if err := cloud.Create(ctx, spec); err != nil {
+			t.Fatalf("creating a disk of a deleted one's name: %v", err)
+		}
+		if err := cloud.Attach(ctx, "journal-a", "machine-b"); err != nil {
+			t.Fatal(err)
+		}
+		fresh, err := cloud.Devices("machine-b").Open(ctx, "journal-a")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer fresh.Close()
+		read := make([]byte, 5)
+		if _, err := fresh.ReadAt(ctx, read, 0); err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(read, make([]byte, 5)) {
+			t.Fatalf("the new disk reads %q, want zeroes", read)
+		}
+	})
+}
+
+// Every create and delete site fires over a few seeds, and whatever they do, a
+// create or a delete that fails leaves the cloud as it was, and one that
+// succeeds did what it asked.
+func TestTheCloudsCreateAndDeleteSitesFire(t *testing.T) {
+	fired := make(map[string]bool)
+	for seed := uint64(1); seed <= 24; seed++ {
+		synctest.Test(t, func(t *testing.T) {
+			ctx := t.Context()
+			runtime := sim.New(sim.Config{Seed: seed, Buggify: true})
+			cloud := runtime.NewNetworkDisks(sim.NetworkDisksConfig{CreateLatency: time.Second,
+				DeleteLatency: time.Second})
+			spec := platform.NetworkDiskSpec{Name: "journal-a", Bytes: networkDiskBytes}
+			for step := range 40 {
+				had := cloud.Disk("journal-a") != nil
+				var err error
+				if step%2 == 0 {
+					err = cloud.Create(ctx, spec)
+				} else {
+					err = cloud.Delete(ctx, "journal-a")
+				}
+				has := cloud.Disk("journal-a") != nil
+				switch {
+				case err == nil && has == had:
+					t.Fatalf("seed %d step %d: succeeded and left the disk there: %v", seed, step, has)
+				case err != nil && has != had:
+					t.Fatalf("seed %d step %d: failed with %v and changed whether the disk is there", seed, step, err)
+				case err == nil, errors.Is(err, platform.ErrUnavailable):
+				case errors.Is(err, platform.ErrAlreadyExists) && had, errors.Is(err, platform.ErrNotFound) && !had:
+				default:
+					t.Fatalf("seed %d step %d: %v", seed, step, err)
+				}
+			}
+			for site, count := range runtime.FiredSites() {
+				if count > 0 {
+					fired[site] = true
+				}
+			}
+		})
+	}
+	for _, site := range sim.NetworkDiskLifecycleSites() {
 		if !fired[site] {
 			t.Errorf("site %s never fired", site)
 		}

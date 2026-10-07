@@ -86,10 +86,27 @@ func newS3(ctx context.Context, endpoint, bucket, prefix string) (platform.Objec
 // NewGCENetworkDisks reaches Compute Engine's persistent disks and Hyperdisks
 // with the ambient Google credentials. A volume is named by its CSI volume
 // handle, projects/<project>/zones/<zone>/disks/<name>, or by its name alone in
-// project and zone; a machine is an instance's name. A non-empty endpoint
-// points the client at a server that answers for the API.
-func NewGCENetworkDisks(ctx context.Context, project, zone, endpoint string) (platform.NetworkDisks, error) {
-	return real.NewGCEDisks(ctx, project, zone, endpoint)
+// the configured project and zone; a machine is an instance's name.
+func NewGCENetworkDisks(ctx context.Context, config GCENetworkDisksConfig) (platform.NetworkDisks, error) {
+	return real.NewGCEDisks(ctx, real.GCEDisksConfig{Project: config.Project, Zone: config.Zone,
+		Endpoint: config.Endpoint, DiskType: config.DiskType, IOPS: config.IOPS,
+		ThroughputMBps: config.ThroughputMBps})
+}
+
+// GCENetworkDisksConfig is where a deployment's Compute Engine disks are and
+// what it creates.
+type GCENetworkDisksConfig struct {
+	// Project and Zone are where a disk named by its name alone is, and
+	// where List looks.
+	Project, Zone string
+	// Endpoint, where non-empty, points the client at a server that answers
+	// for the API, and sends no credentials.
+	Endpoint string
+	// DiskType is the type of disk Create makes, and IOPS and ThroughputMBps
+	// what it provisions for it; zero leaves the cloud's default. An empty
+	// DiskType is Hyperdisk Balanced with 6000 IOPS and 400 MB/s.
+	DiskType             string
+	IOPS, ThroughputMBps int64
 }
 
 // NewGCEDevices opens the Compute Engine disks attached to this instance, at

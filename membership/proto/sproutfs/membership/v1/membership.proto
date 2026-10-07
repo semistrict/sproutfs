@@ -51,9 +51,9 @@ enum MemberState {
   MEMBER_STATE_DRAINING = 3;
 }
 
-// Disk is one cache disk: the identity in its file's header, which windows
-// are ranked by, the name the cloud or the cluster knows the volume by, its
-// weight, the member it is assigned to, and its state.
+// Disk is one disk: the identity in its header, which windows are ranked by
+// for a cache disk, the name the cloud or the cluster knows the volume by, its
+// weight, the member it is assigned to, its state and its kind.
 message Disk {
   bytes id = 1;
   string volume = 2;
@@ -64,6 +64,22 @@ message Disk {
   // assigned is the generation that assigned the disk to its member. Every
   // reply its member sends for it names this generation.
   uint64 assigned = 6;
+  // kind is what the disk is for. A journal disk ranks no window.
+  DiskKind kind = 7;
+  // machine is the machine a journal disk is reserved for, empty for none.
+  string machine = 8;
+  // empty marks a journal disk whose last holder closed it with no live
+  // entry.
+  bool empty = 9;
+}
+
+enum DiskKind {
+  DISK_KIND_UNSPECIFIED = 0;
+  // DISK_KIND_CACHE is a disk of the cluster's cache.
+  DISK_KIND_CACHE = 1;
+  // DISK_KIND_JOURNAL is a host's journal disk
+  // (plans/fsync-journal-2026-10-06.md).
+  DISK_KIND_JOURNAL = 2;
 }
 
 enum DiskState {
@@ -75,4 +91,6 @@ enum DiskState {
   DISK_STATE_RELEASING = 3;
   // DISK_STATE_RELEASED is assigned to nobody.
   DISK_STATE_RELEASED = 4;
+  // DISK_STATE_DELETING is a journal disk being deleted, assigned to nobody.
+  DISK_STATE_DELETING = 5;
 }

@@ -153,11 +153,14 @@ func (s *shardServer) held() []membership.Disk {
 	return disks
 }
 
-// assigned is the shards m assigns this host: attaching or serving here.
-func (s *shardServer) assigned(m membership.Membership) map[rank.Identity]membership.Disk {
+// assigned is the shards m assigns this host: attaching or serving here. A
+// journal disk assigned here is the journal disks' server's (journaldisks.go),
+// never a shard: opened as one, its entries would be emptied.
+func (s *shardServer) assigned(ctx context.Context, m membership.Membership) map[rank.Identity]membership.Disk {
 	wanted := make(map[rank.Identity]membership.Disk)
 	for _, disk := range m.Disks() {
-		if disk.Member == s.self && (disk.State == membership.Attaching || disk.State == membership.Serving) {
+		shard := disk.Kind == membership.Cache || sim.Bug(ctx, "host-open-a-journal-as-a-shard")
+		if shard && disk.Member == s.self && (disk.State == membership.Attaching || disk.State == membership.Serving) {
 			wanted[disk.ID] = disk
 		}
 	}
@@ -172,7 +175,7 @@ func (s *shardServer) pass(ctx context.Context) {
 		return
 	}
 	defer s.passing.Unlock()
-	wanted := s.assigned(s.view.Current())
+	wanted := s.assigned(ctx, s.view.Current())
 	s.mu.Lock()
 	open := maps.Clone(s.open)
 	s.mu.Unlock()
@@ -212,7 +215,7 @@ func (s *shardServer) openShard(ctx context.Context, disk membership.Disk) error
 		if err != nil {
 			return fmt.Errorf("reading the membership before opening a shard: %w", err)
 		}
-		if again, still := s.assigned(read)[disk.ID]; !still || again.Assigned != disk.Assigned {
+		if again, still := s.assigned(ctx, read)[disk.ID]; !still || again.Assigned != disk.Assigned {
 			sim.Probe(ctx, ProbeShardAssignmentMoved)
 			return fmt.Errorf("the membership no longer assigns shard %s here under generation %d", disk.ID,
 				disk.Assigned)

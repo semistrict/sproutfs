@@ -12,8 +12,10 @@ import (
 )
 
 const (
-	// formatVersion is the object's wire format.
-	formatVersion = uint32(1)
+	// formatVersion is the object's wire format. Version 2 gives a disk its
+	// kind, the machine a journal disk is reserved for, and whether it is
+	// empty.
+	formatVersion = uint32(2)
 	// maximumSize bounds the object: a few dozen bytes for each member and
 	// each disk, so a megabyte is tens of thousands of hosts.
 	maximumSize = int64(1 << 20)
@@ -35,8 +37,10 @@ func (m Membership) Marshal() ([]byte, error) {
 	disks := make([]*membershipv1.Disk, 0, len(m.disks))
 	for _, disk := range m.disks {
 		state := membershipv1.DiskState(disk.State)
+		kind := membershipv1.DiskKind(disk.Kind + 1)
 		built := membershipv1.Disk_builder{Id: bytes.Clone(disk.ID[:]), Volume: proto.String(disk.Volume),
-			Weight: proto.Uint32(disk.Weight), State: &state, Assigned: proto.Uint64(disk.Assigned)}
+			Weight: proto.Uint32(disk.Weight), State: &state, Assigned: proto.Uint64(disk.Assigned), Kind: &kind,
+			Machine: proto.String(disk.Machine), Empty: proto.Bool(disk.Empty)}
 		if !disk.Member.IsZero() {
 			built.Member = bytes.Clone(disk.Member[:])
 		}
@@ -93,11 +97,13 @@ func Unmarshal(data []byte) (Membership, error) {
 			owner, owned = identityOf(member)
 		}
 		if len(disk.ProtoReflect().GetUnknown()) != 0 || !ok || !owned || !disk.HasVolume() || !disk.HasWeight() ||
-			!disk.HasState() || !disk.HasAssigned() {
+			!disk.HasState() || !disk.HasAssigned() || !disk.HasKind() || disk.GetKind() == 0 ||
+			!disk.HasMachine() || !disk.HasEmpty() {
 			return Membership{}, ErrCorrupt
 		}
 		disks = append(disks, Disk{ID: id, Volume: disk.GetVolume(), Weight: disk.GetWeight(), Member: owner,
-			State: DiskState(disk.GetState()), Assigned: disk.GetAssigned()})
+			State: DiskState(disk.GetState()), Assigned: disk.GetAssigned(), Kind: DiskKind(disk.GetKind() - 1),
+			Machine: disk.GetMachine(), Empty: disk.GetEmpty()})
 	}
 	earlier := make([]rank.Code, 0, len(message.GetEarlier()))
 	for _, code := range message.GetEarlier() {

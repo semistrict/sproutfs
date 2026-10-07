@@ -264,6 +264,10 @@ type SupervisorConfig struct {
 	// counts nothing of the cache, whose shards each count on their own
 	// device.
 	Shards ShardsConfig
+	// Journal turns durable flush on: a guest's flush is answered once its
+	// changed blocks are on the journal disk the membership assigns this
+	// host's machine. Off, the zero value, a flush waits for a checkpoint.
+	Journal JournalConfig
 	// HotTier is a second bucket under the deployment's names that reads of
 	// checkpoint objects try first and that reads and publications fill. Nil
 	// is none. It is an alternative to the cluster cache: a host given both

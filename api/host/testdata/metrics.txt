@@ -591,70 +591,70 @@ sproutfs_durable_flush 0
 sproutfs_journal_served 1
 # HELP sproutfs_journal_flushes_total Flushes the journal answered, by outcome: a failed one is an I/O error in the guest.
 # TYPE sproutfs_journal_flushes_total counter
-sproutfs_journal_flushes_total{outcome="succeeded"} 38530179
-sproutfs_journal_flushes_total{outcome="failed"} 49574284
+sproutfs_journal_flushes_total{outcome="succeeded"} 27597771
+sproutfs_journal_flushes_total{outcome="failed"} 46641900
 # HELP sproutfs_journal_flush_seconds How long each durable flush took, from its arrival to its answer.
 # TYPE sproutfs_journal_flush_seconds histogram
-sproutfs_journal_flush_seconds_bucket{le="1e-06"} 27597771
-sproutfs_journal_flush_seconds_bucket{le="2e-06"} 74239671
-sproutfs_journal_flush_seconds_bucket{le="4e-06"} 74239671
-sproutfs_journal_flush_seconds_bucket{le="8e-06"} 74239671
-sproutfs_journal_flush_seconds_bucket{le="1.6e-05"} 74239671
-sproutfs_journal_flush_seconds_bucket{le="3.2e-05"} 74239671
-sproutfs_journal_flush_seconds_bucket{le="6.4e-05"} 74239671
-sproutfs_journal_flush_seconds_bucket{le="0.000128"} 74239671
-sproutfs_journal_flush_seconds_bucket{le="0.000256"} 74239671
-sproutfs_journal_flush_seconds_bucket{le="0.000512"} 74239671
-sproutfs_journal_flush_seconds_bucket{le="0.001024"} 74239671
-sproutfs_journal_flush_seconds_bucket{le="0.002048"} 74239671
-sproutfs_journal_flush_seconds_bucket{le="0.004096"} 74239671
-sproutfs_journal_flush_seconds_bucket{le="0.008192"} 74239671
-sproutfs_journal_flush_seconds_bucket{le="0.016384"} 74239671
-sproutfs_journal_flush_seconds_bucket{le="0.032768"} 74239671
-sproutfs_journal_flush_seconds_bucket{le="0.065536"} 74239671
-sproutfs_journal_flush_seconds_bucket{le="0.131072"} 74239671
-sproutfs_journal_flush_seconds_bucket{le="0.262144"} 74239671
-sproutfs_journal_flush_seconds_bucket{le="0.524288"} 74239671
-sproutfs_journal_flush_seconds_bucket{le="1.048576"} 74239671
-sproutfs_journal_flush_seconds_bucket{le="2.097152"} 74239671
-sproutfs_journal_flush_seconds_bucket{le="4.194304"} 74239671
-sproutfs_journal_flush_seconds_bucket{le="+Inf"} 62618395
-sproutfs_journal_flush_seconds_sum 0.010553648
-sproutfs_journal_flush_seconds_count 62618395
+sproutfs_journal_flush_seconds_bucket{le="1e-06"} 48665459
+sproutfs_journal_flush_seconds_bucket{le="2e-06"} 57266207
+sproutfs_journal_flush_seconds_bucket{le="4e-06"} 57266207
+sproutfs_journal_flush_seconds_bucket{le="8e-06"} 57266207
+sproutfs_journal_flush_seconds_bucket{le="1.6e-05"} 57266207
+sproutfs_journal_flush_seconds_bucket{le="3.2e-05"} 57266207
+sproutfs_journal_flush_seconds_bucket{le="6.4e-05"} 57266207
+sproutfs_journal_flush_seconds_bucket{le="0.000128"} 57266207
+sproutfs_journal_flush_seconds_bucket{le="0.000256"} 57266207
+sproutfs_journal_flush_seconds_bucket{le="0.000512"} 57266207
+sproutfs_journal_flush_seconds_bucket{le="0.001024"} 57266207
+sproutfs_journal_flush_seconds_bucket{le="0.002048"} 57266207
+sproutfs_journal_flush_seconds_bucket{le="0.004096"} 57266207
+sproutfs_journal_flush_seconds_bucket{le="0.008192"} 57266207
+sproutfs_journal_flush_seconds_bucket{le="0.016384"} 57266207
+sproutfs_journal_flush_seconds_bucket{le="0.032768"} 57266207
+sproutfs_journal_flush_seconds_bucket{le="0.065536"} 57266207
+sproutfs_journal_flush_seconds_bucket{le="0.131072"} 57266207
+sproutfs_journal_flush_seconds_bucket{le="0.262144"} 57266207
+sproutfs_journal_flush_seconds_bucket{le="0.524288"} 57266207
+sproutfs_journal_flush_seconds_bucket{le="1.048576"} 57266207
+sproutfs_journal_flush_seconds_bucket{le="2.097152"} 57266207
+sproutfs_journal_flush_seconds_bucket{le="4.194304"} 57266207
+sproutfs_journal_flush_seconds_bucket{le="+Inf"} 577171
+sproutfs_journal_flush_seconds_sum 0.023621312
+sproutfs_journal_flush_seconds_count 577171
 # HELP sproutfs_journal_capture_seconds How long each capture of a disk's changed blocks took: protecting, reading and hashing its pages.
 # TYPE sproutfs_journal_capture_seconds histogram
-sproutfs_journal_capture_seconds_bucket{le="1e-06"} 48665459
-sproutfs_journal_capture_seconds_bucket{le="2e-06"} 57266207
-sproutfs_journal_capture_seconds_bucket{le="4e-06"} 57266207
-sproutfs_journal_capture_seconds_bucket{le="8e-06"} 57266207
-sproutfs_journal_capture_seconds_bucket{le="1.6e-05"} 57266207
-sproutfs_journal_capture_seconds_bucket{le="3.2e-05"} 57266207
-sproutfs_journal_capture_seconds_bucket{le="6.4e-05"} 57266207
-sproutfs_journal_capture_seconds_bucket{le="0.000128"} 57266207
-sproutfs_journal_capture_seconds_bucket{le="0.000256"} 57266207
-sproutfs_journal_capture_seconds_bucket{le="0.000512"} 57266207
-sproutfs_journal_capture_seconds_bucket{le="0.001024"} 57266207
-sproutfs_journal_capture_seconds_bucket{le="0.002048"} 57266207
-sproutfs_journal_capture_seconds_bucket{le="0.004096"} 57266207
-sproutfs_journal_capture_seconds_bucket{le="0.008192"} 57266207
-sproutfs_journal_capture_seconds_bucket{le="0.016384"} 57266207
-sproutfs_journal_capture_seconds_bucket{le="0.032768"} 57266207
-sproutfs_journal_capture_seconds_bucket{le="0.065536"} 57266207
-sproutfs_journal_capture_seconds_bucket{le="0.131072"} 57266207
-sproutfs_journal_capture_seconds_bucket{le="0.262144"} 57266207
-sproutfs_journal_capture_seconds_bucket{le="0.524288"} 57266207
-sproutfs_journal_capture_seconds_bucket{le="1.048576"} 57266207
-sproutfs_journal_capture_seconds_bucket{le="2.097152"} 57266207
-sproutfs_journal_capture_seconds_bucket{le="4.194304"} 57266207
-sproutfs_journal_capture_seconds_bucket{le="+Inf"} 577171
-sproutfs_journal_capture_seconds_sum 0.023621312
-sproutfs_journal_capture_seconds_count 577171
+sproutfs_journal_capture_seconds_bucket{le="1e-06"} 34624379
+sproutfs_journal_capture_seconds_bucket{le="2e-06"} 37184071
+sproutfs_journal_capture_seconds_bucket{le="4e-06"} 37184071
+sproutfs_journal_capture_seconds_bucket{le="8e-06"} 37184071
+sproutfs_journal_capture_seconds_bucket{le="1.6e-05"} 37184071
+sproutfs_journal_capture_seconds_bucket{le="3.2e-05"} 37184071
+sproutfs_journal_capture_seconds_bucket{le="6.4e-05"} 37184071
+sproutfs_journal_capture_seconds_bucket{le="0.000128"} 37184071
+sproutfs_journal_capture_seconds_bucket{le="0.000256"} 37184071
+sproutfs_journal_capture_seconds_bucket{le="0.000512"} 37184071
+sproutfs_journal_capture_seconds_bucket{le="0.001024"} 37184071
+sproutfs_journal_capture_seconds_bucket{le="0.002048"} 37184071
+sproutfs_journal_capture_seconds_bucket{le="0.004096"} 37184071
+sproutfs_journal_capture_seconds_bucket{le="0.008192"} 37184071
+sproutfs_journal_capture_seconds_bucket{le="0.016384"} 37184071
+sproutfs_journal_capture_seconds_bucket{le="0.032768"} 37184071
+sproutfs_journal_capture_seconds_bucket{le="0.065536"} 37184071
+sproutfs_journal_capture_seconds_bucket{le="0.131072"} 37184071
+sproutfs_journal_capture_seconds_bucket{le="0.262144"} 37184071
+sproutfs_journal_capture_seconds_bucket{le="0.524288"} 37184071
+sproutfs_journal_capture_seconds_bucket{le="1.048576"} 37184071
+sproutfs_journal_capture_seconds_bucket{le="2.097152"} 37184071
+sproutfs_journal_capture_seconds_bucket{le="4.194304"} 37184071
+sproutfs_journal_capture_seconds_bucket{le="+Inf"} 37644907
+sproutfs_journal_capture_seconds_sum 0.001580208
+sproutfs_journal_capture_seconds_count 37644907
 # HELP sproutfs_journal_ring_bytes The journal disk's ring.
 # TYPE sproutfs_journal_ring_bytes gauge
-sproutfs_journal_ring_bytes 37644907
+sproutfs_journal_ring_bytes 39603875
 # HELP sproutfs_journal_live_bytes What trimming has not freed of the journal's ring.
 # TYPE sproutfs_journal_live_bytes gauge
-sproutfs_journal_live_bytes 1580208
+sproutfs_journal_live_bytes 11539200
 # HELP sproutfs_template_imports_total Templates this host imported, by outcome.
 # TYPE sproutfs_template_imports_total counter
 sproutfs_template_imports_total{outcome="succeeded"} 20935472
@@ -727,235 +727,235 @@ sproutfs_cache_disk_limit_bytes 12845708
 sproutfs_cache_disk_used_bytes 56976539
 # HELP sproutfs_cache_memory_entries The pages and page tables the page cache holds in memory.
 # TYPE sproutfs_cache_memory_entries gauge
-sproutfs_cache_memory_entries 13663276
+sproutfs_cache_memory_entries 27556172
 # HELP sproutfs_cache_memory_page_tables The segments' page tables the page cache holds decoded in memory.
 # TYPE sproutfs_cache_memory_page_tables gauge
-sproutfs_cache_memory_page_tables 19252195
+sproutfs_cache_memory_page_tables 6036347
 # HELP sproutfs_cache_memory_page_table_bytes What the page tables the page cache holds are charged.
 # TYPE sproutfs_cache_memory_page_table_bytes gauge
-sproutfs_cache_memory_page_table_bytes 12948224
+sproutfs_cache_memory_page_table_bytes 7732400
 # HELP sproutfs_cache_memory_page_table_lookups_total Lookups of segments' page tables, by outcome: answered by a held table, a fetch and decode of the segment, or a table a publication kept.
 # TYPE sproutfs_cache_memory_page_table_lookups_total counter
-sproutfs_cache_memory_page_table_lookups_total{outcome="hit"} 8644259
-sproutfs_cache_memory_page_table_lookups_total{outcome="load"} 6340300
-sproutfs_cache_memory_page_table_lookups_total{outcome="kept"} 6036347
+sproutfs_cache_memory_page_table_lookups_total{outcome="hit"} 11428459
+sproutfs_cache_memory_page_table_lookups_total{outcome="load"} 17124524
+sproutfs_cache_memory_page_table_lookups_total{outcome="kept"} 24820595
 # HELP sproutfs_cache_memory_reads_total Reads of pages from the page cache's memory, by outcome: served from it, fetched from the disk, the cluster or the store, or joined to a fetch in flight.
 # TYPE sproutfs_cache_memory_reads_total counter
-sproutfs_cache_memory_reads_total{outcome="hit"} 64468139
-sproutfs_cache_memory_reads_total{outcome="miss"} 50164144
-sproutfs_cache_memory_reads_total{outcome="coalesced"} 37860155
+sproutfs_cache_memory_reads_total{outcome="hit"} 19252195
+sproutfs_cache_memory_reads_total{outcome="miss"} 12948224
+sproutfs_cache_memory_reads_total{outcome="coalesced"} 8644259
 # HELP sproutfs_cache_memory_evictions_total Entries the page cache's memory gave up.
 # TYPE sproutfs_cache_memory_evictions_total counter
-sproutfs_cache_memory_evictions_total 27556172
+sproutfs_cache_memory_evictions_total 6340300
 # HELP sproutfs_cache_disk_regions The regions the page cache's disk holds.
 # TYPE sproutfs_cache_disk_regions gauge
-sproutfs_cache_disk_regions 17124524
+sproutfs_cache_disk_regions 59908844
 # HELP sproutfs_cache_disk_entries The stripes of pages and segments the page cache's disk holds.
 # TYPE sproutfs_cache_disk_entries gauge
-sproutfs_cache_disk_entries 24820595
+sproutfs_cache_disk_entries 8496075
 # HELP sproutfs_cache_disk_hits_total Reads the page cache's disk served, which made no request of the object store.
 # TYPE sproutfs_cache_disk_hits_total counter
-sproutfs_cache_disk_hits_total 46212755
+sproutfs_cache_disk_hits_total 45888283
 # HELP sproutfs_cache_disk_lost_total Copies the page cache's disk could not give back intact, which the object store served instead.
 # TYPE sproutfs_cache_disk_lost_total counter
-sproutfs_cache_disk_lost_total 59908844
+sproutfs_cache_disk_lost_total 475532
 # HELP sproutfs_cache_disk_evicted_regions_total Regions the page cache's disk gave back.
 # TYPE sproutfs_cache_disk_evicted_regions_total counter
-sproutfs_cache_disk_evicted_regions_total 8496075
+sproutfs_cache_disk_evicted_regions_total 24171651
 # HELP sproutfs_cache_disk_writes_refused_total Writes the page cache's disk refused.
 # TYPE sproutfs_cache_disk_writes_refused_total counter
-sproutfs_cache_disk_writes_refused_total 45888283
+sproutfs_cache_disk_writes_refused_total 10455043
 # HELP sproutfs_cache_disk_opened_regions What the host did with the regions it found in its cache's file when it started.
 # TYPE sproutfs_cache_disk_opened_regions gauge
-sproutfs_cache_disk_opened_regions{how="tables"} 475532
-sproutfs_cache_disk_opened_regions{how="scanned"} 24171651
-sproutfs_cache_disk_opened_regions{how="given-back"} 49867776
+sproutfs_cache_disk_opened_regions{how="tables"} 40151180
+sproutfs_cache_disk_opened_regions{how="scanned"} 4738459
+sproutfs_cache_disk_opened_regions{how="given-back"} 38434608
 # HELP sproutfs_cache_fills_total Windows this host filled the cluster's cache with, by what it read them for.
 # TYPE sproutfs_cache_fills_total counter
-sproutfs_cache_fills_total{from="read"} 23270411
-sproutfs_cache_fills_total{from="publication"} 37857840
+sproutfs_cache_fills_total{from="read"} 26511299
+sproutfs_cache_fills_total{from="publication"} 49098752
 # HELP sproutfs_cache_fills_without_right_total Windows this host read from the store and filled nothing of, for want of the fill right.
 # TYPE sproutfs_cache_fills_without_right_total counter
-sproutfs_cache_fills_without_right_total 54445275
+sproutfs_cache_fills_without_right_total 6577347
 # HELP sproutfs_cache_fill_rights_granted_total Fill rights this host's cache gave out as a window's rank 1.
 # TYPE sproutfs_cache_fill_rights_granted_total counter
-sproutfs_cache_fill_rights_granted_total 5923852
+sproutfs_cache_fill_rights_granted_total 33164812
 # HELP sproutfs_cache_fill_stripes_sent_total Stripes this host's keeps carried that their holders kept.
 # TYPE sproutfs_cache_fill_stripes_sent_total counter
-sproutfs_cache_fill_stripes_sent_total 26511299
+sproutfs_cache_fill_stripes_sent_total 61752283
 # HELP sproutfs_cache_fill_bytes_sent_total Bytes of the keeps their holders kept.
 # TYPE sproutfs_cache_fill_bytes_sent_total counter
-sproutfs_cache_fill_bytes_sent_total 49098752
+sproutfs_cache_fill_bytes_sent_total 25230896
 # HELP sproutfs_cache_fill_stripes_kept_total Stripes fills wrote to this host's disk, its own and its peers' keeps.
 # TYPE sproutfs_cache_fill_stripes_kept_total counter
-sproutfs_cache_fill_stripes_kept_total 6577347
+sproutfs_cache_fill_stripes_kept_total 57818379
 # HELP sproutfs_cache_fill_stripes_dropped_total Stripes fills dropped, by why.
 # TYPE sproutfs_cache_fill_stripes_dropped_total counter
-sproutfs_cache_fill_stripes_dropped_total{reason="queue"} 38452812
-sproutfs_cache_fill_stripes_dropped_total{reason="rate"} 23931491
-sproutfs_cache_fill_stripes_dropped_total{reason="budget"} 25230896
-sproutfs_cache_fill_stripes_dropped_total{reason="busy"} 57818379
-sproutfs_cache_fill_stripes_dropped_total{reason="down"} 25297004
-sproutfs_cache_fill_stripes_dropped_total{reason="stale"} 61884499
-sproutfs_cache_fill_stripes_dropped_total{reason="peer"} 33363136
-sproutfs_cache_fill_stripes_dropped_total{reason="disk"} 6841779
-sproutfs_cache_fill_stripes_dropped_total{reason="failed"} 49429292
+sproutfs_cache_fill_stripes_dropped_total{reason="queue"} 59476428
+sproutfs_cache_fill_stripes_dropped_total{reason="rate"} 52955131
+sproutfs_cache_fill_stripes_dropped_total{reason="budget"} 33363136
+sproutfs_cache_fill_stripes_dropped_total{reason="busy"} 6841779
+sproutfs_cache_fill_stripes_dropped_total{reason="down"} 49429292
+sproutfs_cache_fill_stripes_dropped_total{reason="stale"} 26907947
+sproutfs_cache_fill_stripes_dropped_total{reason="peer"} 6386608
+sproutfs_cache_fill_stripes_dropped_total{reason="disk"} 54974139
+sproutfs_cache_fill_stripes_dropped_total{reason="failed"} 38452812
 # HELP sproutfs_cache_fill_stripes_duplicate_total Stripes a fill or a keep carried that this host's cache held or was writing already.
 # TYPE sproutfs_cache_fill_stripes_duplicate_total counter
-sproutfs_cache_fill_stripes_duplicate_total 52955131
+sproutfs_cache_fill_stripes_duplicate_total 46870003
 # HELP sproutfs_cache_keep_stripes_refused_total Stripes of keeps refused: for a window this host's list does not rank its cache for, or that did not hold together.
 # TYPE sproutfs_cache_keep_stripes_refused_total counter
-sproutfs_cache_keep_stripes_refused_total 48433840
+sproutfs_cache_keep_stripes_refused_total 50348736
 # HELP sproutfs_cache_fill_queued_bytes What the queue of writes to this host's disk holds now.
 # TYPE sproutfs_cache_fill_queued_bytes gauge
-sproutfs_cache_fill_queued_bytes 45912555
+sproutfs_cache_fill_queued_bytes 55827475
 # HELP sproutfs_cache_fill_queue_limit_bytes The bound of the queue of writes to this host's disk.
 # TYPE sproutfs_cache_fill_queue_limit_bytes gauge
-sproutfs_cache_fill_queue_limit_bytes 45391276
+sproutfs_cache_fill_queue_limit_bytes 63306220
 # HELP sproutfs_cache_fill_queued_peak_bytes The most the queue of writes to this host's disk has held.
 # TYPE sproutfs_cache_fill_queued_peak_bytes gauge
-sproutfs_cache_fill_queued_peak_bytes 46870003
+sproutfs_cache_fill_queued_peak_bytes 5676107
 # HELP sproutfs_cache_fill_publication_waits_total Waits of publications' fills: for room in the queue, the rate, the background budget or a busy holder.
 # TYPE sproutfs_cache_fill_publication_waits_total counter
-sproutfs_cache_fill_publication_waits_total 50348736
+sproutfs_cache_fill_publication_waits_total 17154864
 # HELP sproutfs_cache_fill_publication_waited_seconds_total How long publications' fills waited in all.
 # TYPE sproutfs_cache_fill_publication_waited_seconds_total counter
-sproutfs_cache_fill_publication_waited_seconds_total 3.1961381598142857e+10
+sproutfs_cache_fill_publication_waited_seconds_total 3.250424036957143e+10
 # HELP sproutfs_cache_fill_publications_gave_up_total Publications that waited out the bound for their fills and waited no more.
 # TYPE sproutfs_cache_fill_publications_gave_up_total counter
-sproutfs_cache_fill_publications_gave_up_total 63306220
+sproutfs_cache_fill_publications_gave_up_total 46112396
 # HELP sproutfs_cache_reads_total Envelopes this host read from the cluster's cache, by outcome.
 # TYPE sproutfs_cache_reads_total counter
-sproutfs_cache_reads_total{outcome="hit"} 5676107
-sproutfs_cache_reads_total{outcome="miss"} 46112396
+sproutfs_cache_reads_total{outcome="hit"} 63591171
+sproutfs_cache_reads_total{outcome="miss"} 60918668
 # HELP sproutfs_cache_read_own_hits_total Envelopes this host's own stripes rebuilt alone, with no request.
 # TYPE sproutfs_cache_read_own_hits_total counter
-sproutfs_cache_read_own_hits_total 17154864
+sproutfs_cache_read_own_hits_total 15961088
 # HELP sproutfs_cache_read_earlier_hits_total Envelopes rebuilt from stripes of a code the deployment used before its own.
 # TYPE sproutfs_cache_read_earlier_hits_total counter
-sproutfs_cache_read_earlier_hits_total 30633627
+sproutfs_cache_read_earlier_hits_total 37439875
 # HELP sproutfs_cache_read_requests_total Stripe requests this host sent its peers.
 # TYPE sproutfs_cache_read_requests_total counter
-sproutfs_cache_read_requests_total 63591171
+sproutfs_cache_read_requests_total 19288603
 # HELP sproutfs_cache_read_replaced_total Holders replaced at once for answering with nothing, BUSY or an error.
 # TYPE sproutfs_cache_read_replaced_total counter
-sproutfs_cache_read_replaced_total 15961088
+sproutfs_cache_read_replaced_total 46767408
 # HELP sproutfs_cache_read_second_requests_total Reads that asked the rest of a window's ranks after the delay.
 # TYPE sproutfs_cache_read_second_requests_total counter
-sproutfs_cache_read_second_requests_total 37439875
+sproutfs_cache_read_second_requests_total 9137355
 # HELP sproutfs_cache_read_refused_by_budget_total Reads whose second request the budget refused.
 # TYPE sproutfs_cache_read_refused_by_budget_total counter
-sproutfs_cache_read_refused_by_budget_total 60918668
+sproutfs_cache_read_refused_by_budget_total 40616172
 # HELP sproutfs_cache_read_store_hedges_total Reads past the bound that read the store as well, by outcome.
 # TYPE sproutfs_cache_read_store_hedges_total counter
-sproutfs_cache_read_store_hedges_total{outcome="won"} 9644301
-sproutfs_cache_read_store_hedges_total{outcome="lost"} 9644302
-sproutfs_cache_read_store_hedges_total{outcome="refused"} 9137355
+sproutfs_cache_read_store_hedges_total{outcome="won"} 3493065
+sproutfs_cache_read_store_hedges_total{outcome="lost"} 3493066
+sproutfs_cache_read_store_hedges_total{outcome="refused"} 12834931
 # HELP sproutfs_cache_read_wrong_stripes_total Stripes found wrong.
 # TYPE sproutfs_cache_read_wrong_stripes_total counter
-sproutfs_cache_read_wrong_stripes_total 40616172
+sproutfs_cache_read_wrong_stripes_total 52313772
 # HELP sproutfs_cache_read_drops_sent_total Drops sent to the holders of stripes found wrong.
 # TYPE sproutfs_cache_read_drops_sent_total counter
-sproutfs_cache_read_drops_sent_total 6986131
+sproutfs_cache_read_drops_sent_total 26683755
 # HELP sproutfs_cache_read_repairs_total Stripes sent to ranks that lacked them, of indices no rank held.
 # TYPE sproutfs_cache_read_repairs_total counter
-sproutfs_cache_read_repairs_total 42464960
+sproutfs_cache_read_repairs_total 3053744
 # HELP sproutfs_cache_read_timeouts_total Stripe requests that timed out.
 # TYPE sproutfs_cache_read_timeouts_total counter
-sproutfs_cache_read_timeouts_total 12834931
+sproutfs_cache_read_timeouts_total 48532603
 # HELP sproutfs_cache_read_marked_down_total Hosts this host's reads marked down.
 # TYPE sproutfs_cache_read_marked_down_total counter
-sproutfs_cache_read_marked_down_total 52313772
+sproutfs_cache_read_marked_down_total 28902604
 # HELP sproutfs_cache_read_mark_capped_total Marks refused because a fifth of the list was marked down already.
 # TYPE sproutfs_cache_read_mark_capped_total counter
-sproutfs_cache_read_mark_capped_total 26683755
+sproutfs_cache_read_mark_capped_total 11272611
 # HELP sproutfs_cache_read_mark_cleared_total Marks a probe cleared.
 # TYPE sproutfs_cache_read_mark_cleared_total counter
-sproutfs_cache_read_mark_cleared_total 3053744
+sproutfs_cache_read_mark_cleared_total 62751488
 # HELP sproutfs_cache_read_down_hosts Hosts this host's reads have marked down now.
 # TYPE sproutfs_cache_read_down_hosts gauge
-sproutfs_cache_read_down_hosts 48532603
+sproutfs_cache_read_down_hosts 49121507
 # HELP sproutfs_cache_read_head_checks_total Sampled hits whose part was checked with a HEAD.
 # TYPE sproutfs_cache_read_head_checks_total counter
-sproutfs_cache_read_head_checks_total 28902604
+sproutfs_cache_read_head_checks_total 37491532
 # HELP sproutfs_cache_read_head_missing_total Sampled hits whose part the store no longer had.
 # TYPE sproutfs_cache_read_head_missing_total counter
-sproutfs_cache_read_head_missing_total 11272611
+sproutfs_cache_read_head_missing_total 27861563
 # HELP sproutfs_cache_read_delay_seconds The delay before a read of a size class asks the rest of a window's ranks.
 # TYPE sproutfs_cache_read_delay_seconds gauge
-sproutfs_cache_read_delay_seconds{up_to_bytes="62751488"} 0.037491532
 sproutfs_cache_read_delay_seconds{up_to_bytes="20231600"} 0.010971692
+sproutfs_cache_read_delay_seconds{up_to_bytes="9711808"} 0.016451948
 # HELP sproutfs_cache_read_bound_seconds The bound before a read of a size class reads the store too.
 # TYPE sproutfs_cache_read_bound_seconds gauge
-sproutfs_cache_read_bound_seconds{up_to_bytes="62751488"} 0.027861563
 sproutfs_cache_read_bound_seconds{up_to_bytes="20231600"} 0.009341747
+sproutfs_cache_read_bound_seconds{up_to_bytes="9711808"} 0.022822027
 # HELP sproutfs_cache_read_class_reads_total Reads of a size class that had their stripes, which its delay is drawn from.
 # TYPE sproutfs_cache_read_class_reads_total counter
-sproutfs_cache_read_class_reads_total{up_to_bytes="62751488"} 49121507
 sproutfs_cache_read_class_reads_total{up_to_bytes="20231600"} 14601643
+sproutfs_cache_read_class_reads_total{up_to_bytes="9711808"} 12081875
 # HELP sproutfs_cache_serve_reads_total Reads of this host's stripes its peer server answered with them.
 # TYPE sproutfs_cache_serve_reads_total counter
-sproutfs_cache_serve_reads_total 9711808
+sproutfs_cache_serve_reads_total 31192112
 # HELP sproutfs_cache_serve_stripes_total Stripes this host served its peers.
 # TYPE sproutfs_cache_serve_stripes_total counter
-sproutfs_cache_serve_stripes_total 12081875
+sproutfs_cache_serve_stripes_total 41562203
 # HELP sproutfs_cache_serve_bytes_total Bytes of stripes this host served its peers.
 # TYPE sproutfs_cache_serve_bytes_total counter
-sproutfs_cache_serve_bytes_total 16451948
+sproutfs_cache_serve_bytes_total 53932300
 # HELP sproutfs_cache_serve_busy_total Reads this host answered BUSY because its serving bandwidth was spent.
 # TYPE sproutfs_cache_serve_busy_total counter
-sproutfs_cache_serve_busy_total 22822027
+sproutfs_cache_serve_busy_total 1193539
 # HELP sproutfs_hot_tier_reads_total Reads of checkpoint objects through the hot tier, by how they ended.
 # TYPE sproutfs_hot_tier_reads_total counter
-sproutfs_hot_tier_reads_total{result="hit"} 31192112
-sproutfs_hot_tier_reads_total{result="miss"} 41562203
-sproutfs_hot_tier_reads_total{result="skipped"} 33353955
+sproutfs_hot_tier_reads_total{result="hit"} 17563648
+sproutfs_hot_tier_reads_total{result="miss"} 35933763
+sproutfs_hot_tier_reads_total{result="skipped"} 37508219
 # HELP sproutfs_hot_tier_failures_total Reads the hot tier failed, which the regional bucket served, by why.
 # TYPE sproutfs_hot_tier_failures_total counter
-sproutfs_hot_tier_failures_total{reason="error"} 53936851
-sproutfs_hot_tier_failures_total{reason="slow"} 19198144
-sproutfs_hot_tier_failures_total{reason="corrupt"} 53568307
+sproutfs_hot_tier_failures_total{reason="error"} 61199787
+sproutfs_hot_tier_failures_total{reason="slow"} 34461104
+sproutfs_hot_tier_failures_total{reason="corrupt"} 9722427
 # HELP sproutfs_hot_tier_marked_down_total Times the hot tier failed three reads in a row and reads skipped it for a while.
 # TYPE sproutfs_hot_tier_marked_down_total counter
-sproutfs_hot_tier_marked_down_total 14615296
+sproutfs_hot_tier_marked_down_total 26769584
 # HELP sproutfs_hot_tier_down Whether reads skip the hot tier now.
 # TYPE sproutfs_hot_tier_down gauge
 sproutfs_hot_tier_down 0
 # HELP sproutfs_hot_tier_fills_total Fills of the hot tier handed over and held, by what handed them over.
 # TYPE sproutfs_hot_tier_fills_total counter
-sproutfs_hot_tier_fills_total{from="read"} 50246860
-sproutfs_hot_tier_fills_total{from="publication"} 37508219
+sproutfs_hot_tier_fills_total{from="read"} 11292332
+sproutfs_hot_tier_fills_total{from="publication"} 6553715
 # HELP sproutfs_hot_tier_fills_sent_total Fills the hot tier took.
 # TYPE sproutfs_hot_tier_fills_sent_total counter
-sproutfs_hot_tier_fills_sent_total 18030955
+sproutfs_hot_tier_fills_sent_total 3076499
 # HELP sproutfs_hot_tier_fill_bytes_sent_total Bytes of the fills the hot tier took.
 # TYPE sproutfs_hot_tier_fill_bytes_sent_total counter
-sproutfs_hot_tier_fill_bytes_sent_total 11292332
+sproutfs_hot_tier_fill_bytes_sent_total 4337900
 # HELP sproutfs_hot_tier_fills_present_total Fills that found the object in the hot tier already.
 # TYPE sproutfs_hot_tier_fills_present_total counter
-sproutfs_hot_tier_fills_present_total 6553715
+sproutfs_hot_tier_fills_present_total 7599307
 # HELP sproutfs_hot_tier_fills_duplicate_total Misses of an object a fill was already held for.
 # TYPE sproutfs_hot_tier_fills_duplicate_total counter
-sproutfs_hot_tier_fills_duplicate_total 26769584
+sproutfs_hot_tier_fills_duplicate_total 3815104
 # HELP sproutfs_hot_tier_fills_dropped_total Fills of the hot tier dropped, by why.
 # TYPE sproutfs_hot_tier_fills_dropped_total counter
-sproutfs_hot_tier_fills_dropped_total{reason="queue"} 59843376
-sproutfs_hot_tier_fills_dropped_total{reason="rate"} 15995979
-sproutfs_hot_tier_fills_dropped_total{reason="read"} 41257452
-sproutfs_hot_tier_fills_dropped_total{reason="write"} 1410067
-sproutfs_hot_tier_fills_dropped_total{reason="closed"} 30671552
+sproutfs_hot_tier_fills_dropped_total{reason="queue"} 30671552
+sproutfs_hot_tier_fills_dropped_total{reason="rate"} 61933043
+sproutfs_hot_tier_fills_dropped_total{reason="read"} 28085676
+sproutfs_hot_tier_fills_dropped_total{reason="write"} 63347179
+sproutfs_hot_tier_fills_dropped_total{reason="closed"} 33499824
 # HELP sproutfs_hot_tier_head_checks_total Sampled hits whose regional object was checked with a HEAD.
 # TYPE sproutfs_hot_tier_head_checks_total counter
-sproutfs_hot_tier_head_checks_total 61933043
+sproutfs_hot_tier_head_checks_total 5652475
 # HELP sproutfs_hot_tier_head_missing_total Sampled hits whose regional object the regional bucket no longer held.
 # TYPE sproutfs_hot_tier_head_missing_total counter
-sproutfs_hot_tier_head_missing_total 28085676
+sproutfs_hot_tier_head_missing_total 46913996
 # HELP sproutfs_hot_tier_fill_queued_bytes What the fills of the hot tier held now come to.
 # TYPE sproutfs_hot_tier_fill_queued_bytes gauge
-sproutfs_hot_tier_fill_queued_bytes 63347179
+sproutfs_hot_tier_fill_queued_bytes 23066659
 # HELP sproutfs_hot_tier_fill_queue_limit_bytes The bound of the fills of the hot tier held.
 # TYPE sproutfs_hot_tier_fill_queue_limit_bytes gauge
-sproutfs_hot_tier_fill_queue_limit_bytes 33499824
+sproutfs_hot_tier_fill_queue_limit_bytes 1219328
 # HELP sproutfs_disk_total_bytes The size of the filesystem the host writes to, as last read.
 # TYPE sproutfs_disk_total_bytes gauge
 sproutfs_disk_total_bytes 61254636
@@ -1184,173 +1184,173 @@ sproutfs_store_seconds_sum{operation="list"} 0.01922944
 sproutfs_store_seconds_count{operation="list"} 19316067
 # HELP sproutfs_hot_tier_store_calls_total Hot tier bucket calls this host has made.
 # TYPE sproutfs_hot_tier_store_calls_total counter
-sproutfs_hot_tier_store_calls_total{operation="head"} 5652475
-sproutfs_hot_tier_store_calls_total{operation="get"} 38505907
-sproutfs_hot_tier_store_calls_total{operation="put"} 2924483
-sproutfs_hot_tier_store_calls_total{operation="delete"} 33125931
-sproutfs_hot_tier_store_calls_total{operation="list"} 62001387
+sproutfs_hot_tier_store_calls_total{operation="head"} 48480867
+sproutfs_hot_tier_store_calls_total{operation="get"} 27116811
+sproutfs_hot_tier_store_calls_total{operation="put"} 4426763
+sproutfs_hot_tier_store_calls_total{operation="delete"} 47519587
+sproutfs_hot_tier_store_calls_total{operation="list"} 22177555
 # HELP sproutfs_hot_tier_store_failures_total Hot tier bucket calls that reported an error.
 # TYPE sproutfs_hot_tier_store_failures_total counter
-sproutfs_hot_tier_store_failures_total{operation="head"} 46913996
-sproutfs_hot_tier_store_failures_total{operation="get"} 32658624
-sproutfs_hot_tier_store_failures_total{operation="put"} 17077260
-sproutfs_hot_tier_store_failures_total{operation="delete"} 169904
-sproutfs_hot_tier_store_failures_total{operation="list"} 49045420
+sproutfs_hot_tier_store_failures_total{operation="head"} 30633548
+sproutfs_hot_tier_store_failures_total{operation="get"} 29269552
+sproutfs_hot_tier_store_failures_total{operation="put"} 26579564
+sproutfs_hot_tier_store_failures_total{operation="delete"} 22563584
+sproutfs_hot_tier_store_failures_total{operation="list"} 17221612
 # HELP sproutfs_hot_tier_store_bytes_total Object bytes moved, which only get and put move.
 # TYPE sproutfs_hot_tier_store_bytes_total counter
-sproutfs_hot_tier_store_bytes_total{operation="head"} 23066659
-sproutfs_hot_tier_store_bytes_total{operation="get"} 28811347
-sproutfs_hot_tier_store_bytes_total{operation="put"} 33230043
-sproutfs_hot_tier_store_bytes_total{operation="delete"} 36322747
-sproutfs_hot_tier_store_bytes_total{operation="list"} 38089459
+sproutfs_hot_tier_store_bytes_total{operation="head"} 14786235
+sproutfs_hot_tier_store_bytes_total{operation="get"} 33422299
+sproutfs_hot_tier_store_bytes_total{operation="put"} 50732371
+sproutfs_hot_tier_store_bytes_total{operation="delete"} 66716451
+sproutfs_hot_tier_store_bytes_total{operation="list"} 14265675
 # HELP sproutfs_hot_tier_store_retries_total Hot tier bucket attempts made again after one outlived its bound.
 # TYPE sproutfs_hot_tier_store_retries_total counter
-sproutfs_hot_tier_store_retries_total{operation="head"} 46353196
-sproutfs_hot_tier_store_retries_total{operation="get"} 57880576
-sproutfs_hot_tier_store_retries_total{operation="put"} 973100
-sproutfs_hot_tier_store_retries_total{operation="delete"} 9848496
-sproutfs_hot_tier_store_retries_total{operation="list"} 17397900
+sproutfs_hot_tier_store_retries_total{operation="head"} 26964076
+sproutfs_hot_tier_store_retries_total{operation="get"} 51382832
+sproutfs_hot_tier_store_retries_total{operation="put"} 7366732
+sproutfs_hot_tier_store_retries_total{operation="delete"} 29133504
+sproutfs_hot_tier_store_retries_total{operation="list"} 49574284
 # HELP sproutfs_hot_tier_store_timeouts_total Hot tier bucket attempts cancelled at a bound: waiting for the first byte, or stalled between two.
 # TYPE sproutfs_hot_tier_store_timeouts_total counter
-sproutfs_hot_tier_store_timeouts_total{operation="head",bound="first_byte"} 938928
-sproutfs_hot_tier_store_timeouts_total{operation="head",bound="stall"} 56200491
-sproutfs_hot_tier_store_timeouts_total{operation="get",bound="first_byte"} 39575052
-sproutfs_hot_tier_store_timeouts_total{operation="get",bound="stall"} 47727811
-sproutfs_hot_tier_store_timeouts_total{operation="put",bound="first_byte"} 9776320
-sproutfs_hot_tier_store_timeouts_total{operation="put",bound="stall"} 37929139
-sproutfs_hot_tier_store_timeouts_total{operation="delete",bound="first_byte"} 45760460
-sproutfs_hot_tier_store_timeouts_total{operation="delete",bound="stall"} 26804475
-sproutfs_hot_tier_store_timeouts_total{operation="list",bound="first_byte"} 13309744
-sproutfs_hot_tier_store_timeouts_total{operation="list",bound="stall"} 14353819
+sproutfs_hot_tier_store_timeouts_total{operation="head",bound="first_byte"} 32658624
+sproutfs_hot_tier_store_timeouts_total{operation="head",bound="stall"} 28811347
+sproutfs_hot_tier_store_timeouts_total{operation="get",bound="first_byte"} 17077260
+sproutfs_hot_tier_store_timeouts_total{operation="get",bound="stall"} 33230043
+sproutfs_hot_tier_store_timeouts_total{operation="put",bound="first_byte"} 169904
+sproutfs_hot_tier_store_timeouts_total{operation="put",bound="stall"} 36322747
+sproutfs_hot_tier_store_timeouts_total{operation="delete",bound="first_byte"} 49045420
+sproutfs_hot_tier_store_timeouts_total{operation="delete",bound="stall"} 38089459
+sproutfs_hot_tier_store_timeouts_total{operation="list",bound="first_byte"} 29486080
+sproutfs_hot_tier_store_timeouts_total{operation="list",bound="stall"} 38530179
 # HELP sproutfs_hot_tier_store_seconds How long each hot tier bucket call took, failed ones and every attempt included.
 # TYPE sproutfs_hot_tier_store_seconds histogram
-sproutfs_hot_tier_store_seconds_bucket{operation="head",le="1e-06"} 30633548
-sproutfs_hot_tier_store_seconds_bucket{operation="head",le="2e-06"} 45419783
-sproutfs_hot_tier_store_seconds_bucket{operation="head",le="4e-06"} 45419783
-sproutfs_hot_tier_store_seconds_bucket{operation="head",le="8e-06"} 45419783
-sproutfs_hot_tier_store_seconds_bucket{operation="head",le="1.6e-05"} 45419783
-sproutfs_hot_tier_store_seconds_bucket{operation="head",le="3.2e-05"} 45419783
-sproutfs_hot_tier_store_seconds_bucket{operation="head",le="6.4e-05"} 45419783
-sproutfs_hot_tier_store_seconds_bucket{operation="head",le="0.000128"} 45419783
-sproutfs_hot_tier_store_seconds_bucket{operation="head",le="0.000256"} 45419783
-sproutfs_hot_tier_store_seconds_bucket{operation="head",le="0.000512"} 45419783
-sproutfs_hot_tier_store_seconds_bucket{operation="head",le="0.001024"} 45419783
-sproutfs_hot_tier_store_seconds_bucket{operation="head",le="0.002048"} 45419783
-sproutfs_hot_tier_store_seconds_bucket{operation="head",le="0.004096"} 45419783
-sproutfs_hot_tier_store_seconds_bucket{operation="head",le="0.008192"} 45419783
-sproutfs_hot_tier_store_seconds_bucket{operation="head",le="0.016384"} 45419783
-sproutfs_hot_tier_store_seconds_bucket{operation="head",le="0.032768"} 45419783
-sproutfs_hot_tier_store_seconds_bucket{operation="head",le="0.065536"} 45419783
-sproutfs_hot_tier_store_seconds_bucket{operation="head",le="0.131072"} 45419783
-sproutfs_hot_tier_store_seconds_bucket{operation="head",le="0.262144"} 45419783
-sproutfs_hot_tier_store_seconds_bucket{operation="head",le="0.524288"} 45419783
-sproutfs_hot_tier_store_seconds_bucket{operation="head",le="1.048576"} 45419783
-sproutfs_hot_tier_store_seconds_bucket{operation="head",le="2.097152"} 45419783
-sproutfs_hot_tier_store_seconds_bucket{operation="head",le="4.194304"} 45419783
-sproutfs_hot_tier_store_seconds_bucket{operation="head",le="+Inf"} 1219328
-sproutfs_hot_tier_store_seconds_sum{operation="head"} 0.048480867
-sproutfs_hot_tier_store_seconds_count{operation="head"} 1219328
-sproutfs_hot_tier_store_seconds_bucket{operation="get",le="1e-06"} 29269552
-sproutfs_hot_tier_store_seconds_bucket{operation="get",le="2e-06"} 62691851
-sproutfs_hot_tier_store_seconds_bucket{operation="get",le="4e-06"} 62691851
-sproutfs_hot_tier_store_seconds_bucket{operation="get",le="8e-06"} 62691851
-sproutfs_hot_tier_store_seconds_bucket{operation="get",le="1.6e-05"} 62691851
-sproutfs_hot_tier_store_seconds_bucket{operation="get",le="3.2e-05"} 62691851
-sproutfs_hot_tier_store_seconds_bucket{operation="get",le="6.4e-05"} 62691851
-sproutfs_hot_tier_store_seconds_bucket{operation="get",le="0.000128"} 62691851
-sproutfs_hot_tier_store_seconds_bucket{operation="get",le="0.000256"} 62691851
-sproutfs_hot_tier_store_seconds_bucket{operation="get",le="0.000512"} 62691851
-sproutfs_hot_tier_store_seconds_bucket{operation="get",le="0.001024"} 62691851
-sproutfs_hot_tier_store_seconds_bucket{operation="get",le="0.002048"} 62691851
-sproutfs_hot_tier_store_seconds_bucket{operation="get",le="0.004096"} 62691851
-sproutfs_hot_tier_store_seconds_bucket{operation="get",le="0.008192"} 62691851
-sproutfs_hot_tier_store_seconds_bucket{operation="get",le="0.016384"} 62691851
-sproutfs_hot_tier_store_seconds_bucket{operation="get",le="0.032768"} 62691851
-sproutfs_hot_tier_store_seconds_bucket{operation="get",le="0.065536"} 62691851
-sproutfs_hot_tier_store_seconds_bucket{operation="get",le="0.131072"} 62691851
-sproutfs_hot_tier_store_seconds_bucket{operation="get",le="0.262144"} 62691851
-sproutfs_hot_tier_store_seconds_bucket{operation="get",le="0.524288"} 62691851
-sproutfs_hot_tier_store_seconds_bucket{operation="get",le="1.048576"} 62691851
-sproutfs_hot_tier_store_seconds_bucket{operation="get",le="2.097152"} 62691851
-sproutfs_hot_tier_store_seconds_bucket{operation="get",le="4.194304"} 62691851
-sproutfs_hot_tier_store_seconds_bucket{operation="get",le="+Inf"} 26964076
-sproutfs_hot_tier_store_seconds_sum{operation="get"} 0.027116811
-sproutfs_hot_tier_store_seconds_count{operation="get"} 26964076
-sproutfs_hot_tier_store_seconds_bucket{operation="put",le="1e-06"} 26579564
-sproutfs_hot_tier_store_seconds_bucket{operation="put",le="2e-06"} 77311935
-sproutfs_hot_tier_store_seconds_bucket{operation="put",le="4e-06"} 77311935
-sproutfs_hot_tier_store_seconds_bucket{operation="put",le="8e-06"} 77311935
-sproutfs_hot_tier_store_seconds_bucket{operation="put",le="1.6e-05"} 77311935
-sproutfs_hot_tier_store_seconds_bucket{operation="put",le="3.2e-05"} 77311935
-sproutfs_hot_tier_store_seconds_bucket{operation="put",le="6.4e-05"} 77311935
-sproutfs_hot_tier_store_seconds_bucket{operation="put",le="0.000128"} 77311935
-sproutfs_hot_tier_store_seconds_bucket{operation="put",le="0.000256"} 77311935
-sproutfs_hot_tier_store_seconds_bucket{operation="put",le="0.000512"} 77311935
-sproutfs_hot_tier_store_seconds_bucket{operation="put",le="0.001024"} 77311935
-sproutfs_hot_tier_store_seconds_bucket{operation="put",le="0.002048"} 77311935
-sproutfs_hot_tier_store_seconds_bucket{operation="put",le="0.004096"} 77311935
-sproutfs_hot_tier_store_seconds_bucket{operation="put",le="0.008192"} 77311935
-sproutfs_hot_tier_store_seconds_bucket{operation="put",le="0.016384"} 77311935
-sproutfs_hot_tier_store_seconds_bucket{operation="put",le="0.032768"} 77311935
-sproutfs_hot_tier_store_seconds_bucket{operation="put",le="0.065536"} 77311935
-sproutfs_hot_tier_store_seconds_bucket{operation="put",le="0.131072"} 77311935
-sproutfs_hot_tier_store_seconds_bucket{operation="put",le="0.262144"} 77311935
-sproutfs_hot_tier_store_seconds_bucket{operation="put",le="0.524288"} 77311935
-sproutfs_hot_tier_store_seconds_bucket{operation="put",le="1.048576"} 77311935
-sproutfs_hot_tier_store_seconds_bucket{operation="put",le="2.097152"} 77311935
-sproutfs_hot_tier_store_seconds_bucket{operation="put",le="4.194304"} 77311935
-sproutfs_hot_tier_store_seconds_bucket{operation="put",le="+Inf"} 51382832
-sproutfs_hot_tier_store_seconds_sum{operation="put"} 0.004426763
-sproutfs_hot_tier_store_seconds_count{operation="put"} 51382832
-sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="1e-06"} 22563584
-sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="2e-06"} 89280035
-sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="4e-06"} 89280035
-sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="8e-06"} 89280035
-sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="1.6e-05"} 89280035
-sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="3.2e-05"} 89280035
-sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="6.4e-05"} 89280035
-sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="0.000128"} 89280035
-sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="0.000256"} 89280035
-sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="0.000512"} 89280035
-sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="0.001024"} 89280035
-sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="0.002048"} 89280035
-sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="0.004096"} 89280035
-sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="0.008192"} 89280035
-sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="0.016384"} 89280035
-sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="0.032768"} 89280035
-sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="0.065536"} 89280035
-sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="0.131072"} 89280035
-sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="0.262144"} 89280035
-sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="0.524288"} 89280035
-sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="1.048576"} 89280035
-sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="2.097152"} 89280035
-sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="4.194304"} 89280035
-sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="+Inf"} 7366732
-sproutfs_hot_tier_store_seconds_sum{operation="delete"} 0.047519587
-sproutfs_hot_tier_store_seconds_count{operation="delete"} 7366732
-sproutfs_hot_tier_store_seconds_bucket{operation="list",le="1e-06"} 17221612
-sproutfs_hot_tier_store_seconds_bucket{operation="list",le="2e-06"} 31487287
-sproutfs_hot_tier_store_seconds_bucket{operation="list",le="4e-06"} 31487287
-sproutfs_hot_tier_store_seconds_bucket{operation="list",le="8e-06"} 31487287
-sproutfs_hot_tier_store_seconds_bucket{operation="list",le="1.6e-05"} 31487287
-sproutfs_hot_tier_store_seconds_bucket{operation="list",le="3.2e-05"} 31487287
-sproutfs_hot_tier_store_seconds_bucket{operation="list",le="6.4e-05"} 31487287
-sproutfs_hot_tier_store_seconds_bucket{operation="list",le="0.000128"} 31487287
-sproutfs_hot_tier_store_seconds_bucket{operation="list",le="0.000256"} 31487287
-sproutfs_hot_tier_store_seconds_bucket{operation="list",le="0.000512"} 31487287
-sproutfs_hot_tier_store_seconds_bucket{operation="list",le="0.001024"} 31487287
-sproutfs_hot_tier_store_seconds_bucket{operation="list",le="0.002048"} 31487287
-sproutfs_hot_tier_store_seconds_bucket{operation="list",le="0.004096"} 31487287
-sproutfs_hot_tier_store_seconds_bucket{operation="list",le="0.008192"} 31487287
-sproutfs_hot_tier_store_seconds_bucket{operation="list",le="0.016384"} 31487287
-sproutfs_hot_tier_store_seconds_bucket{operation="list",le="0.032768"} 31487287
-sproutfs_hot_tier_store_seconds_bucket{operation="list",le="0.065536"} 31487287
-sproutfs_hot_tier_store_seconds_bucket{operation="list",le="0.131072"} 31487287
-sproutfs_hot_tier_store_seconds_bucket{operation="list",le="0.262144"} 31487287
-sproutfs_hot_tier_store_seconds_bucket{operation="list",le="0.524288"} 31487287
-sproutfs_hot_tier_store_seconds_bucket{operation="list",le="1.048576"} 31487287
-sproutfs_hot_tier_store_seconds_bucket{operation="list",le="2.097152"} 31487287
-sproutfs_hot_tier_store_seconds_bucket{operation="list",le="4.194304"} 31487287
-sproutfs_hot_tier_store_seconds_bucket{operation="list",le="+Inf"} 29133504
-sproutfs_hot_tier_store_seconds_sum{operation="list"} 0.022177555
-sproutfs_hot_tier_store_seconds_count{operation="list"} 29133504
+sproutfs_hot_tier_store_seconds_bucket{operation="head",le="1e-06"} 46353196
+sproutfs_hot_tier_store_seconds_bucket{operation="head",le="2e-06"} 84859103
+sproutfs_hot_tier_store_seconds_bucket{operation="head",le="4e-06"} 84859103
+sproutfs_hot_tier_store_seconds_bucket{operation="head",le="8e-06"} 84859103
+sproutfs_hot_tier_store_seconds_bucket{operation="head",le="1.6e-05"} 84859103
+sproutfs_hot_tier_store_seconds_bucket{operation="head",le="3.2e-05"} 84859103
+sproutfs_hot_tier_store_seconds_bucket{operation="head",le="6.4e-05"} 84859103
+sproutfs_hot_tier_store_seconds_bucket{operation="head",le="0.000128"} 84859103
+sproutfs_hot_tier_store_seconds_bucket{operation="head",le="0.000256"} 84859103
+sproutfs_hot_tier_store_seconds_bucket{operation="head",le="0.000512"} 84859103
+sproutfs_hot_tier_store_seconds_bucket{operation="head",le="0.001024"} 84859103
+sproutfs_hot_tier_store_seconds_bucket{operation="head",le="0.002048"} 84859103
+sproutfs_hot_tier_store_seconds_bucket{operation="head",le="0.004096"} 84859103
+sproutfs_hot_tier_store_seconds_bucket{operation="head",le="0.008192"} 84859103
+sproutfs_hot_tier_store_seconds_bucket{operation="head",le="0.016384"} 84859103
+sproutfs_hot_tier_store_seconds_bucket{operation="head",le="0.032768"} 84859103
+sproutfs_hot_tier_store_seconds_bucket{operation="head",le="0.065536"} 84859103
+sproutfs_hot_tier_store_seconds_bucket{operation="head",le="0.131072"} 84859103
+sproutfs_hot_tier_store_seconds_bucket{operation="head",le="0.262144"} 84859103
+sproutfs_hot_tier_store_seconds_bucket{operation="head",le="0.524288"} 84859103
+sproutfs_hot_tier_store_seconds_bucket{operation="head",le="1.048576"} 84859103
+sproutfs_hot_tier_store_seconds_bucket{operation="head",le="2.097152"} 84859103
+sproutfs_hot_tier_store_seconds_bucket{operation="head",le="4.194304"} 84859103
+sproutfs_hot_tier_store_seconds_bucket{operation="head",le="+Inf"} 938928
+sproutfs_hot_tier_store_seconds_sum{operation="head"} 0.056200491
+sproutfs_hot_tier_store_seconds_count{operation="head"} 938928
+sproutfs_hot_tier_store_seconds_bucket{operation="get",le="1e-06"} 57880576
+sproutfs_hot_tier_store_seconds_bucket{operation="get",le="2e-06"} 60805059
+sproutfs_hot_tier_store_seconds_bucket{operation="get",le="4e-06"} 60805059
+sproutfs_hot_tier_store_seconds_bucket{operation="get",le="8e-06"} 60805059
+sproutfs_hot_tier_store_seconds_bucket{operation="get",le="1.6e-05"} 60805059
+sproutfs_hot_tier_store_seconds_bucket{operation="get",le="3.2e-05"} 60805059
+sproutfs_hot_tier_store_seconds_bucket{operation="get",le="6.4e-05"} 60805059
+sproutfs_hot_tier_store_seconds_bucket{operation="get",le="0.000128"} 60805059
+sproutfs_hot_tier_store_seconds_bucket{operation="get",le="0.000256"} 60805059
+sproutfs_hot_tier_store_seconds_bucket{operation="get",le="0.000512"} 60805059
+sproutfs_hot_tier_store_seconds_bucket{operation="get",le="0.001024"} 60805059
+sproutfs_hot_tier_store_seconds_bucket{operation="get",le="0.002048"} 60805059
+sproutfs_hot_tier_store_seconds_bucket{operation="get",le="0.004096"} 60805059
+sproutfs_hot_tier_store_seconds_bucket{operation="get",le="0.008192"} 60805059
+sproutfs_hot_tier_store_seconds_bucket{operation="get",le="0.016384"} 60805059
+sproutfs_hot_tier_store_seconds_bucket{operation="get",le="0.032768"} 60805059
+sproutfs_hot_tier_store_seconds_bucket{operation="get",le="0.065536"} 60805059
+sproutfs_hot_tier_store_seconds_bucket{operation="get",le="0.131072"} 60805059
+sproutfs_hot_tier_store_seconds_bucket{operation="get",le="0.262144"} 60805059
+sproutfs_hot_tier_store_seconds_bucket{operation="get",le="0.524288"} 60805059
+sproutfs_hot_tier_store_seconds_bucket{operation="get",le="1.048576"} 60805059
+sproutfs_hot_tier_store_seconds_bucket{operation="get",le="2.097152"} 60805059
+sproutfs_hot_tier_store_seconds_bucket{operation="get",le="4.194304"} 60805059
+sproutfs_hot_tier_store_seconds_bucket{operation="get",le="+Inf"} 39575052
+sproutfs_hot_tier_store_seconds_sum{operation="get"} 0.047727811
+sproutfs_hot_tier_store_seconds_count{operation="get"} 39575052
+sproutfs_hot_tier_store_seconds_bucket{operation="put",le="1e-06"} 973100
+sproutfs_hot_tier_store_seconds_bucket{operation="put",le="2e-06"} 34099031
+sproutfs_hot_tier_store_seconds_bucket{operation="put",le="4e-06"} 34099031
+sproutfs_hot_tier_store_seconds_bucket{operation="put",le="8e-06"} 34099031
+sproutfs_hot_tier_store_seconds_bucket{operation="put",le="1.6e-05"} 34099031
+sproutfs_hot_tier_store_seconds_bucket{operation="put",le="3.2e-05"} 34099031
+sproutfs_hot_tier_store_seconds_bucket{operation="put",le="6.4e-05"} 34099031
+sproutfs_hot_tier_store_seconds_bucket{operation="put",le="0.000128"} 34099031
+sproutfs_hot_tier_store_seconds_bucket{operation="put",le="0.000256"} 34099031
+sproutfs_hot_tier_store_seconds_bucket{operation="put",le="0.000512"} 34099031
+sproutfs_hot_tier_store_seconds_bucket{operation="put",le="0.001024"} 34099031
+sproutfs_hot_tier_store_seconds_bucket{operation="put",le="0.002048"} 34099031
+sproutfs_hot_tier_store_seconds_bucket{operation="put",le="0.004096"} 34099031
+sproutfs_hot_tier_store_seconds_bucket{operation="put",le="0.008192"} 34099031
+sproutfs_hot_tier_store_seconds_bucket{operation="put",le="0.016384"} 34099031
+sproutfs_hot_tier_store_seconds_bucket{operation="put",le="0.032768"} 34099031
+sproutfs_hot_tier_store_seconds_bucket{operation="put",le="0.065536"} 34099031
+sproutfs_hot_tier_store_seconds_bucket{operation="put",le="0.131072"} 34099031
+sproutfs_hot_tier_store_seconds_bucket{operation="put",le="0.262144"} 34099031
+sproutfs_hot_tier_store_seconds_bucket{operation="put",le="0.524288"} 34099031
+sproutfs_hot_tier_store_seconds_bucket{operation="put",le="1.048576"} 34099031
+sproutfs_hot_tier_store_seconds_bucket{operation="put",le="2.097152"} 34099031
+sproutfs_hot_tier_store_seconds_bucket{operation="put",le="4.194304"} 34099031
+sproutfs_hot_tier_store_seconds_bucket{operation="put",le="+Inf"} 9776320
+sproutfs_hot_tier_store_seconds_sum{operation="put"} 0.037929139
+sproutfs_hot_tier_store_seconds_count{operation="put"} 9776320
+sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="1e-06"} 9848496
+sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="2e-06"} 71849883
+sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="4e-06"} 71849883
+sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="8e-06"} 71849883
+sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="1.6e-05"} 71849883
+sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="3.2e-05"} 71849883
+sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="6.4e-05"} 71849883
+sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="0.000128"} 71849883
+sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="0.000256"} 71849883
+sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="0.000512"} 71849883
+sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="0.001024"} 71849883
+sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="0.002048"} 71849883
+sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="0.004096"} 71849883
+sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="0.008192"} 71849883
+sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="0.016384"} 71849883
+sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="0.032768"} 71849883
+sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="0.065536"} 71849883
+sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="0.131072"} 71849883
+sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="0.262144"} 71849883
+sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="0.524288"} 71849883
+sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="1.048576"} 71849883
+sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="2.097152"} 71849883
+sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="4.194304"} 71849883
+sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="+Inf"} 45760460
+sproutfs_hot_tier_store_seconds_sum{operation="delete"} 0.026804475
+sproutfs_hot_tier_store_seconds_count{operation="delete"} 45760460
+sproutfs_hot_tier_store_seconds_bucket{operation="list",le="1e-06"} 17397900
+sproutfs_hot_tier_store_seconds_bucket{operation="list",le="2e-06"} 39839887
+sproutfs_hot_tier_store_seconds_bucket{operation="list",le="4e-06"} 39839887
+sproutfs_hot_tier_store_seconds_bucket{operation="list",le="8e-06"} 39839887
+sproutfs_hot_tier_store_seconds_bucket{operation="list",le="1.6e-05"} 39839887
+sproutfs_hot_tier_store_seconds_bucket{operation="list",le="3.2e-05"} 39839887
+sproutfs_hot_tier_store_seconds_bucket{operation="list",le="6.4e-05"} 39839887
+sproutfs_hot_tier_store_seconds_bucket{operation="list",le="0.000128"} 39839887
+sproutfs_hot_tier_store_seconds_bucket{operation="list",le="0.000256"} 39839887
+sproutfs_hot_tier_store_seconds_bucket{operation="list",le="0.000512"} 39839887
+sproutfs_hot_tier_store_seconds_bucket{operation="list",le="0.001024"} 39839887
+sproutfs_hot_tier_store_seconds_bucket{operation="list",le="0.002048"} 39839887
+sproutfs_hot_tier_store_seconds_bucket{operation="list",le="0.004096"} 39839887
+sproutfs_hot_tier_store_seconds_bucket{operation="list",le="0.008192"} 39839887
+sproutfs_hot_tier_store_seconds_bucket{operation="list",le="0.016384"} 39839887
+sproutfs_hot_tier_store_seconds_bucket{operation="list",le="0.032768"} 39839887
+sproutfs_hot_tier_store_seconds_bucket{operation="list",le="0.065536"} 39839887
+sproutfs_hot_tier_store_seconds_bucket{operation="list",le="0.131072"} 39839887
+sproutfs_hot_tier_store_seconds_bucket{operation="list",le="0.262144"} 39839887
+sproutfs_hot_tier_store_seconds_bucket{operation="list",le="0.524288"} 39839887
+sproutfs_hot_tier_store_seconds_bucket{operation="list",le="1.048576"} 39839887
+sproutfs_hot_tier_store_seconds_bucket{operation="list",le="2.097152"} 39839887
+sproutfs_hot_tier_store_seconds_bucket{operation="list",le="4.194304"} 39839887
+sproutfs_hot_tier_store_seconds_bucket{operation="list",le="+Inf"} 13309744
+sproutfs_hot_tier_store_seconds_sum{operation="list"} 0.014353819
+sproutfs_hot_tier_store_seconds_count{operation="list"} 13309744

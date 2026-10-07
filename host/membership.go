@@ -2,6 +2,7 @@ package host
 
 import (
 	"context"
+	"slices"
 
 	hostapi "github.com/semistrict/sproutfs/api/host"
 	"github.com/semistrict/sproutfs/membership"
@@ -59,6 +60,9 @@ func (h *Host) Member() (membership.Host, bool) {
 	self := h.self
 	if h.shards != nil {
 		self.Disks = h.shards.held()
+	}
+	if h.journalDisks != nil {
+		self.Disks = append(slices.Clone(self.Disks), h.journalDisks.held()...)
 	}
 	return self, !self.ID.IsZero()
 }

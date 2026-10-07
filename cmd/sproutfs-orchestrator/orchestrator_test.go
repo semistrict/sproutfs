@@ -120,6 +120,8 @@ type fakeHostClient struct {
 	arenaPages, residentPages int
 	committed                 uint64
 	templates                 []host.Template
+	// journal is what this host reports of durable flush.
+	journal host.Journal
 	// refuse is what this host answers a stop, a delete or a fork with, which
 	// is how a test stages a host's own refusal — a fork point that holds the
 	// VM sealed — with the status line that host would have sent.
@@ -288,6 +290,7 @@ func (f *fakeHostClient) Status(ctx context.Context) (host.Status, error) {
 	return host.Status{Host: f.name, PageAddress: f.page, Member: f.member,
 		Running: running, Serving: slices.Clone(f.serving),
 		Receiving: slices.Clone(f.receiving), VMs: records, Templates: slices.Clone(f.templates),
+		Journal: f.journal,
 		// A placement measures a host by the RAM arena against the guest RAM it
 		// has committed, so that is the pager this fake fills in.
 		Pager: host.Pager{

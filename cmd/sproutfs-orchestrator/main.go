@@ -33,6 +33,14 @@ import (
 // this is only about letting the request in flight finish.
 const shutdownTimeout = 30 * time.Second
 
+// defaultJournalBytes is the size of a journal disk the orchestrator makes:
+// 32 GiB holds a minute of flushes at 400 MiB/s, with room to spare
+// (plans/fsync-journal-2026-10-06.md). minJournalBytes is the least it takes.
+const (
+	defaultJournalBytes = 32 << 30
+	minJournalBytes     = 1 << 30
+)
+
 // version is what this binary says it is, stamped at link time with the build's
 // `git describe`.
 var version = "dev"
@@ -68,6 +76,13 @@ type config struct {
 	// of their own. ShardClaims selects the shards' claims in the namespace,
 	// SPROUTFS_SHARD_CLAIMS.
 	Shards, ShardClaims string
+	// DurableFlush is the cloud whose network disks are the hosts' journals,
+	// SPROUTFS_DURABLE_FLUSH: gce, or empty for durable flush off. On, the
+	// orchestrator keeps a journal disk of JournalBytes,
+	// SPROUTFS_JOURNAL_BYTES, reserved for every machine a host pod runs on,
+	// labelled with the namespace.
+	DurableFlush string
+	JournalBytes int64
 }
 
 func loadConfig(lookup func(string) string) (config, error) {
@@ -113,6 +128,18 @@ func loadConfig(lookup func(string) string) (config, error) {
 	c.ShardClaims = text("SPROUTFS_SHARD_CLAIMS", "app.kubernetes.io/component=sproutfs-shard")
 	if c.Shards != "" && c.Shards != "gce" {
 		errs = append(errs, fmt.Errorf("SPROUTFS_SHARDS is %q, want gce or nothing", c.Shards))
+	}
+	c.DurableFlush = text("SPROUTFS_DURABLE_FLUSH", "")
+	if c.DurableFlush != "" && c.DurableFlush != "gce" {
+		errs = append(errs, fmt.Errorf("SPROUTFS_DURABLE_FLUSH is %q, want gce or nothing", c.DurableFlush))
+	}
+	c.JournalBytes = defaultJournalBytes
+	if value := text("SPROUTFS_JOURNAL_BYTES", ""); value != "" {
+		parsed, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || parsed < minJournalBytes {
+			errs = append(errs, fmt.Errorf("SPROUTFS_JOURNAL_BYTES is %q, want at least %d", value, minJournalBytes))
+		}
+		c.JournalBytes = parsed
 	}
 	if codes := text("SPROUTFS_CACHE_EARLIER_CODES", ""); codes != "" {
 		for _, written := range strings.Split(codes, ",") {
@@ -194,14 +221,22 @@ func run() error {
 	}
 	// The shards are network disks the cloud attaches where the membership
 	// says, through its attach API, with the pod's own credentials.
-	if config.Shards == "gce" {
-		disks, err := adapters.NewGCENetworkDisks(ctx, "", "", "")
+	// The journal disks are made, attached and deleted through the same API.
+	if config.Shards == "gce" || config.DurableFlush == "gce" {
+		disks, err := adapters.NewGCENetworkDisks(ctx, adapters.GCENetworkDisksConfig{})
 		if err != nil {
 			return fmt.Errorf("compute engine: %w", err)
 		}
 		o.shards = &membership.ShardControl{Store: members, Disks: disks}
-		o.shardVolumes = func(ctx context.Context) ([]string, error) {
-			return pods.ShardVolumes(ctx, config.ShardClaims)
+		o.shardVolumes = func(context.Context) ([]string, error) { return nil, nil }
+		if config.Shards == "gce" {
+			o.shardVolumes = func(ctx context.Context) ([]string, error) {
+				return pods.ShardVolumes(ctx, config.ShardClaims)
+			}
+		}
+		if config.DurableFlush == "gce" {
+			o.shards.Journals = &membership.JournalControl{Disks: disks, Deployment: config.Namespace,
+				Bytes: config.JournalBytes}
 		}
 	}
 	// The table is rebuilt from the deployment itself before anything is

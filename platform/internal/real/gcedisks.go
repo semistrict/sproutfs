@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"path"
+	"slices"
 	"strings"
 	"time"
 
@@ -22,28 +23,45 @@ import (
 // volume's zone: the name a GKE node, or a k3s node on its own instance, has.
 // A disk is attached under its own name as its device name, so the instance
 // sees it at /dev/disk/by-id/google-<name> (GCEDevices), read and write, and
-// never deleted with the instance.
+// never deleted with the instance. List looks in the adapter's own project and
+// zone, and Create makes a disk of the adapter's type.
 type GCEDisks struct {
 	service        *compute.Service
-	project, zone  string
+	config         GCEDisksConfig
 	operationLimit time.Duration
 }
 
-// NewGCEDisks reaches Compute Engine with the ambient Google credentials, for
-// volumes named by their name alone in project and zone. A non-empty endpoint
-// points the client at a server that answers for the API, and sends no
-// credentials: a test's.
-func NewGCEDisks(ctx context.Context, project, zone, endpoint string) (*GCEDisks, error) {
+// GCEDisksConfig is where an adapter's disks are and what it creates.
+type GCEDisksConfig struct {
+	// Project and Zone are where a disk named by its name alone is, and
+	// where List looks.
+	Project, Zone string
+	// Endpoint, where non-empty, points the client at a server that answers
+	// for the API, and sends no credentials: a test's.
+	Endpoint string
+	// DiskType is the type of disk Create makes, and IOPS and ThroughputMBps
+	// what it provisions for it; zero leaves the cloud's default. An empty
+	// DiskType is Hyperdisk Balanced with 6000 IOPS and 400 MB/s.
+	DiskType             string
+	IOPS, ThroughputMBps int64
+}
+
+// NewGCEDisks reaches Compute Engine with the ambient Google credentials, or
+// with none where config names an endpoint.
+func NewGCEDisks(ctx context.Context, config GCEDisksConfig) (*GCEDisks, error) {
 	options := []option.ClientOption{}
-	if endpoint != "" {
-		options = append(options, option.WithEndpoint(endpoint), option.WithoutAuthentication(),
+	if config.Endpoint != "" {
+		options = append(options, option.WithEndpoint(config.Endpoint), option.WithoutAuthentication(),
 			option.WithHTTPClient(http.DefaultClient))
 	}
 	service, err := compute.NewService(ctx, options...)
 	if err != nil {
 		return nil, fmt.Errorf("compute engine client: %w", err)
 	}
-	return &GCEDisks{service: service, project: project, zone: zone, operationLimit: 10 * time.Minute}, nil
+	if config.DiskType == "" {
+		config.DiskType, config.IOPS, config.ThroughputMBps = "hyperdisk-balanced", 6000, 400
+	}
+	return &GCEDisks{service: service, config: config, operationLimit: 10 * time.Minute}, nil
 }
 
 // gceVolume is a disk as the API names it.
@@ -71,7 +89,7 @@ func parseGCEVolume(volume, project, zone string) (gceVolume, error) {
 func GCEDeviceName(volume string) string { return path.Base(volume) }
 
 func (d *GCEDisks) volume(volume string) (gceVolume, error) {
-	return parseGCEVolume(volume, d.project, d.zone)
+	return parseGCEVolume(volume, d.config.Project, d.config.Zone)
 }
 
 // Describe reads a disk's size and the instances it is attached to.
@@ -152,6 +170,67 @@ func (d *GCEDisks) Detach(ctx context.Context, volume, machine string) error {
 	return d.wait(ctx, v, operation, fmt.Sprintf("detaching %s from %s", volume, machine))
 }
 
+// List lists the disks of the adapter's own project and zone labelled
+// key=value, page by page, each by its name alone.
+func (d *GCEDisks) List(ctx context.Context, key, value string) ([]platform.ListedDisk, error) {
+	project, zone := d.config.Project, d.config.Zone
+	if project == "" || zone == "" {
+		return nil, fmt.Errorf("%w: listing disks needs a configured project and zone", platform.ErrInvalidPath)
+	}
+	var listed []platform.ListedDisk
+	filter := fmt.Sprintf("labels.%s = %q", key, value)
+	err := d.service.Disks.List(project, zone).Filter(filter).Pages(ctx, func(page *compute.DiskList) error {
+		for _, disk := range page.Items {
+			found := platform.ListedDisk{Name: disk.Name, Bytes: disk.SizeGb << 30, Labels: disk.Labels}
+			for _, user := range disk.Users {
+				found.Machines = append(found.Machines, path.Base(user))
+			}
+			listed = append(listed, found)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, gceError(err, fmt.Sprintf("listing disks labelled %s=%s", key, value))
+	}
+	slices.SortFunc(listed, func(a, b platform.ListedDisk) int { return strings.Compare(a.Name, b.Name) })
+	return listed, nil
+}
+
+// Create inserts a disk of the adapter's type, its size rounded up to whole
+// GiB, and waits for the operation. A disk of that name already there is
+// platform.ErrAlreadyExists.
+func (d *GCEDisks) Create(ctx context.Context, spec platform.NetworkDiskSpec) error {
+	v, err := d.volume(spec.Name)
+	if err != nil {
+		return err
+	}
+	if spec.Bytes <= 0 {
+		return fmt.Errorf("%w: a disk %q of %d bytes", platform.ErrInvalidPath, spec.Name, spec.Bytes)
+	}
+	disk := &compute.Disk{Name: v.name, SizeGb: (spec.Bytes + 1<<30 - 1) >> 30, Labels: spec.Labels,
+		Type:            fmt.Sprintf("projects/%s/zones/%s/diskTypes/%s", v.project, v.zone, d.config.DiskType),
+		ProvisionedIops: d.config.IOPS, ProvisionedThroughput: d.config.ThroughputMBps}
+	operation, err := d.service.Disks.Insert(v.project, v.zone, disk).Context(ctx).Do()
+	if err != nil {
+		return gceError(err, "creating "+spec.Name)
+	}
+	return d.wait(ctx, v, operation, "creating "+spec.Name)
+}
+
+// Delete deletes a disk and waits for the operation. A disk attached to an
+// instance is platform.ErrInUse.
+func (d *GCEDisks) Delete(ctx context.Context, volume string) error {
+	v, err := d.volume(volume)
+	if err != nil {
+		return err
+	}
+	operation, err := d.service.Disks.Delete(v.project, v.zone, v.name).Context(ctx).Do()
+	if err != nil {
+		return gceError(err, "deleting "+volume)
+	}
+	return d.wait(ctx, v, operation, "deleting "+volume)
+}
+
 // wait waits for a zonal operation to finish, and reports its error.
 func (d *GCEDisks) wait(ctx context.Context, v gceVolume, operation *compute.Operation, what string) error {
 	ctx, cancel := context.WithTimeout(ctx, d.operationLimit)
@@ -166,8 +245,11 @@ func (d *GCEDisks) wait(ctx context.Context, v gceVolume, operation *compute.Ope
 	if operation.Error != nil && len(operation.Error.Errors) > 0 {
 		first := operation.Error.Errors[0]
 		err := fmt.Errorf("%s: %s: %s", what, first.Code, first.Message)
-		if first.Code == "RESOURCE_IN_USE_BY_ANOTHER_RESOURCE" {
+		switch first.Code {
+		case "RESOURCE_IN_USE_BY_ANOTHER_RESOURCE":
 			return errors.Join(platform.ErrInUse, err)
+		case "RESOURCE_ALREADY_EXISTS":
+			return errors.Join(platform.ErrAlreadyExists, err)
 		}
 		return err
 	}
@@ -184,13 +266,21 @@ func gceError(err error, what string) error {
 		switch {
 		case api.Code == http.StatusNotFound:
 			return errors.Join(platform.ErrNotFound, fmt.Errorf("%s: %w", what, err))
+		case api.Code == http.StatusConflict:
+			return errors.Join(platform.ErrAlreadyExists, fmt.Errorf("%s: %w", what, err))
 		case api.Code == http.StatusTooManyRequests || api.Code >= 500:
 			return errors.Join(platform.ErrUnavailable, fmt.Errorf("%s: %w", what, err))
-		case api.Code == http.StatusBadRequest && strings.Contains(api.Message, "already being used"):
+		case api.Code == http.StatusBadRequest &&
+			(hasReason(api, "resourceInUseByAnotherResource") || strings.Contains(api.Message, "already being used")):
 			return errors.Join(platform.ErrInUse, fmt.Errorf("%s: %w", what, err))
 		}
 	}
 	return fmt.Errorf("%s: %w", what, err)
+}
+
+// hasReason reports whether one of an API error's errors gives reason.
+func hasReason(api *googleapi.Error, reason string) bool {
+	return slices.ContainsFunc(api.Errors, func(item googleapi.ErrorItem) bool { return item.Reason == reason })
 }
 
 var _ platform.NetworkDisks = (*GCEDisks)(nil)

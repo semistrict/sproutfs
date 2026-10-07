@@ -455,7 +455,7 @@ func TestAShardControlPassStepsAndCarriesTheStepOut(t *testing.T) {
 		runtime := sim.New(sim.Config{})
 		ctx := sim.WithRuntime(t.Context(), runtime)
 		cloud := runtime.NewNetworkDisks(sim.NetworkDisksConfig{})
-		if err := cloud.Create(ctx, "shard-0", 64<<30); err != nil {
+		if err := cloud.Provision(ctx, "shard-0", 64<<30); err != nil {
 			t.Fatal(err)
 		}
 		store, err := NewStore(Config{ObjectStore: runtime.ObjectStore()})

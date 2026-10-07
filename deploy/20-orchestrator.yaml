@@ -181,6 +181,16 @@ spec:
                   optional: true
             - name: SPROUTFS_SHARD_CLAIMS
               value: app.kubernetes.io/component=sproutfs-shard
+            # Durable flush: the ConfigMap's durable_flush key, gce, has the
+            # orchestrator keep a journal disk for every node a host runs on,
+            # making, attaching and deleting them through Compute Engine's
+            # API. deploy/README.md, "Durable flush".
+            - name: SPROUTFS_DURABLE_FLUSH
+              valueFrom:
+                configMapKeyRef:
+                  name: sproutfs-demo
+                  key: durable_flush
+                  optional: true
           resources:
             requests:
               cpu: 200m

@@ -21,6 +21,17 @@ type Want struct {
 	// Shards is the deployment's network disks, a fixed set the membership
 	// assigns to its members, each where the cloud last said it is attached.
 	Shards []Shard
+	// Journals is the deployment's journal disks as the cloud lists them,
+	// each where it is attached, and JournalsKnown whether the listing
+	// succeeded: a disk missing from a listing that failed is not one the
+	// cloud has deleted. Pool is the machines the deployment's hosts run on,
+	// each of which keeps a journal disk reserved while durable flush is on,
+	// and Expired the journal disks that have been free and empty for long
+	// enough to delete. All are empty for a deployment that journals nothing.
+	Journals      []Shard
+	JournalsKnown bool
+	Pool          []string
+	Expired       []rank.Identity
 }
 
 // Host is one host a controller wants in the membership: its identity, the
@@ -62,6 +73,13 @@ type Shard struct {
 // device whose header names another is made anew under it.
 func ShardIdentity(volume string) rank.Identity {
 	sum := sha256.Sum256([]byte("sproutfs shard\x00" + volume))
+	return rank.Identity(sum[:len(rank.Identity{})])
+}
+
+// JournalIdentity is the identity of the journal disk on a volume, derived
+// from its name as a shard's is.
+func JournalIdentity(volume string) rank.Identity {
+	sum := sha256.Sum256([]byte("sproutfs journal\x00" + volume))
 	return rank.Identity(sum[:len(rank.Identity{})])
 }
 
@@ -123,9 +141,14 @@ func Next(ctx context.Context, m Membership, want Want) (Change, bool) {
 			}
 		}
 	}
-	shards := make(map[rank.Identity]Shard, len(want.Shards))
+	shards := make(map[rank.Identity]Shard, len(want.Shards)+len(want.Journals))
 	for _, shard := range want.Shards {
 		shards[shard.ID] = shard
+	}
+	// A journal disk is let go as a shard is: once its holder has closed it
+	// and the cloud has it on no machine.
+	for _, journal := range want.Journals {
+		shards[journal.ID] = journal
 	}
 	for _, member := range m.members {
 		if host, wanted := hosts[member.ID]; (!wanted || host.Leaving) && member.State != Draining {
@@ -161,7 +184,7 @@ func Next(ctx context.Context, m Membership, want Want) (Change, bool) {
 	}
 	for _, disk := range m.disks {
 		_, wanted := reported[disk.ID]
-		if _, isShard := shards[disk.ID]; !wanted && !isShard && disk.State == Released {
+		if _, isShard := shards[disk.ID]; !wanted && !isShard && disk.State == Released && disk.Kind == Cache {
 			id := disk.ID
 			return func(m Membership) (Membership, error) { return m.Remove(id) }, true
 		}
@@ -187,7 +210,8 @@ func Next(ctx context.Context, m Membership, want Want) (Change, bool) {
 		var disks []Disk
 		for _, disk := range host.Disks {
 			found, listed := m.Disk(disk.ID)
-			if _, isShard := shards[disk.ID]; !isShard && reported[disk.ID] == host.ID && (!listed || found.State == Released) {
+			if _, isShard := shards[disk.ID]; !isShard && disk.Kind == Cache && reported[disk.ID] == host.ID &&
+				(!listed || found.State == Released) {
 				disks = append(disks, disk)
 			}
 		}
@@ -209,8 +233,8 @@ func Next(ctx context.Context, m Membership, want Want) (Change, bool) {
 	for _, host := range sortedHosts(want.Hosts) {
 		for _, disk := range host.Disks {
 			found, listed := m.Disk(disk.ID)
-			if _, isShard := shards[disk.ID]; !isShard && listed && reported[disk.ID] == host.ID &&
-				found.Weight != disk.Weight {
+			if _, isShard := shards[disk.ID]; !isShard && disk.Kind == Cache && listed &&
+				reported[disk.ID] == host.ID && found.Weight != disk.Weight {
 				id, weight := disk.ID, disk.Weight
 				return func(m Membership) (Membership, error) { return m.Weigh(id, weight) }, true
 			}
@@ -222,7 +246,14 @@ func Next(ctx context.Context, m Membership, want Want) (Change, bool) {
 			return func(m Membership) (Membership, error) { return m.Weigh(id, weight) }, true
 		}
 	}
-	return nextShardMove(m, hosts, shards)
+	if change, ok := nextJournalStep(m, hosts, want); ok {
+		return change, true
+	}
+	cacheShards := make(map[rank.Identity]Shard, len(want.Shards))
+	for _, shard := range want.Shards {
+		cacheShards[shard.ID] = shard
+	}
+	return nextShardMove(m, hosts, cacheShards)
 }
 
 // nextShardMove is the step that puts a released shard on a member, or, while

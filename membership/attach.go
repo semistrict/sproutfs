@@ -22,6 +22,9 @@ import (
 //     holds it open, and is detached from every machine once it does not,
 //     or once that host is gone.
 //   - A shard released is attached to no machine.
+//   - A journal disk follows the same rules, except that one released and
+//     reserved for a machine in the pool is attached to that machine, so the
+//     member there finds it attached when it is assigned it.
 //
 // A shard is let go (Next's step 2) only once the cloud says it is attached
 // to no machine, so a disk is released and detached before it is assigned
@@ -75,6 +78,25 @@ func Carry(ctx context.Context, m Membership, want Want) []Action {
 		}
 		if target != "" && !slices.Contains(shard.Machines, target) {
 			attaches = append(attaches, Action{Volume: shard.Volume, Machine: target, Attach: true})
+		}
+	}
+	journals := slices.Clone(want.Journals)
+	slices.SortFunc(journals, func(a, b Shard) int { return compareIdentities(a.ID, b.ID) })
+	for _, journal := range journals {
+		if !journal.Known {
+			continue
+		}
+		target, keep := carryJournal(ctx, m, want, hosts, journal)
+		if keep {
+			continue
+		}
+		for _, machine := range journal.Machines {
+			if machine != target {
+				detaches = append(detaches, Action{Volume: journal.Volume, Machine: machine})
+			}
+		}
+		if target != "" && !slices.Contains(journal.Machines, target) {
+			attaches = append(attaches, Action{Volume: journal.Volume, Machine: target, Attach: true})
 		}
 	}
 	return append(detaches, attaches...)

@@ -38,7 +38,7 @@ func (w *World) makeShards(ctx context.Context) error {
 	w.leaving = map[int]bool{}
 	for n := range w.config.Shards {
 		volume := fmt.Sprintf("%sshard-%d", w.config.Namespace, n)
-		if err := w.cloud.Create(ctx, volume, shardBytes); err != nil {
+		if err := w.cloud.Provision(ctx, volume, shardBytes); err != nil {
 			return err
 		}
 		w.control.Volumes = append(w.control.Volumes, volume)

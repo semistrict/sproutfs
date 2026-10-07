@@ -78,7 +78,7 @@ func TestAShardMovesWithItsStripes(t *testing.T) {
 		runtime := sim.New(sim.Config{})
 		ctx := sim.WithRuntime(t.Context(), runtime)
 		cloud := runtime.NewNetworkDisks(sim.NetworkDisksConfig{AttachLatency: time.Second})
-		if err := cloud.Create(ctx, "shard-one", shardBytes); err != nil {
+		if err := cloud.Provision(ctx, "shard-one", shardBytes); err != nil {
 			t.Fatal(err)
 		}
 		served := shardServedBy(2, memberA, 1, membership.Serving)
@@ -174,7 +174,7 @@ func TestAStaleMemberThatStillHoldsTheDeviceIsFenced(t *testing.T) {
 		runtime := sim.New(sim.Config{})
 		ctx := sim.WithRuntime(t.Context(), runtime)
 		cloud := runtime.NewNetworkDisks(sim.NetworkDisksConfig{})
-		if err := cloud.Create(ctx, "shard-one", shardBytes); err != nil {
+		if err := cloud.Provision(ctx, "shard-one", shardBytes); err != nil {
 			t.Fatal(err)
 		}
 		open := func() platform.File {
@@ -243,7 +243,7 @@ func TestAShardReadsBackOnlyTheRegionsItsLeaseNames(t *testing.T) {
 		const regionBytes = 64 << 10
 		const deviceBytes = 512 << 20
 		cloud := runtime.NewNetworkDisks(sim.NetworkDisksConfig{})
-		if err := cloud.Create(ctx, "shard-one", deviceBytes); err != nil {
+		if err := cloud.Provision(ctx, "shard-one", deviceBytes); err != nil {
 			t.Fatal(err)
 		}
 		handle, err := cloud.Disk("shard-one").Open(ctx, "device", platform.OpenOptions{})
@@ -294,7 +294,7 @@ func TestRemovingAShardWaitsForTheRequestsUsingIt(t *testing.T) {
 		runtime := sim.New(sim.Config{})
 		ctx := sim.WithRuntime(t.Context(), runtime)
 		cloud := runtime.NewNetworkDisks(sim.NetworkDisksConfig{})
-		if err := cloud.Create(ctx, "shard-one", shardBytes); err != nil {
+		if err := cloud.Provision(ctx, "shard-one", shardBytes); err != nil {
 			t.Fatal(err)
 		}
 		device, err := cloud.Disk("shard-one").Open(ctx, "device", platform.OpenOptions{})

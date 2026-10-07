@@ -70,6 +70,53 @@ func (x MemberState) Number() protoreflect.EnumNumber {
 	return protoreflect.EnumNumber(x)
 }
 
+type DiskKind int32
+
+const (
+	DiskKind_DISK_KIND_UNSPECIFIED DiskKind = 0
+	// DISK_KIND_CACHE is a disk of the cluster's cache.
+	DiskKind_DISK_KIND_CACHE DiskKind = 1
+	// DISK_KIND_JOURNAL is a host's journal disk
+	// (plans/fsync-journal-2026-10-06.md).
+	DiskKind_DISK_KIND_JOURNAL DiskKind = 2
+)
+
+// Enum value maps for DiskKind.
+var (
+	DiskKind_name = map[int32]string{
+		0: "DISK_KIND_UNSPECIFIED",
+		1: "DISK_KIND_CACHE",
+		2: "DISK_KIND_JOURNAL",
+	}
+	DiskKind_value = map[string]int32{
+		"DISK_KIND_UNSPECIFIED": 0,
+		"DISK_KIND_CACHE":       1,
+		"DISK_KIND_JOURNAL":     2,
+	}
+)
+
+func (x DiskKind) Enum() *DiskKind {
+	p := new(DiskKind)
+	*p = x
+	return p
+}
+
+func (x DiskKind) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (DiskKind) Descriptor() protoreflect.EnumDescriptor {
+	return file_sproutfs_membership_v1_membership_proto_enumTypes[1].Descriptor()
+}
+
+func (DiskKind) Type() protoreflect.EnumType {
+	return &file_sproutfs_membership_v1_membership_proto_enumTypes[1]
+}
+
+func (x DiskKind) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
 type DiskState int32
 
 const (
@@ -81,6 +128,8 @@ const (
 	DiskState_DISK_STATE_RELEASING DiskState = 3
 	// DISK_STATE_RELEASED is assigned to nobody.
 	DiskState_DISK_STATE_RELEASED DiskState = 4
+	// DISK_STATE_DELETING is a journal disk being deleted, assigned to nobody.
+	DiskState_DISK_STATE_DELETING DiskState = 5
 )
 
 // Enum value maps for DiskState.
@@ -91,6 +140,7 @@ var (
 		2: "DISK_STATE_SERVING",
 		3: "DISK_STATE_RELEASING",
 		4: "DISK_STATE_RELEASED",
+		5: "DISK_STATE_DELETING",
 	}
 	DiskState_value = map[string]int32{
 		"DISK_STATE_UNSPECIFIED": 0,
@@ -98,6 +148,7 @@ var (
 		"DISK_STATE_SERVING":     2,
 		"DISK_STATE_RELEASING":   3,
 		"DISK_STATE_RELEASED":    4,
+		"DISK_STATE_DELETING":    5,
 	}
 )
 
@@ -112,11 +163,11 @@ func (x DiskState) String() string {
 }
 
 func (DiskState) Descriptor() protoreflect.EnumDescriptor {
-	return file_sproutfs_membership_v1_membership_proto_enumTypes[1].Descriptor()
+	return file_sproutfs_membership_v1_membership_proto_enumTypes[2].Descriptor()
 }
 
 func (DiskState) Type() protoreflect.EnumType {
-	return &file_sproutfs_membership_v1_membership_proto_enumTypes[1]
+	return &file_sproutfs_membership_v1_membership_proto_enumTypes[2]
 }
 
 func (x DiskState) Number() protoreflect.EnumNumber {
@@ -632,9 +683,9 @@ func (b0 Member_builder) Build() *Member {
 	return m0
 }
 
-// Disk is one cache disk: the identity in its file's header, which windows
-// are ranked by, the name the cloud or the cluster knows the volume by, its
-// weight, the member it is assigned to, and its state.
+// Disk is one disk: the identity in its header, which windows are ranked by
+// for a cache disk, the name the cloud or the cluster knows the volume by, its
+// weight, the member it is assigned to, its state and its kind.
 type Disk struct {
 	state                  protoimpl.MessageState `protogen:"opaque.v1"`
 	xxx_hidden_Id          []byte                 `protobuf:"bytes,1,opt,name=id"`
@@ -643,6 +694,9 @@ type Disk struct {
 	xxx_hidden_Member      []byte                 `protobuf:"bytes,4,opt,name=member"`
 	xxx_hidden_State       DiskState              `protobuf:"varint,5,opt,name=state,enum=sproutfs.membership.v1.DiskState"`
 	xxx_hidden_Assigned    uint64                 `protobuf:"varint,6,opt,name=assigned"`
+	xxx_hidden_Kind        DiskKind               `protobuf:"varint,7,opt,name=kind,enum=sproutfs.membership.v1.DiskKind"`
+	xxx_hidden_Machine     *string                `protobuf:"bytes,8,opt,name=machine"`
+	xxx_hidden_Empty       bool                   `protobuf:"varint,9,opt,name=empty"`
 	XXX_raceDetectHookData protoimpl.RaceDetectHookData
 	XXX_presence           [1]uint32
 	unknownFields          protoimpl.UnknownFields
@@ -721,22 +775,48 @@ func (x *Disk) GetAssigned() uint64 {
 	return 0
 }
 
+func (x *Disk) GetKind() DiskKind {
+	if x != nil {
+		if protoimpl.X.Present(&(x.XXX_presence[0]), 6) {
+			return x.xxx_hidden_Kind
+		}
+	}
+	return DiskKind_DISK_KIND_UNSPECIFIED
+}
+
+func (x *Disk) GetMachine() string {
+	if x != nil {
+		if x.xxx_hidden_Machine != nil {
+			return *x.xxx_hidden_Machine
+		}
+		return ""
+	}
+	return ""
+}
+
+func (x *Disk) GetEmpty() bool {
+	if x != nil {
+		return x.xxx_hidden_Empty
+	}
+	return false
+}
+
 func (x *Disk) SetId(v []byte) {
 	if v == nil {
 		v = []byte{}
 	}
 	x.xxx_hidden_Id = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 0, 6)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 0, 9)
 }
 
 func (x *Disk) SetVolume(v string) {
 	x.xxx_hidden_Volume = &v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 1, 6)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 1, 9)
 }
 
 func (x *Disk) SetWeight(v uint32) {
 	x.xxx_hidden_Weight = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 2, 6)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 2, 9)
 }
 
 func (x *Disk) SetMember(v []byte) {
@@ -744,17 +824,32 @@ func (x *Disk) SetMember(v []byte) {
 		v = []byte{}
 	}
 	x.xxx_hidden_Member = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 3, 6)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 3, 9)
 }
 
 func (x *Disk) SetState(v DiskState) {
 	x.xxx_hidden_State = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 4, 6)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 4, 9)
 }
 
 func (x *Disk) SetAssigned(v uint64) {
 	x.xxx_hidden_Assigned = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 5, 6)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 5, 9)
+}
+
+func (x *Disk) SetKind(v DiskKind) {
+	x.xxx_hidden_Kind = v
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 6, 9)
+}
+
+func (x *Disk) SetMachine(v string) {
+	x.xxx_hidden_Machine = &v
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 7, 9)
+}
+
+func (x *Disk) SetEmpty(v bool) {
+	x.xxx_hidden_Empty = v
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 8, 9)
 }
 
 func (x *Disk) HasId() bool {
@@ -799,6 +894,27 @@ func (x *Disk) HasAssigned() bool {
 	return protoimpl.X.Present(&(x.XXX_presence[0]), 5)
 }
 
+func (x *Disk) HasKind() bool {
+	if x == nil {
+		return false
+	}
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 6)
+}
+
+func (x *Disk) HasMachine() bool {
+	if x == nil {
+		return false
+	}
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 7)
+}
+
+func (x *Disk) HasEmpty() bool {
+	if x == nil {
+		return false
+	}
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 8)
+}
+
 func (x *Disk) ClearId() {
 	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 0)
 	x.xxx_hidden_Id = nil
@@ -829,6 +945,21 @@ func (x *Disk) ClearAssigned() {
 	x.xxx_hidden_Assigned = 0
 }
 
+func (x *Disk) ClearKind() {
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 6)
+	x.xxx_hidden_Kind = DiskKind_DISK_KIND_UNSPECIFIED
+}
+
+func (x *Disk) ClearMachine() {
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 7)
+	x.xxx_hidden_Machine = nil
+}
+
+func (x *Disk) ClearEmpty() {
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 8)
+	x.xxx_hidden_Empty = false
+}
+
 type Disk_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
@@ -841,6 +972,13 @@ type Disk_builder struct {
 	// assigned is the generation that assigned the disk to its member. Every
 	// reply its member sends for it names this generation.
 	Assigned *uint64
+	// kind is what the disk is for. A journal disk ranks no window.
+	Kind *DiskKind
+	// machine is the machine a journal disk is reserved for, empty for none.
+	Machine *string
+	// empty marks a journal disk whose last holder closed it with no live
+	// entry.
+	Empty *bool
 }
 
 func (b0 Disk_builder) Build() *Disk {
@@ -848,28 +986,40 @@ func (b0 Disk_builder) Build() *Disk {
 	b, x := &b0, m0
 	_, _ = b, x
 	if b.Id != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 0, 6)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 0, 9)
 		x.xxx_hidden_Id = b.Id
 	}
 	if b.Volume != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 1, 6)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 1, 9)
 		x.xxx_hidden_Volume = b.Volume
 	}
 	if b.Weight != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 2, 6)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 2, 9)
 		x.xxx_hidden_Weight = *b.Weight
 	}
 	if b.Member != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 3, 6)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 3, 9)
 		x.xxx_hidden_Member = b.Member
 	}
 	if b.State != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 4, 6)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 4, 9)
 		x.xxx_hidden_State = *b.State
 	}
 	if b.Assigned != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 5, 6)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 5, 9)
 		x.xxx_hidden_Assigned = *b.Assigned
+	}
+	if b.Kind != nil {
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 6, 9)
+		x.xxx_hidden_Kind = *b.Kind
+	}
+	if b.Machine != nil {
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 7, 9)
+		x.xxx_hidden_Machine = b.Machine
+	}
+	if b.Empty != nil {
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 8, 9)
+		x.xxx_hidden_Empty = *b.Empty
 	}
 	return m0
 }
@@ -897,47 +1047,57 @@ const file_sproutfs_membership_v1_membership_proto_rawDesc = "" +
 	"\x06Member\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\fR\x02id\x12\x18\n" +
 	"\aaddress\x18\x02 \x01(\tR\aaddress\x129\n" +
-	"\x05state\x18\x03 \x01(\x0e2#.sproutfs.membership.v1.MemberStateR\x05state\"\xb3\x01\n" +
+	"\x05state\x18\x03 \x01(\x0e2#.sproutfs.membership.v1.MemberStateR\x05state\"\x99\x02\n" +
 	"\x04Disk\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\fR\x02id\x12\x16\n" +
 	"\x06volume\x18\x02 \x01(\tR\x06volume\x12\x16\n" +
 	"\x06weight\x18\x03 \x01(\rR\x06weight\x12\x16\n" +
 	"\x06member\x18\x04 \x01(\fR\x06member\x127\n" +
 	"\x05state\x18\x05 \x01(\x0e2!.sproutfs.membership.v1.DiskStateR\x05state\x12\x1a\n" +
-	"\bassigned\x18\x06 \x01(\x04R\bassigned*y\n" +
+	"\bassigned\x18\x06 \x01(\x04R\bassigned\x124\n" +
+	"\x04kind\x18\a \x01(\x0e2 .sproutfs.membership.v1.DiskKindR\x04kind\x12\x18\n" +
+	"\amachine\x18\b \x01(\tR\amachine\x12\x14\n" +
+	"\x05empty\x18\t \x01(\bR\x05empty*y\n" +
 	"\vMemberState\x12\x1c\n" +
 	"\x18MEMBER_STATE_UNSPECIFIED\x10\x00\x12\x18\n" +
 	"\x14MEMBER_STATE_JOINING\x10\x01\x12\x17\n" +
 	"\x13MEMBER_STATE_ACTIVE\x10\x02\x12\x19\n" +
-	"\x15MEMBER_STATE_DRAINING\x10\x03*\x8c\x01\n" +
+	"\x15MEMBER_STATE_DRAINING\x10\x03*Q\n" +
+	"\bDiskKind\x12\x19\n" +
+	"\x15DISK_KIND_UNSPECIFIED\x10\x00\x12\x13\n" +
+	"\x0fDISK_KIND_CACHE\x10\x01\x12\x15\n" +
+	"\x11DISK_KIND_JOURNAL\x10\x02*\xa5\x01\n" +
 	"\tDiskState\x12\x1a\n" +
 	"\x16DISK_STATE_UNSPECIFIED\x10\x00\x12\x18\n" +
 	"\x14DISK_STATE_ATTACHING\x10\x01\x12\x16\n" +
 	"\x12DISK_STATE_SERVING\x10\x02\x12\x18\n" +
 	"\x14DISK_STATE_RELEASING\x10\x03\x12\x17\n" +
-	"\x13DISK_STATE_RELEASED\x10\x04B\\ZZgithub.com/semistrict/sproutfs/membership/internal/gen/sproutfs/membership/v1;membershipv1b\beditionsp\xe9\a"
+	"\x13DISK_STATE_RELEASED\x10\x04\x12\x17\n" +
+	"\x13DISK_STATE_DELETING\x10\x05B\\ZZgithub.com/semistrict/sproutfs/membership/internal/gen/sproutfs/membership/v1;membershipv1b\beditionsp\xe9\a"
 
-var file_sproutfs_membership_v1_membership_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
+var file_sproutfs_membership_v1_membership_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
 var file_sproutfs_membership_v1_membership_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
 var file_sproutfs_membership_v1_membership_proto_goTypes = []any{
 	(MemberState)(0),   // 0: sproutfs.membership.v1.MemberState
-	(DiskState)(0),     // 1: sproutfs.membership.v1.DiskState
-	(*Membership)(nil), // 2: sproutfs.membership.v1.Membership
-	(*Code)(nil),       // 3: sproutfs.membership.v1.Code
-	(*Member)(nil),     // 4: sproutfs.membership.v1.Member
-	(*Disk)(nil),       // 5: sproutfs.membership.v1.Disk
+	(DiskKind)(0),      // 1: sproutfs.membership.v1.DiskKind
+	(DiskState)(0),     // 2: sproutfs.membership.v1.DiskState
+	(*Membership)(nil), // 3: sproutfs.membership.v1.Membership
+	(*Code)(nil),       // 4: sproutfs.membership.v1.Code
+	(*Member)(nil),     // 5: sproutfs.membership.v1.Member
+	(*Disk)(nil),       // 6: sproutfs.membership.v1.Disk
 }
 var file_sproutfs_membership_v1_membership_proto_depIdxs = []int32{
-	4, // 0: sproutfs.membership.v1.Membership.members:type_name -> sproutfs.membership.v1.Member
-	5, // 1: sproutfs.membership.v1.Membership.disks:type_name -> sproutfs.membership.v1.Disk
-	3, // 2: sproutfs.membership.v1.Membership.earlier:type_name -> sproutfs.membership.v1.Code
+	5, // 0: sproutfs.membership.v1.Membership.members:type_name -> sproutfs.membership.v1.Member
+	6, // 1: sproutfs.membership.v1.Membership.disks:type_name -> sproutfs.membership.v1.Disk
+	4, // 2: sproutfs.membership.v1.Membership.earlier:type_name -> sproutfs.membership.v1.Code
 	0, // 3: sproutfs.membership.v1.Member.state:type_name -> sproutfs.membership.v1.MemberState
-	1, // 4: sproutfs.membership.v1.Disk.state:type_name -> sproutfs.membership.v1.DiskState
-	5, // [5:5] is the sub-list for method output_type
-	5, // [5:5] is the sub-list for method input_type
-	5, // [5:5] is the sub-list for extension type_name
-	5, // [5:5] is the sub-list for extension extendee
-	0, // [0:5] is the sub-list for field type_name
+	2, // 4: sproutfs.membership.v1.Disk.state:type_name -> sproutfs.membership.v1.DiskState
+	1, // 5: sproutfs.membership.v1.Disk.kind:type_name -> sproutfs.membership.v1.DiskKind
+	6, // [6:6] is the sub-list for method output_type
+	6, // [6:6] is the sub-list for method input_type
+	6, // [6:6] is the sub-list for extension type_name
+	6, // [6:6] is the sub-list for extension extendee
+	0, // [0:6] is the sub-list for field type_name
 }
 
 func init() { file_sproutfs_membership_v1_membership_proto_init() }
@@ -950,7 +1110,7 @@ func file_sproutfs_membership_v1_membership_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_sproutfs_membership_v1_membership_proto_rawDesc), len(file_sproutfs_membership_v1_membership_proto_rawDesc)),
-			NumEnums:      2,
+			NumEnums:      3,
 			NumMessages:   4,
 			NumExtensions: 0,
 			NumServices:   0,

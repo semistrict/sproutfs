@@ -13,7 +13,6 @@ import (
 	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/internal/latency"
 	"github.com/semistrict/sproutfs/journal"
-	"github.com/semistrict/sproutfs/peer"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/rank"
@@ -51,6 +50,15 @@ type JournalConfig struct {
 	// DurableFlush answers each flush of a disk from the host's journal,
 	// and fails one that cannot be journaled. SPROUTFS_DURABLE_FLUSH.
 	DurableFlush bool
+	// Devices, where it is not nil, has the host open the journal disks the
+	// membership assigns it, network disks the controller attaches to its
+	// machine: the one reserved for Machine, which it writes, and others for
+	// reading (journaldisks.go). Without it, the journal is what SetJournal
+	// gives the host. Interval is how often the host looks again at what the
+	// membership assigns it; zero is DefaultJournalDiskInterval.
+	Devices  platform.Devices
+	Machine  string
+	Interval time.Duration
 }
 
 // journals is the host's side of durable flush: whether the mode is on, the
@@ -430,12 +438,18 @@ func (h *Host) trimming(ctx context.Context, interval time.Duration) {
 	}
 }
 
-// trimOnce trims the journal to the records of the VMs it holds entries of.
+// trimOnce trims every journal this host holds to the records of the VMs
+// each holds entries of: its own, and those it holds for reading, whose
+// entries die as the hosts that recovered their VMs select checkpoints.
 func (h *Host) trimOnce(ctx context.Context) {
-	j := h.journal()
-	if j == nil {
-		return
+	for _, j := range h.heldJournals() {
+		h.trimJournal(ctx, j)
 	}
+}
+
+// trimJournal trims one journal to the records of the VMs it holds entries
+// of.
+func (h *Host) trimJournal(ctx context.Context, j *journal.Journal) {
 	var vms []string
 	for _, held := range j.Held() {
 		if n := len(vms); n == 0 || vms[n-1] != held.VM {
@@ -585,9 +599,9 @@ func (h *Host) journalActivity() JournalActivity {
 // safe. A disk this host does not hold is peer.ErrNoJournal.
 func (h *Host) ReadJournal(ctx context.Context, disk rank.Identity, request journal.ReadRequest,
 	yield func(journal.Entry) error) error {
-	j := h.journal()
-	if j == nil || j.Identity() != disk {
-		return fmt.Errorf("%w: %s", peer.ErrNoJournal, disk)
+	j := h.journalOf(disk)
+	if j == nil {
+		return errNotHeld(disk)
 	}
 	err := j.Read(ctx, request, yield)
 	if vm := h.vm(request.VM); vm != nil && vm.Epoch() < request.Reader && !sim.Bug(ctx, "journal-read-keeps-vm") {

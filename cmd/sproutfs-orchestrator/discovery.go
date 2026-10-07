@@ -49,7 +49,7 @@ func (k *clusterPods) List(ctx context.Context) ([]pod, error) {
 	pods := make([]pod, 0, len(list.Items))
 	for _, item := range list.Items {
 		pods = append(pods, pod{Name: item.Name, IP: item.Status.PodIP, Ready: podReady(item),
-			Terminating: item.DeletionTimestamp != nil})
+			Terminating: item.DeletionTimestamp != nil, Node: item.Spec.NodeName})
 	}
 	return pods, nil
 }
