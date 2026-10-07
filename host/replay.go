@@ -73,11 +73,18 @@ func (r replayer) Replay(ctx context.Context, vm string, journals []control.Jour
 		}
 		for {
 			page, err := r.h.peers.Peer(address).ReadJournal(ctx, disk, request, journalReadBytes)
-			if errors.Is(err, peer.ErrNoJournal) {
+			switch {
+			case errors.Is(err, peer.ErrNoJournal):
 				return fmt.Errorf("%w: %s no longer holds journal %s", volume.ErrJournalPending, address, disk)
-			}
-			if err != nil {
+			case errors.Is(err, journal.ErrGeneration):
 				return fmt.Errorf("replaying journal %s of %s from %s: %w", disk, vm, address, err)
+			case err != nil:
+				// A holder that cannot be read is one the membership has not
+				// drained yet, or one cut off from here: the disk moves to a
+				// survivor once its member is drained, and the open is asked
+				// again then. Nothing read so far is published.
+				return fmt.Errorf("%w: reading journal %s of %s from %s: %w", volume.ErrJournalPending, disk, vm,
+					address, err)
 			}
 			for _, entry := range page.Entries {
 				if err := apply(entry); err != nil {

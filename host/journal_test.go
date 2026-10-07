@@ -400,26 +400,7 @@ func TestAnotherHostsOpenReplaysWhatTheVMFlushed(t *testing.T) {
 		t.Fatalf("an open while no member serves the journal = %v, want ErrJournalPending", err)
 	}
 	// The membership says the first host serves its journal disk.
-	members, err := membership.NewStore(membership.Config{ObjectStore: s.h.runtime.ObjectStore(),
-		ObjectPrefix: s.h.prefix, Entropy: s.h.runtime.NewEntropy("membership")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	holder := rank.Identity{2}
-	for _, change := range []func(membership.Membership) (membership.Membership, error){
-		func(m membership.Membership) (membership.Membership, error) {
-			return m.Join(membership.Member{ID: holder, Address: s.h.pages[0]})
-		},
-		func(m membership.Membership) (membership.Membership, error) {
-			return m.Add(membership.Disk{ID: s.j.Identity(), Volume: "journal-0", Kind: membership.Journal})
-		},
-		func(m membership.Membership) (membership.Membership, error) { return m.Assign(s.j.Identity(), holder) },
-		func(m membership.Membership) (membership.Membership, error) { return m.Serve(s.j.Identity(), holder) },
-	} {
-		if _, err := members.Update(t.Context(), change); err != nil {
-			t.Fatal(err)
-		}
-	}
+	s.servedAt(t, s.h.pages[0])
 	reopened, err := other.Volumes().Open(ctx, "vm-1")
 	if err != nil {
 		t.Fatal(err)
@@ -453,6 +434,53 @@ func TestAnotherHostsOpenReplaysWhatTheVMFlushed(t *testing.T) {
 	if record.Selected == published.Sequence || len(record.Journals) != 0 {
 		t.Fatalf("after the cold boot the record selects %d naming %v, want a new checkpoint naming none",
 			record.Selected, record.Journals)
+	}
+}
+
+// servedAt has the membership say that a member at address serves the
+// journal disk, as a holder that opened it does.
+func (s *journalHostOf) servedAt(t *testing.T, address platform.Address) {
+	t.Helper()
+	members, err := membership.NewStore(membership.Config{ObjectStore: s.h.runtime.ObjectStore(),
+		ObjectPrefix: s.h.prefix, Entropy: s.h.runtime.NewEntropy("membership")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	holder := rank.Identity{2}
+	for _, change := range []func(membership.Membership) (membership.Membership, error){
+		func(m membership.Membership) (membership.Membership, error) {
+			return m.Join(membership.Member{ID: holder, Address: address})
+		},
+		func(m membership.Membership) (membership.Membership, error) {
+			return m.Add(membership.Disk{ID: s.j.Identity(), Volume: "journal-0", Kind: membership.Journal})
+		},
+		func(m membership.Membership) (membership.Membership, error) { return m.Assign(s.j.Identity(), holder) },
+		func(m membership.Membership) (membership.Membership, error) { return m.Serve(s.j.Identity(), holder) },
+	} {
+		if _, err := members.Update(t.Context(), change); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// A holder the membership still lists and nothing can reach, as a host that
+// died before its member was drained, holds the open back as pending: the
+// disk is read once a survivor serves it, and the open publishes nothing.
+func TestAnOpenWhoseJournalHolderCannotBeReachedIsPending(t *testing.T) {
+	s := journalHosts(t, journalRing, 2)
+	s.checkpoint(t)
+	published := s.vm.Status().Checkpoint
+	s.guest.store("disk", 0, 7)
+	if err := <-flush(s.guest); err != nil {
+		t.Fatal(err)
+	}
+	s.servedAt(t, "gone-pages")
+	ctx := sim.WithRuntime(t.Context(), s.h.runtime)
+	if _, err := s.h.hosts[1].Volumes().Open(ctx, "vm-1"); !errors.Is(err, volume.ErrJournalPending) {
+		t.Fatalf("an open whose journal's holder cannot be reached = %v, want ErrJournalPending", err)
+	}
+	if record := s.record(t); record.Selected != published.Sequence {
+		t.Fatalf("the pending open left the record selecting %d, want %d", record.Selected, published.Sequence)
 	}
 }
 
