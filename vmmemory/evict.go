@@ -148,7 +148,7 @@ func (h *Host) reclaimStep(ctx context.Context, req *evictionRequest, _ bool, _ 
 		// h.mu is given up for the idle drop, which takes it itself. Nothing
 		// read under the hold before is used after it: the rest of the step
 		// looks at the prefetches, the free slots and the queues afresh. A
-		// host that went terminal meanwhile still takes this one victim, as a
+		// host that went terminal meanwhile still goes on to a victim, as a
 		// step begun just before would, and the allocation's next look
 		// reports it.
 		h.mu.Unlock()
@@ -410,9 +410,9 @@ func (h *Host) evictPage(ctx context.Context, page *zirconvm.VmPage) error {
 	// slot goes back. The aliases are taken off under a hold of h.mu of their
 	// own, whatever they are by then. The page's lock, held throughout, keeps
 	// out every path that names a page but a seal's walk, which names it to
-	// the checkpoint's copy of a binding that maps it, and hands that copy the
-	// binding's reservation, which the bytes went to: so the copy dropped here
-	// with the rest finds its bytes there. Once they are off, nothing names
+	// the checkpoint's copy of a binding that names it, and hands that copy
+	// the binding's reservation, which the bytes went to: so the copy dropped
+	// here with the rest finds its bytes there. Once they are off, nothing names
 	// the page, and releaseFrame's look finds none.
 	h.removeFromObject(page)
 	h.mu.Lock()

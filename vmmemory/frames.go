@@ -218,11 +218,12 @@ func probeFrame(p *zirconvm.VmPage) probePage {
 // or a move took the page from b meanwhile.
 //
 // What it read before the lock is not used after it: b's page is read again
-// under h.mu with the page's lock held. Every path that takes b off a page
-// holds that page's lock, but a fault's lookup, which holds b's window
-// instead, as every caller of a guest's binding does or holds the region
-// exclusively. So b names the page until the caller gives it up. A b that
-// went off the page and came back names it, which is all the caller asks.
+// under h.mu, with the page's lock held. Every path that takes b off a page
+// holds that page's lock, except a fault's lookup, which holds b's window
+// instead; and every caller that asks for a guest's binding holds that window
+// or the region exclusively, which keeps such a lookup out. So b names the
+// page until the caller gives it up. A b that went off the page and came back
+// to it names it, which is all the caller asks.
 func (h *Host) lockedPage(ctx context.Context, b *binding) (*zirconvm.VmPage, error) {
 	for {
 		h.mu.Lock()
