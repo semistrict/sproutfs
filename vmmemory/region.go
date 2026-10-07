@@ -790,4 +790,3 @@ func (r *MemoryRegion) Detach(ctx context.Context) error {
 	r.pageCount = 0
 	return nil
 }
-
