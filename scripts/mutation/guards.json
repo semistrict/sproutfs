@@ -1222,6 +1222,12 @@
     "purpose": "Give up the idle page allocateOwn chose under h.mu once its lock is taken, without asking again whether it is idle. A page a settle handed back to the region meanwhile, and an eviction's look aged, is freed while the region names it: the pager panics."
   },
   {
+    "id": "pager-take-a-moving-page-for-a-mapped-one",
+    "package": "vmmemory",
+    "run": "^TestARefaultWaitsForAnEvictionThatHasNotGivenItsPlaceBack$",
+    "purpose": "Count a page in one of a page's own places that nothing maps and no root holds, which an eviction is taking, as one the region maps. A refault meeting it beside the checkpoint's copy reports both places taken, and the guest's session ends with ErrCapacity."
+  },
+  {
     "id": "pager-seal-drops-the-cold-copies-before-a-failed-compare",
     "package": "vmmemory",
     "run": "^TestASealWhoseColdCopyCompareFailsKeepsTheCopiesItComparedBefore$",

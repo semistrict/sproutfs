@@ -180,6 +180,66 @@ func TestAStoreGivesUpNoOwnPlaceASettleHandedBackWhileItLocked(t *testing.T) {
 	})
 }
 
+// A refault of a spilled page looks for a place of its own in an isolated
+// arena. One place holds the checkpoint's copy, and the other the page an
+// eviction is taking: its aliases are off but its slot is not back yet.
+// Nothing maps that page and it is no root's, so it is neither mapped nor
+// idle. The refault must wait for the eviction and take the place it frees:
+// counting the page as mapped, it reported both places taken, and the guest's
+// session ended with ErrCapacity (the unscheduled soak).
+func TestARefaultWaitsForAnEvictionThatHasNotGivenItsPlaceBack(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := isolatedFixture(t, vmmemory.Config{ResidentPages: 8, LogicalPages: 16, DirtyPages: 8, ReadAheadPages: 1})
+		r, m, b := f.memoryRegion(4)
+		first := byte(99)
+		if _, err := memoryByte(f.ctx, r, m, 0, &first); err != nil {
+			t.Fatal(err)
+		}
+		if err := r.Seal(f.ctx); err != nil {
+			t.Fatal(err)
+		}
+		// The store copies away from the checkpoint's copy, in the page's own
+		// place, into its other place.
+		next := byte(100)
+		if _, err := memoryByte(f.ctx, r, m, 0, &next); err != nil {
+			t.Fatal(err)
+		}
+		if p := m.pages[0]; m.number(0) != 0 || p.slot != 4 || !p.writable {
+			t.Fatalf("the store maps %+v as file %d, want slot 4 of the region's own file 0, writable", p, m.number(0))
+		}
+		// The refault reads the page's bytes back from its reservation, and
+		// then reclaims a place with the eviction still under way.
+		reclaiming := make(chan struct{})
+		vmmemory.SetReclaimSeam(t, func(index uint64) {
+			if index == 0 {
+				close(reclaiming)
+			}
+		})
+		var read byte
+		var readErr error
+		var refault sync.WaitGroup
+		vmmemory.SetEvictedSeam(t, func(slot int) {
+			if slot != 4 {
+				return
+			}
+			refault.Go(func() { read, readErr = memoryByte(f.ctx, r, m, 0, nil) })
+			<-reclaiming
+			synctest.Wait()
+		})
+		if evicted, err := vmmemory.EvictPage(f.ctx, r, 0); err != nil || !evicted {
+			t.Fatalf("evicting page 0 = %t, %v; want it gone", evicted, err)
+		}
+		refault.Wait()
+		if readErr != nil || read != next {
+			t.Fatalf("page 0 reads %d after the eviction, want %d: %v", read, next, readErr)
+		}
+		if p := m.pages[0]; m.number(0) != 0 || p.slot != 4 {
+			t.Fatalf("the refault maps %+v as file %d, want the place the eviction freed, slot 4 of file 0", p, m.number(0))
+		}
+		f.finishCheckpoint(r, b)
+	})
+}
+
 // A lookup's resolver finds a root holding the page under the root's lock,
 // lets it go, and the lookup locks the root again to go down into it. An idle
 // drop in between gives the page up. Going on down, the lookup sent a READ to

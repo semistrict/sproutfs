@@ -359,8 +359,10 @@ There are four kinds of file:
   pages. A page's own offset is its index, and the second half is each page's
   other place, which a store takes when the own offset holds a checkpoint's copy
   or the page it copies from. When both are taken, one holds a clean page
-  nothing maps, and the store gives it up. A range's extent is that range of the
-  file, so the gap and half-private rules work as in a shared arena.
+  nothing maps, and the store gives it up, or a page an eviction is taking,
+  whose lock the store waits for before it looks again. A range's extent is that
+  range of the file, so the gap and half-private rules work as in a shared
+  arena.
 - **A shared file per tenant.** It holds the pages another memory region of the
   tenant may map: pages loaded by identity, and published pages once another
   region inherits them. The tenant's VMMs receive it read-only, as file 1. It is

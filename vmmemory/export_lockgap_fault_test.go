@@ -15,6 +15,15 @@ func SetAllocateOwnSeam(t *testing.T, seam func(index uint64)) {
 	t.Cleanup(func() { allocateOwnSeam = previous })
 }
 
+// SetEvictedSeam installs what an eviction runs once it has taken every alias
+// off its page and before it gives the page's slot back, so a test can put a
+// fault of that page there. It is restored when the test ends.
+func SetEvictedSeam(t *testing.T, seam func(slot int)) {
+	previous := evictedSeam
+	evictedSeam = seam
+	t.Cleanup(func() { evictedSeam = previous })
+}
+
 // AgeEveryPage ages the page queues by as many generations as they hold, as
 // an eviction's look for a victim does when it finds none old enough: every
 // page is then old enough to give up, the ones a fault just touched too.

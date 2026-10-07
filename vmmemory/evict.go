@@ -439,9 +439,17 @@ func (h *Host) evictPage(ctx context.Context, page *zirconvm.VmPage) error {
 	}
 	h.dropAliasesLocked(f)
 	h.mu.Unlock()
+	if evictedSeam != nil {
+		evictedSeam(f.slot)
+	}
 	h.releaseFrame(page)
 	return nil
 }
+
+// evictedSeam runs once an eviction has taken every alias off its page and
+// before it gives the page's slot back, where nothing maps the page and its
+// slot is still taken. Production leaves it nil.
+var evictedSeam func(slot int)
 
 // removeFromObject takes a locked page out of whichever object holds it, and
 // its name out of the temporary root that lends it.

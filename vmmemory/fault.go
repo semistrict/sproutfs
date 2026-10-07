@@ -881,7 +881,8 @@ func (r *MemoryRegion) reclaimOwn(ctx context.Context, index uint64) (fileSlot, 
 // allocateOwn takes a place of page index in the region's own file, evicting
 // where the page budget rather than the place is missing. A page never needs a
 // third place: where both are taken, one holds a root's page nothing maps,
-// published from this region and idle since, which is given up.
+// published from this region and idle since, which is given up, or a page an
+// eviction is taking, whose slot is back once its lock is.
 func (r *MemoryRegion) allocateOwn(ctx context.Context, index uint64, clean bool) (fileSlot, error) {
 	h := r.host
 	places := r.ownPlaces(index, clean)
@@ -909,15 +910,20 @@ func (r *MemoryRegion) allocateOwn(ctx context.Context, index uint64, clean bool
 				break
 			}
 		}
-		var idle *zirconvm.VmPage
+		var idle, moving *zirconvm.VmPage
 		if free == nil {
 			for _, at := range places {
-				if page := at.file.frames[at.slot]; page != nil {
-					f := frameOf(page)
-					if f.layer == nil && f.aliases.len() == 0 && f.replacing == 0 {
-						idle = page
-						break
-					}
+				page := at.file.frames[at.slot]
+				if page == nil {
+					continue
+				}
+				f := frameOf(page)
+				switch {
+				case f.aliases.len() > 0:
+				case f.layer == nil && f.replacing == 0:
+					idle = page
+				default:
+					moving = page
 				}
 			}
 		}
@@ -927,6 +933,19 @@ func (r *MemoryRegion) allocateOwn(ctx context.Context, index uint64, clean bool
 			// takeOwnLocked again: what was free here may not be by then.
 			at := *free
 			return h.allocate(ctx, r, at.file, func() int { return h.takeOwnLocked(r, index, at).slot }, preferEviction)
+		}
+		if idle == nil && moving != nil && !sim.Bug(ctx, "pager-take-a-moving-page-for-a-mapped-one") {
+			// Nothing maps the page, yet it is not idle: whoever holds its
+			// lock is moving it. An eviction takes every alias off and then
+			// gives the slot back, under holds of h.mu of their own and the
+			// page's lock throughout. Once that lock is given back the page is
+			// gone, mapped or idle, and the places are looked at again from
+			// the top.
+			if err := r.host.lockPage(ctx, moving); err != nil {
+				return fileSlot{}, err
+			}
+			r.host.unlockPage(moving)
+			continue
 		}
 		if idle == nil {
 			return fileSlot{}, fmt.Errorf("%w: both places of page %d of a memory region hold a page it maps", ErrCapacity, index)
