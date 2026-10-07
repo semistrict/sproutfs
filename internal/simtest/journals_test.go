@@ -416,17 +416,17 @@ func TestAFlushSentAsTheDestinationStartsWaitsForThePostCopy(t *testing.T) {
 	})
 }
 
-// A host is cut off from the others with the VM running on it. Another host
-// cannot read its journal, so the takeover waits. An operator gives the cut
-// off host up: its member is drained and its journal disk detached from its
+// A host is isolated from the others with the VM running on it. Another host
+// cannot read its journal, so the takeover waits. An operator gives the
+// isolated host up: its member is drained and its journal disk detached from its
 // machine while its process runs on. The disk is read on the other host, the
-// VM opens there with what was flushed, and the guest the cut off host still
+// VM opens there with what was flushed, and the guest the isolated host still
 // runs can flush nothing more.
-func TestAFlushSurvivesItsHostCutOffAndGivenUp(t *testing.T) {
+func TestAFlushSurvivesItsHostIsolatedAndGivenUp(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		runtime := newCampaignRuntime(37, false)
 		ctx := sim.WithRuntime(t.Context(), runtime)
-		world := journalWorld(t, ctx, runtime, "cut-off/", 2)
+		world := journalWorld(t, ctx, runtime, "isolated/", 2)
 		flushed(t, world, []uint64{0, 1}, 4)
 		isolated := simtest.IsolatedHost(0)
 		if err := isolated.Begin(ctx, world); err != nil {
@@ -436,7 +436,7 @@ func TestAFlushSurvivesItsHostCutOffAndGivenUp(t *testing.T) {
 			t.Fatal(err)
 		}
 		if got := world.Takeovers(); got != 0 {
-			t.Fatalf("the VM was taken over %d times while its journal's holder was cut off, want none", got)
+			t.Fatalf("the VM was taken over %d times while its journal's holder was isolated, want none", got)
 		}
 		world.GiveUpOn(0)
 		if err := world.Settle(ctx); err != nil {
@@ -453,7 +453,7 @@ func TestAFlushSurvivesItsHostCutOffAndGivenUp(t *testing.T) {
 		stale := world.FlushOn(0, "vm-0", simtest.DiskVolume)
 		synctest.Wait()
 		if err := <-stale; !errors.Is(err, host.ErrJournalUnavailable) {
-			t.Fatalf("the cut off host answered a flush after its journal disk was detached with %v, "+
+			t.Fatalf("the isolated host answered a flush after its journal disk was detached with %v, "+
 				"want ErrJournalUnavailable", err)
 		}
 		if err := isolated.End(ctx, world); err != nil {

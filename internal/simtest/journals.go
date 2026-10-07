@@ -383,7 +383,7 @@ func (w *World) Flush(id, name string) <-chan error {
 
 // FlushOn is Flush by the guest the host at index runs for a VM, whether or
 // not the world runs the VM there: a migration's destination during its
-// post-copy, or a host cut off from the deployment after the VM was taken
+// post-copy, or a host isolated from the deployment after the VM was taken
 // over elsewhere.
 func (w *World) FlushOn(index int, id, name string) <-chan error {
 	answered := make(chan error, 1)

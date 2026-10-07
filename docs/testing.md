@@ -1389,14 +1389,71 @@ The guards are `journal-answer-before-sync` and `journal-read-without-fence` in
 in `vmmemory`; `journal-failed-write-answers`,
 `journal-failed-write-keeps-pages`, `journal-covered-after-seal`,
 `journal-ignore-half-ring`, `journal-read-keeps-vm`, `journal-answer-unnamed`,
-`journal-drop-source-before-post-copy`, `host-resume-over-a-replay` and
+`journal-drop-source-early`, `host-resume-over-a-replay` and
 `host-open-a-journal-as-a-shard` in `host`; `volume-publish-a-partial-replay`
 in `volume`; and `membership-attach-journal-late`,
 `membership-create-no-journal` and `membership-delete-a-live-journal` in
 `membership`.
 
-No simulation campaign yet kills a host right after a flush and opens its VM
-elsewhere, and no fingerprint arm runs with journals.
+No fingerprint arm runs with journals: two runs of one seed do different work,
+because the hosts' checkpoint and trimming loops race the driver.
+
+### Durable flush in the simulation
+
+A world with `Config.Journals` runs [durable
+flush](../plans/fsync-journal-2026-10-06.md): each host answers a flush of a
+disk from its journal, on a network disk of the world's cloud that the
+controller keeps for its machine. The checkpoint loop is on, because a flush is
+journaled only once a checkpoint names the journal.
+
+A recovery here is not checked against one whole checkpoint. The world keeps,
+for every block of every durable disk, each value the guest stored there, and
+a floor: the value the last flush answered with success, or the last
+checkpoint that landed, saw. A recovery must read every block at its floor or
+at a value stored later. A flush answered after a recovery took the VM is
+checked against what that recovery read. `World.Flush` sends a flush,
+`World.HoldFlush` holds the host's answer before the guest takes it, and
+`World.FlushOn` and `World.FlushAtStart` flush from a guest the world does not
+run the VM through: a destination's during its post-copy, or as it starts.
+
+The kills, each a test in `journals_test.go`:
+
+- the host dies at once after the guest has the answer;
+- between the journal's sync and the answer;
+- during a seal's upload, with a flush answered under the seal;
+- the source dies during the post-copy;
+- the destination dies during the post-copy of a VM back on a host it ran on;
+- a flush on a destination waits for the post-copy, also one sent as its guest
+  starts;
+- a host isolated and given up by an operator, whose guest can flush nothing
+  more;
+- a host dies during a scale-down's wait for its journal to empty;
+- a VM whose journal holds nothing opens after its disk was let go.
+
+`TestJournalsSurviveTheirFaultsAndReachTheirProbes` runs sixteen seeds of three
+hosts and two VMs, rings of 20 MiB, with every site on. A seeded schedule
+flushes, fills a ring past half, sends three flushes at once, races a flush
+with a checkpoint, migrates, takes a VM over with a flush in flight, detaches
+a journal disk under a batch that never synced, kills hosts after an answer and
+between the sync and the answer, and has hosts leave and join. After every step
+each guest reads back what it wrote, and every flush answered with success is
+still there. Across the seeds every journal site fires, every journal probe is
+reached but those a single-attach cloud cannot reach, flushes fail, VMs are
+recovered from their journals, and a recovery waits for a disk still moving.
+
+| Site | What it does |
+| --- | --- |
+| `host/journal-capture-slow` | Holds a flush for up to 20 ms after it chose its pages and before its capture, so a checkpoint's pause may come between |
+
+The campaign found five bugs, each fixed with a test: a commit that needed
+more room than half the ring waited for trims nobody asked for; the host asked
+the VMs holding the most rather than the oldest entries; a failed batch's range
+was never padded when no commit fit beside it; commits placed ahead took a
+commit's room after the host had asked for it; and a VM whose journal held
+nothing could not open once its disk was let go. The kills found two: a
+recovery gave up on a holder it could not reach rather than waiting, and a
+flush sent before the host registered its VMM was answered with nothing
+journaled.
 
 ### Probes
 

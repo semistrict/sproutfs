@@ -84,7 +84,7 @@ func (r replayer) Replay(ctx context.Context, vm string, journals []control.Jour
 				return fmt.Errorf("replaying journal %s of %s from %s: %w", disk, vm, address, err)
 			case err != nil:
 				// A holder that cannot be read is one the membership has not
-				// drained yet, or one cut off from here: the disk moves to a
+				// drained yet, or one isolated from here: the disk moves to a
 				// survivor once its member is drained, and the open is asked
 				// again then. Nothing read so far is published.
 				return fmt.Errorf("%w: reading journal %s of %s from %s: %w", volume.ErrJournalPending, disk, vm,
