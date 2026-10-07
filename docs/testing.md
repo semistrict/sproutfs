@@ -20,10 +20,11 @@ campaign is a schedule, a fault set and an invariant set over the deployment's
 
 - the determinism rule below;
 - `gofmt`, `go build` and `go vet` for Linux and macOS;
-- `go test ./...`;
+- `go test ./...`, then the pager, host, migration, simulation and VMM
+  packages again with `SPROUTFS_ARENA=shared`;
 - every guard in `scripts/mutation/guards.json`
   ([Negative tests in the tree](#negative-tests-in-the-tree));
-- `buf lint` and `shellcheck`;
+- `buf lint`, `shellcheck` and the demo flows' shell tests (`just test-shell`);
 - the Rust crate's `fmt`, `clippy` and unit tests;
 - the TLA+ specs, model-checked with TLC ([Model checking](#model-checking)).
 
@@ -1592,7 +1593,7 @@ The hot tier's properties, over a simulated regional bucket and hot bucket:
 - In `host`, `TestAVMOpenedOnAnotherHostReadsItsCheckpointFromTheHotTier`
   writes a VM on one host and reads it on another with three hits and no miss,
   and `TestAHostRefusesAHotTierBesideTheClusterCache` refuses both.
-- `TestSeededTopologyFingerprintIsStable` runs each seed a third time with
+- `TestSeededTopologyFingerprintIsStable` has an arm with
   every host reading through a hot tier, and requires the hosts to have filled
   it and read from it. The world sets the hot tier's bound, rate, queue and
   sampled checks out of reach. Seeds 1 to 25 of that arm did the same work
