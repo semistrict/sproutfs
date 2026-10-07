@@ -442,18 +442,7 @@ func (h *Host) removeFromObject(page *zirconvm.VmPage) {
 		link.Cow.RemovePageLocked(link.Offset, page)
 		lock.Unlock()
 	}
-	h.mu.Lock()
-	lent := frameOf(page).lent
-	frameOf(page).lent = nil
-	h.mu.Unlock()
-	if lent != nil {
-		if link, ok := h.node.PageQueues().Backlink(lent); ok {
-			lock := link.Cow.Lock()
-			lock.Lock()
-			link.Cow.RemovePageLocked(link.Offset, lent)
-			lock.Unlock()
-		}
-	}
+	h.dropLentName(page)
 }
 
 // dropAliasesLocked takes every alias off a frame that is going, which an

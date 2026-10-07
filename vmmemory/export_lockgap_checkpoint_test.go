@@ -10,3 +10,12 @@ func SetEndForkFileSeam(t *testing.T, seam func()) {
 	endForkFileSeam = seam
 	t.Cleanup(func() { endForkFileSeam = previous })
 }
+
+// SetReadSpillSeam installs what a read of a spilled checkpoint copy runs
+// between taking its reservation and reading it. It is restored when the
+// test ends.
+func SetReadSpillSeam(t *testing.T, seam func()) {
+	previous := readSpillSeam
+	readSpillSeam = seam
+	t.Cleanup(func() { readSpillSeam = previous })
+}
