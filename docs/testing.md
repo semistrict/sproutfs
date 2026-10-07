@@ -1541,6 +1541,16 @@ forks, never fills the dirty budget, and captures only from its guest's own
 task, so it does not reach the fork, move, unindex, dirty-wait and refault
 gaps; their seam tests do.
 
+**A fork point's children while its seal ends.**
+`TestAForkPointsChildrenReadWhatItLentWhileItsSealEnds` runs twelve seeds of a
+parent that seals a fork point, stores and ends the seal by retire, unseal or
+detach, while children of the point read and store its pages. Every read must
+return what the child stored or what the point held. A seal's take, a lend, each
+retired batch and page, an abandon, a hand-back, an adoption, a sharer's drop, a
+lent root's drop and a fork file's end pass `sim.Admit`.
+`TestForkCampaignReplaysItsSeeds` runs seeds twice and requires the same order.
+The campaign finds `pager-lend-a-page-past-its-checkpoint` in both arenas.
+
 **The disk's stripes** mark five: a write that kept several indices of one
 envelope, a read that rebuilt an envelope from a parity stripe, a read that
 found fewer than k stripes, a read that found the page only under another code,

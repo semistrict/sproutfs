@@ -1238,5 +1238,35 @@
     "package": "vmmemory",
     "run": "^TestASealWhoseColdCopyCompareFailsKeepsTheCopiesItComparedBefore$",
     "purpose": "Leave the cold copies a seal found unchanged out of both its set and the region's dirty set when a later compare fails. A store into one is then dirty in no set, and no checkpoint holds it."
+  },
+  {
+    "id": "pager-lend-a-page-past-its-checkpoint",
+    "package": "vmmemory",
+    "run": "^TestAChildFaultingDuringItsParentsUnsealNeverSeesThePagesParentStoresNext$",
+    "purpose": "Keep a fork point's lent name for a page until the point's fork ends rather than take it away as the page leaves the checkpoint, so a child faulting in between maps a freed slot or reads the parent's later stores."
+  },
+  {
+    "id": "pager-destroy-a-lent-root-under-its-readers",
+    "package": "vmmemory",
+    "run": "^TestTheEndOfASealLeavesThePagesAChildReadUnderItsPointsName$",
+    "purpose": "Destroy an unpublished lent root at its seal's end, with the pages a child read under the point's name and still maps: the pager panics."
+  },
+  {
+    "id": "pager-share-an-ended-seal",
+    "package": "vmmemory",
+    "run": "^TestAShareAfterItsSealEndedLendsNothing$",
+    "purpose": "Let a share lend a checkpoint's pages after its seal ended, registering a lent root and a lent entry nothing ever ends."
+  },
+  {
+    "id": "pager-free-a-fork-number-before-its-drop",
+    "package": "vmmemory",
+    "run": "^TestAForkFileIsGivenUnderNoNumberAnotherIsDroppedFrom$",
+    "purpose": "Free a fork file's number in its holder before the holder's DROP_FILE lands, so another point's file is given under the number about to be dropped."
+  },
+  {
+    "id": "journal-abandon-forgets-protection",
+    "package": "vmmemory",
+    "run": "^TestAPageACaptureTookStaysProtectedThroughAnAbandonedSeal$",
+    "purpose": "Give a page back from an abandoned seal without the protection a capture gave it, so a read fault maps it writable while it is not unjournaled and the guest's next store reaches no flush."
   }
 ]
