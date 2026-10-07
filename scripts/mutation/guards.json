@@ -1314,7 +1314,7 @@
   {
     "id": "orchestrator-take-up-a-driven-handover",
     "package": "cmd/sproutfs-orchestrator",
-    "run": "^TestARecoveryPastTheHoldWaitsForTheSourceToLetThePagesGo$",
+    "run": "^TestASurveyTakesUpNoHandoverThisOrchestratorCarries$",
     "purpose": "Let a survey take up a handover this orchestrator is still carrying, between a failed carry and its recovery, so two recoveries of one VM race and one fails finding the other's open."
   },
   {

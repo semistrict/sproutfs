@@ -617,7 +617,7 @@ func (p *forkingParent) run(ctx context.Context, random *rand.Rand, end int) err
 		return nil
 	}
 	if err := steps(6, 0x80); err != nil {
-		return err
+		return fmt.Errorf("before the seal's end: %w", err)
 	}
 	if err := sim.Admit(ctx, "campaign/end"); err != nil {
 		return err
@@ -642,7 +642,10 @@ func (p *forkingParent) run(ctx context.Context, random *rand.Rand, end int) err
 		p.m.arena.mu.Unlock()
 		return p.region.Detach(ctx)
 	}
-	return steps(6, 0xc0)
+	if err := steps(6, 0xc0); err != nil {
+		return fmt.Errorf("after the seal's end by %s: %w", []string{"retire", "unseal", "detach"}[end], err)
+	}
+	return nil
 }
 
 // runForkChild reads a child's pages, half the time the page after the last

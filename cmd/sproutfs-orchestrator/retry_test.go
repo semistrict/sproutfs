@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/semistrict/sproutfs/api/orch"
+	"github.com/semistrict/sproutfs/api/host"
 )
 
 // holdForAMinute is what a source in these tests says it holds a handover for:
@@ -98,6 +99,38 @@ func TestARecoveryPastTheHoldWaitsForTheSourceToLetThePagesGo(t *testing.T) {
 	}
 	if last := d.log[len(d.log)-1]; last != "host-0 open vm-a" {
 		t.Fatalf("the deployment ended with %q, want the VM recovered: %v", last, d.log)
+	}
+}
+
+// A survey takes up no handover this orchestrator is still carrying. Between a
+// carry that failed and the recovery after it, the table says the VM is
+// stopped and its source still serves the pages, which is what a handover
+// nothing drives looks like; taking it up then would run a second recovery of
+// the VM beside the first.
+func TestASurveyTakesUpNoHandoverThisOrchestratorCarries(t *testing.T) {
+	d := newDeployment(t, map[string][]string{"host-0": {}, "host-1": {}})
+	// host-1 has room for the VM, so a survey that took the handover up
+	// would hand it there.
+	d.hosts["host-1"].arenaPages = 8
+	source := d.hosts["host-0"]
+	source.serving = []string{"vm-a"}
+	source.handed = map[string]host.MigrateResult{"vm-a": {Handoff: host.Handoff{VMID: "vm-a",
+		Source: source.page, PageSize: 2 << 20}, Hold: holdForAMinute}}
+	if err := d.orchestrator.table.Record(t.Context(), vmRecord{ID: "vm-a", Host: "host-0", State: stateStopped,
+		Memory: 2 << 20}); err != nil {
+		t.Fatal(err)
+	}
+	done, driven := d.orchestrator.drive("vm-a")
+	if !driven {
+		t.Fatal("vm-a's handover was already marked carried")
+	}
+	defer done()
+	if _, err := d.orchestrator.survey(simulated(t)); err != nil {
+		t.Fatal(err)
+	}
+	d.orchestrator.resumes.Wait()
+	if len(d.log) != 0 {
+		t.Fatalf("a survey beside a carried handover did %v, want nothing", d.log)
 	}
 }
 
