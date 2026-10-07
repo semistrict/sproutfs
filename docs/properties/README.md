@@ -21,3 +21,4 @@ observe them. Each file ends with its status and the tests that show it.
 - [Scaling compute moves no window](scaling-moves-no-window.md)
 - [One disk limiter](one-disk-limiter.md)
 - [The disk limiter follows its goals](disk-limiter-goals.md)
+- [A flushed write survives losing its host](a-flushed-write-survives-losing-its-host.md)

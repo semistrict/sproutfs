@@ -393,7 +393,11 @@ by default, so 120 s; zero completes every flush at once. It is the maximum
 age of the VM's oldest unpublished disk write at which a guest's flush still
 completes at once. Past it, the flush waits until a checkpoint covers the
 write, which the loop takes out of turn. When a VM leaves the host, its
-waiting flushes go unanswered, and its device asks the next host again.
+waiting flushes go unanswered, and its device asks the next host again. With
+[durable flush](architecture.md#durable-flush) on, the host's journal answers
+a flush instead, and the loop also takes a checkpoint out of turn when the
+VM's record does not yet name the journal, when the journal is three quarters
+full, and when one VM holds more than half of it.
 
 The window belongs to a VM, because one pause seals every memory region a VM
 maps. `Pressure.Oldest` reports the oldest unpublished write across every
@@ -525,7 +529,12 @@ than a few seconds.
 The preStop hook drains and then exits. The drain returns only when
 `Status().Serving` is empty, so every page this host held is on a destination
 or in object storage. Exiting earlier loses every write since each VM's last
-checkpoint, including dirty RAM, dirty PMEM and unpublished local forks.
+checkpoint, including dirty RAM, dirty PMEM and unpublished local forks. With
+durable flush on, the moved VMs' records name this host's journal until each
+destination's next checkpoint, and the drain then waits for the journal to
+hold no live entry. A disk that still holds live entries when the host exits
+is read back by its next holder, as after a host loss
+([journal disks](#journal-disks)).
 
 The hook has no deadline, so the drain sets its own:
 
@@ -811,12 +820,15 @@ are copies. It holds:
 - every **member**: a host's identity, its peer-server address, and its
   state: joining, active or draining;
 - every **disk**: the identity in its cache file's header, the name of its
-  volume, its weight, the member it is assigned to or none, its state
-  (attaching, serving, releasing or released), and the generation that
-  assigned it to that member;
+  volume, its kind (cache or journal), its weight, the member it is assigned
+  to or none, its state (attaching, serving, releasing, released, or deleting
+  for a journal disk), and the generation that assigned it to that member. A
+  [journal disk](#journal-disks) also has the machine it is reserved for and
+  whether it is empty;
 - the nonce of the process that wrote this generation.
 
-It is protobuf, format version 1, and at most 1 MiB.
+It is protobuf, format version 2, and at most 1 MiB. Version 1 had no kind,
+machine or empty flag.
 
 **Changed only by compare-and-set.** A change reads the object, builds the
 next generation, and writes it conditional on the object it read (`IfMatch`
@@ -835,8 +847,13 @@ it refuses:
   draining member. The generation that assigns it is the one it carries.
 - A disk is removed only once released. A member leaves only once it is
   draining and assigned no disk.
+- A journal disk keeps its kind. It is deleting only from released and empty,
+  never comes back from it, and is removed only once deleting. Its
+  reservation changes only while it is released, and an assignment clears its
+  empty flag.
 
-**Ranks are over disks.** Every listed disk ranks windows, whatever its state.
+**Ranks are over disks.** Every listed cache disk ranks windows, whatever its
+state. A journal disk ranks none.
 While nobody serves a disk, a reader asks the next rank. So a disk that moves
 to another member keeps its windows; only adding or removing a disk, or
 changing a weight, moves windows.
@@ -900,6 +917,9 @@ order:
     machine.
 11. While no shard is attaching or releasing, a member that serves two more
     shards than another releases one.
+
+With durable flush on, the steps for [journal disks](#journal-disks) come
+between 9 and 10.
 
 The code is the orchestrator's `SPROUTFS_CACHE_CODE`, written as `4+2`, and
 4+2 when unset. The earlier codes are its `SPROUTFS_CACHE_EARLIER_CODES`,
@@ -1048,6 +1068,115 @@ PersistentVolumes, and its service account needs `compute.disks.get` and
 nodes, and `compute.zoneOperations.get`. `deploy/README.md` gives the
 manifests and the sizing. The AWS adapter, over EC2's `AttachVolume` and
 `DetachVolume`, is not written.
+
+## Journal disks
+
+With [durable flush](architecture.md#durable-flush) on, each machine of the
+host pool has one journal disk reserved for it, and the host on that machine
+writes its journal there ([the plan](../plans/fsync-journal-2026-10-06.md)). A
+host may also hold other journal disks for reading, after their writers were
+lost. A journal disk is a disk of the membership of kind journal. It ranks no
+window, and it is not a shard: a host may serve no shard, shards move on their
+own schedule, and a flush would queue behind the cache's reads and fills.
+
+**The orchestrator makes and deletes them.** There is no fixed pool and no
+PersistentVolumeClaim. `platform.NetworkDisks` lists, creates and deletes
+disks, through Compute Engine's `disks.list`, `disks.insert` and
+`disks.delete`. A journal disk is named `sproutfs-journal-<random>`, labelled
+`sproutfs-journal=<namespace>`, and its identity is derived from its name
+(`membership.JournalIdentity`). It is `SPROUTFS_JOURNAL_BYTES` on the
+orchestrator, 32 GiB by default. The pool is the machines the host pods are
+scheduled on, terminating pods included, as the orchestrator's survey lists
+them.
+
+**The steps.** Each orchestrator pass takes one step of the membership
+(`membership.Next`, between its steps 9 and 10), then acts on the cloud
+(`membership.ShardControl`, `membership.JournalControl`):
+
+1. A labelled disk the membership does not list is added, released and empty.
+   A disk leaves the membership only once the cloud no longer lists it, so a
+   disk the membership does not list is one a pass has just created.
+2. A disk marked deleting that the cloud no longer lists is removed.
+3. A disk free and empty for an hour is marked deleting. The orchestrator
+   keeps that time in memory; a restarted one starts the hour again.
+4. A disk held for reading, or releasing, is marked empty when its holder
+   reports no live entry, and unmarked when its holder reports one again. A
+   disk its writer serves is never marked: a flush may write it at any moment.
+5. A disk held for reading that is empty is released.
+6. A released disk reserved for a machine no longer in the pool is reserved
+   for none.
+7. A machine in the pool with no disk is reserved a free and empty one.
+8. A member is assigned the released disk reserved for its machine, which it
+   writes.
+9. A released disk that is not empty and reserved for no machine is assigned
+   for reading to the member holding the fewest journal disks.
+
+A disk is **free** when it is released and reserved for no machine, and
+**empty** when its last holder closed it with no live entry. Only a free and
+empty disk is reserved again or deleted. An assignment clears the empty flag.
+After the step, the pass deletes in the cloud the disks marked deleting,
+creates one disk when a machine of the pool has none and none is free, and
+attaches a reserved disk to its machine at once, while the host pod starts. It
+detaches as for a shard. A crash between any two of these is a pass that does
+what is left.
+
+**The host.** A host given `SPROUTFS_DURABLE_FLUSH=gce` and its node's name
+is a member on that machine; one with no cache disk takes an identity drawn
+when its process starts, as a shard host does. It opens each journal disk the membership assigns it once the cloud has attached
+it and the object, read again, still assigns it there under the same
+generation. It opens the device as a shard's, takes the lease in the header,
+and reads the journal back. It reads the lease again on every pass, once a
+second, not before each answer: the design trusts the cloud never to attach
+one disk to two machines. It reports each disk it holds in `/status` under
+`member`, with whether it holds a live entry. Its own disk is reported empty
+only while the host runs no VM. Every 30 s it reads the control records of the
+VMs each disk holds entries of, a few at a time, and trims what no record
+names. It serves `JOURNAL_READ` from every disk it holds.
+
+**Scale-up.** A pod scheduled on a new node puts the node in the pool. The
+orchestrator reserves a free and empty disk for it, or creates one, and
+attaches it while the pod starts. The host joins, is assigned the disk, opens
+it, and reports `journal.served` in `/status`. The orchestrator places no VM
+on a host whose journal is not served, because every flush there would fail.
+
+**Scale-down.** A terminating pod's member drains, and its journal disk is
+releasing. The host keeps it open while its VMs move away. Each destination's
+first checkpoint after its post-copy drops this journal from the VM's record
+([migration](migration.md#durable-flush-and-the-handoff)), and trimming frees
+the entries. Once the host runs no VM and holds no live entry, it reports the
+disk empty, and the membership marks it so. The host closes a released disk
+only once the membership marks it empty, and writes empty into its header. If
+the close finds live entries, written since, the host opens the disk again and
+reports them, and the mark is taken off. Then the disk is detached and let go.
+When the node leaves the pool, the disk is free and empty. The drain's last
+step waits for this: after its VMs have moved, it trims the journal every
+poll rather than every 30 s, and returns once it holds no live entry. A pod
+that exits first anyway leaves a disk that is not empty, which is handled as
+after a host loss.
+
+**Host loss.** The member drains, the orchestrator detaches the disk, and it is
+let go, released and not empty. A pod that comes back on the same node is
+assigned it as its own and reads it back. Once the node leaves the pool, the
+disk is assigned for reading to the member holding the fewest journal disks,
+which reads it back and serves the lost host's entries to the hosts that
+recover its VMs. Once no record names the disk, that member reports it empty,
+and it is released, closed, detached and free. A disk attaches only in its own
+zone, and the controller does not yet choose a member by zone; a deployment in
+one zone, as today's is, does not need it.
+
+**Recovery waits for the journals.** The orchestrator does not reopen a VM
+while a journal its record names is served by no member, and a recovery tries
+again for up to two minutes. A host's open is refused the same way, before it
+takes the epoch (`volume.ErrJournalPending`). `sproutfsctl recover VM
+--discard-journal` opens the VM without the flushes of a journal that is not
+served or whose disk was formatted again. Each journal discarded is logged, and
+a checkpoint that names none follows.
+
+**Configuration.** `SPROUTFS_DURABLE_FLUSH=gce` on the hosts and the
+orchestrator, and `SPROUTFS_NODE_NAME` on the hosts. The orchestrator's service
+account needs `compute.disks.list`, `compute.disks.create`,
+`compute.disks.setLabels` and `compute.disks.delete` besides the shards'
+permissions. `deploy/README.md` gives the manifests.
 
 ## The code
 

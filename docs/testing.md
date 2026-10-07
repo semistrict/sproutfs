@@ -1320,6 +1320,84 @@ in proportion within half a point over 100,000 windows, equal scores go to the
 lower identity, and the ranks of a few windows are written out so that a host
 of any architecture must agree.
 
+### Journals
+
+[Durable flush](architecture.md#durable-flush) writes a host's flushed blocks
+to its journal disk. The journal's sites, and the simulated cloud's for making
+journal disks:
+
+| Site | What it does |
+| --- | --- |
+| `journal/write-slow` | Holds a batch's write for up to 50 ms, so commits pile up behind it |
+| `journal/write-fails` | Fails a batch's write before it reaches the disk |
+| `journal/write-torn` | Writes the first half of a batch, then fails |
+| `journal/sync-fails` | Fails a batch's sync |
+| `journal/header-write-fails` | Fails a write of the header |
+| `sim/network-disk/create-slow` | Holds a disk's creation |
+| `sim/network-disk/create-fails` | Fails a disk's creation |
+| `sim/network-disk/delete-fails` | Fails a disk's deletion |
+
+`TestAJournalKeepsEveryAnsweredEntryThroughItsFaults` in `journal` runs 24
+seeds. Three VMs commit to one journal at once and trim what a checkpoint would
+cover, until the power is lost at a point the seed draws, with the sites on and
+power losses that tear what was not synced. The next holder reads the journal
+back under a newer lease and commits at the next epoch: four holders, and a
+fifth that only reads back. Every entry a commit was answered for, and no
+checkpoint covered, must read back at its position. Every entry that reads back
+must be one a commit made, no position is answered twice, and each holder
+answers past everything answered before. Every site must fire and every probe
+be reached: a disk formatted, a lease refused, a torn entry, a failed range
+padded over, the ring's end padded, a full ring and a batch of several commits.
+
+The other tests, by package:
+
+- `journal`: an answered entry reads back after a power loss, a torn batch ends
+  the read back, a failed batch is padded over with nothing after it lost, a
+  commit is answered only after its batch syncs, a newer lease refuses the
+  disk, a read fences the VM and waits for the batch in flight, trimming by
+  covered positions frees the ring, and a close writes empty only when no entry
+  is live. Two fuzz tests parse entries and header slots.
+- `vmmemory`: a capture takes only the changed blocks, a store after it traps
+  and copies nothing, a capture during a seal takes the sealed copy, a store
+  under the seal moves the page off the list, a seal keeps only the digests of
+  journaled pages, a failed capture gives its pages back, a page of zeros takes
+  zero digests, a spilled page is read back, and RAM is refused.
+- `host`: a flush is answered once its entry is on the journal, and fails with
+  no journal or a failed sync; a selection names the covered position and
+  trims; a VM over half the ring waits for its checkpoint; `JOURNAL_READ`
+  fences and gives up the VM; a flush is journaled only once the record names
+  the journal; another host's open replays what the VM flushed and cold boots
+  it; a destination journals nothing until its post-copy ends; a handoff is
+  refused while the record names two journals; each host serves the journal
+  disk made for its machine, and a drained one passes it on.
+- `volume` and `control`: an open keeps the journals and a close writes none, an
+  open replays them, an open whose journal is not served takes no epoch, a
+  failed replay publishes nothing, a migration's open names its journal and
+  replays nothing, a discard opens a VM whose journal is lost, and a migration's
+  open of a record naming two is refused.
+- `membership`: `TestJournalDisksFollowTheMachines` runs eight seeds, seven
+  with the sites on, over a model of hosts, machines and a cloud: two machines
+  get two disks, a draining host's disk is kept while it holds entries and then
+  given to the next machine, a lost host's disk is read on a survivor until it
+  is empty, and a disk free for an hour is deleted.
+- `cmd/sproutfs-orchestrator`: a recovery waits for the journal its record
+  names to be served.
+
+The guards are `journal-answer-before-sync` and `journal-read-without-fence` in
+`journal`; `journal-trap-not-marked`, `journal-seal-drops-unjournaled`,
+`journal-digests-survive-unjournaled-seal` and `journal-failed-keeps-digests`
+in `vmmemory`; `journal-failed-write-answers`,
+`journal-failed-write-keeps-pages`, `journal-covered-after-seal`,
+`journal-ignore-half-ring`, `journal-read-keeps-vm`, `journal-answer-unnamed`,
+`journal-drop-source-before-post-copy`, `host-resume-over-a-replay` and
+`host-open-a-journal-as-a-shard` in `host`; `volume-publish-a-partial-replay`
+in `volume`; and `membership-attach-journal-late`,
+`membership-create-no-journal` and `membership-delete-a-live-journal` in
+`membership`.
+
+No simulation campaign yet kills a host right after a flush and opens its VM
+elsewhere, and no fingerprint arm runs with journals.
+
 ### Probes
 
 `sim.Probe(ctx, name)` marks a place execution reached, as FoundationDB's
@@ -2174,6 +2252,50 @@ retire until 2026-09-22 ([a refault decides again after its
 reclaim](vm-memory.md#a-refault-decides-again-after-its-reclaim)) fails
 `Reserved`. A walk that skips a page a reclaim holds fails `NoLostWrite`.
 
+`spec/journal` is [durable flush](architecture.md#durable-flush), in two
+modules so that no TLC run takes more than a couple of minutes.
+`Capture.tla` is one region's captures: stores, flushes, captures, syncs,
+seals, selections, abandons, failed batches, and a crash with a replay. A
+block holds one of two values and every store flips it, so a block can go back
+to bytes an older entry holds, which a digest kept too long would miss. Its
+invariants are:
+
+- `NoLostFlush`: after a crash, the replay holds the bytes of every block the
+  guest has not stored into since it sent the last answered flush.
+- `NoRegression`: after a crash, the replay holds the bytes of every block the
+  guest has not stored into since the selected checkpoint's seal.
+- `WritableIsUnjournaled`: every page the guest can store into without a fault
+  is unjournaled.
+- `DigestsDescribeTheJournal`: a block's digest is what a replay would read for
+  it once the batch in flight lands.
+
+`MCCapture` runs two pages of two blocks with the pager's rule, a page that was
+not unjournaled at a seal keeps its digests, in about a minute; `MCTakeover`
+runs three hosts and three epochs in about a minute and a half. `Takeover.tla` is a VM's entries
+outliving its host: three hosts and their journal disks, epochs, migrations
+with a post-copy, recoveries that read and fence, a host that keeps running
+after it is fenced or unreachable, a crash, and a detach and a move of a disk. Its
+invariants are `NoLostFlush` for the VM, `NoFencedReplay` (no entry is applied
+unless the record names its disk and epoch and it is after the covered
+position) and `OneWriter` per disk. `spec/journal/deep` holds larger
+configurations of each, and `CaptureDigestsDropped`, which drops every digest
+at every seal and passes too. The mutants and what they fail:
+
+| Mutant | Fails |
+| --- | --- |
+| A seal that forgets the unjournaled pages | `NoLostFlush` |
+| A protect trap that does not mark its page | `WritableIsUnjournaled` |
+| An unjournaled page that keeps its digests across a seal | `NoLostFlush` |
+| A failed batch that keeps its pages' digests (B6) | `NoLostFlush` |
+| A failed batch that leaves its pages journaled | `NoLostFlush` |
+| A writer that gives out a failed batch's positions again | `NoRegression` |
+| A read that does not fence the VM | `NoLostFlush` |
+| A destination that drops the source's journal before its post-copy ends | `NoLostFlush` |
+| A replay of any epoch | `NoFencedReplay` |
+| A cloud that attaches a disk to two machines | `OneWriter` |
+
+`spec/shards` does not model journal disks.
+
 A mutant may expect `deadlock`, or a liveness property, which must then be its
 only `PROPERTY`, because TLC does not name the liveness property it finds
 violated.
@@ -2781,8 +2903,9 @@ enforce that:
 
 | Fixture | What it holds |
 | --- | --- |
-| `volume/testdata/deployment-record-5-index-8-part-4`, `deployment-record-4-index-8-part-4`, `deployment-record-4-index-7-part-4`, `deployment-record-4-part-3`, `deployment-record-4-index-6-part-2`, `deployment-record-4-index-5-part-1`, `deployment-record-3-index-5-part-1` | The whole object namespace of a small deployment: a VM with a history of checkpoints and VMM state whose record keeps its first capture and pins the point it was forked at, and a fork of it whose root names that point's checkpoints. The older dumps are what the builds before kept checkpoints, before the page size in the root, before the parts and the index object were split, before the root moved into the last part, before the segmented index and before the pin bump wrote. Opening a VM reads its control record first, and every older dump's record is below format 5, so their test requires that opening each is refused with its record's version named. |
-| `control/testdata/record-5`, `record-4`, `record-3`, `record-2` | Two records with pins, one of which keeps two checkpoints, at this build's version and at each version committed before it. |
+| `volume/testdata/deployment-record-6-index-9-part-5`, `deployment-record-5-index-9-part-5`, `deployment-record-5-index-8-part-4`, `deployment-record-4-index-8-part-4`, `deployment-record-4-index-7-part-4`, `deployment-record-4-part-3`, `deployment-record-4-index-6-part-2`, `deployment-record-4-index-5-part-1`, `deployment-record-3-index-5-part-1` | The whole object namespace of a small deployment: a VM with a history of checkpoints and VMM state whose record keeps its first capture and pins the point it was forked at, and a fork of it whose root names that point's checkpoints. The older dumps are what the builds before the journals, before kept checkpoints, before the page size in the root, before the parts and the index object were split, before the root moved into the last part, before the segmented index and before the pin bump wrote. Opening a VM reads its control record first, and every older dump's record is below format 6, so their test requires that opening each is refused with its record's version named. |
+| `control/testdata/record-6`, `record-5`, `record-4`, `record-3`, `record-2` | Two records with pins, one of which keeps two checkpoints and, from format 6, names two journals, at this build's version and at each version committed before it. |
+| `journal/testdata/journal-1` | A journal disk whose 48 KiB ring has wrapped: entries of two VMs, a covered position that covers all but one of them, and an entry of a third VM after a pad at the ring's end. It must read back under a newer lease with the entries no checkpoint covered. |
 | `checkpoint/testdata/index-7-part-4`, `part-3`, `index-6-part-2`, `index-5-part-1`, `index-4` | The objects of a published checkpoint at this build's formats (its index object and its parts), the objects of the three format sets before it, each refused by the version that moved, and one index table restamped with a version older still. |
 | `checkpoint/internal/part/testdata/part-4`, `part-3`, `part-2`, `part-1`, `part-0` | One sealed part holding the VMM state and pages of two volumes, which is everything a part holds; the layout-3 part before it, which also held a segment and the root; the layout-2 part before that, which has a tombstone and no root; the layout-1 part before that, which has no segment member; and a part and table restamped with a version older still. |
 
@@ -2799,6 +2922,7 @@ Every fixture is written by a `-update` flag on its own test:
 ```sh
 go test ./volume -run TestTheCommittedDeploymentFixture -update
 go test ./control -run Fixture -update
+go test ./journal -run TestTheCommittedJournalReadsBack -update
 go test ./checkpoint -run Fixture -update
 go test ./checkpoint/internal/part -run Committed -update
 ```

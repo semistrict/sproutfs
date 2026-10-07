@@ -43,7 +43,8 @@ and tests write through it; a pager never does. It is not durable.
 
 **Control record**: The only mutable object a VM owns in the store. It holds
 the writer epoch, the selected checkpoint, the pins (checkpoints of this VM
-that have been forked) and the kept checkpoints. It changes only by
+that have been forked), the kept checkpoints and the journals that may hold
+flushed writes newer than the selected checkpoint. It changes only by
 conditional write. See [metadata](metadata.md).
 
 **Kept checkpoint**: A checkpoint that a checkpoint request (a capture, or a
@@ -106,11 +107,12 @@ place. The pages then belong to the checkpoint while the guest runs. Nothing is
 copied; a later store into a sealed page copies only that page.
 
 **Flush**: A guest's virtio-pmem flush, which is how its fsync reaches the
-host, over that disk's memory session. The host answers at once if the VM holds
-no unpublished disk write older than the flush bound (`SPROUTFS_FLUSH_BOUND`,
-twice the checkpoint interval by default, zero to disable), and otherwise when
-a checkpoint covering those writes lands. See
-[architecture](architecture.md#loss-model).
+host, over that disk's memory session. With durable flush off, the host
+answers at once if the VM holds no unpublished disk write older than the flush
+bound (`SPROUTFS_FLUSH_BOUND`, twice the checkpoint interval by default, zero
+to disable), and otherwise when a checkpoint covering those writes lands. See
+[architecture](architecture.md#loss-model). With it on, the host answers once
+the disk's changed blocks are in its journal.
 
 **Reclamation**: After a checkpoint is selected, deleting the checkpoints its
 root no longer names and nothing protects. **Compaction** rewrites the live
@@ -173,9 +175,10 @@ to run with both a hot tier and the cluster's disk cache. See
 destinations and to forks on other hosts.
 
 **Peer server**: The one channel between hosts, one per host on one port. It
-serves the pages a handoff left on the host, and stripe reads, keeps, drops and
-presence checks for the cluster's disk cache. It speaks a framed protocol over
-TCP. See [the peer server](migration.md#the-peer-server).
+serves the pages a handoff left on the host, stripe reads, keeps, drops and
+presence checks for the cluster's disk cache, and reads of the journal disks
+the host holds. It speaks a framed protocol over TCP. See
+[the peer server](migration.md#the-peer-server).
 
 **Peer**: Another host, as this host's table of peers sees it: one per remote
 host, with a pool of connections per class, the budget the remote host gave
@@ -233,10 +236,13 @@ and its state (joining, active or draining). The identity is the one in its
 cache file's header, or, for a host that serves shards, one drawn when its
 process starts.
 
-**Disk**: A cache disk in the membership: its identity, its volume, its weight
-from its size, the member it is assigned to, its state (attaching, serving,
-releasing or released), and the generation that assigned it. Windows are
-ranked over disks, so a disk that moves to another member keeps its windows.
+**Disk**: A disk in the membership: its identity, its volume, its kind (cache
+or journal), its weight from its size, the member it is assigned to, its state
+(attaching, serving, releasing, released, or deleting for a journal disk), and
+the generation that assigned it. A journal disk also has the machine it is
+reserved for and whether it is empty. Windows are ranked over cache disks, so a
+disk that moves to another member keeps its windows. A journal disk ranks no
+window.
 
 **Shard**: One network disk of a fixed set that may hold the cluster cache
 instead of the hosts' own disks: a single-writer Hyperdisk Balanced on GCP. It
@@ -248,7 +254,8 @@ and it moves between members as compute scales. See
 it was last opened under, the member's identity, and the regions it has opened.
 A member of an older assignment is refused the shard, and a member reads the
 lease again before every region it writes, so one that lost the shard stops
-writing it.
+writing it. A journal disk's header carries a lease too, which its holder takes
+as it opens the disk and reads again on every pass.
 
 **Rank**: A disk's place in one window's order. Each disk scores the window as
 its weight over -ln(u), where u is a hash of the disk's identity and the
@@ -291,3 +298,69 @@ stripes than the code puts on it. It is a keep of the lowest priority.
 **Fill right**: The right to fill a window from a read of the store. The
 window's rank 1 gives it to the first reader that asks, once per window per
 interval, so a burst of readers fills a window once.
+
+## Durable flush
+
+**Durable flush**: An optional mode, off by default (`SPROUTFS_DURABLE_FLUSH`).
+On, a flush of a disk returns success only once every store the guest made to
+that disk before it is on the host's journal disk, and it survives the loss of
+the host. A flush that cannot be journaled fails with an I/O error. See
+[architecture](architecture.md#durable-flush).
+
+**Journal**: A host's write-ahead log of flushed blocks, on its journal disk
+(package `journal`). The guest's own filesystem journal is always called the
+guest's journal.
+
+**Journal disk**: The network disk that holds a journal: two header slots and
+a ring. Each machine of the host pool has one reserved for it while the mode
+is on, and the host on that machine writes it. A host may hold others for
+reading, after their writers were lost. The orchestrator creates and deletes
+them. A journal disk is **free** when it is released and reserved for no
+machine, and **empty** when its last holder closed it with no live entry. See
+[hosting](hosting.md#journal-disks).
+
+**Journal generation**: A number drawn when a journal disk is formatted, in its
+header and in every entry. A record that names a journal names its
+generation, so a disk formatted again is known to have lost its entries.
+
+**Block**: 4 KiB of a page. A 4 KiB page is one block. The journal holds
+blocks, not pages.
+
+**Digest**: The SHA-256 of one block, as the journal last took it. The pager
+keeps the digests of each page it has captured, in memory: 16 KiB for a 2 MiB
+page. They are never written.
+
+**Unjournaled**: A page the guest may have stored into since its last capture.
+Every page the guest can store into without a fault is unjournaled.
+
+**Capture of a disk**: Taking a disk's changed blocks for a flush: the pager
+write-protects the unjournaled pages, reads them, and keeps the blocks whose
+digest changed. The guest's next store to such a page takes a **protect trap**,
+which makes it writable and unjournaled again and copies nothing. This is not
+the host API's capture, which checkpoints a whole VM. See
+[managed VM memory](vm-memory.md#capturing-for-a-durable-flush).
+
+**Entry**: The changed blocks of one memory region from one capture, with the
+VM, its epoch, the volume and the journal's generation. A large capture makes
+several entries.
+
+**Batch**: The entries one write puts on the ring and one sync makes durable.
+A journal has one batch in flight. The flushes that arrive meanwhile join the
+next, and each is answered once its batch has synced.
+
+**Position**: An entry's logical byte position in its journal. It only grows,
+and the process that gave it out never gives it again.
+
+**Covered position**: The last position whose entries a checkpoint holds. The
+selection writes it beside the journal it is in. A replay applies only the
+entries after it.
+
+**Trimming**: Freeing the ring of entries no record needs: those of an epoch or
+a journal the VM's record no longer names, and those at or before the covered
+position it names.
+
+**Replay**: Writing a VM's entries back into its disks when a host opens it, in
+the order the record names the journals and in position order within each. A
+host reads them with `JOURNAL_READ` from whichever host holds the disk, which
+fences the VM at the reader's epoch first. A VM anything was replayed into is
+cold booted.

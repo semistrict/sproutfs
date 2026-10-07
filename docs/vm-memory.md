@@ -1153,6 +1153,69 @@ the host holds the page twice. Preventing that needs a host kernel that passes
 the guest's access type through, or KVM userfault. Both are TASK-32 in the
 [backlog](../backlog/tasks).
 
+### Capturing for a durable flush
+
+In the [durable flush](architecture.md#durable-flush) mode, a flush of a disk
+writes the disk's changed blocks to its host's journal
+([the plan](../plans/fsync-journal-2026-10-06.md), `vmmemory/journal.go`).
+Guest stores are CPU stores into mapped memory, which nothing logs, so the
+pager is what knows which pages changed. One rule keeps that right:
+
+> Every page the guest can store into without a fault is unjournaled.
+
+Every path that gives the guest a writable page marks it unjournaled
+(`noteStoredLocked`), and so does every page that becomes dirty state,
+including a page a migration's source supplies. `MemoryRegion.Capture` takes
+the unjournaled pages a flush has to cover. It holds the region exclusively,
+as a seal's pause does, so no seal falls inside it:
+
+1. It write-protects the pages the guest maps writable, one command per run,
+   under the region's protection lock.
+2. It reads each page once, from the guest's page, its spill, or the sealed
+   copy where the guest still shares it, and hashes each 4 KiB block with
+   SHA-256 on `Config.SettleWorkers` workers.
+3. It keeps the blocks whose digest differs from the one the region holds, and
+   the region keeps the new digests.
+
+The guest's next store to such a page takes a protect trap. For a page no seal
+holds, the trap maps the page writable where it is and marks it unjournaled. It
+copies nothing. A trap on a sealed page copies on write as before, and the copy
+is unjournaled.
+
+**Digests.** The region keeps the digest of each block of each page it has
+captured, in memory: 16 KiB for a 2 MiB page. They describe what the journal
+holds for the page, so an unchanged block is one a replay already restores. A
+page with no entry since it became the region's own takes its digests from
+what a replay starts from: the page it was copied from, while that is
+resident, or zeros for a page made from zeros. Otherwise its first capture
+writes it whole. A store that lands while a capture reads its block may or may
+not be in the entry. The page is unjournaled again, so the next capture takes
+it.
+
+**Across a seal.**
+
+- The seal takes the region's unjournaled pages as its checkpoint's
+  unjournaled list, and drops their digests. The region's set starts empty.
+- A capture while the seal stands takes the list too. It reads the sealed copy
+  where the guest still shares it, and the guest's page where the guest has
+  stored into it since, which takes the page off the list. So a flush answered
+  while a checkpoint uploads covers the stores made just before the seal.
+- A published checkpoint drops the list. A page still on it, which the guest
+  has not stored into since, drops its digests, so its next copy takes them
+  from the published page.
+- An abandoned checkpoint gives every page still on the list back as
+  unjournaled, with no digests.
+- Every other page keeps its digests across the seal. `MCCapture` in
+  `spec/journal` checks this rule, and fails it when an unjournaled page keeps
+  its digests too ([model checking](testing.md#model-checking)).
+
+**A failed batch.** A capture whose journal write or sync failed gives its
+pages back as unjournaled, with no digests (`Captured.Fail`): its entry may or
+may not be on the disk (B6 in [spec/bugs.md](../spec/bugs.md)).
+
+RAM and ephemeral disks are not captured (`ErrNotJournaled`). The pager still
+never writes a volume: the host writes the captured blocks to its journal.
+
 ### Giving back an unchanged copy
 
 RAM is never checkpointed on the interval, so a RAM page a fork shares with its
@@ -1628,9 +1691,13 @@ never on the reader, because a checkpoint the host takes for the flush needs the
 reader for its seal. The host calls `done` once the flush is durable, at most
 once: at once if the VM holds no unpublished disk write older than its flush
 bound, and otherwise after a disk checkpoint it asks for outside the interval's
-schedule ([hosting](hosting.md#the-checkpoint-loop)). With no callback installed,
-every flush is answered at once. A host drops the flushes of a VM that leaves it,
-because an answer would write into guest memory the destination now owns. The
+schedule ([hosting](hosting.md#the-checkpoint-loop)). With durable flush on,
+it calls `done` once the disk's changed blocks are in its journal, and with an
+error where they cannot be, which the guest reads as EIO
+([capturing for a durable flush](#capturing-for-a-durable-flush)). With no
+callback installed, every flush is answered at once. A host drops the flushes
+of a VM that leaves it, because an answer would write into guest memory the
+destination now owns. The
 session ends on a FLUSH on a RAM session, a FLUSH without a fresh ID, or a FLUSH
 with another field set.
 

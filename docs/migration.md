@@ -298,7 +298,11 @@ The requests are:
 - pages, resident and claim, for handoffs;
 - ping, answered at once;
 - read, keep, drop, presence and probe of stripes, for the disk cache. A read
-  of stripes that wants no bytes asks only for a window's fill right.
+  of stripes that wants no bytes asks only for a window's fill right;
+- `JOURNAL_READ`, a VM's entries of one epoch after a covered position, from a
+  [journal disk](hosting.md#journal-disks) the host holds, in pages of up to
+  16 MiB. The host fences the VM at the reader's epoch first, and gives it up
+  if it runs it. A host that holds no such disk says so.
 
 A stripe request names the cache it expects. A server whose cache is another
 answers `NOT_ME`, as a host that took over a reused address would. The server
@@ -426,6 +430,44 @@ pager. The handoff marks the memory region `Ephemeral`, and a destination
 refuses a handoff whose marker disagrees with the volume it opened. A large
 ephemeral disk is streamed whole and holds the source until it is. A fork does
 not carry it.
+
+## Durable flush and the handoff
+
+With [durable flush](architecture.md#durable-flush) on, a migration still
+publishes nothing. The flushes the guest sent before the stop move with it: the
+source answers none of them, and the device sends them again from the
+destination ([managed VM memory](vm-memory.md#control-protocol-version-10)).
+
+- **The destination names its journal at the open.** `Client.OpenMigration`
+  adds it to the record after the source's, at the epoch the open takes, in the
+  same write. The record then names two journals. The open reads no journal
+  back: what the source journaled is in the pages it hands over.
+- **The destination journals no flush until its post-copy ends.** The pages the
+  guest stored into on the source since their last capture are in no journal,
+  and reach the destination only in the post-copy. The handoff carries no list
+  of them: every page the destination takes as the source's dirty state is
+  unjournaled there, with no digests, so its first entries hold whole pages. A
+  flush that arrives meanwhile waits.
+- **It asks for a checkpoint out of turn when the post-copy ends.** A
+  checkpoint paused before then keeps the source's journal named, since it may
+  not hold every page the source held. The first one paused after it names the
+  destination's journal alone.
+- **The source keeps the VM's entries** until the record no longer names its
+  journal. Its trimming reads the record every 30 s.
+- **A handoff is refused while the record names two journals**
+  (`ErrNotMigratable`, `control.ErrTooManyJournals`), before the guest stops.
+  The source asks for the checkpoint that drops the older journal, and the move
+  is asked again after it. So a record never names more than two.
+
+If the destination is lost before its first checkpoint after the post-copy, a
+recovery replays the source's entries, then the destination's. If the source is
+lost during the post-copy, the migration ends as before, and the recovery
+replays the source's entries from whichever host holds its journal disk.
+
+A fork's child exists only on its host until its root is selected, and nothing
+could replay its entries before then. So a child journals no flush until its
+root is selected, and then, like any VM, not until its record names its host's
+journal. The parent's journal is never read for a child.
 
 ## A fork is a handoff from a parent that keeps running
 

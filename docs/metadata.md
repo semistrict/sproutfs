@@ -31,11 +31,15 @@ A VM's control record is the only mutable object the VM owns. It contains:
   ascending order, each with its sequence, the time it was selected, and
   whether it holds VMM state;
 - the **created flag**, which says that the selected checkpoint's index object
-  exists.
+  exists;
+- the **journals**, the journals that may hold this VM's flushed writes newer
+  than the selected checkpoint, in ascending order of epoch
+  ([journals](#journals)).
 
-This is format 5. Format 4 had no kept checkpoints, format 3 marked a
-tombstone, format 2 named each pin's holders and the parent checkpoint a record
-pinned, and format 1 stored pins as bare sequences. None of them parses.
+This is format 6. Format 5 had no journals, format 4 had no kept checkpoints,
+format 3 marked a tombstone, format 2 named each pin's holders and the parent
+checkpoint a record pinned, and format 1 stored pins as bare sequences. None of
+them parses.
 
 A pin is permanent. It records that a fork was taken at that checkpoint, not
 that a fork still reads it. A grandchild's root names its grandparent's
@@ -135,6 +139,36 @@ replaces it.
 
 Deleting a VM spares only its pins. A kept checkpoint no fork was taken from
 goes with the VM.
+
+### Journals
+
+In the [durable flush](architecture.md#durable-flush) mode, the record names
+the journals a recovery must replay. Each entry names:
+
+- the journal disk's identity;
+- the journal's generation, drawn when the disk was formatted;
+- the VM's epoch whose entries the journal holds;
+- the covered position: the last position whose entries the selected
+  checkpoint holds.
+
+No change of the list adds a record write. It changes only with the writes
+that happen anyway:
+
+- A selection writes the list its checkpoint names: usually this host's
+  journal at this epoch and the position the checkpoint's pause covered. A
+  stop's and a close's checkpoint hold every store and write an empty list. So
+  does a cold boot's, which publishes what a replay wrote.
+- An open, a pin and a release keep the list. An open of a VM whose list names
+  a journal no member serves is refused before it takes the epoch
+  (`ErrJournalPending`). A journal whose disk was formatted again fails the
+  open with `ErrJournalLost`.
+- A migration's open (`Client.OpenMigration`) adds the destination's journal
+  after the source's, stamped with the epoch it takes, in the same write. It is
+  refused with `ErrTooManyJournals` while the list names two
+  (`MaximumJournals`), and the epoch is left alone.
+
+The list names at most two journals, with distinct epochs no newer than the
+record's. With the mode off it is always empty.
 
 ## Conditional publication
 
@@ -253,7 +287,8 @@ A volume write applies to an in-memory overlay and returns without contacting
 object storage. Creation, opening, checkpoint publication and selection,
 deletion, and cold page reads pay object-storage latency. Nothing on the
 guest's write path does. A guest flush is durable within the flush bound plus one interval
-([architecture](architecture.md#loss-model)). Checkpoints
+([architecture](architecture.md#loss-model)), or, with durable flush on, when
+it returns: it waits for a journal disk's sync, not for the store. Checkpoints
 run on the interval and on request. The only thing a volume can verify
 synchronously is that this handle still owns its VM. Checkpoints need not be
 available during an outage of the authority store. A failed publication leaves

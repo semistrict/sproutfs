@@ -8,7 +8,9 @@ copying the disk and memory the VM already has. Disks and RAM are both
 ## What is durable
 
 A VM is durable up to its last published checkpoint. Its control record says
-which checkpoint that is. Anything written after it is lost if the host dies.
+which checkpoint that is. Anything written after it is lost if the host dies,
+except, in the optional [durable flush](#durable-flush) mode, disk writes a
+guest flushed.
 
 The host checkpoints a VM's disks on an interval. RAM is saved only when asked:
 a capture, a suspend, or a stop that keeps it. A VM whose checkpoint has no RAM
@@ -48,7 +50,7 @@ destination's next checkpoint for a migration.
 
 | Component | Role |
 | --- | --- |
-| Control record | One object per VM, at `control/<id>`. It holds the writer epoch, the writer nonce, the selected checkpoint sequence, whether that checkpoint is published, the pins (checkpoints of this VM that were forked) and the kept checkpoints. Every change is a conditional write ([metadata](metadata.md#the-control-record)). |
+| Control record | One object per VM, at `control/<id>`. It holds the writer epoch, the writer nonce, the selected checkpoint sequence, whether that checkpoint is published, the pins (checkpoints of this VM that were forked), the kept checkpoints and the journals that may hold flushed writes newer than the checkpoint. Every change is a conditional write ([metadata](metadata.md#the-control-record)). |
 | [Checkpoint](volumes.md#objects) | An index object and its parts under `vm/<id>/ckpt/<seq>/`. A part, `part/<n>`, holds the VMM state if one was saved, the dirty pages in page order, and the pages compaction rescued. It is filled to 64 MiB and ends with a table of at most 1 MiB and a 32-byte trailer. The `index` object holds a fixed record, the page-table segments this checkpoint changed, the root, and the fixed record again. Its create-if-absent PUT commits the publication. The root records each volume's geometry and, for each segment, its address in the index object of the checkpoint that wrote it. It names no parent. |
 | Overlay | The in-memory writes of one open VM since its selected checkpoint. The next checkpoint publishes them. The overlay does not survive any failure. |
 | [Pager](vm-memory.md) | The host's page cache for guest memory: an arena of memfds keyed by page identity, and a spill file. It replaces the kernel's page cache and swap for guest memory ([why](vm-memory.md#why-a-pager-of-its-own)). A host runs one pager per kind of memory region, each with its own arena, spill file and page size. Both default to 2 MiB pages over the node's HugeTLB pool; a deployment may run RAM at 4 KiB over ordinary memory, as the simulation does. A pager refuses a volume of another page size. In the isolated mode each memory region has a private file ([the isolated arena](vm-memory.md#the-isolated-arena)). |
@@ -56,6 +58,7 @@ destination's next checkpoint for a migration.
 | Orchestrator | `cmd/sproutfs-orchestrator` allocates VM identities, places VMs on host pods, and drives migrations and forks. Its SQLite table, with the states `creating`, `running`, `migrating`, `stopped` and `recovering`, is a view. The control records are the authority. |
 | [Membership](hosting.md#the-membership) | One object, at `membership`: the hosts in the cluster, the cache disk each serves, and the deployment's code. It changes only by compare-and-set, one generation per change. A request between hosts names its sender's generation, so two hosts never exchange a stripe under different memberships. |
 | [Shard](hosting.md#shards-on-network-disks) | One network disk of a fixed set that may hold the cluster cache instead of the hosts' own disks. Windows are ranked over shards, so scaling compute moves no window. The membership assigns each shard to a host, and the orchestrator attaches it through the cloud's attach API. |
+| [Journal disk](hosting.md#journal-disks) | In the durable flush mode, one network disk per machine of the host pool. It holds the host's journal: the changed blocks its guests flushed since their last checkpoints. The orchestrator creates, attaches and deletes these disks, and the membership assigns each to a host. |
 
 ## Loss model
 
@@ -136,7 +139,8 @@ the fence at its interval checkpoint, then closes the VMM and releases the VM,
 so no guest runs whose writes can never be published.
 
 A guest CPU store is not a durability acknowledgement. A guest flush (its fsync
-reaching the virtio-pmem device) is one, within a bound. The host completes it
+reaching the virtio-pmem device) is one. With [durable flush](#durable-flush)
+off, the default, it holds only within a bound. The host completes it
 at once if the VM holds no unpublished disk write older than
 `host.Config.FlushBound` (`SPROUTFS_FLUSH_BOUND`, twice the interval, 120 s, by
 default; zero to disable). Otherwise the flush waits for a checkpoint that
@@ -156,6 +160,58 @@ durable. A configured host can open a VM once the checkpoint its record selects
 is published and the store is reachable. A fork that has not published its root
 runs only on the host that took it in. Resuming a VMM also needs its captured
 state and a compatible runtime configuration.
+
+### Durable flush
+
+Durable flush is an optional mode, off by default. One setting,
+`SPROUTFS_DURABLE_FLUSH`, turns it on for the hosts and the orchestrator; its
+value names the cloud of the journal disks, `gce`. Off, the flush bound
+answers a flush as above, and no control record names a journal.
+
+On, a flush of a disk returns success only once the blocks the guest changed
+before it are on the host's journal disk, a network disk the cloud replicates.
+The guarantee: **when a flush returns success, every store the guest made to
+that disk before the flush survives the loss of its host.** It does not survive
+the loss of the zone, because the disks are zonal. A flush that cannot be
+journaled fails, and the guest reads an I/O error. There is no fallback to a
+checkpoint, and the flush bound does not apply.
+
+A flush:
+
+1. captures the disk's changed 4 KiB blocks: those of its unjournaled pages
+   whose SHA-256 differs from what the journal holds
+   ([the capture](vm-memory.md#capturing-for-a-durable-flush));
+2. joins the next batch of the journal, which writes and syncs the flushes that
+   arrived while the batch before was in flight;
+3. is answered once its batch has synced. It waits for nothing in the object
+   store.
+
+A flush is journaled only once the VM's control record names this host's
+journal at the VM's epoch, because a recovery reads only the journals the
+record names. So the first flush after an open asks for a checkpoint out of
+turn and waits for its selection.
+
+A checkpoint still makes everything durable, and it trims the journal. Its
+selection names the host's journal and the **covered position**, the last
+position whose entries the checkpoint holds. A stop's and a close's checkpoint
+hold every store and name no journal. A full journal is back-pressure, not a
+failure: the host asks for checkpoints out of turn, and flushes wait for room.
+In the mode, the interval and the loss window bound what a host loss costs
+**unflushed** writes. Flushed writes are not lost.
+
+After a host loss, the membership assigns the lost host's journal disk to
+another host, which reads it back ([hosting](hosting.md#journal-disks)). An
+open that is not a migration's reads the VM's entries from every journal its
+record names, after each covered position, and writes their blocks into the
+VM's disks before anything runs it. The host that holds the disk fences the VM
+at the reader's epoch before it answers, so a host that still runs the VM
+answers no later flush. A VM anything was replayed into is cold booted,
+whatever VMM state its checkpoint holds, and its cold boot's checkpoint
+publishes the replayed blocks.
+
+RAM, ephemeral disks and VMs with no checkpoint loop are not journaled. A
+flush of an ephemeral disk or of such a VM completes at once, as with the mode
+off.
 
 ## VM lifecycle
 
@@ -249,7 +305,9 @@ integration is qualified on Linux aarch64 with real KVM in the
 [documented test environment](vm-memory.md#qualification), and the pager's
 2 MiB HugeTLB mode on x86_64. Other environments, and production workload and
 scale, are not qualified. The recorded workload run is partial. No production
-deployment is recorded. Not implemented:
+deployment is recorded. Durable flush is implemented and covered by package
+tests and TLA+ models, but no simulation campaign kills a host after a flush
+yet, and it has not been measured on GCE. Not implemented:
 
 - collection, which releases pins and sweeps what deleted VMs left pinned;
 - compatibility and migration paths for legacy data.

@@ -503,8 +503,9 @@ once the blocks it changed are on a journal disk, not at the next checkpoint
 on has one journal disk. The orchestrator makes the disks through Compute
 Engine's API, labelled `sproutfs-journal` with the namespace, attaches each to
 its node, and deletes one that has been unused for an hour. A flush that cannot
-be journaled fails with an I/O error in the guest, and a host places no VM
-until its journal disk is served.
+be journaled fails with an I/O error in the guest, and the orchestrator places
+no VM on a host until its journal disk is served. See
+[journal disks](../docs/hosting.md#journal-disks).
 
 ```
 kubectl -n sproutfs patch configmap sproutfs-demo --type merge -p '{"data":{"durable_flush":"gce"}}'
