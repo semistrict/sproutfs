@@ -769,6 +769,15 @@ shared page, because its copy replaces it. A migration destination's backing is
 read one page at a time, because only a load can tell whether the source still
 holds a page.
 
+That read can lose to another holder of the page: a prefetch reading it, a
+fault or an eviction holding it, or its root giving it up before the store binds
+it. The store waits and reads again, and its decision to make a page of its own
+stands. Those losses are bounded as a load's are, 64, apart from the eight times
+a fault may decide again whether it needs a page of its own: under eight forks
+of one checkpoint on two vCPUs each, a store lost its read eight times running,
+and counted as decisions they ended the guest's session with `ErrContended`
+(`TestAStoreThatLosesItsReadTenTimesRunningStillStores`).
+
 A store into fresh memory (a zero-mapped page, or a hole the guest has never
 touched) has nothing to copy. One mapping command replaces the zero mapping or
 the trap with a private page from a free slot, which reads as zeros because it
@@ -1191,7 +1200,12 @@ the unjournaled pages a flush has to cover. It holds the region exclusively,
 as a seal's pause does, so no seal falls inside it:
 
 1. It write-protects the pages the guest maps writable, one command per run,
-   under the region's protection lock.
+   under the region's protection lock. It reads which pages those are under
+   that lock too, as a seal does: an eviction takes a mapping away under the
+   page's lock and the protection lock shared, not the region, so a page
+   evicted after the capture took its pages is not mapped, and protecting it
+   would be refused and end the session
+   (`TestACaptureProtectsNoPageAnEvictionUnmappedAfterItTookThePages`).
 2. It reads each page once, from the guest's page, its spill, or the sealed
    copy where the guest still shares it, and hashes each 4 KiB block with
    SHA-256 on `Config.SettleWorkers` workers.

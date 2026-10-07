@@ -33,7 +33,8 @@ func (r *MemoryRegion) Fault(ctx context.Context, index uint64, write bool) erro
 	// the high-water mark here, where it holds nothing.
 	defer r.host.askAtHighWater()
 	reserve := false
-	for range faultAttempts {
+	decisions, lost := 0, 0
+	for decisions < faultAttempts && lost < loadAttempts {
 		// A store that needs a page of its own takes its dirty reservation
 		// before any region, page or I/O resource, and so does a read of a
 		// page only another host holds, which the load makes the region's own
@@ -50,14 +51,20 @@ func (r *MemoryRegion) Fault(ctx context.Context, index uint64, write bool) erro
 		if !spill.none() {
 			r.host.releaseSpill(spill)
 		}
-		if errors.Is(err, errUnpublishedReservation) {
+		switch {
+		case errors.Is(err, errUnpublishedReservation):
 			reserve, retry, err = true, true, nil
+		case errors.Is(err, errLostRead) && !sim.Bug(ctx, "pager-count-a-lost-read-as-a-decision"):
+			lost++
+			continue
 		}
 		if !retry {
 			return err
 		}
+		decisions++
 	}
-	return ErrContended
+	return fmt.Errorf("%w: page %d decided whether it needs a page of its own %d times and lost its read %d",
+		ErrContended, index, decisions, lost)
 }
 
 // errUnpublishedReservation reports a fault whose window turned out to hold
@@ -68,8 +75,19 @@ var errUnpublishedReservation = errors.New("managed-memory fault needs a dirty r
 
 // faultAttempts bounds how often a fault re-decides whether it needs a private
 // page. Only a seal taken between that decision and the memory region lock can force
-// another attempt, so one repetition is enough in every observed case.
+// another attempt, so one repetition is enough in every observed case. A store
+// that lost the read of the page it copies to another reader (errLostRead)
+// tries again without a new decision, bounded as a load is (loadAttempts).
 const faultAttempts = 8
+
+// errLostRead is a store that lost the read of the page it copies: another
+// fault or a prefetch was reading the page, and the store waited for it, or
+// the page's root gave it up before the store could bind it. Whoever won made
+// progress, so the store reads again, as a load does after a lost race, and
+// its decision to make a page of its own stands. Under many forks of one
+// checkpoint reading at once, a store loses several of these running; counted
+// as decisions, eight ended the guest's session (the unscheduled soak).
+var errLostRead = errors.New("managed-memory store lost the read of its page")
 
 // around narrows [first, last) to at most n pages that still hold index,
 // preferring the pages after it: access tends to continue forward.
@@ -152,7 +170,7 @@ func (r *MemoryRegion) load(ctx context.Context, index uint64, spill *reservatio
 			return err
 		}
 	}
-	return ErrContended
+	return fmt.Errorf("%w: page %d was loaded %d times", ErrContended, index, loadAttempts)
 }
 
 // loadOnce reports whether the faulting page ended mapped and resolved.
@@ -938,7 +956,8 @@ func (r *MemoryRegion) allocateOwn(ctx context.Context, index uint64, clean bool
 		}
 		r.host.unlockPage(idle)
 	}
-	return fileSlot{}, ErrContended
+	return fileSlot{}, fmt.Errorf("%w: page %d looked for a place of its own %d times", ErrContended, index,
+		loadAttempts)
 }
 
 // allocateOwnSeam runs in allocateOwn once it has chosen the idle page it

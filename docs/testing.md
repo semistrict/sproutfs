@@ -1542,11 +1542,40 @@ eviction and give-back paths admit there: `fault-lookup`, `reserve-runs`,
 `fork-file`, `fork-copy`, `move`, `reclaim-private`, `store-read-in`,
 `rule-copy` and `settle-reshare`, all under `vmmemory/`. A path that must
 finish once begun admits without its cancellation (`admitGoingOn`:
-`give-back-share`, `unindex`, `rebind`). The campaign neither checkpoints nor
-forks, never fills the dirty budget, and captures only from its guest's own
-task, so it does not reach the fork, move, unindex, dirty-wait and refault
-gaps; their seam tests do. No campaign reaches the mapping rules, which need
-4 KiB pages, a read-ahead run under 2 MiB and a pressed or half-private range.
+`give-back-share`, `unindex`, `rebind`). The prefetch campaign neither
+checkpoints nor forks and never fills the dirty budget, so it does not reach
+the fork, move, unindex and dirty-wait gaps; their seam tests do. Each disk
+guest has a flusher on a task of its own, as a guest's flush arrives on
+another vCPU than its stores, so the campaign reaches the gap between a
+refault and a capture and finds `pager-refault-maps-by-a-stale-protection`.
+
+**The mapping rules.** `TestTheMappingRulesSurviveTheirCampaign` runs 64 seeds
+of two forks of one checkpoint and a disk at 4 KiB pages, each region pressed
+for mappings, so the gap rule makes private the pages between a store and a
+private page near it, across read-ahead windows. Each guest runs two vCPUs,
+each reading and storing only its own pages, every other one, so a rule meets
+the other vCPU's fault or store in the window it takes a page from. Every read
+must return what the guest stored or what its volume holds, and the rules must
+copy pages. Seeds 7, 11 and 40 find `pager-rule-takes-a-page-of-another-window`.
+Until this campaign, every campaign guest ran one vCPU, and no two faults of
+one region ever met.
+
+**The soak.** A seeded campaign lets one task go on at a time, at its
+admission points, so a race between two of them is found only where an
+admission point sits in it. `TestThePagersCampaignsSoakWithoutAScheduler` runs
+the prefetch, fork and rules worlds with no scheduler: eight forks of one
+checkpoint, as an embedder's boot starts them, six children of one fork point,
+two vCPUs a guest, on real goroutines and timers, half as many worlds at once
+as the machine has cores. A seed still fixes each world's operations and the
+fault sites it activates, but not the order its guests run in, so a failure
+names its seed without replaying. It runs only when asked:
+
+```
+SPROUTFS_PAGER_SOAK=30m go test -race ./vmmemory -run '^TestThePagersCampaignsSoakWithoutAScheduler$' -timeout 40m
+```
+
+`SPROUTFS_PAGER_SOAK_SEED` sets the first seed; it is the clock's otherwise.
+Run it on a machine with many cores, not on a laptop that runs anything else.
 
 **A fork point's children while its seal ends.**
 `TestAForkPointsChildrenReadWhatItLentWhileItsSealEnds` runs twelve seeds of a

@@ -2,6 +2,7 @@ package vmmemory_test
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"fmt"
 	"maps"
@@ -54,6 +55,14 @@ type campaignGuest struct {
 	region *vmmemory.MemoryRegion
 	m      *mapping
 	want   []byte
+	// vcpus is how many vCPUs the guest runs, one where it is zero. Each
+	// reads and stores only its own pages, every vcpus-th from its number,
+	// so what each reads is still the model's, while its faults and stores
+	// meet the others' in the same read-ahead windows.
+	vcpus int
+	// storeOdds is one in how many accesses is a store, four where it is
+	// zero.
+	storeOdds int
 }
 
 // Prefetches survive every fault their sites inject — a read held back, a run
@@ -104,44 +113,7 @@ func prefetchCampaign(t *testing.T, seed uint64) (map[string]uint64, map[string]
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		ctx := sim.WithRuntime(t.Context(), runtime)
-		disk := scheduledSpillDisk(seed, scheduler, done)
-		f, err := newFixtureOn(t, ctx, disk, vmmemory.Config{PageSize: uint64(pageSize), Arena: suiteArena,
-			ResidentPages: 24, LogicalPages: 80, DirtyPages: 48, ReadAheadPages: 4, PrefetchRuns: 2})
-		if err != nil {
-			t.Error(err)
-			return
-		}
-		guests := campaignGuests(f)
-		var wg sync.WaitGroup
-		for at, guest := range guests {
-			wg.Go(func() {
-				runCampaignGuest(sim.WithTask(ctx, guest.name), t, guest, rand.New(rand.NewPCG(seed, uint64(at))))
-			})
-		}
-		wg.Wait()
-		for _, guest := range guests {
-			if err := guest.region.SettlePrefetches(ctx); err != nil {
-				t.Error(err)
-				return
-			}
-			for page := range uint64(campaignPages) {
-				got, err := memoryByte(sim.WithTask(ctx, guest.name+"-check"), guest.region, guest.m, page, nil)
-				if err != nil || got != guest.want[page] {
-					t.Errorf("%s page %d reads %d at the end, want %d: %v", guest.name, page, got, guest.want[page], err)
-				}
-			}
-		}
-		// The guests stop and detach while the scheduler still runs: a
-		// detach waits for the prefetches it cancels.
-		for _, guest := range guests {
-			guest.m.arena.mu.Lock()
-			clear(guest.m.pages)
-			guest.m.arena.mu.Unlock()
-			if err := guest.region.Detach(ctx); err != nil {
-				t.Error(err)
-			}
-		}
+		prefetchWorld(t, sim.WithRuntime(t.Context(), runtime), seed, scheduledSpillDisk(seed, scheduler, done), 2, 1)
 	}()
 	if err := scheduler.Run(done); err != nil {
 		t.Fatal(err)
@@ -151,6 +123,87 @@ func prefetchCampaign(t *testing.T, seed uint64) (map[string]uint64, map[string]
 		t.Fatal(err)
 	}
 	return runtime.Probes(), runtime.FiredSites(), recording.Execution
+}
+
+// prefetchWorld is the campaign's world on one seed: forks forks of one
+// checkpoint, a migrated guest and a disk, each on vcpus vCPUs, reading and
+// storing at once over an arena too small for them, then each checked page by
+// page and detached. ctx carries the runtime, and with it whether a scheduler
+// orders what they do.
+func prefetchWorld(t *testing.T, ctx context.Context, seed uint64, disk *sim.Disk, forks, vcpus int) {
+	// A host never checkpoints RAM to relieve its dirty budget, so the budget
+	// holds every page its guests may store into.
+	guestCount := forks + 2
+	f, err := newFixtureOn(t, ctx, disk, vmmemory.Config{PageSize: uint64(pageSize), Arena: suiteArena,
+		ResidentPages: 24, LogicalPages: campaignPages * (guestCount + 1), DirtyPages: campaignPages * guestCount,
+		ReadAheadPages: 4, PrefetchRuns: 2})
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	guests := campaignGuests(f, forks)
+	for _, guest := range guests {
+		guest.vcpus = vcpus
+	}
+	runCampaignWorld(t, ctx, seed, guests)
+}
+
+// runCampaignWorld runs a campaign's guests at once, each on a task of its
+// own, and beside each disk a flusher on a task of its own, as a guest's flush
+// arrives on another vCPU than its stores. Then it checks every page of each
+// guest and detaches them.
+func runCampaignWorld(t *testing.T, ctx context.Context, seed uint64, guests []*campaignGuest) {
+	var wg, flushers sync.WaitGroup
+	stop := make(chan struct{})
+	for at, guest := range guests {
+		vcpus := max(1, guest.vcpus)
+		for vcpu := range vcpus {
+			task := guest.name
+			if vcpus > 1 {
+				task = fmt.Sprintf("%s/vcpu-%d", guest.name, vcpu)
+			}
+			wg.Go(func() {
+				runCampaignGuest(sim.WithTask(ctx, task), t, guest,
+					rand.New(rand.NewPCG(seed, uint64(at)|uint64(vcpu)<<32)), vcpu)
+			})
+		}
+		if guest.region.Kind() == vmmemory.Pmem {
+			flushers.Go(func() {
+				runCampaignFlusher(sim.WithTask(ctx, guest.name+"-flusher"), t, guest,
+					rand.New(rand.NewPCG(seed, uint64(len(guests)+at))), stop)
+			})
+		}
+	}
+	wg.Wait()
+	close(stop)
+	flushers.Wait()
+	for _, guest := range guests {
+		if err := unjournaledWritable(guest.region, guest.m); err != nil {
+			t.Errorf("%s once its vCPUs stopped: %v", guest.name, err)
+		}
+	}
+	for _, guest := range guests {
+		if err := guest.region.SettlePrefetches(ctx); err != nil {
+			t.Error(err)
+			return
+		}
+		for page := range uint64(len(guest.want)) {
+			got, err := memoryByte(sim.WithTask(ctx, guest.name+"-check"), guest.region, guest.m, page, nil)
+			if err != nil || got != guest.want[page] {
+				t.Errorf("%s page %d reads %d at the end, want %d: %v", guest.name, page, got, guest.want[page], err)
+			}
+		}
+	}
+	// The guests stop and detach while the scheduler still runs: a detach
+	// waits for the prefetches it cancels.
+	for _, guest := range guests {
+		guest.m.arena.mu.Lock()
+		clear(guest.m.pages)
+		guest.m.arena.mu.Unlock()
+		if err := guest.region.Detach(ctx); err != nil {
+			t.Error(err)
+		}
+	}
 }
 
 // scheduledSpillDisk is the disk of a campaign's spill file, a runtime's of
@@ -202,12 +255,13 @@ func TestPrefetchCampaignReplaysItsSeeds(t *testing.T) {
 	}
 }
 
-// campaignGuests attaches the campaign's three guests: two forks of one
-// checkpoint, whose loads race for the same identities, and one whose
-// migration source serves two pages the volume names as its own.
-func campaignGuests(f *fixture) []*campaignGuest {
+// campaignGuests attaches the campaign's guests: forks forks of one
+// checkpoint, whose loads race for the same identities, one whose migration
+// source serves two pages the volume names as its own, and a disk.
+func campaignGuests(f *fixture, forks int) []*campaignGuest {
 	var guests []*campaignGuest
-	for _, name := range []string{"fork-a", "fork-b"} {
+	for fork := range forks {
+		name := "fork-" + string(rune('a'+fork))
 		b := f.slowBacking(campaignPages)
 		b.admit = true
 		r, m := f.attach(b)
@@ -227,6 +281,31 @@ func campaignGuests(f *fixture) []*campaignGuest {
 	return guests
 }
 
+// runCampaignFlusher flushes a disk guest's writes from a task of its own
+// until stop closes: a capture of what the guest stored, whose journal write
+// fails one time in four, beside the guest's own stores, reads and spills.
+func runCampaignFlusher(ctx context.Context, t *testing.T, g *campaignGuest, random *rand.Rand, stop <-chan struct{}) {
+	for {
+		select {
+		case <-stop:
+			return
+		case <-time.After(time.Duration(1+random.IntN(4)) * time.Millisecond):
+		}
+		if err := sim.Admit(ctx, "campaign/flush"); err != nil {
+			t.Errorf("%s flusher: %v", g.name, err)
+			return
+		}
+		captured, err := g.region.Capture(ctx, g.region.Unjournaled())
+		if err != nil {
+			t.Errorf("%s flusher capturing: %v", g.name, err)
+			return
+		}
+		if random.IntN(4) == 0 {
+			captured.Fail(ctx)
+		}
+	}
+}
+
 // initialBytes is what a fixture backing holds: every byte of page i is i+1.
 func initialBytes(pages int) []byte {
 	want := make([]byte, pages)
@@ -239,8 +318,11 @@ func initialBytes(pages int) []byte {
 // runCampaignGuest reads and stores a guest's memory, half the time the page
 // after the last and otherwise one at random, sometimes pausing, and requires
 // each read to return what the model holds.
-func runCampaignGuest(ctx context.Context, t *testing.T, g *campaignGuest, random *rand.Rand) {
-	page := uint64(0)
+//
+// vcpu is the guest's vCPU this runs, whose pages are every g.vcpus-th from it.
+func runCampaignGuest(ctx context.Context, t *testing.T, g *campaignGuest, random *rand.Rand, vcpu int) {
+	stride := uint64(max(1, g.vcpus))
+	page := uint64(vcpu)
 	for op := range 60 {
 		// Guests whose pauses end at one instant go on one at a time, in the
 		// order the run chooses, as a simulated VMM's accesses are admitted:
@@ -251,11 +333,11 @@ func runCampaignGuest(ctx context.Context, t *testing.T, g *campaignGuest, rando
 			return
 		}
 		if random.IntN(2) == 0 {
-			page = (page + 1) % campaignPages
+			page = (page + stride) % uint64(len(g.want))
 		} else {
-			page = random.Uint64N(campaignPages)
+			page = uint64(vcpu) + stride*random.Uint64N(uint64(len(g.want))/stride)
 		}
-		if random.IntN(4) == 0 {
+		if random.IntN(cmp.Or(g.storeOdds, 4)) == 0 {
 			value := byte(0x40 + op)
 			if _, err := memoryByte(ctx, g.region, g.m, page, &value); err != nil {
 				t.Errorf("%s storing into page %d: %v", g.name, page, err)
@@ -286,10 +368,15 @@ func runCampaignGuest(ctx context.Context, t *testing.T, g *campaignGuest, rando
 			}
 		}
 		// The journal's rule holds after every step, in RAM as in a disk: a
-		// page the guest may store into without a fault is unjournaled.
-		if err := unjournaledWritable(g.region, g.m); err != nil {
-			t.Errorf("%s after step %d: %v", g.name, op, err)
-			return
+		// page the guest may store into without a fault is unjournaled. With
+		// one vCPU nothing else stores between the two looks this takes; with
+		// several, another vCPU's store, its write-ahead or a rule it set off
+		// may, so the rule is checked once they have all stopped.
+		if stride == 1 {
+			if err := unjournaledWritable(g.region, g.m); err != nil {
+				t.Errorf("%s after step %d: %v", g.name, op, err)
+				return
+			}
 		}
 		if random.IntN(3) == 0 {
 			time.Sleep(time.Duration(random.IntN(4)) * time.Millisecond)

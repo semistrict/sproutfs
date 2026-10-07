@@ -481,66 +481,7 @@ func forkCampaign(t *testing.T, seed uint64) []byte {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		ctx := sim.WithRuntime(t.Context(), runtime)
-		disk := scheduledSpillDisk(seed, scheduler, done)
-		f, err := newFixtureOn(t, ctx, disk, vmmemory.Config{PageSize: uint64(pageSize), Arena: suiteArena,
-			ResidentPages: 16, LogicalPages: 64, DirtyPages: 32, ReadAheadPages: 1})
-		if err != nil {
-			t.Error(err)
-			return
-		}
-		random := rand.New(rand.NewPCG(seed, 0))
-		parent, err := forkParent(sim.WithTask(ctx, "parent"), f)
-		if err != nil {
-			t.Error(err)
-			return
-		}
-		var children []*forkGuest
-		for _, name := range []string{"child-a", "child-b"} {
-			b := f.newBacking(forkCampaignPages)
-			b.source = parent.point
-			for page, value := range parent.lent {
-				b.data[page*f.pageSize] = value
-			}
-			r, m := f.attach(b)
-			children = append(children, &forkGuest{name: name, region: r, m: m, want: bytes.Clone(parent.lent)})
-		}
-		end := random.IntN(3)
-		var wg sync.WaitGroup
-		wg.Go(func() {
-			if err := parent.run(sim.WithTask(ctx, "parent"), rand.New(rand.NewPCG(seed, 1)), end); err != nil {
-				t.Error(err)
-			}
-		})
-		for at, child := range children {
-			wg.Go(func() {
-				if err := runForkChild(sim.WithTask(ctx, child.name), child,
-					rand.New(rand.NewPCG(seed, uint64(2+at)))); err != nil {
-					t.Error(err)
-				}
-			})
-		}
-		wg.Wait()
-		guests := children
-		if end != forkEndDetach {
-			guests = append(guests, &parent.forkGuest)
-		}
-		for _, g := range guests {
-			for page := range uint64(forkCampaignPages) {
-				if err := g.step(sim.WithTask(ctx, g.name+"-check"), page, nil); err != nil {
-					t.Errorf("at the end: %v", err)
-				}
-			}
-		}
-		// The guests stop and detach while the scheduler still runs.
-		for _, g := range guests {
-			g.m.arena.mu.Lock()
-			clear(g.m.pages)
-			g.m.arena.mu.Unlock()
-			if err := g.region.Detach(ctx); err != nil {
-				t.Error(err)
-			}
-		}
+		forkWorld(t, sim.WithRuntime(t.Context(), runtime), seed, scheduledSpillDisk(seed, scheduler, done), 2)
 	}()
 	if err := scheduler.Run(done); err != nil {
 		t.Fatal(err)
@@ -550,6 +491,72 @@ func forkCampaign(t *testing.T, seed uint64) []byte {
 		t.Fatal(err)
 	}
 	return recording.Execution
+}
+
+// forkWorld is the fork campaign's world on one seed: a parent that seals a
+// fork point, stores and ends the seal, beside children children of the point
+// reading and storing its pages, then each checked page by page and detached.
+// ctx carries the runtime, and with it whether a scheduler orders what they do.
+func forkWorld(t *testing.T, ctx context.Context, seed uint64, disk *sim.Disk, children int) {
+	f, err := newFixtureOn(t, ctx, disk, vmmemory.Config{PageSize: uint64(pageSize), Arena: suiteArena,
+		ResidentPages: 16, LogicalPages: 64 + forkCampaignPages*(children-2),
+		DirtyPages: 32 + forkCampaignPages*(children-2), ReadAheadPages: 1})
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	random := rand.New(rand.NewPCG(seed, 0))
+	parent, err := forkParent(sim.WithTask(ctx, "parent"), f)
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	var guests []*forkGuest
+	for child := range children {
+		b := f.newBacking(forkCampaignPages)
+		b.source = parent.point
+		for page, value := range parent.lent {
+			b.data[page*f.pageSize] = value
+		}
+		r, m := f.attach(b)
+		guests = append(guests, &forkGuest{name: "child-" + string(rune('a'+child)), region: r, m: m,
+			want: bytes.Clone(parent.lent)})
+	}
+	end := random.IntN(3)
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		if err := parent.run(sim.WithTask(ctx, "parent"), rand.New(rand.NewPCG(seed, 1)), end); err != nil {
+			t.Error(err)
+		}
+	})
+	for at, child := range guests {
+		wg.Go(func() {
+			if err := runForkChild(sim.WithTask(ctx, child.name), child,
+				rand.New(rand.NewPCG(seed, uint64(2+at)))); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	wg.Wait()
+	if end != forkEndDetach {
+		guests = append(guests, &parent.forkGuest)
+	}
+	for _, g := range guests {
+		for page := range uint64(forkCampaignPages) {
+			if err := g.step(sim.WithTask(ctx, g.name+"-check"), page, nil); err != nil {
+				t.Errorf("at the end: %v", err)
+			}
+		}
+	}
+	// The guests stop and detach while the scheduler still runs.
+	for _, g := range guests {
+		g.m.arena.mu.Lock()
+		clear(g.m.pages)
+		g.m.arena.mu.Unlock()
+		if err := g.region.Detach(ctx); err != nil {
+			t.Error(err)
+		}
+	}
 }
 
 // How the fork campaign's parent ends the point's seal.

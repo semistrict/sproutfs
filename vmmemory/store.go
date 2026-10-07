@@ -841,7 +841,9 @@ func (r *MemoryRegion) readForCopy(ctx context.Context, index uint64, src *zirco
 // page's window as a read fault reads it, and bound to the store's binding,
 // unmapped, until the copy replaces it. A page with no identity, or a hole,
 // has none, and the store reads its copy from the backing. It reports again
-// where the fault must look again.
+// where the fault must look again: with errLostRead where another reader won
+// the page, so the store reads again, and with none where what the store
+// decided has changed.
 //
 // A peer backing's store reads its page alone: a load is what answers that the
 // source still holds a page, which is per page, and nothing may be shared
@@ -865,7 +867,10 @@ func (r *MemoryRegion) readIn(ctx context.Context, index uint64) (*zirconvm.VmPa
 		return nil, false, nil
 	}
 	if waiter := plan.inFlight(ctx, index); waiter != nil {
-		return nil, true, r.awaitRead(ctx, waiter, index)
+		if err := r.awaitRead(ctx, waiter, index); err != nil {
+			return nil, false, err
+		}
+		return nil, true, errLostRead
 	}
 	// The look for a read under way and the lookup are two holds, as a read
 	// fault's are (loadOnce). A prefetch of another region of the same root
@@ -877,9 +882,15 @@ func (r *MemoryRegion) readIn(ctx context.Context, index uint64) (*zirconvm.VmPa
 	if err := sim.Admit(ctx, "vmmemory/store-read-in"); err != nil {
 		return nil, false, err
 	}
+	if readInSeam != nil {
+		readInSeam(index)
+	}
 	again, err := plan.takeFaulting(ctx, index)
-	if err != nil || again {
-		return nil, again, err
+	if err != nil {
+		return nil, false, err
+	}
+	if again {
+		return nil, true, errLostRead
 	}
 	if err := plan.read(ctx, index); errors.Is(err, errUnpublishedReservation) {
 		// The extents named the page the volume's and the load found the
@@ -896,8 +907,8 @@ func (r *MemoryRegion) readIn(ctx context.Context, index uint64) (*zirconvm.VmPa
 	origin := plan.pages[index-plan.start]
 	if origin == nil {
 		// Its root gave it up before the store could bind it; the store
-		// decides again from the top.
-		return nil, true, nil
+		// reads it again.
+		return nil, true, errLostRead
 	}
 	if _, err := plan.install(ctx); err != nil {
 		return nil, false, err
@@ -906,6 +917,10 @@ func (r *MemoryRegion) readIn(ctx context.Context, index uint64) (*zirconvm.VmPa
 	plan.release(origin)
 	return origin, false, nil
 }
+
+// readInSeam runs in a store's read of the page it copies just before the
+// lookup, so a test can hold the page there.
+var readInSeam func(index uint64)
 
 // closeAround is what a store does after the page it faulted on is private: it
 // makes the shared pages the two rules name private too and reports the run of

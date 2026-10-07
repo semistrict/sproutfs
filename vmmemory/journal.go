@@ -274,7 +274,10 @@ func (r *MemoryRegion) Capture(ctx context.Context, pages []uint64) (*Captured, 
 	}
 	c := r.currentCheckpoint()
 	taken, writable := r.takeForCapture(c, pages)
-	if err := r.protectForCapture(ctx, writable); err != nil {
+	if captureSeam != nil {
+		captureSeam(taken)
+	}
+	if err := r.protectForCapture(ctx, taken, writable); err != nil {
 		return nil, err
 	}
 	r.markCaptured(taken)
@@ -288,10 +291,15 @@ func (r *MemoryRegion) Capture(ctx context.Context, pages []uint64) (*Captured, 
 	return r.captured(c, taken, reads), nil
 }
 
+// captureSeam runs in a capture between its taking the pages and its holding
+// the region's protection, so a test can evict one of them there.
+var captureSeam func(taken []uint64)
+
 // takeForCapture is the pages a capture takes, in ascending order: those of
 // asked that are unjournaled or on the standing seal's list. writable is the
-// runs of them the guest may store into without a fault, which the capture
-// has to write-protect.
+// runs of them the guest may store into without a fault as they were taken;
+// the capture protects those it finds so under the region's protection
+// (writableRuns).
 func (r *MemoryRegion) takeForCapture(c *MemoryRegionCheckpoint, asked []uint64) (taken []uint64, writable []PageRun) {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
@@ -304,29 +312,52 @@ func (r *MemoryRegion) takeForCapture(c *MemoryRegionCheckpoint, asked []uint64)
 			continue
 		}
 		taken = append(taken, page)
-		if r.dirtyRuns.has(page) {
-			if n := len(writable); n > 0 && writable[n-1].Page+uint64(writable[n-1].Count) == page {
-				writable[n-1].Count++
-			} else {
-				writable = append(writable, PageRun{Page: page, Count: 1})
-			}
+	}
+	return taken, r.writableRunsLocked(taken)
+}
+
+// writableRunsLocked is the runs of pages the guest may store into without a
+// fault, in ascending order. Caller holds r.bindingsMu.
+func (r *MemoryRegion) writableRunsLocked(pages []uint64) []PageRun {
+	var writable []PageRun
+	for _, page := range pages {
+		if !r.dirtyRuns.has(page) {
+			continue
+		}
+		if n := len(writable); n > 0 && writable[n-1].Page+uint64(writable[n-1].Count) == page {
+			writable[n-1].Count++
+		} else {
+			writable = append(writable, PageRun{Page: page, Count: 1})
 		}
 	}
-	return taken, writable
+	return writable
 }
 
 // protectForCapture write-protects the runs a capture takes that the guest
 // maps writable, under the region's protection as a seal's pause takes it. A
 // failure takes away the mappings of the runs it protected, so the guest
 // faults and maps them writable again, still unjournaled.
-func (r *MemoryRegion) protectForCapture(ctx context.Context, runs []PageRun) error {
-	if len(runs) == 0 {
-		return nil
-	}
+//
+// The runs are read again under the protection, as a seal reads them
+// (protectDirtyRuns): an eviction takes a page's mapping away under that
+// page's lock and the protection shared alone, not the region, so one that
+// ended after the capture took its pages left a page the guest no longer maps,
+// and a write-protect of an unmapped page is refused. writable is the runs as
+// the pages were taken.
+func (r *MemoryRegion) protectForCapture(ctx context.Context, taken []uint64, writable []PageRun) error {
 	if err := r.protectMu.Lock(ctx); err != nil {
 		return err
 	}
 	defer r.protectMu.Unlock()
+	runs := writable
+	if !sim.Bug(ctx, "journal-protect-runs-read-before-the-protection") {
+		r.bindingsMu.Lock()
+		runs = r.writableRunsLocked(taken)
+		r.bindingsMu.Unlock()
+	}
+	if len(runs) == 0 {
+		return nil
+	}
 	protected, err := r.protect(ctx, runs)
 	if err != nil {
 		return errors.Join(err, r.unprotect(context.WithoutCancel(ctx), protected))

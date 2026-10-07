@@ -1212,7 +1212,7 @@
   {
     "id": "pager-refault-maps-by-a-stale-protection",
     "package": "vmmemory",
-    "run": "^TestARefaultMapsAPageACaptureProtectedWhileItReclaimedReadOnly$",
+    "run": "^(TestARefaultMapsAPageACaptureProtectedWhileItReclaimedReadOnly|TestPrefetchSurvivesItsFaultsAndReachesItsProbes)$",
     "purpose": "Map a refaulted page by the protection read before the region was given up for its slot. A capture taken meanwhile that journaled and protected the page leaves it mapped writable and not unjournaled, so the guest's next store reaches no flush."
   },
   {
@@ -1272,7 +1272,7 @@
   {
     "id": "pager-rule-takes-a-page-of-another-window",
     "package": "vmmemory",
-    "run": "^(TestARuleNeverCopiesAPageAStoreOfItsOwnWindowIsCopying|TestARuleEndsItsRunAtAPageAFaultOfAnotherWindowHolds)$",
+    "run": "^(TestARuleNeverCopiesAPageAStoreOfItsOwnWindowIsCopying|TestARuleEndsItsRunAtAPageAFaultOfAnotherWindowHolds|TestTheMappingRulesSurviveTheirCampaign)$",
     "purpose": "Let a rule copy a page of another read-ahead window without its stripe, and wait for that page's lock. A store of the page in between makes it private twice and the run maps a punched slot; a fault holding the page across its read, behind a queued seal, deadlocks with the store."
   },
   {
@@ -1316,5 +1316,17 @@
     "package": "cmd/sproutfs-orchestrator",
     "run": "^TestARecoveryPastTheHoldWaitsForTheSourceToLetThePagesGo$",
     "purpose": "Let a survey take up a handover this orchestrator is still carrying, between a failed carry and its recovery, so two recoveries of one VM race and one fails finding the other's open."
+  },
+  {
+    "id": "journal-protect-runs-read-before-the-protection",
+    "package": "vmmemory",
+    "run": "^TestACaptureProtectsNoPageAnEvictionUnmappedAfterItTookThePages$",
+    "purpose": "Write-protect the runs a capture read as it took its pages, before it held the region's protection, so a page an eviction unmapped in between is protected unmapped: the client refuses and the region is terminal."
+  },
+  {
+    "id": "pager-count-a-lost-read-as-a-decision",
+    "package": "vmmemory",
+    "run": "^TestAStoreThatLosesItsReadTenTimesRunningStillStores$",
+    "purpose": "Count a store's lost read of the page it copies as one of a fault's eight decisions whether it needs a page of its own, so a store that loses it eight times running to other forks reading the same page ends its guest's session with ErrContended."
   }
 ]
