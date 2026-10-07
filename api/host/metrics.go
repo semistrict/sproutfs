@@ -2,45 +2,111 @@ package host
 
 import (
 	"fmt"
+	"math"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 )
 
+// MetricKind is what a family's samples are: a counter, a gauge or a histogram.
+type MetricKind int
+
+const (
+	Counter MetricKind = iota
+	Gauge
+	Histogram
+)
+
+// String is the kind as the Prometheus text format names it.
+func (k MetricKind) String() string {
+	switch k {
+	case Counter:
+		return "counter"
+	case Gauge:
+		return "gauge"
+	case Histogram:
+		return "histogram"
+	}
+	return "untyped"
+}
+
+// MetricFamily is one metric: its name, its help, its kind and its samples, one
+// for each set of labels. A family of a host with nothing to report under a
+// label, such as a disk limiter with no promises, has no samples.
+type MetricFamily struct {
+	Name    string
+	Help    string
+	Kind    MetricKind
+	Samples []Sample
+}
+
+// Label is one label of a sample. A sample's labels are in the order the text
+// writes them.
+type Label struct {
+	Name  string
+	Value string
+}
+
+// Sample is one series of a family. Value is a counter's or a gauge's value.
+// Buckets, Sum and Count are a histogram's: the cumulative count of
+// observations at each bucket's upper bound in seconds, in ascending order and
+// without +Inf, the sum of the observations in seconds, and their count.
+type Sample struct {
+	Labels  []Label
+	Value   float64
+	Buckets []Bucket
+	Sum     float64
+	Count   uint64
+}
+
+// Bucket is one bucket of a histogram: how many observations were at most
+// UpperBound seconds.
+type Bucket struct {
+	UpperBound float64
+	Count      uint64
+}
+
 // Metrics writes one host's status as Prometheus text: what sproutfs-host
-// serves on /metrics, and what an embedder that runs the host as a library
-// serves on its own endpoint from the Status it reads. The format is four lines
-// per metric and nothing else, so it is written by hand rather than linked: a
-// client library would be a dependency, a registry and a set of collectors for
-// numbers this host already has in one struct.
+// serves on /metrics. It is MetricFamilies written out, so the text and the
+// families cannot differ.
+func Metrics(status Status) string {
+	var out strings.Builder
+	for _, family := range MetricFamilies(status) {
+		family.write(&out)
+	}
+	return out.String()
+}
+
+// MetricFamilies is one host's status as metrics: what an embedder that runs
+// the host as a library registers with its own metrics library, from the Status
+// it reads. sproutfs links no metrics library: the families are plain data, and
+// Metrics writes them as text.
 //
 // Everything here is read from Status, which is the same report the API and the
 // orchestrator's survey see. Counters end in _total and are monotonic for one
 // process lifetime — a host restart is a host loss, so they start again at zero
 // with everything else this process holds.
-func Metrics(status Status) string {
-	var out strings.Builder
-	write := func(name, kind, help string, value any) {
-		fmt.Fprintf(&out, "# HELP %s %s\n# TYPE %s %s\n%s %v\n", name, help, name, kind, name, value)
-	}
+func MetricFamilies(status Status) []MetricFamily {
+	var e exposition
 	// What this host runs, as labels on a constant, which is how a dashboard
 	// tells hosts apart during a rollout.
-	fmt.Fprintf(&out, "# HELP sproutfs_build_info What this host is running.\n# TYPE sproutfs_build_info gauge\n"+
-		"sproutfs_build_info{version=%q,api_revision=\"%d\",arena=%q} 1\n",
-		status.Build.Version, status.Build.APIRevision, status.Build.Arena)
-	write("sproutfs_vms_running", "gauge",
-		"VMs this host runs.", len(status.Running))
-	write("sproutfs_vms_serving", "gauge",
-		"VMs this host has handed over and still serves the pages of.", len(status.Serving))
+	e.family("sproutfs_build_info", Gauge, "What this host is running.", sample(1,
+		Label{"version", status.Build.Version}, Label{"api_revision", strconv.Itoa(status.Build.APIRevision)},
+		Label{"arena", status.Build.Arena}))
+	e.one("sproutfs_vms_running", Gauge,
+		"VMs this host runs.", float(len(status.Running)))
+	e.one("sproutfs_vms_serving", Gauge,
+		"VMs this host has handed over and still serves the pages of.", float(len(status.Serving)))
 	// The widest window rather than one series per VM: what an operator alerts
 	// on is the worst exposure this host carries, and a gauge per VM would put
 	// the deployment's VM identities into the scraper's label space.
 	widest, waiting := lossWindow(status.VMs)
-	write("sproutfs_loss_window_seconds", "gauge",
+	e.one("sproutfs_loss_window_seconds", Gauge,
 		"How long the worst-off VM this host runs has held a write no checkpoint covers, which is what losing this host would cost it in time.",
 		widest.Seconds())
-	write("sproutfs_vms_waiting", "gauge",
-		"VMs past their loss window, whose stores the pager is holding back until a checkpoint of them lands.", waiting)
+	e.one("sproutfs_vms_waiting", Gauge,
+		"VMs past their loss window, whose stores the pager is holding back until a checkpoint of them lands.", float(waiting))
 
 	// A host runs one pager per kind of memory region, and one for ephemeral
 	// disks, so every pager series carries the pager as its kind label: one
@@ -53,131 +119,133 @@ func Metrics(status Status) string {
 		name  string
 		pager PagerKind
 	}{{"ram", status.Pager.RAM}, {"pmem", status.Pager.PMEM}, {"ephemeral", status.Pager.Ephemeral}}
-	byKind := func(name, metric, help string, value func(PagerKind) any) {
-		fmt.Fprintf(&out, "# HELP %s %s\n# TYPE %s %s\n", name, help, name, metric)
-		for _, kind := range kinds {
-			fmt.Fprintf(&out, "%s{kind=%q} %v\n", name, kind.name, value(kind.pager))
+	byKind := func(name string, kind MetricKind, help string, value func(PagerKind) float64) {
+		samples := make([]Sample, 0, len(kinds))
+		for _, k := range kinds {
+			samples = append(samples, sample(value(k.pager), Label{"kind", k.name}))
 		}
+		e.family(name, kind, help, samples...)
 	}
-	byKind("sproutfs_pager_page_bytes", "gauge",
+	byKind("sproutfs_pager_page_bytes", Gauge,
 		"The page each pager runs, which its page counts here are in.",
-		func(p PagerKind) any { return p.PageBytes })
-	byKind("sproutfs_pager_arena_pages", "gauge",
-		"Pages each pager's arena holds.", func(p PagerKind) any { return p.ArenaPages })
-	byKind("sproutfs_pager_resident_pages", "gauge",
-		"Pages of each arena that are taken.", func(p PagerKind) any { return p.ResidentPages })
-	byKind("sproutfs_pager_dirty_pages", "gauge",
+		func(p PagerKind) float64 { return float(p.PageBytes) })
+	byKind("sproutfs_pager_arena_pages", Gauge,
+		"Pages each pager's arena holds.", func(p PagerKind) float64 { return float(p.ArenaPages) })
+	byKind("sproutfs_pager_resident_pages", Gauge,
+		"Pages of each arena that are taken.", func(p PagerKind) float64 { return float(p.ResidentPages) })
+	byKind("sproutfs_pager_dirty_pages", Gauge,
 		"Pages of volatile private state no checkpoint has published.",
-		func(p PagerKind) any { return p.DirtyPages })
-	byKind("sproutfs_pager_logical_pages", "gauge",
-		"Pages each pager holds metadata for.", func(p PagerKind) any { return p.LogicalPages })
-	write("sproutfs_pager_arena_bytes", "gauge",
+		func(p PagerKind) float64 { return float(p.DirtyPages) })
+	byKind("sproutfs_pager_logical_pages", Gauge,
+		"Pages each pager holds metadata for.", func(p PagerKind) float64 { return float(p.LogicalPages) })
+	e.one("sproutfs_pager_arena_bytes", Gauge,
 		"What the two arenas hold together, which is the only unit their capacities can be added in.",
-		status.Pager.ArenaBytes())
-	write("sproutfs_guest_committed_bytes", "gauge",
+		float(status.Pager.ArenaBytes()))
+	e.one("sproutfs_guest_committed_bytes", Gauge,
 		"Guest RAM the VMs this host runs have between them, resident or not, which is what a placement measures this host by.",
-		status.Pager.CommittedBytes)
-	byKind("sproutfs_pager_shared_pages_total", "counter",
+		float(status.Pager.CommittedBytes))
+	byKind("sproutfs_pager_shared_pages_total", Counter,
 		"Pages mapped to an already resident identity without a read, which is what a fork inherits.",
-		func(p PagerKind) any { return p.SharedPages })
+		func(p PagerKind) float64 { return float(p.SharedPages) })
 	// The sharing gauges are what the counter above is not — how much sharing is
 	// still there, rather than how often it happened.
-	byKind("sproutfs_pager_unique_resident_bytes", "gauge",
+	byKind("sproutfs_pager_unique_resident_bytes", Gauge,
 		"Host memory the pager's arena holds, one resident page counted once however many memory regions map it.",
-		func(p PagerKind) any { return p.Sharing.UniqueBytes })
-	byKind("sproutfs_pager_mapped_resident_bytes", "gauge",
+		func(p PagerKind) float64 { return float(p.Sharing.UniqueBytes) })
+	byKind("sproutfs_pager_mapped_resident_bytes", Gauge,
 		"Resident pages summed over the memory regions that map them, counting every alias, which is what this host would hold if nothing shared anything.",
-		func(p PagerKind) any { return p.Sharing.MappedBytes })
-	byKind("sproutfs_pager_shared_saved_bytes", "gauge",
+		func(p PagerKind) float64 { return float(p.Sharing.MappedBytes) })
+	byKind("sproutfs_pager_shared_saved_bytes", Gauge,
 		"Mapped less unique: the memory this host did not have to find because its guests are reading the same pages.",
-		func(p PagerKind) any { return p.Sharing.SavedBytes })
-	byKind("sproutfs_pager_faults_total", "counter", "Faults the pager has resolved.",
-		func(p PagerKind) any { return p.Faults })
-	byKind("sproutfs_pager_evictions_total", "counter", "Pages the pager has evicted.",
-		func(p PagerKind) any { return p.Evictions })
-	byKind("sproutfs_pager_spills_total", "counter", "Pages the pager has written to its spill file.",
-		func(p PagerKind) any { return p.Spills })
-	byKind("sproutfs_pager_idle_pages", "gauge",
+		func(p PagerKind) float64 { return float(p.Sharing.SavedBytes) })
+	byKind("sproutfs_pager_faults_total", Counter, "Faults the pager has resolved.",
+		func(p PagerKind) float64 { return float(p.Faults) })
+	byKind("sproutfs_pager_evictions_total", Counter, "Pages the pager has evicted.",
+		func(p PagerKind) float64 { return float(p.Evictions) })
+	byKind("sproutfs_pager_spills_total", Counter, "Pages the pager has written to its spill file.",
+		func(p PagerKind) float64 { return float(p.Spills) })
+	byKind("sproutfs_pager_idle_pages", Gauge,
 		"Resident pages no memory region maps, kept for the next one that inherits them.",
-		func(p PagerKind) any { return p.IdlePages })
-	byKind("sproutfs_pager_loaded_pages_total", "counter", "Pages the pager read from its backing.",
-		func(p PagerKind) any { return p.LoadedPages })
-	byKind("sproutfs_pager_copy_on_writes_total", "counter", "Stores the pager gave a private copy of a page.",
-		func(p PagerKind) any { return p.CopyOnWrites })
-	byKind("sproutfs_pager_unmapped_copy_on_writes_total", "counter",
+		func(p PagerKind) float64 { return float(p.IdlePages) })
+	byKind("sproutfs_pager_loaded_pages_total", Counter, "Pages the pager read from its backing.",
+		func(p PagerKind) float64 { return float(p.LoadedPages) })
+	byKind("sproutfs_pager_copy_on_writes_total", Counter, "Stores the pager gave a private copy of a page.",
+		func(p PagerKind) float64 { return float(p.CopyOnWrites) })
+	byKind("sproutfs_pager_unmapped_copy_on_writes_total", Counter,
 		"Copy-on-writes of a page the storing guest did not map.",
-		func(p PagerKind) any { return p.UnmappedCopyOnWrites })
-	byKind("sproutfs_pager_unchanged_pages_total", "counter",
+		func(p PagerKind) float64 { return float(p.UnmappedCopyOnWrites) })
+	byKind("sproutfs_pager_unchanged_pages_total", Counter,
 		"Private copies a checkpoint found still holding the bytes they were copied from.",
-		func(p PagerKind) any { return p.UnchangedPages })
+		func(p PagerKind) float64 { return float(p.UnchangedPages) })
 	// What the kernel said of each page fault it reported.
-	byKind("sproutfs_pager_read_traps_total", "counter", "Page faults the kernel reported as reads.",
-		func(p PagerKind) any { return p.ReadTraps })
-	byKind("sproutfs_pager_store_traps_total", "counter",
+	byKind("sproutfs_pager_read_traps_total", Counter, "Page faults the kernel reported as reads.",
+		func(p PagerKind) float64 { return float(p.ReadTraps) })
+	byKind("sproutfs_pager_store_traps_total", Counter,
 		"Page faults the kernel reported as stores into a page not in the page tables.",
-		func(p PagerKind) any { return p.StoreTraps })
-	byKind("sproutfs_pager_protect_traps_total", "counter",
+		func(p PagerKind) float64 { return float(p.StoreTraps) })
+	byKind("sproutfs_pager_protect_traps_total", Counter,
 		"Page faults the kernel reported as stores into a write-protected page.",
-		func(p PagerKind) any { return p.ProtectTraps })
-	byKind("sproutfs_pager_given_back_pages_total", "counter",
+		func(p PagerKind) float64 { return float(p.ProtectTraps) })
+	byKind("sproutfs_pager_given_back_pages_total", Counter,
 		"Unchanged copies given back to the page they were copied from without a checkpoint.",
-		func(p PagerKind) any { return p.GivenBackPages })
-	byKind("sproutfs_pager_revocations_total", "counter", "Commands that took mappings away from a VMM.",
-		func(p PagerKind) any { return p.Revocations })
-	byKind("sproutfs_pager_revoked_pages_total", "counter", "Pages those commands took away.",
-		func(p PagerKind) any { return p.RevokedPages })
+		func(p PagerKind) float64 { return float(p.GivenBackPages) })
+	byKind("sproutfs_pager_revocations_total", Counter, "Commands that took mappings away from a VMM.",
+		func(p PagerKind) float64 { return float(p.Revocations) })
+	byKind("sproutfs_pager_revoked_pages_total", Counter, "Pages those commands took away.",
+		func(p PagerKind) float64 { return float(p.RevokedPages) })
 	// What an isolated arena copies between its files, which a shared arena
 	// never does.
-	byKind("sproutfs_pager_moved_pages_total", "counter",
+	byKind("sproutfs_pager_moved_pages_total", Counter,
 		"Published pages copied into the tenant's shared file because another memory region inherited them.",
-		func(p PagerKind) any { return p.MovedPages })
-	byKind("sproutfs_pager_fork_copies_total", "counter",
+		func(p PagerKind) float64 { return float(p.MovedPages) })
+	byKind("sproutfs_pager_fork_copies_total", Counter,
 		"Pages copied into a fork point's file for a child on this host.",
-		func(p PagerKind) any { return p.ForkCopies })
-	byKind("sproutfs_pager_tampered_total", "counter",
+		func(p PagerKind) float64 { return float(p.ForkCopies) })
+	byKind("sproutfs_pager_tampered_total", Counter,
 		"Moves whose copy did not hold the bytes the page's upload read.",
-		func(p PagerKind) any { return p.Tampered })
+		func(p PagerKind) float64 { return float(p.Tampered) })
 
 	// Why a guest stops making progress: a store held back for the dirty
 	// budget or the loss window, and a VMM out of mapping budget or faulting
 	// in a loop.
-	byKind("sproutfs_pager_dirty_waits_total", "counter", "Stores that waited for the dirty budget.",
-		func(p PagerKind) any { return p.DirtyWaits })
-	byKind("sproutfs_pager_checkpoint_requests_total", "counter",
+	byKind("sproutfs_pager_dirty_waits_total", Counter, "Stores that waited for the dirty budget.",
+		func(p PagerKind) float64 { return float(p.DirtyWaits) })
+	byKind("sproutfs_pager_checkpoint_requests_total", Counter,
 		"Checkpoints a store waiting for the dirty budget asked for out of the interval's turn.",
-		func(p PagerKind) any { return p.CheckpointRequests })
-	byKind("sproutfs_pager_dirty_stalls_total", "counter",
+		func(p PagerKind) float64 { return float(p.CheckpointRequests) })
+	byKind("sproutfs_pager_dirty_stalls_total", Counter,
 		"Stores no checkpoint could admit, whose VM was stopped.",
-		func(p PagerKind) any { return p.DirtyStalls })
-	byKind("sproutfs_pager_window_waits_total", "counter",
+		func(p PagerKind) float64 { return float(p.DirtyStalls) })
+	byKind("sproutfs_pager_window_waits_total", Counter,
 		"Stores that waited because their VM had held a write no checkpoint covers for longer than the loss window.",
-		func(p PagerKind) any { return p.WindowWaits })
-	byKind("sproutfs_pager_window_stalls_total", "counter",
+		func(p PagerKind) float64 { return float(p.WindowWaits) })
+	byKind("sproutfs_pager_window_stalls_total", Counter,
 		"Stores past the loss window no checkpoint was ever going to cover, whose VM was stopped.",
-		func(p PagerKind) any { return p.WindowStalls })
-	byKind("sproutfs_pager_refused_mappings_total", "counter",
+		func(p PagerKind) float64 { return float(p.WindowStalls) })
+	byKind("sproutfs_pager_refused_mappings_total", Counter,
 		"Faults a VMM refused a mapping command for, which is a VMM out of mapping budget.",
-		func(p PagerKind) any { return p.RefusedMappings })
-	byKind("sproutfs_pager_repeated_faults_total", "counter",
+		func(p PagerKind) float64 { return float(p.RefusedMappings) })
+	byKind("sproutfs_pager_repeated_faults_total", Counter,
 		"Faults a VMM took again on pages already mapped for it.",
-		func(p PagerKind) any { return p.RepeatedFaults })
-	byKind("sproutfs_pager_paced_faults_total", "counter",
+		func(p PagerKind) float64 { return float(p.RepeatedFaults) })
+	byKind("sproutfs_pager_paced_faults_total", Counter,
 		"Repeated faults that waited for their VMM's budget of them.",
-		func(p PagerKind) any { return p.PacedFaults })
-	byKind("sproutfs_pager_prefetched_pages_total", "counter",
+		func(p PagerKind) float64 { return float(p.PacedFaults) })
+	byKind("sproutfs_pager_prefetched_pages_total", Counter,
 		"Pages the prefetches behind faults landed: the rest of each fault's run, read behind its own page.",
-		func(p PagerKind) any { return p.PrefetchedPages })
-	byKind("sproutfs_pager_prefetch_waits_total", "counter",
+		func(p PagerKind) float64 { return float(p.PrefetchedPages) })
+	byKind("sproutfs_pager_prefetch_waits_total", Counter,
 		"Faults that waited for a prefetch already reading their page.",
-		func(p PagerKind) any { return p.PrefetchWaits })
-	byKind("sproutfs_pager_prefetch_cancelled_total", "counter",
+		func(p PagerKind) float64 { return float(p.PrefetchWaits) })
+	byKind("sproutfs_pager_prefetch_cancelled_total", Counter,
 		"Prefetches an allocation cancelled to take their slots rather than evict a page a guest maps.",
-		func(p PagerKind) any { return p.PrefetchCancelled })
+		func(p PagerKind) float64 { return float(p.PrefetchCancelled) })
 	histogramByKind := func(name, help string, value func(PagerKind) Latency) {
-		fmt.Fprintf(&out, "# HELP %s %s\n# TYPE %s histogram\n", name, help, name)
-		for _, kind := range kinds {
-			histogram(&out, name, fmt.Sprintf("kind=%q", kind.name), value(kind.pager))
+		samples := make([]Sample, 0, len(kinds))
+		for _, k := range kinds {
+			samples = append(samples, latencySample(value(k.pager), Label{"kind", k.name}))
 		}
+		e.family(name, Histogram, help, samples...)
 	}
 	histogramByKind("sproutfs_pager_fault_seconds",
 		"How long each fault took, from the kernel's report to the guest resuming.",
@@ -190,27 +258,20 @@ func Metrics(status Status) string {
 
 	// What the interval checkpoints did, which is what makes a running
 	// guest durable. The loss window says something is wrong; these say what.
-	write("sproutfs_checkpoint_attempts_total", "counter", "Interval checkpoints this host began.",
-		status.Checkpoints.Attempts)
-	fmt.Fprintf(&out, "# HELP sproutfs_checkpoints_total Interval checkpoints that ended, by how.\n"+
-		"# TYPE sproutfs_checkpoints_total counter\n")
-	for _, outcome := range []struct {
-		name  string
-		count uint64
-	}{
-		{"published", status.Checkpoints.Published}, {"capture_failed", status.Checkpoints.CaptureFailed},
-		{"publish_failed", status.Checkpoints.PublishFailed}, {"fenced", status.Checkpoints.Fenced},
-	} {
-		fmt.Fprintf(&out, "sproutfs_checkpoints_total{outcome=%q} %d\n", outcome.name, outcome.count)
-	}
-	write("sproutfs_checkpoint_uploaded_bytes_total", "counter",
-		"Bytes the published interval checkpoints uploaded.", status.Checkpoints.UploadedBytes)
-	fmt.Fprintf(&out, "# HELP sproutfs_checkpoint_pause_seconds How long each interval checkpoint paused its guest.\n"+
-		"# TYPE sproutfs_checkpoint_pause_seconds histogram\n")
-	histogram(&out, "sproutfs_checkpoint_pause_seconds", "", status.Checkpoints.Pause)
-	fmt.Fprintf(&out, "# HELP sproutfs_checkpoint_upload_seconds How long each interval checkpoint took to publish, behind the running guest.\n"+
-		"# TYPE sproutfs_checkpoint_upload_seconds histogram\n")
-	histogram(&out, "sproutfs_checkpoint_upload_seconds", "", status.Checkpoints.Upload)
+	e.one("sproutfs_checkpoint_attempts_total", Counter, "Interval checkpoints this host began.",
+		float(status.Checkpoints.Attempts))
+	e.family("sproutfs_checkpoints_total", Counter, "Interval checkpoints that ended, by how.",
+		sample(float(status.Checkpoints.Published), Label{"outcome", "published"}),
+		sample(float(status.Checkpoints.CaptureFailed), Label{"outcome", "capture_failed"}),
+		sample(float(status.Checkpoints.PublishFailed), Label{"outcome", "publish_failed"}),
+		sample(float(status.Checkpoints.Fenced), Label{"outcome", "fenced"}))
+	e.one("sproutfs_checkpoint_uploaded_bytes_total", Counter,
+		"Bytes the published interval checkpoints uploaded.", float(status.Checkpoints.UploadedBytes))
+	e.family("sproutfs_checkpoint_pause_seconds", Histogram, "How long each interval checkpoint paused its guest.",
+		latencySample(status.Checkpoints.Pause))
+	e.family("sproutfs_checkpoint_upload_seconds", Histogram,
+		"How long each interval checkpoint took to publish, behind the running guest.",
+		latencySample(status.Checkpoints.Upload))
 
 	// What the host did with its VMs. A drain's migrations happen just before
 	// its host exits and are never scraped there: its destinations' receives
@@ -223,39 +284,32 @@ func Metrics(status Status) string {
 		{"sproutfs_forks_total", "Forks this host took of a VM it runs, by outcome.", status.Lifecycle.Forks},
 		{"sproutfs_receives_total", "Migrated and forked VMs this host took in, by outcome.", status.Lifecycle.Receives},
 	} {
-		fmt.Fprintf(&out, "# HELP %s %s\n# TYPE %s counter\n", handovers.name, handovers.help, handovers.name)
-		fmt.Fprintf(&out, "%s{outcome=\"succeeded\"} %d\n%s{outcome=\"failed\"} %d\n", handovers.name,
-			handovers.outcomes.Succeeded, handovers.name, handovers.outcomes.Failed)
+		e.outcomes(handovers.name, handovers.help, handovers.outcomes)
 	}
-	fmt.Fprintf(&out, "# HELP sproutfs_received_pause_seconds What each guest this host took in paid, from the source's pause to its resume here.\n"+
-		"# TYPE sproutfs_received_pause_seconds histogram\n")
-	histogram(&out, "sproutfs_received_pause_seconds", `kind="migration"`, status.Lifecycle.MigrationPause)
-	histogram(&out, "sproutfs_received_pause_seconds", `kind="fork"`, status.Lifecycle.ForkPause)
-	fmt.Fprintf(&out, "# HELP sproutfs_vms_given_up_total VMs this host gave up, by why.\n"+
-		"# TYPE sproutfs_vms_given_up_total counter\n"+
-		"sproutfs_vms_given_up_total{reason=\"vmm_ended\"} %d\n"+
-		"sproutfs_vms_given_up_total{reason=\"fenced\"} %d\n"+
-		"sproutfs_vms_given_up_total{reason=\"stopped_for_a_bound\"} %d\n",
-		status.Lifecycle.Deaths, status.Lifecycle.Fenced, status.Lifecycle.Stopped)
+	e.family("sproutfs_received_pause_seconds", Histogram,
+		"What each guest this host took in paid, from the source's pause to its resume here.",
+		latencySample(status.Lifecycle.MigrationPause, Label{"kind", "migration"}),
+		latencySample(status.Lifecycle.ForkPause, Label{"kind", "fork"}))
+	e.family("sproutfs_vms_given_up_total", Counter, "VMs this host gave up, by why.",
+		sample(float(status.Lifecycle.Deaths), Label{"reason", "vmm_ended"}),
+		sample(float(status.Lifecycle.Fenced), Label{"reason", "fenced"}),
+		sample(float(status.Lifecycle.Stopped), Label{"reason", "stopped_for_a_bound"}))
 
 	// Template imports: the imports this host wrote, what each took, and every
 	// byte of guest image it read, which is what a host start costs.
-	fmt.Fprintf(&out, "# HELP sproutfs_template_imports_total Templates this host imported, by outcome.\n"+
-		"# TYPE sproutfs_template_imports_total counter\n"+
-		"sproutfs_template_imports_total{outcome=\"succeeded\"} %d\n"+
-		"sproutfs_template_imports_total{outcome=\"failed\"} %d\n",
-		status.Imports.Outcomes.Succeeded, status.Imports.Outcomes.Failed)
-	fmt.Fprintf(&out, "# HELP sproutfs_template_import_seconds How long each import took, from its image's digest to its pin.\n"+
-		"# TYPE sproutfs_template_import_seconds histogram\n")
-	histogram(&out, "sproutfs_template_import_seconds", "", status.Imports.Latency)
-	write("sproutfs_image_read_bytes_total", "counter",
-		"Guest image bytes this host read, for a digest or an import.", status.Imports.ImageBytes)
+	e.outcomes("sproutfs_template_imports_total", "Templates this host imported, by outcome.", status.Imports.Outcomes)
+	e.family("sproutfs_template_import_seconds", Histogram,
+		"How long each import took, from its image's digest to its pin.", latencySample(status.Imports.Latency))
+	e.one("sproutfs_image_read_bytes_total", Counter,
+		"Guest image bytes this host read, for a digest or an import.", float(status.Imports.ImageBytes))
 
-	write("sproutfs_pages_requests_total", "counter",
-		"Page requests this host's peer server has answered.", status.Pages.Requests)
-	write("sproutfs_pages_served_total", "counter", "Pages served to a peer.", status.Pages.Served)
-	write("sproutfs_pages_absent_total", "counter", "Page requests for a page this host does not hold.", status.Pages.Absent)
-	write("sproutfs_pages_refused_total", "counter", "Page requests refused, which is a peer at its budget.", status.Pages.Refused)
+	e.one("sproutfs_pages_requests_total", Counter,
+		"Page requests this host's peer server has answered.", float(status.Pages.Requests))
+	e.one("sproutfs_pages_served_total", Counter, "Pages served to a peer.", float(status.Pages.Served))
+	e.one("sproutfs_pages_absent_total", Counter, "Page requests for a page this host does not hold.",
+		float(status.Pages.Absent))
+	e.one("sproutfs_pages_refused_total", Counter, "Page requests refused, which is a peer at its budget.",
+		float(status.Pages.Refused))
 	up, down, incompatible := 0, 0, 0
 	for _, peer := range status.Peers {
 		switch {
@@ -267,272 +321,140 @@ func Metrics(status Status) string {
 			up++
 		}
 	}
-	fmt.Fprintf(&out, "# HELP sproutfs_peers Hosts this host has asked anything of, by what its table of peers knows of them.\n"+
-		"# TYPE sproutfs_peers gauge\n"+
-		"sproutfs_peers{state=\"up\"} %d\n"+
-		"sproutfs_peers{state=\"down\"} %d\n"+
-		"sproutfs_peers{state=\"incompatible\"} %d\n", up, down, incompatible)
+	e.family("sproutfs_peers", Gauge, "Hosts this host has asked anything of, by what its table of peers knows of them.",
+		sample(float(up), Label{"state", "up"}), sample(float(down), Label{"state", "down"}),
+		sample(float(incompatible), Label{"state", "incompatible"}))
 
-	write("sproutfs_memory_limit_bytes", "gauge", "The RAM allotment the pager takes its pages from.",
-		status.Resources.MemoryLimit)
-	write("sproutfs_memory_used_bytes", "gauge", "How much of that allotment is taken.", status.Resources.MemoryUsed)
-	write("sproutfs_cache_limit_bytes", "gauge", "The page cache's own cap, which nothing else draws on.",
-		status.Resources.CacheLimit)
-	write("sproutfs_cache_used_bytes", "gauge", "How much of the page cache is resident.", status.Resources.CacheUsed)
-	write("sproutfs_cache_disk_limit_bytes", "gauge", "The page cache's disk, which holds what pulls copy.",
-		status.Resources.CacheDiskLimit)
-	write("sproutfs_cache_disk_used_bytes", "gauge", "How much of the page cache's disk the pulls hold.",
-		status.Resources.CacheDiskUsed)
-	cacheMemoryMetrics(&out, status.CacheMemory)
-	cacheDiskMetrics(&out, status.CacheDisk)
-	cacheFillMetrics(&out, status.CacheFill)
-	cacheReadMetrics(&out, status.CacheRead)
-	hotTierMetrics(&out, status.HotTier)
-	diskMetrics(&out, status.Disk)
+	e.one("sproutfs_memory_limit_bytes", Gauge, "The RAM allotment the pager takes its pages from.",
+		float(status.Resources.MemoryLimit))
+	e.one("sproutfs_memory_used_bytes", Gauge, "How much of that allotment is taken.",
+		float(status.Resources.MemoryUsed))
+	e.one("sproutfs_cache_limit_bytes", Gauge, "The page cache's own cap, which nothing else draws on.",
+		float(status.Resources.CacheLimit))
+	e.one("sproutfs_cache_used_bytes", Gauge, "How much of the page cache is resident.",
+		float(status.Resources.CacheUsed))
+	e.one("sproutfs_cache_disk_limit_bytes", Gauge, "The page cache's disk, which holds what pulls copy.",
+		float(status.Resources.CacheDiskLimit))
+	e.one("sproutfs_cache_disk_used_bytes", Gauge, "How much of the page cache's disk the pulls hold.",
+		float(status.Resources.CacheDiskUsed))
+	e.cacheMemory(status.CacheMemory)
+	e.cacheDisk(status.CacheDisk)
+	e.cacheFill(status.CacheFill)
+	e.cacheRead(status.CacheRead)
+	e.hotTier(status.HotTier)
+	e.disk(status.Disk)
 
-	storeMetrics(&out, "sproutfs_store", "Object store", status.Store)
+	e.store("sproutfs_store", "Object store", status.Store)
 	if status.HotTierStore != nil {
-		storeMetrics(&out, "sproutfs_hot_tier_store", "Hot tier bucket", *status.HotTierStore)
+		e.store("sproutfs_hot_tier_store", "Hot tier bucket", *status.HotTierStore)
 	}
-	return out.String()
+	return e.families
 }
 
-// lossWindow reduces the per-VM report to the two numbers a scrape carries: the
-// widest window on this host, and how many VMs are past theirs.
-// diskBindings are the goals a disk limiter can report as binding, each a
-// series of its own so that a dashboard can show which one sets the cache's
-// share.
-var diskBindings = []string{"free-bytes", "free-percent", "used-bytes", "filesystem"}
+// exposition collects the families in the order Metrics writes them.
+type exposition struct {
+	families []MetricFamily
+}
 
-// diskMetrics writes what the disk limiter chose: the filesystem as it read
-// it, the floor and band it keeps, what the host promised, the cache's share
-// and the goal that set it, and the cache's write budget.
-func diskMetrics(out *strings.Builder, disk Disk) {
-	write := func(name, kind, help string, value any) {
-		fmt.Fprintf(out, "# HELP %s %s\n# TYPE %s %s\n%s %v\n", name, help, name, kind, name, value)
-	}
-	write("sproutfs_disk_total_bytes", "gauge", "The size of the filesystem the host writes to, as last read.",
-		disk.TotalBytes)
-	write("sproutfs_disk_available_bytes", "gauge", "What the filesystem had available, as last read.",
-		disk.AvailableBytes)
-	write("sproutfs_disk_smooth_free_bytes", "gauge", "What the filesystem has free, smoothed, as the limiter acts on it.",
-		disk.SmoothFreeBytes)
-	write("sproutfs_disk_floor_bytes", "gauge", "What the free-space goals keep free.", disk.FloorBytes)
-	write("sproutfs_disk_reserve_bytes", "gauge", "What the cache leaves free above the floor for promises.",
-		disk.ReserveBytes)
-	write("sproutfs_disk_band_bytes", "gauge", "How far above the floor and the reserve the cache is kept.",
-		disk.BandBytes)
-	fmt.Fprintf(out, "# HELP sproutfs_disk_promised_bytes What each user that cannot give space back is promised.\n"+
-		"# TYPE sproutfs_disk_promised_bytes gauge\n")
-	for _, promise := range disk.Promises {
-		fmt.Fprintf(out, "sproutfs_disk_promised_bytes{user=%q} %d\n", promise.Name, promise.PromisedBytes)
-	}
-	fmt.Fprintf(out, "# HELP sproutfs_disk_allocated_bytes What each user that cannot give space back holds.\n"+
-		"# TYPE sproutfs_disk_allocated_bytes gauge\n")
-	for _, promise := range disk.Promises {
-		fmt.Fprintf(out, "sproutfs_disk_allocated_bytes{user=%q} %d\n", promise.Name, promise.AllocatedBytes)
-	}
-	write("sproutfs_disk_cache_share_bytes", "gauge",
-		"What the cache may hold, below zero when the promises do not fit.", disk.CacheShareBytes)
-	write("sproutfs_disk_cache_held_bytes", "gauge", "What the cache holds.", disk.CacheHeldBytes)
-	fmt.Fprintf(out, "# HELP sproutfs_disk_binding The goal that sets the cache's share.\n"+
-		"# TYPE sproutfs_disk_binding gauge\n")
-	for _, binding := range diskBindings {
-		value := 0
-		if binding == disk.Binding {
-			value = 1
+func (e *exposition) family(name string, kind MetricKind, help string, samples ...Sample) {
+	e.families = append(e.families, MetricFamily{Name: name, Help: help, Kind: kind, Samples: samples})
+}
+
+// one adds a family of one sample with no labels.
+func (e *exposition) one(name string, kind MetricKind, help string, value float64) {
+	e.family(name, kind, help, sample(value))
+}
+
+// outcomes adds a counter of handovers or imports by outcome.
+func (e *exposition) outcomes(name, help string, outcomes Outcomes) {
+	e.family(name, Counter, help,
+		sample(float(outcomes.Succeeded), Label{"outcome", "succeeded"}),
+		sample(float(outcomes.Failed), Label{"outcome", "failed"}))
+}
+
+func sample(value float64, labels ...Label) Sample {
+	return Sample{Labels: labels, Value: value}
+}
+
+// number is every type a Status field counts in.
+type number interface {
+	~int | ~int32 | ~int64 | ~uint | ~uint32 | ~uint64 | ~float64
+}
+
+// float is a Status field as a sample's value. A count past 2^53 loses its low
+// digits, as it would in any Prometheus client.
+func float[N number](n N) float64 { return float64(n) }
+
+// latencySample is a Latency as a histogram sample: the cumulative count at
+// each bucket's upper bound, in seconds, and the sum and the count.
+func latencySample(l Latency, labels ...Label) Sample {
+	s := Sample{Labels: labels, Sum: float64(l.TotalNS) / 1e9, Count: l.Count,
+		Buckets: make([]Bucket, 0, LatencyBuckets-1)}
+	var cumulative uint64
+	for i := range LatencyBuckets - 1 {
+		if i < len(l.Buckets) {
+			cumulative += l.Buckets[i]
 		}
-		fmt.Fprintf(out, "sproutfs_disk_binding{goal=%q} %d\n", binding, value)
+		upper := LatencyBucketUpperNS(i)
+		if i == 0 {
+			upper++ // the first bucket is every observation under a microsecond
+		}
+		s.Buckets = append(s.Buckets, Bucket{UpperBound: float64(upper) / 1e9, Count: cumulative})
 	}
-	ready := 1
-	if disk.Unready != "" {
-		ready = 0
-	}
-	write("sproutfs_disk_promises_fit", "gauge",
-		"One while the host's promises fit under its goals with an empty cache, and zero when they do not.", ready)
-	write("sproutfs_disk_device_written_bytes_total", "counter",
-		"What the device wrote since the host started, by every writer.", disk.Writes.WrittenBytes)
-	write("sproutfs_disk_cache_admitted_bytes_total", "counter",
-		"What the cache was admitted to write.", disk.Writes.AdmittedBytes)
-	write("sproutfs_disk_write_budget_left_bytes", "gauge",
-		"What the cache's write budget has left, below zero when the device wrote past it.", disk.Writes.LeftBytes)
-	fmt.Fprintf(out, "# HELP sproutfs_disk_cache_writes_refused_total The cache's writes the budget refused, by priority.\n"+
-		"# TYPE sproutfs_disk_cache_writes_refused_total counter\n")
-	for priority, refused := range disk.Writes.Refused {
-		fmt.Fprintf(out, "sproutfs_disk_cache_writes_refused_total{priority=\"%d\"} %d\n", priority, refused)
+	return s
+}
+
+// write writes the family as Prometheus text: its help and type, then each
+// sample, a histogram's as its buckets, +Inf, its sum and its count.
+func (f MetricFamily) write(out *strings.Builder) {
+	fmt.Fprintf(out, "# HELP %s %s\n# TYPE %s %s\n", f.Name, helpEscaper.Replace(f.Help), f.Name, f.Kind)
+	for _, s := range f.Samples {
+		if f.Kind != Histogram {
+			fmt.Fprintf(out, "%s%s %s\n", f.Name, labelText(s.Labels), value(s.Value))
+			continue
+		}
+		with := func(le string) string { return labelText(append(slices.Clip(s.Labels), Label{"le", le})) }
+		for _, bucket := range s.Buckets {
+			fmt.Fprintf(out, "%s_bucket%s %d\n", f.Name, with(seconds(bucket.UpperBound)), bucket.Count)
+		}
+		fmt.Fprintf(out, "%s_bucket%s %d\n", f.Name, with("+Inf"), s.Count)
+		fmt.Fprintf(out, "%s_sum%s %s\n", f.Name, labelText(s.Labels), seconds(s.Sum))
+		fmt.Fprintf(out, "%s_count%s %d\n", f.Name, labelText(s.Labels), s.Count)
 	}
 }
 
-// cacheMemoryMetrics writes what the page cache's memory tier holds and what
-// it served, in pages and page tables.
-func cacheMemoryMetrics(out *strings.Builder, memory CacheMemory) {
-	fmt.Fprintf(out, "# HELP sproutfs_cache_memory_entries The pages and page tables the page cache holds in memory.\n"+
-		"# TYPE sproutfs_cache_memory_entries gauge\nsproutfs_cache_memory_entries %d\n", memory.Entries)
-	fmt.Fprintf(out, "# HELP sproutfs_cache_memory_page_tables The segments' page tables the page cache holds "+
-		"decoded in memory.\n# TYPE sproutfs_cache_memory_page_tables gauge\nsproutfs_cache_memory_page_tables %d\n",
-		memory.Tables)
-	fmt.Fprintf(out, "# HELP sproutfs_cache_memory_page_table_bytes What the page tables the page cache holds "+
-		"are charged.\n# TYPE sproutfs_cache_memory_page_table_bytes gauge\nsproutfs_cache_memory_page_table_bytes %d\n",
-		memory.TableBytes)
-	fmt.Fprintf(out, "# HELP sproutfs_cache_memory_page_table_lookups_total Lookups of segments' page tables, by "+
-		"outcome: answered by a held table, a fetch and decode of the segment, or a table a publication kept.\n"+
-		"# TYPE sproutfs_cache_memory_page_table_lookups_total counter\n"+
-		"sproutfs_cache_memory_page_table_lookups_total{outcome=\"hit\"} %d\n"+
-		"sproutfs_cache_memory_page_table_lookups_total{outcome=\"load\"} %d\n"+
-		"sproutfs_cache_memory_page_table_lookups_total{outcome=\"kept\"} %d\n",
-		memory.TableHits, memory.TableLoads, memory.TableKept)
-	fmt.Fprintf(out, "# HELP sproutfs_cache_memory_reads_total Reads of pages from the page cache's memory, by outcome: "+
-		"served from it, fetched from the disk, the cluster or the store, or joined to a fetch in flight.\n"+
-		"# TYPE sproutfs_cache_memory_reads_total counter\n"+
-		"sproutfs_cache_memory_reads_total{outcome=\"hit\"} %d\n"+
-		"sproutfs_cache_memory_reads_total{outcome=\"miss\"} %d\n"+
-		"sproutfs_cache_memory_reads_total{outcome=\"coalesced\"} %d\n", memory.Hits, memory.Misses, memory.Coalesced)
-	fmt.Fprintf(out, "# HELP sproutfs_cache_memory_evictions_total Entries the page cache's memory gave up.\n"+
-		"# TYPE sproutfs_cache_memory_evictions_total counter\nsproutfs_cache_memory_evictions_total %d\n",
-		memory.Evictions)
-}
-
-// cacheDiskMetrics writes what the page cache's disk holds, what it served
-// and what the host read back from it when it started. A host that keeps no
-// cache disk reports zeroes.
-func cacheDiskMetrics(out *strings.Builder, disk *CacheDisk) {
-	var held CacheDisk
-	if disk != nil {
-		held = *disk
-	}
-	write := func(name, kind, help string, value any) {
-		fmt.Fprintf(out, "# HELP %s %s\n# TYPE %s %s\n%s %v\n", name, help, name, kind, name, value)
-	}
-	write("sproutfs_cache_disk_regions", "gauge", "The regions the page cache's disk holds.", held.Regions)
-	write("sproutfs_cache_disk_entries", "gauge", "The stripes of pages and segments the page cache's disk holds.",
-		held.Entries)
-	write("sproutfs_cache_disk_hits_total", "counter",
-		"Reads the page cache's disk served, which made no request of the object store.", held.Hits)
-	write("sproutfs_cache_disk_lost_total", "counter",
-		"Copies the page cache's disk could not give back intact, which the object store served instead.", held.Lost)
-	write("sproutfs_cache_disk_evicted_regions_total", "counter", "Regions the page cache's disk gave back.",
-		held.Evicted)
-	write("sproutfs_cache_disk_writes_refused_total", "counter", "Writes the page cache's disk refused.", held.Refused)
-	fmt.Fprintf(out, "# HELP sproutfs_cache_disk_opened_regions What the host did with the regions it found in its cache's file when it started.\n"+
-		"# TYPE sproutfs_cache_disk_opened_regions gauge\n")
-	for _, opened := range []struct {
-		how     string
-		regions uint64
-	}{{"tables", held.Opened.FromTables}, {"scanned", held.Opened.Scanned}, {"given-back", held.Opened.GivenBack}} {
-		fmt.Fprintf(out, "sproutfs_cache_disk_opened_regions{how=%q} %d\n", opened.how, opened.regions)
-	}
-}
-
-// FillDropReasons is every reason a fill drops stripes for, in the order
-// /metrics lists them.
-var FillDropReasons = []string{"queue", "rate", "budget", "busy", "down", "stale", "peer", "disk", "failed"}
-
-// cacheFillMetrics writes what this host's fills of the cluster's disk cache
-// did. A host that keeps no cache disk reports zeroes.
-func cacheFillMetrics(out *strings.Builder, fill *CacheFill) {
-	var did CacheFill
-	if fill != nil {
-		did = *fill
-	}
-	write := func(name, kind, help string, value any) {
-		fmt.Fprintf(out, "# HELP %s %s\n# TYPE %s %s\n%s %v\n", name, help, name, kind, name, value)
-	}
-	fmt.Fprintf(out, "# HELP sproutfs_cache_fills_total Windows this host filled the cluster's cache with, by what it read them for.\n"+
-		"# TYPE sproutfs_cache_fills_total counter\n"+
-		"sproutfs_cache_fills_total{from=\"read\"} %d\n"+
-		"sproutfs_cache_fills_total{from=\"publication\"} %d\n", did.FromReads, did.FromPublications)
-	write("sproutfs_cache_fills_without_right_total", "counter",
-		"Windows this host read from the store and filled nothing of, for want of the fill right.", did.WithoutRight)
-	write("sproutfs_cache_fill_rights_granted_total", "counter",
-		"Fill rights this host's cache gave out as a window's rank 1.", did.RightsGranted)
-	write("sproutfs_cache_fill_stripes_sent_total", "counter",
-		"Stripes this host's keeps carried that their holders kept.", did.Sent)
-	write("sproutfs_cache_fill_bytes_sent_total", "counter", "Bytes of the keeps their holders kept.", did.SentBytes)
-	write("sproutfs_cache_fill_stripes_kept_total", "counter",
-		"Stripes fills wrote to this host's disk, its own and its peers' keeps.", did.Kept)
-	fmt.Fprintf(out, "# HELP sproutfs_cache_fill_stripes_dropped_total Stripes fills dropped, by why.\n"+
-		"# TYPE sproutfs_cache_fill_stripes_dropped_total counter\n")
-	for _, reason := range FillDropReasons {
-		fmt.Fprintf(out, "sproutfs_cache_fill_stripes_dropped_total{reason=%q} %d\n", reason, did.Dropped[reason])
-	}
-	write("sproutfs_cache_fill_stripes_duplicate_total", "counter",
-		"Stripes a fill or a keep carried that this host's cache held or was writing already.", did.Duplicates)
-	write("sproutfs_cache_keep_stripes_refused_total", "counter",
-		"Stripes of keeps refused: for a window this host's list does not rank its cache for, or that did not hold together.",
-		did.Refused)
-	write("sproutfs_cache_fill_queued_bytes", "gauge",
-		"What the queue of writes to this host's disk holds now.", did.QueuedBytes)
-	write("sproutfs_cache_fill_queue_limit_bytes", "gauge",
-		"The bound of the queue of writes to this host's disk.", did.QueueBytes)
-	write("sproutfs_cache_fill_queued_peak_bytes", "gauge",
-		"The most the queue of writes to this host's disk has held.", did.QueuedPeakBytes)
-	write("sproutfs_cache_fill_publication_waits_total", "counter",
-		"Waits of publications' fills: for room in the queue, the rate, the background budget or a busy holder.",
-		did.PublicationWaits)
-	write("sproutfs_cache_fill_publication_waited_seconds_total", "counter",
-		"How long publications' fills waited in all.", did.PublicationWaitedSeconds)
-	write("sproutfs_cache_fill_publications_gave_up_total", "counter",
-		"Publications that waited out the bound for their fills and waited no more.", did.PublicationsGaveUp)
-}
-
-// HotTierFailures is every reason a read of the hot tier fails for, and
-// HotTierDropReasons every reason a fill of it is dropped for, in the order
-// /metrics lists them.
 var (
-	HotTierFailures    = []string{"error", "slow", "corrupt"}
-	HotTierDropReasons = []string{"queue", "rate", "read", "write", "closed"}
+	helpEscaper  = strings.NewReplacer(`\`, `\\`, "\n", `\n`)
+	labelEscaper = strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\n", `\n`)
 )
 
-// hotTierMetrics writes what this host's reads through the hot tier and its
-// fills of it did. A host with no hot tier reports zeroes.
-func hotTierMetrics(out *strings.Builder, hot *HotTier) {
-	var did HotTier
-	if hot != nil {
-		did = *hot
+// labelText is a sample's labels as the text writes them, empty for none.
+func labelText(labels []Label) string {
+	if len(labels) == 0 {
+		return ""
 	}
-	write := func(name, kind, help string, value any) {
-		fmt.Fprintf(out, "# HELP %s %s\n# TYPE %s %s\n%s %v\n", name, help, name, kind, name, value)
+	parts := make([]string, len(labels))
+	for i, label := range labels {
+		parts[i] = label.Name + `="` + labelEscaper.Replace(label.Value) + `"`
 	}
-	fmt.Fprintf(out, "# HELP sproutfs_hot_tier_reads_total Reads of checkpoint objects through the hot tier, by how they ended.\n"+
-		"# TYPE sproutfs_hot_tier_reads_total counter\n"+
-		"sproutfs_hot_tier_reads_total{result=\"hit\"} %d\n"+
-		"sproutfs_hot_tier_reads_total{result=\"miss\"} %d\n"+
-		"sproutfs_hot_tier_reads_total{result=\"skipped\"} %d\n", did.Hits, did.Misses, did.Skipped)
-	fmt.Fprintf(out, "# HELP sproutfs_hot_tier_failures_total Reads the hot tier failed, which the regional bucket served, by why.\n"+
-		"# TYPE sproutfs_hot_tier_failures_total counter\n")
-	for _, reason := range HotTierFailures {
-		fmt.Fprintf(out, "sproutfs_hot_tier_failures_total{reason=%q} %d\n", reason, did.Failed[reason])
+	return "{" + strings.Join(parts, ",") + "}"
+}
+
+// value is a counter's or a gauge's value as the text writes it: a whole number
+// without an exponent, anything else in Go's shortest form.
+func value(v float64) string {
+	if v == 0 {
+		return "0"
 	}
-	write("sproutfs_hot_tier_marked_down_total", "counter",
-		"Times the hot tier failed three reads in a row and reads skipped it for a while.", did.MarkedDown)
-	down := 0
-	if did.Down {
-		down = 1
+	if v == math.Trunc(v) && math.Abs(v) < 1<<53 {
+		return strconv.FormatFloat(v, 'f', -1, 64)
 	}
-	write("sproutfs_hot_tier_down", "gauge", "Whether reads skip the hot tier now.", down)
-	fmt.Fprintf(out, "# HELP sproutfs_hot_tier_fills_total Fills of the hot tier handed over and held, by what handed them over.\n"+
-		"# TYPE sproutfs_hot_tier_fills_total counter\n"+
-		"sproutfs_hot_tier_fills_total{from=\"read\"} %d\n"+
-		"sproutfs_hot_tier_fills_total{from=\"publication\"} %d\n", did.FromReads, did.FromPublications)
-	write("sproutfs_hot_tier_fills_sent_total", "counter", "Fills the hot tier took.", did.Sent)
-	write("sproutfs_hot_tier_fill_bytes_sent_total", "counter", "Bytes of the fills the hot tier took.", did.SentBytes)
-	write("sproutfs_hot_tier_fills_present_total", "counter",
-		"Fills that found the object in the hot tier already.", did.Present)
-	write("sproutfs_hot_tier_fills_duplicate_total", "counter",
-		"Misses of an object a fill was already held for.", did.Duplicates)
-	fmt.Fprintf(out, "# HELP sproutfs_hot_tier_fills_dropped_total Fills of the hot tier dropped, by why.\n"+
-		"# TYPE sproutfs_hot_tier_fills_dropped_total counter\n")
-	for _, reason := range HotTierDropReasons {
-		fmt.Fprintf(out, "sproutfs_hot_tier_fills_dropped_total{reason=%q} %d\n", reason, did.Dropped[reason])
-	}
-	write("sproutfs_hot_tier_head_checks_total", "counter",
-		"Sampled hits whose regional object was checked with a HEAD.", did.HeadChecks)
-	write("sproutfs_hot_tier_head_missing_total", "counter",
-		"Sampled hits whose regional object the regional bucket no longer held.", did.HeadMissing)
-	write("sproutfs_hot_tier_fill_queued_bytes", "gauge", "What the fills of the hot tier held now come to.",
-		did.QueuedBytes)
-	write("sproutfs_hot_tier_fill_queue_limit_bytes", "gauge", "The bound of the fills of the hot tier held.",
-		did.QueueBytes)
+	return fmt.Sprint(v)
+}
+
+// seconds is a duration in seconds as Prometheus writes it.
+func seconds(s float64) string {
+	return strconv.FormatFloat(s, 'g', -1, 64)
 }
 
 func lossWindow(vms []VM) (widest time.Duration, waiting int) {
@@ -545,118 +467,303 @@ func lossWindow(vms []VM) (widest time.Duration, waiting int) {
 	return widest, waiting
 }
 
-// histogram writes one Prometheus histogram series set: the cumulative count
-// at each bucket's upper bound, in seconds, then +Inf, the sum and the count.
-// labels are the series' own labels, empty for none.
-func histogram(out *strings.Builder, name, labels string, l Latency) {
-	with := func(label string) string {
-		if labels == "" {
-			return "{" + label + "}"
-		}
-		return "{" + labels + "," + label + "}"
+// diskBindings are the goals a disk limiter can report as binding, each a
+// series of its own so that a dashboard can show which one sets the cache's
+// share.
+var diskBindings = []string{"free-bytes", "free-percent", "used-bytes", "filesystem"}
+
+// disk adds what the disk limiter chose: the filesystem as it read it, the
+// floor and band it keeps, what the host promised, the cache's share and the
+// goal that set it, and the cache's write budget.
+func (e *exposition) disk(disk Disk) {
+	e.one("sproutfs_disk_total_bytes", Gauge, "The size of the filesystem the host writes to, as last read.",
+		float(disk.TotalBytes))
+	e.one("sproutfs_disk_available_bytes", Gauge, "What the filesystem had available, as last read.",
+		float(disk.AvailableBytes))
+	e.one("sproutfs_disk_smooth_free_bytes", Gauge, "What the filesystem has free, smoothed, as the limiter acts on it.",
+		float(disk.SmoothFreeBytes))
+	e.one("sproutfs_disk_floor_bytes", Gauge, "What the free-space goals keep free.", float(disk.FloorBytes))
+	e.one("sproutfs_disk_reserve_bytes", Gauge, "What the cache leaves free above the floor for promises.",
+		float(disk.ReserveBytes))
+	e.one("sproutfs_disk_band_bytes", Gauge, "How far above the floor and the reserve the cache is kept.",
+		float(disk.BandBytes))
+	promised := make([]Sample, 0, len(disk.Promises))
+	allocated := make([]Sample, 0, len(disk.Promises))
+	for _, promise := range disk.Promises {
+		promised = append(promised, sample(float(promise.PromisedBytes), Label{"user", promise.Name}))
+		allocated = append(allocated, sample(float(promise.AllocatedBytes), Label{"user", promise.Name}))
 	}
-	plain := ""
-	if labels != "" {
-		plain = "{" + labels + "}"
+	e.family("sproutfs_disk_promised_bytes", Gauge, "What each user that cannot give space back is promised.",
+		promised...)
+	e.family("sproutfs_disk_allocated_bytes", Gauge, "What each user that cannot give space back holds.",
+		allocated...)
+	e.one("sproutfs_disk_cache_share_bytes", Gauge,
+		"What the cache may hold, below zero when the promises do not fit.", float(disk.CacheShareBytes))
+	e.one("sproutfs_disk_cache_held_bytes", Gauge, "What the cache holds.", float(disk.CacheHeldBytes))
+	bindings := make([]Sample, 0, len(diskBindings))
+	for _, binding := range diskBindings {
+		bindings = append(bindings, sample(flag(binding == disk.Binding), Label{"goal", binding}))
 	}
-	var cumulative uint64
-	for i := range LatencyBuckets - 1 {
-		if i < len(l.Buckets) {
-			cumulative += l.Buckets[i]
-		}
-		upper := LatencyBucketUpperNS(i)
-		if i == 0 {
-			upper++ // the first bucket is every observation under a microsecond
-		}
-		fmt.Fprintf(out, "%s_bucket%s %d\n", name, with(fmt.Sprintf("le=%q", seconds(upper))), cumulative)
+	e.family("sproutfs_disk_binding", Gauge, "The goal that sets the cache's share.", bindings...)
+	e.one("sproutfs_disk_promises_fit", Gauge,
+		"One while the host's promises fit under its goals with an empty cache, and zero when they do not.",
+		flag(disk.Unready == ""))
+	e.one("sproutfs_disk_device_written_bytes_total", Counter,
+		"What the device wrote since the host started, by every writer.", float(disk.Writes.WrittenBytes))
+	e.one("sproutfs_disk_cache_admitted_bytes_total", Counter,
+		"What the cache was admitted to write.", float(disk.Writes.AdmittedBytes))
+	e.one("sproutfs_disk_write_budget_left_bytes", Gauge,
+		"What the cache's write budget has left, below zero when the device wrote past it.", float(disk.Writes.LeftBytes))
+	refused := make([]Sample, 0, len(disk.Writes.Refused))
+	for priority, count := range disk.Writes.Refused {
+		refused = append(refused, sample(float(count), Label{"priority", strconv.Itoa(priority)}))
 	}
-	fmt.Fprintf(out, "%s_bucket%s %d\n", name, with(`le="+Inf"`), l.Count)
-	fmt.Fprintf(out, "%s_sum%s %s\n", name, plain, seconds(l.TotalNS))
-	fmt.Fprintf(out, "%s_count%s %d\n", name, plain, l.Count)
+	e.family("sproutfs_disk_cache_writes_refused_total", Counter, "The cache's writes the budget refused, by priority.",
+		refused...)
 }
 
-// seconds is a nanosecond count as Prometheus writes a duration.
-func seconds(ns uint64) string {
-	return strconv.FormatFloat(float64(ns)/1e9, 'g', -1, 64)
+// flag is a condition as a gauge: one when it holds, zero when it does not.
+func flag(holds bool) float64 {
+	if holds {
+		return 1
+	}
+	return 0
 }
 
-// cacheReadMetrics writes what this host's reads of the cluster's disk cache
-// did, and what its peer server served of its cache. A host that keeps no
-// cache disk reports zeroes.
-func cacheReadMetrics(out *strings.Builder, read *CacheRead) {
+// cacheMemory adds what the page cache's memory tier holds and what it served,
+// in pages and page tables.
+func (e *exposition) cacheMemory(memory CacheMemory) {
+	e.one("sproutfs_cache_memory_entries", Gauge, "The pages and page tables the page cache holds in memory.",
+		float(memory.Entries))
+	e.one("sproutfs_cache_memory_page_tables", Gauge, "The segments' page tables the page cache holds decoded in memory.",
+		float(memory.Tables))
+	e.one("sproutfs_cache_memory_page_table_bytes", Gauge, "What the page tables the page cache holds are charged.",
+		float(memory.TableBytes))
+	e.family("sproutfs_cache_memory_page_table_lookups_total", Counter,
+		"Lookups of segments' page tables, by outcome: answered by a held table, a fetch and decode of the segment, or a table a publication kept.",
+		sample(float(memory.TableHits), Label{"outcome", "hit"}),
+		sample(float(memory.TableLoads), Label{"outcome", "load"}),
+		sample(float(memory.TableKept), Label{"outcome", "kept"}))
+	e.family("sproutfs_cache_memory_reads_total", Counter,
+		"Reads of pages from the page cache's memory, by outcome: served from it, fetched from the disk, the cluster or the store, or joined to a fetch in flight.",
+		sample(float(memory.Hits), Label{"outcome", "hit"}),
+		sample(float(memory.Misses), Label{"outcome", "miss"}),
+		sample(float(memory.Coalesced), Label{"outcome", "coalesced"}))
+	e.one("sproutfs_cache_memory_evictions_total", Counter, "Entries the page cache's memory gave up.",
+		float(memory.Evictions))
+}
+
+// cacheDisk adds what the page cache's disk holds, what it served and what the
+// host read back from it when it started. A host that keeps no cache disk
+// reports zeroes.
+func (e *exposition) cacheDisk(disk *CacheDisk) {
+	var held CacheDisk
+	if disk != nil {
+		held = *disk
+	}
+	e.one("sproutfs_cache_disk_regions", Gauge, "The regions the page cache's disk holds.", float(held.Regions))
+	e.one("sproutfs_cache_disk_entries", Gauge, "The stripes of pages and segments the page cache's disk holds.",
+		float(held.Entries))
+	e.one("sproutfs_cache_disk_hits_total", Counter,
+		"Reads the page cache's disk served, which made no request of the object store.", float(held.Hits))
+	e.one("sproutfs_cache_disk_lost_total", Counter,
+		"Copies the page cache's disk could not give back intact, which the object store served instead.",
+		float(held.Lost))
+	e.one("sproutfs_cache_disk_evicted_regions_total", Counter, "Regions the page cache's disk gave back.",
+		float(held.Evicted))
+	e.one("sproutfs_cache_disk_writes_refused_total", Counter, "Writes the page cache's disk refused.",
+		float(held.Refused))
+	e.family("sproutfs_cache_disk_opened_regions", Gauge,
+		"What the host did with the regions it found in its cache's file when it started.",
+		sample(float(held.Opened.FromTables), Label{"how", "tables"}),
+		sample(float(held.Opened.Scanned), Label{"how", "scanned"}),
+		sample(float(held.Opened.GivenBack), Label{"how", "given-back"}))
+}
+
+// FillDropReasons is every reason a fill drops stripes for, in the order
+// /metrics lists them.
+var FillDropReasons = []string{"queue", "rate", "budget", "busy", "down", "stale", "peer", "disk", "failed"}
+
+// byReason is a counter's samples for every reason in reasons, zero for a
+// reason counts does not hold.
+func byReason(reasons []string, counts map[string]uint64) []Sample {
+	samples := make([]Sample, 0, len(reasons))
+	for _, reason := range reasons {
+		samples = append(samples, sample(float(counts[reason]), Label{"reason", reason}))
+	}
+	return samples
+}
+
+// cacheFill adds what this host's fills of the cluster's disk cache did. A host
+// that keeps no cache disk reports zeroes.
+func (e *exposition) cacheFill(fill *CacheFill) {
+	var did CacheFill
+	if fill != nil {
+		did = *fill
+	}
+	e.family("sproutfs_cache_fills_total", Counter,
+		"Windows this host filled the cluster's cache with, by what it read them for.",
+		sample(float(did.FromReads), Label{"from", "read"}),
+		sample(float(did.FromPublications), Label{"from", "publication"}))
+	e.one("sproutfs_cache_fills_without_right_total", Counter,
+		"Windows this host read from the store and filled nothing of, for want of the fill right.",
+		float(did.WithoutRight))
+	e.one("sproutfs_cache_fill_rights_granted_total", Counter,
+		"Fill rights this host's cache gave out as a window's rank 1.", float(did.RightsGranted))
+	e.one("sproutfs_cache_fill_stripes_sent_total", Counter,
+		"Stripes this host's keeps carried that their holders kept.", float(did.Sent))
+	e.one("sproutfs_cache_fill_bytes_sent_total", Counter, "Bytes of the keeps their holders kept.",
+		float(did.SentBytes))
+	e.one("sproutfs_cache_fill_stripes_kept_total", Counter,
+		"Stripes fills wrote to this host's disk, its own and its peers' keeps.", float(did.Kept))
+	e.family("sproutfs_cache_fill_stripes_dropped_total", Counter, "Stripes fills dropped, by why.",
+		byReason(FillDropReasons, did.Dropped)...)
+	e.one("sproutfs_cache_fill_stripes_duplicate_total", Counter,
+		"Stripes a fill or a keep carried that this host's cache held or was writing already.", float(did.Duplicates))
+	e.one("sproutfs_cache_keep_stripes_refused_total", Counter,
+		"Stripes of keeps refused: for a window this host's list does not rank its cache for, or that did not hold together.",
+		float(did.Refused))
+	e.one("sproutfs_cache_fill_queued_bytes", Gauge,
+		"What the queue of writes to this host's disk holds now.", float(did.QueuedBytes))
+	e.one("sproutfs_cache_fill_queue_limit_bytes", Gauge,
+		"The bound of the queue of writes to this host's disk.", float(did.QueueBytes))
+	e.one("sproutfs_cache_fill_queued_peak_bytes", Gauge,
+		"The most the queue of writes to this host's disk has held.", float(did.QueuedPeakBytes))
+	e.one("sproutfs_cache_fill_publication_waits_total", Counter,
+		"Waits of publications' fills: for room in the queue, the rate, the background budget or a busy holder.",
+		float(did.PublicationWaits))
+	e.one("sproutfs_cache_fill_publication_waited_seconds_total", Counter,
+		"How long publications' fills waited in all.", did.PublicationWaitedSeconds)
+	e.one("sproutfs_cache_fill_publications_gave_up_total", Counter,
+		"Publications that waited out the bound for their fills and waited no more.", float(did.PublicationsGaveUp))
+}
+
+// HotTierFailures is every reason a read of the hot tier fails for, and
+// HotTierDropReasons every reason a fill of it is dropped for, in the order
+// /metrics lists them.
+var (
+	HotTierFailures    = []string{"error", "slow", "corrupt"}
+	HotTierDropReasons = []string{"queue", "rate", "read", "write", "closed"}
+)
+
+// hotTier adds what this host's reads through the hot tier and its fills of it
+// did. A host with no hot tier reports zeroes.
+func (e *exposition) hotTier(hot *HotTier) {
+	var did HotTier
+	if hot != nil {
+		did = *hot
+	}
+	e.family("sproutfs_hot_tier_reads_total", Counter,
+		"Reads of checkpoint objects through the hot tier, by how they ended.",
+		sample(float(did.Hits), Label{"result", "hit"}),
+		sample(float(did.Misses), Label{"result", "miss"}),
+		sample(float(did.Skipped), Label{"result", "skipped"}))
+	e.family("sproutfs_hot_tier_failures_total", Counter,
+		"Reads the hot tier failed, which the regional bucket served, by why.",
+		byReason(HotTierFailures, did.Failed)...)
+	e.one("sproutfs_hot_tier_marked_down_total", Counter,
+		"Times the hot tier failed three reads in a row and reads skipped it for a while.", float(did.MarkedDown))
+	e.one("sproutfs_hot_tier_down", Gauge, "Whether reads skip the hot tier now.", flag(did.Down))
+	e.family("sproutfs_hot_tier_fills_total", Counter,
+		"Fills of the hot tier handed over and held, by what handed them over.",
+		sample(float(did.FromReads), Label{"from", "read"}),
+		sample(float(did.FromPublications), Label{"from", "publication"}))
+	e.one("sproutfs_hot_tier_fills_sent_total", Counter, "Fills the hot tier took.", float(did.Sent))
+	e.one("sproutfs_hot_tier_fill_bytes_sent_total", Counter, "Bytes of the fills the hot tier took.",
+		float(did.SentBytes))
+	e.one("sproutfs_hot_tier_fills_present_total", Counter,
+		"Fills that found the object in the hot tier already.", float(did.Present))
+	e.one("sproutfs_hot_tier_fills_duplicate_total", Counter,
+		"Misses of an object a fill was already held for.", float(did.Duplicates))
+	e.family("sproutfs_hot_tier_fills_dropped_total", Counter, "Fills of the hot tier dropped, by why.",
+		byReason(HotTierDropReasons, did.Dropped)...)
+	e.one("sproutfs_hot_tier_head_checks_total", Counter,
+		"Sampled hits whose regional object was checked with a HEAD.", float(did.HeadChecks))
+	e.one("sproutfs_hot_tier_head_missing_total", Counter,
+		"Sampled hits whose regional object the regional bucket no longer held.", float(did.HeadMissing))
+	e.one("sproutfs_hot_tier_fill_queued_bytes", Gauge, "What the fills of the hot tier held now come to.",
+		float(did.QueuedBytes))
+	e.one("sproutfs_hot_tier_fill_queue_limit_bytes", Gauge, "The bound of the fills of the hot tier held.",
+		float(did.QueueBytes))
+}
+
+// cacheRead adds what this host's reads of the cluster's disk cache did, and
+// what its peer server served of its cache. A host that keeps no cache disk
+// reports zeroes.
+func (e *exposition) cacheRead(read *CacheRead) {
 	var did CacheRead
 	if read != nil {
 		did = *read
 	}
-	write := func(name, kind, help string, value any) {
-		fmt.Fprintf(out, "# HELP %s %s\n# TYPE %s %s\n%s %v\n", name, help, name, kind, name, value)
-	}
-	fmt.Fprintf(out, "# HELP sproutfs_cache_reads_total Envelopes this host read from the cluster's cache, by outcome.\n"+
-		"# TYPE sproutfs_cache_reads_total counter\n"+
-		"sproutfs_cache_reads_total{outcome=\"hit\"} %d\n"+
-		"sproutfs_cache_reads_total{outcome=\"miss\"} %d\n", did.Hits, did.Misses)
-	write("sproutfs_cache_read_own_hits_total", "counter",
-		"Envelopes this host's own stripes rebuilt alone, with no request.", did.OwnHits)
-	write("sproutfs_cache_read_earlier_hits_total", "counter",
-		"Envelopes rebuilt from stripes of a code the deployment used before its own.", did.EarlierHits)
-	write("sproutfs_cache_read_requests_total", "counter", "Stripe requests this host sent its peers.", did.Requests)
-	write("sproutfs_cache_read_replaced_total", "counter",
-		"Holders replaced at once for answering with nothing, BUSY or an error.", did.Replaced)
-	write("sproutfs_cache_read_second_requests_total", "counter",
-		"Reads that asked the rest of a window's ranks after the delay.", did.SecondRequests)
-	write("sproutfs_cache_read_refused_by_budget_total", "counter",
-		"Reads whose second request the budget refused.", did.RefusedByBudget)
-	fmt.Fprintf(out, "# HELP sproutfs_cache_read_store_hedges_total Reads past the bound that read the store as well, by outcome.\n"+
-		"# TYPE sproutfs_cache_read_store_hedges_total counter\n"+
-		"sproutfs_cache_read_store_hedges_total{outcome=\"won\"} %d\n"+
-		"sproutfs_cache_read_store_hedges_total{outcome=\"lost\"} %d\n"+
-		"sproutfs_cache_read_store_hedges_total{outcome=\"refused\"} %d\n",
-		did.StoreHedgesWon, did.StoreHedges-did.StoreHedgesWon, did.StoreHedgesRefused)
-	write("sproutfs_cache_read_wrong_stripes_total", "counter", "Stripes found wrong.", did.WrongStripes)
-	write("sproutfs_cache_read_drops_sent_total", "counter",
-		"Drops sent to the holders of stripes found wrong.", did.DropsSent)
-	write("sproutfs_cache_read_repairs_total", "counter",
-		"Stripes sent to ranks that lacked them, of indices no rank held.", did.Repairs)
-	write("sproutfs_cache_read_timeouts_total", "counter", "Stripe requests that timed out.", did.Timeouts)
-	write("sproutfs_cache_read_marked_down_total", "counter", "Hosts this host's reads marked down.", did.MarkedDown)
-	write("sproutfs_cache_read_mark_capped_total", "counter",
-		"Marks refused because a fifth of the list was marked down already.", did.MarkCapped)
-	write("sproutfs_cache_read_mark_cleared_total", "counter", "Marks a probe cleared.", did.MarkCleared)
-	write("sproutfs_cache_read_down_hosts", "gauge", "Hosts this host's reads have marked down now.", did.Down)
-	write("sproutfs_cache_read_head_checks_total", "counter",
-		"Sampled hits whose part was checked with a HEAD.", did.HeadChecks)
-	write("sproutfs_cache_read_head_missing_total", "counter",
-		"Sampled hits whose part the store no longer had.", did.HeadMissing)
+	e.family("sproutfs_cache_reads_total", Counter, "Envelopes this host read from the cluster's cache, by outcome.",
+		sample(float(did.Hits), Label{"outcome", "hit"}),
+		sample(float(did.Misses), Label{"outcome", "miss"}))
+	e.one("sproutfs_cache_read_own_hits_total", Counter,
+		"Envelopes this host's own stripes rebuilt alone, with no request.", float(did.OwnHits))
+	e.one("sproutfs_cache_read_earlier_hits_total", Counter,
+		"Envelopes rebuilt from stripes of a code the deployment used before its own.", float(did.EarlierHits))
+	e.one("sproutfs_cache_read_requests_total", Counter, "Stripe requests this host sent its peers.",
+		float(did.Requests))
+	e.one("sproutfs_cache_read_replaced_total", Counter,
+		"Holders replaced at once for answering with nothing, BUSY or an error.", float(did.Replaced))
+	e.one("sproutfs_cache_read_second_requests_total", Counter,
+		"Reads that asked the rest of a window's ranks after the delay.", float(did.SecondRequests))
+	e.one("sproutfs_cache_read_refused_by_budget_total", Counter,
+		"Reads whose second request the budget refused.", float(did.RefusedByBudget))
+	e.family("sproutfs_cache_read_store_hedges_total", Counter,
+		"Reads past the bound that read the store as well, by outcome.",
+		sample(float(did.StoreHedgesWon), Label{"outcome", "won"}),
+		sample(float(did.StoreHedges-did.StoreHedgesWon), Label{"outcome", "lost"}),
+		sample(float(did.StoreHedgesRefused), Label{"outcome", "refused"}))
+	e.one("sproutfs_cache_read_wrong_stripes_total", Counter, "Stripes found wrong.", float(did.WrongStripes))
+	e.one("sproutfs_cache_read_drops_sent_total", Counter,
+		"Drops sent to the holders of stripes found wrong.", float(did.DropsSent))
+	e.one("sproutfs_cache_read_repairs_total", Counter,
+		"Stripes sent to ranks that lacked them, of indices no rank held.", float(did.Repairs))
+	e.one("sproutfs_cache_read_timeouts_total", Counter, "Stripe requests that timed out.", float(did.Timeouts))
+	e.one("sproutfs_cache_read_marked_down_total", Counter, "Hosts this host's reads marked down.",
+		float(did.MarkedDown))
+	e.one("sproutfs_cache_read_mark_capped_total", Counter,
+		"Marks refused because a fifth of the list was marked down already.", float(did.MarkCapped))
+	e.one("sproutfs_cache_read_mark_cleared_total", Counter, "Marks a probe cleared.", float(did.MarkCleared))
+	e.one("sproutfs_cache_read_down_hosts", Gauge, "Hosts this host's reads have marked down now.", float(did.Down))
+	e.one("sproutfs_cache_read_head_checks_total", Counter,
+		"Sampled hits whose part was checked with a HEAD.", float(did.HeadChecks))
+	e.one("sproutfs_cache_read_head_missing_total", Counter,
+		"Sampled hits whose part the store no longer had.", float(did.HeadMissing))
 	// Each size class of read is a series of its own, labelled by the most
 	// bytes a read of it asks for.
-	classes := func(name, kind, help string, value func(CacheReadClass) any) {
-		fmt.Fprintf(out, "# HELP %s %s\n# TYPE %s %s\n", name, help, name, kind)
+	classes := func(name string, kind MetricKind, help string, value func(CacheReadClass) float64) {
+		samples := make([]Sample, 0, len(did.Classes))
 		for _, class := range did.Classes {
-			fmt.Fprintf(out, "%s{up_to_bytes=\"%d\"} %v\n", name, class.UpToBytes, value(class))
+			samples = append(samples, sample(value(class), Label{"up_to_bytes", strconv.FormatInt(class.UpToBytes, 10)}))
 		}
+		e.family(name, kind, help, samples...)
 	}
-	classes("sproutfs_cache_read_delay_seconds", "gauge",
+	classes("sproutfs_cache_read_delay_seconds", Gauge,
 		"The delay before a read of a size class asks the rest of a window's ranks.",
-		func(class CacheReadClass) any { return class.Delay.Seconds() })
-	classes("sproutfs_cache_read_bound_seconds", "gauge",
+		func(class CacheReadClass) float64 { return class.Delay.Seconds() })
+	classes("sproutfs_cache_read_bound_seconds", Gauge,
 		"The bound before a read of a size class reads the store too.",
-		func(class CacheReadClass) any { return class.Bound.Seconds() })
-	classes("sproutfs_cache_read_class_reads_total", "counter",
+		func(class CacheReadClass) float64 { return class.Bound.Seconds() })
+	classes("sproutfs_cache_read_class_reads_total", Counter,
 		"Reads of a size class that had their stripes, which its delay is drawn from.",
-		func(class CacheReadClass) any { return class.Reads })
-	write("sproutfs_cache_serve_reads_total", "counter",
-		"Reads of this host's stripes its peer server answered with them.", did.Served)
-	write("sproutfs_cache_serve_stripes_total", "counter", "Stripes this host served its peers.", did.ServedStripes)
-	write("sproutfs_cache_serve_bytes_total", "counter", "Bytes of stripes this host served its peers.", did.ServedBytes)
-	write("sproutfs_cache_serve_busy_total", "counter",
-		"Reads this host answered BUSY because its serving bandwidth was spent.", did.ServeBusy)
+		func(class CacheReadClass) float64 { return float(class.Reads) })
+	e.one("sproutfs_cache_serve_reads_total", Counter,
+		"Reads of this host's stripes its peer server answered with them.", float(did.Served))
+	e.one("sproutfs_cache_serve_stripes_total", Counter, "Stripes this host served its peers.",
+		float(did.ServedStripes))
+	e.one("sproutfs_cache_serve_bytes_total", Counter, "Bytes of stripes this host served its peers.",
+		float(did.ServedBytes))
+	e.one("sproutfs_cache_serve_busy_total", Counter,
+		"Reads this host answered BUSY because its serving bandwidth was spent.", float(did.ServeBusy))
 }
 
-// storeMetrics writes what one bucket served, under prefix. The counters carry
-// the operation as a label: five operations, one series each, which is what
-// makes a rate by operation a query rather than five metrics. The timeouts
-// carry the bound that cancelled the attempt as a second.
-func storeMetrics(out *strings.Builder, prefix, what string, store Store) {
+// store adds what one bucket served, under prefix. The counters carry the
+// operation as a label: five operations, one series each, which is what makes a
+// rate by operation a query rather than five metrics. The timeouts carry the
+// bound that cancelled the attempt as a second.
+func (e *exposition) store(prefix, what string, store Store) {
 	operations := []struct {
 		name  string
 		count StoreCount
@@ -664,11 +771,11 @@ func storeMetrics(out *strings.Builder, prefix, what string, store Store) {
 		{"head", store.Head}, {"get", store.Get}, {"put", store.Put}, {"delete", store.Delete}, {"list", store.List},
 	}
 	labelled := func(name, help string, value func(StoreCount) int64) {
-		name = prefix + name
-		fmt.Fprintf(out, "# HELP %s %s\n# TYPE %s counter\n", name, help, name)
+		samples := make([]Sample, 0, len(operations))
 		for _, operation := range operations {
-			fmt.Fprintf(out, "%s{operation=%q} %d\n", name, operation.name, value(operation.count))
+			samples = append(samples, sample(float(value(operation.count)), Label{"operation", operation.name}))
 		}
+		e.family(prefix+name, Counter, help, samples...)
 	}
 	labelled("_calls_total", what+" calls this host has made.",
 		func(c StoreCount) int64 { return c.Calls })
@@ -678,18 +785,16 @@ func storeMetrics(out *strings.Builder, prefix, what string, store Store) {
 		func(c StoreCount) int64 { return c.Bytes })
 	labelled("_retries_total", what+" attempts made again after one outlived its bound.",
 		func(c StoreCount) int64 { return c.Retries })
-	name := prefix + "_timeouts_total"
-	fmt.Fprintf(out, "# HELP %s %s attempts cancelled at a bound: waiting for the first byte, or stalled between two.\n"+
-		"# TYPE %s counter\n", name, what, name)
+	timeouts := make([]Sample, 0, 2*len(operations))
+	latencies := make([]Sample, 0, len(operations))
 	for _, operation := range operations {
-		fmt.Fprintf(out, "%s{operation=%q,bound=\"first_byte\"} %d\n", name, operation.name,
-			operation.count.FirstByteTimeouts)
-		fmt.Fprintf(out, "%s{operation=%q,bound=\"stall\"} %d\n", name, operation.name, operation.count.StallTimeouts)
+		timeouts = append(timeouts,
+			sample(float(operation.count.FirstByteTimeouts), Label{"operation", operation.name}, Label{"bound", "first_byte"}),
+			sample(float(operation.count.StallTimeouts), Label{"operation", operation.name}, Label{"bound", "stall"}))
+		latencies = append(latencies, latencySample(operation.count.Latency, Label{"operation", operation.name}))
 	}
-	name = prefix + "_seconds"
-	fmt.Fprintf(out, "# HELP %s How long each %s call took, failed ones and every attempt included.\n"+
-		"# TYPE %s histogram\n", name, strings.ToLower(what), name)
-	for _, operation := range operations {
-		histogram(out, name, fmt.Sprintf("operation=%q", operation.name), operation.count.Latency)
-	}
+	e.family(prefix+"_timeouts_total", Counter,
+		what+" attempts cancelled at a bound: waiting for the first byte, or stalled between two.", timeouts...)
+	e.family(prefix+"_seconds", Histogram,
+		"How long each "+strings.ToLower(what)+" call took, failed ones and every attempt included.", latencies...)
 }

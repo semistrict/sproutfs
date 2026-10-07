@@ -1,0 +1,1284 @@
+# HELP sproutfs_build_info What this host is running.
+# TYPE sproutfs_build_info gauge
+sproutfs_build_info{version="s4.000012ms",api_revision="9000027",arena="s16.000048ms"} 1
+# HELP sproutfs_vms_running VMs this host runs.
+# TYPE sproutfs_vms_running gauge
+sproutfs_vms_running 2
+# HELP sproutfs_vms_serving VMs this host has handed over and still serves the pages of.
+# TYPE sproutfs_vms_serving gauge
+sproutfs_vms_serving 2
+# HELP sproutfs_loss_window_seconds How long the worst-off VM this host runs has held a write no checkpoint covers, which is what losing this host would cost it in time.
+# TYPE sproutfs_loss_window_seconds gauge
+sproutfs_loss_window_seconds 0.059091355
+# HELP sproutfs_vms_waiting VMs past their loss window, whose stores the pager is holding back until a checkpoint of them lands.
+# TYPE sproutfs_vms_waiting gauge
+sproutfs_vms_waiting 1
+# HELP sproutfs_pager_page_bytes The page each pager runs, which its page counts here are in.
+# TYPE sproutfs_pager_page_bytes gauge
+sproutfs_pager_page_bytes{kind="ram"} 18354147
+sproutfs_pager_page_bytes{kind="pmem"} 61078427
+sproutfs_pager_page_bytes{kind="ephemeral"} 3544043
+# HELP sproutfs_pager_arena_pages Pages each pager's arena holds.
+# TYPE sproutfs_pager_arena_pages gauge
+sproutfs_pager_arena_pages{kind="ram"} 44028236
+sproutfs_pager_arena_pages{kind="pmem"} 52535088
+sproutfs_pager_arena_pages{kind="ephemeral"} 27892140
+# HELP sproutfs_pager_resident_pages Pages of each arena that are taken.
+# TYPE sproutfs_pager_resident_pages gauge
+sproutfs_pager_resident_pages{kind="ram"} 4593467
+sproutfs_pager_resident_pages{kind="pmem"} 45991755
+sproutfs_pager_resident_pages{kind="ephemeral"} 54240243
+# HELP sproutfs_pager_dirty_pages Pages of volatile private state no checkpoint has published.
+# TYPE sproutfs_pager_dirty_pages gauge
+sproutfs_pager_dirty_pages{kind="ram"} 34267568
+sproutfs_pager_dirty_pages{kind="pmem"} 41448428
+sproutfs_pager_dirty_pages{kind="ephemeral"} 15479488
+# HELP sproutfs_pager_logical_pages Pages each pager holds metadata for.
+# TYPE sproutfs_pager_logical_pages gauge
+sproutfs_pager_logical_pages{kind="ram"} 65941675
+sproutfs_pager_logical_pages{kind="pmem"} 38905107
+sproutfs_pager_logical_pages{kind="ephemeral"} 45827603
+# HELP sproutfs_pager_arena_bytes What the two arenas hold together, which is the only unit their capacities can be added in.
+# TYPE sproutfs_pager_arena_bytes gauge
+sproutfs_pager_arena_bytes 4115712196563288
+# HELP sproutfs_guest_committed_bytes Guest RAM the VMs this host runs have between them, resident or not, which is what a placement measures this host by.
+# TYPE sproutfs_guest_committed_bytes gauge
+sproutfs_guest_committed_bytes 47077587
+# HELP sproutfs_pager_shared_pages_total Pages mapped to an already resident identity without a read, which is what a fork inherits.
+# TYPE sproutfs_pager_shared_pages_total counter
+sproutfs_pager_shared_pages_total{kind="ram"} 52985708
+sproutfs_pager_shared_pages_total{kind="pmem"} 56188592
+sproutfs_pager_shared_pages_total{kind="ephemeral"} 26241676
+# HELP sproutfs_pager_unique_resident_bytes Host memory the pager's arena holds, one resident page counted once however many memory regions map it.
+# TYPE sproutfs_pager_unique_resident_bytes gauge
+sproutfs_pager_unique_resident_bytes{kind="ram"} 1072179
+sproutfs_pager_unique_resident_bytes{kind="pmem"} 39818483
+sproutfs_pager_unique_resident_bytes{kind="ephemeral"} 45414987
+# HELP sproutfs_pager_mapped_resident_bytes Resident pages summed over the memory regions that map them, counting every alias, which is what this host would hold if nothing shared anything.
+# TYPE sproutfs_pager_mapped_resident_bytes gauge
+sproutfs_pager_mapped_resident_bytes{kind="ram"} 38746304
+sproutfs_pager_mapped_resident_bytes{kind="pmem"} 43275180
+sproutfs_pager_mapped_resident_bytes{kind="ephemeral"} 14654256
+# HELP sproutfs_pager_shared_saved_bytes Mapped less unique: the memory this host did not have to find because its guests are reading the same pages.
+# TYPE sproutfs_pager_shared_saved_bytes gauge
+sproutfs_pager_shared_saved_bytes{kind="ram"} 11311571
+sproutfs_pager_shared_saved_bytes{kind="pmem"} 48731883
+sproutfs_pager_shared_saved_bytes{kind="ephemeral"} 53002395
+# HELP sproutfs_pager_faults_total Faults the pager has resolved.
+# TYPE sproutfs_pager_faults_total counter
+sproutfs_pager_faults_total{kind="ram"} 29550987
+sproutfs_pager_faults_total{kind="pmem"} 65645307
+sproutfs_pager_faults_total{kind="ephemeral"} 1480963
+# HELP sproutfs_pager_evictions_total Pages the pager has evicted.
+# TYPE sproutfs_pager_evictions_total counter
+sproutfs_pager_evictions_total{kind="ram"} 8116272
+sproutfs_pager_evictions_total{kind="pmem"} 9993164
+sproutfs_pager_evictions_total{kind="ephemeral"} 45829120
+# HELP sproutfs_pager_spills_total Pages the pager has written to its spill file.
+# TYPE sproutfs_pager_spills_total counter
+sproutfs_pager_spills_total{kind="ram"} 55790427
+sproutfs_pager_spills_total{kind="pmem"} 23449891
+sproutfs_pager_spills_total{kind="ephemeral"} 25068419
+# HELP sproutfs_pager_idle_pages Resident pages no memory region maps, kept for the next one that inherits them.
+# TYPE sproutfs_pager_idle_pages gauge
+sproutfs_pager_idle_pages{kind="ram"} 38355724
+sproutfs_pager_idle_pages{kind="pmem"} 38906624
+sproutfs_pager_idle_pages{kind="ephemeral"} 6307724
+# HELP sproutfs_pager_loaded_pages_total Pages the pager read from its backing.
+# TYPE sproutfs_pager_loaded_pages_total counter
+sproutfs_pager_loaded_pages_total{kind="ram"} 22921027
+sproutfs_pager_loaded_pages_total{kind="pmem"} 56363363
+sproutfs_pager_loaded_pages_total{kind="ephemeral"} 56655899
+# HELP sproutfs_pager_copy_on_writes_total Stores the pager gave a private copy of a page.
+# TYPE sproutfs_pager_copy_on_writes_total counter
+sproutfs_pager_copy_on_writes_total{kind="ram"} 9486336
+sproutfs_pager_copy_on_writes_total{kind="pmem"} 8711244
+sproutfs_pager_copy_on_writes_total{kind="ephemeral"} 41895216
+# HELP sproutfs_pager_unmapped_copy_on_writes_total Copy-on-writes of a page the storing guest did not map.
+# TYPE sproutfs_pager_unmapped_copy_on_writes_total counter
+sproutfs_pager_unmapped_copy_on_writes_total{kind="ram"} 65160515
+sproutfs_pager_unmapped_copy_on_writes_total{kind="pmem"} 30167995
+sproutfs_pager_unmapped_copy_on_writes_total{kind="ephemeral"} 29134539
+# HELP sproutfs_pager_unchanged_pages_total Private copies a checkpoint found still holding the bytes they were copied from.
+# TYPE sproutfs_pager_unchanged_pages_total counter
+sproutfs_pager_unchanged_pages_total{kind="ram"} 55725836
+sproutfs_pager_unchanged_pages_total{kind="pmem"} 53624752
+sproutfs_pager_unchanged_pages_total{kind="ephemeral"} 18373868
+# HELP sproutfs_pager_read_traps_total Page faults the kernel reported as reads.
+# TYPE sproutfs_pager_read_traps_total counter
+sproutfs_pager_read_traps_total{kind="ram"} 48291163
+sproutfs_pager_read_traps_total{kind="pmem"} 11972651
+sproutfs_pager_read_traps_total{kind="ephemeral"} 9613203
+# HELP sproutfs_pager_store_traps_total Page faults the kernel reported as stores into a page not in the page tables.
+# TYPE sproutfs_pager_store_traps_total counter
+sproutfs_pager_store_traps_total{kind="ram"} 42856496
+sproutfs_pager_store_traps_total{kind="pmem"} 39429420
+sproutfs_pager_store_traps_total{kind="ephemeral"} 2852544
+# HELP sproutfs_pager_protect_traps_total Page faults the kernel reported as stores into a write-protected page.
+# TYPE sproutfs_pager_protect_traps_total counter
+sproutfs_pager_protect_traps_total{kind="ram"} 39421835
+sproutfs_pager_protect_traps_total{kind="pmem"} 1777331
+sproutfs_pager_protect_traps_total{kind="ephemeral"} 65200755
+# HELP sproutfs_pager_given_back_pages_total Unchanged copies given back to the page they were copied from without a checkpoint.
+# TYPE sproutfs_pager_given_back_pages_total counter
+sproutfs_pager_given_back_pages_total{kind="ram"} 37987180
+sproutfs_pager_given_back_pages_total{kind="pmem"} 33234112
+sproutfs_pager_given_back_pages_total{kind="ephemeral"} 62440108
+# HELP sproutfs_pager_revocations_total Commands that took mappings away from a VMM.
+# TYPE sproutfs_pager_revocations_total counter
+sproutfs_pager_revocations_total{kind="ram"} 38552531
+sproutfs_pager_revocations_total{kind="pmem"} 66690899
+sproutfs_pager_revocations_total{kind="ephemeral"} 61679467
+# HELP sproutfs_pager_revoked_pages_total Pages those commands took away.
+# TYPE sproutfs_pager_revoked_pages_total counter
+sproutfs_pager_revoked_pages_total{kind="ram"} 41117888
+sproutfs_pager_revoked_pages_total{kind="pmem"} 35038828
+sproutfs_pager_revoked_pages_total{kind="ephemeral"} 62918832
+# HELP sproutfs_pager_moved_pages_total Published pages copied into the tenant's shared file because another memory region inherited them.
+# TYPE sproutfs_pager_moved_pages_total counter
+sproutfs_pager_moved_pages_total{kind="ram"} 45683251
+sproutfs_pager_moved_pages_total{kind="pmem"} 5386763
+sproutfs_pager_moved_pages_total{kind="ephemeral"} 66158203
+# HELP sproutfs_pager_fork_copies_total Pages copied into a fork point's file for a child on this host.
+# TYPE sproutfs_pager_fork_copies_total counter
+sproutfs_pager_fork_copies_total{kind="ram"} 52248620
+sproutfs_pager_fork_copies_total{kind="pmem"} 44843568
+sproutfs_pager_fork_copies_total{kind="ephemeral"} 4288716
+# HELP sproutfs_pager_tampered_total Moves whose copy did not hold the bytes the page's upload read.
+# TYPE sproutfs_pager_tampered_total counter
+sproutfs_pager_tampered_total{kind="ram"} 60813995
+sproutfs_pager_tampered_total{kind="pmem"} 19191515
+sproutfs_pager_tampered_total{kind="ephemeral"} 11528099
+# HELP sproutfs_pager_dirty_waits_total Stores that waited for the dirty budget.
+# TYPE sproutfs_pager_dirty_waits_total counter
+sproutfs_pager_dirty_waits_total{kind="ram"} 4270512
+sproutfs_pager_dirty_waits_total{kind="pmem"} 62648332
+sproutfs_pager_dirty_waits_total{kind="ephemeral"} 20767488
+# HELP sproutfs_pager_checkpoint_requests_total Checkpoints a store waiting for the dirty budget asked for out of the interval's turn.
+# TYPE sproutfs_pager_checkpoint_requests_total counter
+sproutfs_pager_checkpoint_requests_total{kind="ram"} 16835899
+sproutfs_pager_checkpoint_requests_total{kind="pmem"} 40996291
+sproutfs_pager_checkpoint_requests_total{kind="ephemeral"} 32006883
+# HELP sproutfs_pager_dirty_stalls_total Stores no checkpoint could admit, whose VM was stopped.
+# TYPE sproutfs_pager_dirty_stalls_total counter
+sproutfs_pager_dirty_stalls_total{kind="ram"} 31401292
+sproutfs_pager_dirty_stalls_total{kind="pmem"} 21344256
+sproutfs_pager_dirty_stalls_total{kind="ephemeral"} 45246284
+# HELP sproutfs_pager_window_waits_total Stores that waited because their VM had held a write no checkpoint covers for longer than the loss window.
+# TYPE sproutfs_pager_window_waits_total counter
+sproutfs_pager_window_waits_total{kind="ram"} 47966691
+sproutfs_pager_window_waits_total{kind="pmem"} 3692227
+sproutfs_pager_window_waits_total{kind="ephemeral"} 60485691
+# HELP sproutfs_pager_window_stalls_total Stores past the loss window no checkpoint was ever going to cover, whose VM was stopped.
+# TYPE sproutfs_pager_window_stalls_total counter
+sproutfs_pager_window_stalls_total{kind="ram"} 66532096
+sproutfs_pager_window_stalls_total{kind="pmem"} 55149068
+sproutfs_pager_window_stalls_total{kind="ephemeral"} 10616240
+# HELP sproutfs_pager_refused_mappings_total Faults a VMM refused a mapping command for, which is a VMM out of mapping budget.
+# TYPE sproutfs_pager_refused_mappings_total counter
+sproutfs_pager_refused_mappings_total{kind="ram"} 19988643
+sproutfs_pager_refused_mappings_total{kind="pmem"} 41497051
+sproutfs_pager_refused_mappings_total{kind="ephemeral"} 29855659
+# HELP sproutfs_pager_repeated_faults_total Faults a VMM took again on pages already mapped for it.
+# TYPE sproutfs_pager_repeated_faults_total counter
+sproutfs_pager_repeated_faults_total{kind="ram"} 42554060
+sproutfs_pager_repeated_faults_total{kind="pmem"} 29845040
+sproutfs_pager_repeated_faults_total{kind="ephemeral"} 51095084
+# HELP sproutfs_pager_paced_faults_total Repeated faults that waited for their VMM's budget of them.
+# TYPE sproutfs_pager_paced_faults_total counter
+sproutfs_pager_paced_faults_total{kind="ram"} 10619
+sproutfs_pager_paced_faults_total{kind="pmem"} 20193035
+sproutfs_pager_paced_faults_total{kind="ephemeral"} 7225651
+# HELP sproutfs_pager_prefetched_pages_total Pages the prefetches behind faults landed: the rest of each fault's run, read behind its own page.
+# TYPE sproutfs_pager_prefetched_pages_total counter
+sproutfs_pager_prefetched_pages_total{kind="ram"} 26576048
+sproutfs_pager_prefetched_pages_total{kind="pmem"} 12541036
+sproutfs_pager_prefetched_pages_total{kind="ephemeral"} 32465088
+# HELP sproutfs_pager_prefetch_waits_total Faults that waited for a prefetch already reading their page.
+# TYPE sproutfs_pager_prefetch_waits_total counter
+sproutfs_pager_prefetch_waits_total{kind="ram"} 55141483
+sproutfs_pager_prefetch_waits_total{kind="pmem"} 6889043
+sproutfs_pager_prefetch_waits_total{kind="ephemeral"} 59704531
+# HELP sproutfs_pager_prefetch_cancelled_total Prefetches an allocation cancelled to take their slots rather than evict a page a guest maps.
+# TYPE sproutfs_pager_prefetch_cancelled_total counter
+sproutfs_pager_prefetch_cancelled_total{kind="ram"} 18598060
+sproutfs_pager_prefetch_cancelled_total{kind="pmem"} 3237056
+sproutfs_pager_prefetch_cancelled_total{kind="ephemeral"} 21835116
+# HELP sproutfs_pager_fault_seconds How long each fault took, from the kernel's report to the guest resuming.
+# TYPE sproutfs_pager_fault_seconds histogram
+sproutfs_pager_fault_seconds_bucket{kind="ram",le="1e-06"} 55185555
+sproutfs_pager_fault_seconds_bucket{kind="ram",le="2e-06"} 81827711
+sproutfs_pager_fault_seconds_bucket{kind="ram",le="4e-06"} 81827711
+sproutfs_pager_fault_seconds_bucket{kind="ram",le="8e-06"} 81827711
+sproutfs_pager_fault_seconds_bucket{kind="ram",le="1.6e-05"} 81827711
+sproutfs_pager_fault_seconds_bucket{kind="ram",le="3.2e-05"} 81827711
+sproutfs_pager_fault_seconds_bucket{kind="ram",le="6.4e-05"} 81827711
+sproutfs_pager_fault_seconds_bucket{kind="ram",le="0.000128"} 81827711
+sproutfs_pager_fault_seconds_bucket{kind="ram",le="0.000256"} 81827711
+sproutfs_pager_fault_seconds_bucket{kind="ram",le="0.000512"} 81827711
+sproutfs_pager_fault_seconds_bucket{kind="ram",le="0.001024"} 81827711
+sproutfs_pager_fault_seconds_bucket{kind="ram",le="0.002048"} 81827711
+sproutfs_pager_fault_seconds_bucket{kind="ram",le="0.004096"} 81827711
+sproutfs_pager_fault_seconds_bucket{kind="ram",le="0.008192"} 81827711
+sproutfs_pager_fault_seconds_bucket{kind="ram",le="0.016384"} 81827711
+sproutfs_pager_fault_seconds_bucket{kind="ram",le="0.032768"} 81827711
+sproutfs_pager_fault_seconds_bucket{kind="ram",le="0.065536"} 81827711
+sproutfs_pager_fault_seconds_bucket{kind="ram",le="0.131072"} 81827711
+sproutfs_pager_fault_seconds_bucket{kind="ram",le="0.262144"} 81827711
+sproutfs_pager_fault_seconds_bucket{kind="ram",le="0.524288"} 81827711
+sproutfs_pager_fault_seconds_bucket{kind="ram",le="1.048576"} 81827711
+sproutfs_pager_fault_seconds_bucket{kind="ram",le="2.097152"} 81827711
+sproutfs_pager_fault_seconds_bucket{kind="ram",le="4.194304"} 81827711
+sproutfs_pager_fault_seconds_bucket{kind="ram",le="+Inf"} 51163507
+sproutfs_pager_fault_seconds_sum{kind="ram"} 0.018620096
+sproutfs_pager_fault_seconds_count{kind="ram"} 51163507
+sproutfs_pager_fault_seconds_bucket{kind="pmem",le="1e-06"} 4281131
+sproutfs_pager_fault_seconds_bucket{kind="pmem",le="2e-06"} 12910299
+sproutfs_pager_fault_seconds_bucket{kind="pmem",le="4e-06"} 12910299
+sproutfs_pager_fault_seconds_bucket{kind="pmem",le="8e-06"} 12910299
+sproutfs_pager_fault_seconds_bucket{kind="pmem",le="1.6e-05"} 12910299
+sproutfs_pager_fault_seconds_bucket{kind="pmem",le="3.2e-05"} 12910299
+sproutfs_pager_fault_seconds_bucket{kind="pmem",le="6.4e-05"} 12910299
+sproutfs_pager_fault_seconds_bucket{kind="pmem",le="0.000128"} 12910299
+sproutfs_pager_fault_seconds_bucket{kind="pmem",le="0.000256"} 12910299
+sproutfs_pager_fault_seconds_bucket{kind="pmem",le="0.000512"} 12910299
+sproutfs_pager_fault_seconds_bucket{kind="pmem",le="0.001024"} 12910299
+sproutfs_pager_fault_seconds_bucket{kind="pmem",le="0.002048"} 12910299
+sproutfs_pager_fault_seconds_bucket{kind="pmem",le="0.004096"} 12910299
+sproutfs_pager_fault_seconds_bucket{kind="pmem",le="0.008192"} 12910299
+sproutfs_pager_fault_seconds_bucket{kind="pmem",le="0.016384"} 12910299
+sproutfs_pager_fault_seconds_bucket{kind="pmem",le="0.032768"} 12910299
+sproutfs_pager_fault_seconds_bucket{kind="pmem",le="0.065536"} 12910299
+sproutfs_pager_fault_seconds_bucket{kind="pmem",le="0.131072"} 12910299
+sproutfs_pager_fault_seconds_bucket{kind="pmem",le="0.262144"} 12910299
+sproutfs_pager_fault_seconds_bucket{kind="pmem",le="0.524288"} 12910299
+sproutfs_pager_fault_seconds_bucket{kind="pmem",le="1.048576"} 12910299
+sproutfs_pager_fault_seconds_bucket{kind="pmem",le="2.097152"} 12910299
+sproutfs_pager_fault_seconds_bucket{kind="pmem",le="4.194304"} 12910299
+sproutfs_pager_fault_seconds_bucket{kind="pmem",le="+Inf"} 1585075
+sproutfs_pager_fault_seconds_sum{kind="pmem"} 0.0019331
+sproutfs_pager_fault_seconds_count{kind="pmem"} 1585075
+sproutfs_pager_fault_seconds_bucket{kind="ephemeral",le="1e-06"} 54444635
+sproutfs_pager_fault_seconds_bucket{kind="ephemeral",le="2e-06"} 79019879
+sproutfs_pager_fault_seconds_bucket{kind="ephemeral",le="4e-06"} 79019879
+sproutfs_pager_fault_seconds_bucket{kind="ephemeral",le="8e-06"} 79019879
+sproutfs_pager_fault_seconds_bucket{kind="ephemeral",le="1.6e-05"} 79019879
+sproutfs_pager_fault_seconds_bucket{kind="ephemeral",le="3.2e-05"} 79019879
+sproutfs_pager_fault_seconds_bucket{kind="ephemeral",le="6.4e-05"} 79019879
+sproutfs_pager_fault_seconds_bucket{kind="ephemeral",le="0.000128"} 79019879
+sproutfs_pager_fault_seconds_bucket{kind="ephemeral",le="0.000256"} 79019879
+sproutfs_pager_fault_seconds_bucket{kind="ephemeral",le="0.000512"} 79019879
+sproutfs_pager_fault_seconds_bucket{kind="ephemeral",le="0.001024"} 79019879
+sproutfs_pager_fault_seconds_bucket{kind="ephemeral",le="0.002048"} 79019879
+sproutfs_pager_fault_seconds_bucket{kind="ephemeral",le="0.004096"} 79019879
+sproutfs_pager_fault_seconds_bucket{kind="ephemeral",le="0.008192"} 79019879
+sproutfs_pager_fault_seconds_bucket{kind="ephemeral",le="0.016384"} 79019879
+sproutfs_pager_fault_seconds_bucket{kind="ephemeral",le="0.032768"} 79019879
+sproutfs_pager_fault_seconds_bucket{kind="ephemeral",le="0.065536"} 79019879
+sproutfs_pager_fault_seconds_bucket{kind="ephemeral",le="0.131072"} 79019879
+sproutfs_pager_fault_seconds_bucket{kind="ephemeral",le="0.262144"} 79019879
+sproutfs_pager_fault_seconds_bucket{kind="ephemeral",le="0.524288"} 79019879
+sproutfs_pager_fault_seconds_bucket{kind="ephemeral",le="1.048576"} 79019879
+sproutfs_pager_fault_seconds_bucket{kind="ephemeral",le="2.097152"} 79019879
+sproutfs_pager_fault_seconds_bucket{kind="ephemeral",le="4.194304"} 79019879
+sproutfs_pager_fault_seconds_bucket{kind="ephemeral",le="+Inf"} 53074571
+sproutfs_pager_fault_seconds_sum{kind="ephemeral"} 0.019205168
+sproutfs_pager_fault_seconds_count{kind="ephemeral"} 53074571
+# HELP sproutfs_pager_load_seconds How long each read of pages from the backing took.
+# TYPE sproutfs_pager_load_seconds histogram
+sproutfs_pager_load_seconds_bucket{kind="ram",le="1e-06"} 20120859
+sproutfs_pager_load_seconds_bucket{kind="ram",le="2e-06"} 86807207
+sproutfs_pager_load_seconds_bucket{kind="ram",le="4e-06"} 86807207
+sproutfs_pager_load_seconds_bucket{kind="ram",le="8e-06"} 86807207
+sproutfs_pager_load_seconds_bucket{kind="ram",le="1.6e-05"} 86807207
+sproutfs_pager_load_seconds_bucket{kind="ram",le="3.2e-05"} 86807207
+sproutfs_pager_load_seconds_bucket{kind="ram",le="6.4e-05"} 86807207
+sproutfs_pager_load_seconds_bucket{kind="ram",le="0.000128"} 86807207
+sproutfs_pager_load_seconds_bucket{kind="ram",le="0.000256"} 86807207
+sproutfs_pager_load_seconds_bucket{kind="ram",le="0.000512"} 86807207
+sproutfs_pager_load_seconds_bucket{kind="ram",le="0.001024"} 86807207
+sproutfs_pager_load_seconds_bucket{kind="ram",le="0.002048"} 86807207
+sproutfs_pager_load_seconds_bucket{kind="ram",le="0.004096"} 86807207
+sproutfs_pager_load_seconds_bucket{kind="ram",le="0.008192"} 86807207
+sproutfs_pager_load_seconds_bucket{kind="ram",le="0.016384"} 86807207
+sproutfs_pager_load_seconds_bucket{kind="ram",le="0.032768"} 86807207
+sproutfs_pager_load_seconds_bucket{kind="ram",le="0.065536"} 86807207
+sproutfs_pager_load_seconds_bucket{kind="ram",le="0.131072"} 86807207
+sproutfs_pager_load_seconds_bucket{kind="ram",le="0.262144"} 86807207
+sproutfs_pager_load_seconds_bucket{kind="ram",le="0.524288"} 86807207
+sproutfs_pager_load_seconds_bucket{kind="ram",le="1.048576"} 86807207
+sproutfs_pager_load_seconds_bucket{kind="ram",le="2.097152"} 86807207
+sproutfs_pager_load_seconds_bucket{kind="ram",le="4.194304"} 86807207
+sproutfs_pager_load_seconds_bucket{kind="ram",le="+Inf"} 98763
+sproutfs_pager_load_seconds_sum{kind="ram"} 0.04266424
+sproutfs_pager_load_seconds_count{kind="ram"} 98763
+sproutfs_pager_load_seconds_bucket{kind="pmem",le="1e-06"} 33673315
+sproutfs_pager_load_seconds_bucket{kind="pmem",le="2e-06"} 79694691
+sproutfs_pager_load_seconds_bucket{kind="pmem",le="4e-06"} 79694691
+sproutfs_pager_load_seconds_bucket{kind="pmem",le="8e-06"} 79694691
+sproutfs_pager_load_seconds_bucket{kind="pmem",le="1.6e-05"} 79694691
+sproutfs_pager_load_seconds_bucket{kind="pmem",le="3.2e-05"} 79694691
+sproutfs_pager_load_seconds_bucket{kind="pmem",le="6.4e-05"} 79694691
+sproutfs_pager_load_seconds_bucket{kind="pmem",le="0.000128"} 79694691
+sproutfs_pager_load_seconds_bucket{kind="pmem",le="0.000256"} 79694691
+sproutfs_pager_load_seconds_bucket{kind="pmem",le="0.000512"} 79694691
+sproutfs_pager_load_seconds_bucket{kind="pmem",le="0.001024"} 79694691
+sproutfs_pager_load_seconds_bucket{kind="pmem",le="0.002048"} 79694691
+sproutfs_pager_load_seconds_bucket{kind="pmem",le="0.004096"} 79694691
+sproutfs_pager_load_seconds_bucket{kind="pmem",le="0.008192"} 79694691
+sproutfs_pager_load_seconds_bucket{kind="pmem",le="0.016384"} 79694691
+sproutfs_pager_load_seconds_bucket{kind="pmem",le="0.032768"} 79694691
+sproutfs_pager_load_seconds_bucket{kind="pmem",le="0.065536"} 79694691
+sproutfs_pager_load_seconds_bucket{kind="pmem",le="0.131072"} 79694691
+sproutfs_pager_load_seconds_bucket{kind="pmem",le="0.262144"} 79694691
+sproutfs_pager_load_seconds_bucket{kind="pmem",le="0.524288"} 79694691
+sproutfs_pager_load_seconds_bucket{kind="pmem",le="1.048576"} 79694691
+sproutfs_pager_load_seconds_bucket{kind="pmem",le="2.097152"} 79694691
+sproutfs_pager_load_seconds_bucket{kind="pmem",le="4.194304"} 79694691
+sproutfs_pager_load_seconds_bucket{kind="pmem",le="+Inf"} 14977211
+sproutfs_pager_load_seconds_sum{kind="pmem"} 0.02332526
+sproutfs_pager_load_seconds_count{kind="pmem"} 14977211
+sproutfs_pager_load_seconds_bucket{kind="ephemeral",le="1e-06"} 14075971
+sproutfs_pager_load_seconds_bucket{kind="ephemeral",le="2e-06"} 73391439
+sproutfs_pager_load_seconds_bucket{kind="ephemeral",le="4e-06"} 73391439
+sproutfs_pager_load_seconds_bucket{kind="ephemeral",le="8e-06"} 73391439
+sproutfs_pager_load_seconds_bucket{kind="ephemeral",le="1.6e-05"} 73391439
+sproutfs_pager_load_seconds_bucket{kind="ephemeral",le="3.2e-05"} 73391439
+sproutfs_pager_load_seconds_bucket{kind="ephemeral",le="6.4e-05"} 73391439
+sproutfs_pager_load_seconds_bucket{kind="ephemeral",le="0.000128"} 73391439
+sproutfs_pager_load_seconds_bucket{kind="ephemeral",le="0.000256"} 73391439
+sproutfs_pager_load_seconds_bucket{kind="ephemeral",le="0.000512"} 73391439
+sproutfs_pager_load_seconds_bucket{kind="ephemeral",le="0.001024"} 73391439
+sproutfs_pager_load_seconds_bucket{kind="ephemeral",le="0.002048"} 73391439
+sproutfs_pager_load_seconds_bucket{kind="ephemeral",le="0.004096"} 73391439
+sproutfs_pager_load_seconds_bucket{kind="ephemeral",le="0.008192"} 73391439
+sproutfs_pager_load_seconds_bucket{kind="ephemeral",le="0.016384"} 73391439
+sproutfs_pager_load_seconds_bucket{kind="ephemeral",le="0.032768"} 73391439
+sproutfs_pager_load_seconds_bucket{kind="ephemeral",le="0.065536"} 73391439
+sproutfs_pager_load_seconds_bucket{kind="ephemeral",le="0.131072"} 73391439
+sproutfs_pager_load_seconds_bucket{kind="ephemeral",le="0.262144"} 73391439
+sproutfs_pager_load_seconds_bucket{kind="ephemeral",le="0.524288"} 73391439
+sproutfs_pager_load_seconds_bucket{kind="ephemeral",le="1.048576"} 73391439
+sproutfs_pager_load_seconds_bucket{kind="ephemeral",le="2.097152"} 73391439
+sproutfs_pager_load_seconds_bucket{kind="ephemeral",le="4.194304"} 73391439
+sproutfs_pager_load_seconds_bucket{kind="ephemeral",le="+Inf"} 63814723
+sproutfs_pager_load_seconds_sum{kind="ephemeral"} 0.037945344
+sproutfs_pager_load_seconds_count{kind="ephemeral"} 63814723
+# HELP sproutfs_pager_seal_seconds How long each checkpoint's write-protection of one memory region took.
+# TYPE sproutfs_pager_seal_seconds histogram
+sproutfs_pager_seal_seconds_bucket{kind="ram",le="1e-06"} 17056259
+sproutfs_pager_seal_seconds_bucket{kind="ram",le="2e-06"} 21569167
+sproutfs_pager_seal_seconds_bucket{kind="ram",le="4e-06"} 21569167
+sproutfs_pager_seal_seconds_bucket{kind="ram",le="8e-06"} 21569167
+sproutfs_pager_seal_seconds_bucket{kind="ram",le="1.6e-05"} 21569167
+sproutfs_pager_seal_seconds_bucket{kind="ram",le="3.2e-05"} 21569167
+sproutfs_pager_seal_seconds_bucket{kind="ram",le="6.4e-05"} 21569167
+sproutfs_pager_seal_seconds_bucket{kind="ram",le="0.000128"} 21569167
+sproutfs_pager_seal_seconds_bucket{kind="ram",le="0.000256"} 21569167
+sproutfs_pager_seal_seconds_bucket{kind="ram",le="0.000512"} 21569167
+sproutfs_pager_seal_seconds_bucket{kind="ram",le="0.001024"} 21569167
+sproutfs_pager_seal_seconds_bucket{kind="ram",le="0.002048"} 21569167
+sproutfs_pager_seal_seconds_bucket{kind="ram",le="0.004096"} 21569167
+sproutfs_pager_seal_seconds_bucket{kind="ram",le="0.008192"} 21569167
+sproutfs_pager_seal_seconds_bucket{kind="ram",le="0.016384"} 21569167
+sproutfs_pager_seal_seconds_bucket{kind="ram",le="0.032768"} 21569167
+sproutfs_pager_seal_seconds_bucket{kind="ram",le="0.065536"} 21569167
+sproutfs_pager_seal_seconds_bucket{kind="ram",le="0.131072"} 21569167
+sproutfs_pager_seal_seconds_bucket{kind="ram",le="0.262144"} 21569167
+sproutfs_pager_seal_seconds_bucket{kind="ram",le="0.524288"} 21569167
+sproutfs_pager_seal_seconds_bucket{kind="ram",le="1.048576"} 21569167
+sproutfs_pager_seal_seconds_bucket{kind="ram",le="2.097152"} 21569167
+sproutfs_pager_seal_seconds_bucket{kind="ram",le="4.194304"} 21569167
+sproutfs_pager_seal_seconds_bucket{kind="ram",le="+Inf"} 48142979
+sproutfs_pager_seal_seconds_sum{kind="ram"} 0.031599616
+sproutfs_pager_seal_seconds_count{kind="ram"} 48142979
+sproutfs_pager_seal_seconds_bucket{kind="pmem",le="1e-06"} 27956731
+sproutfs_pager_seal_seconds_bucket{kind="pmem",le="2e-06"} 76261547
+sproutfs_pager_seal_seconds_bucket{kind="pmem",le="4e-06"} 76261547
+sproutfs_pager_seal_seconds_bucket{kind="pmem",le="8e-06"} 76261547
+sproutfs_pager_seal_seconds_bucket{kind="pmem",le="1.6e-05"} 76261547
+sproutfs_pager_seal_seconds_bucket{kind="pmem",le="3.2e-05"} 76261547
+sproutfs_pager_seal_seconds_bucket{kind="pmem",le="6.4e-05"} 76261547
+sproutfs_pager_seal_seconds_bucket{kind="pmem",le="0.000128"} 76261547
+sproutfs_pager_seal_seconds_bucket{kind="pmem",le="0.000256"} 76261547
+sproutfs_pager_seal_seconds_bucket{kind="pmem",le="0.000512"} 76261547
+sproutfs_pager_seal_seconds_bucket{kind="pmem",le="0.001024"} 76261547
+sproutfs_pager_seal_seconds_bucket{kind="pmem",le="0.002048"} 76261547
+sproutfs_pager_seal_seconds_bucket{kind="pmem",le="0.004096"} 76261547
+sproutfs_pager_seal_seconds_bucket{kind="pmem",le="0.008192"} 76261547
+sproutfs_pager_seal_seconds_bucket{kind="pmem",le="0.016384"} 76261547
+sproutfs_pager_seal_seconds_bucket{kind="pmem",le="0.032768"} 76261547
+sproutfs_pager_seal_seconds_bucket{kind="pmem",le="0.065536"} 76261547
+sproutfs_pager_seal_seconds_bucket{kind="pmem",le="0.131072"} 76261547
+sproutfs_pager_seal_seconds_bucket{kind="pmem",le="0.262144"} 76261547
+sproutfs_pager_seal_seconds_bucket{kind="pmem",le="0.524288"} 76261547
+sproutfs_pager_seal_seconds_bucket{kind="pmem",le="1.048576"} 76261547
+sproutfs_pager_seal_seconds_bucket{kind="pmem",le="2.097152"} 76261547
+sproutfs_pager_seal_seconds_bucket{kind="pmem",le="4.194304"} 76261547
+sproutfs_pager_seal_seconds_bucket{kind="pmem",le="+Inf"} 60369443
+sproutfs_pager_seal_seconds_sum{kind="pmem"} 0.009608652
+sproutfs_pager_seal_seconds_count{kind="pmem"} 60369443
+sproutfs_pager_seal_seconds_bucket{kind="ephemeral",le="1e-06"} 5707403
+sproutfs_pager_seal_seconds_bucket{kind="ephemeral",le="2e-06"} 64654327
+sproutfs_pager_seal_seconds_bucket{kind="ephemeral",le="4e-06"} 64654327
+sproutfs_pager_seal_seconds_bucket{kind="ephemeral",le="8e-06"} 64654327
+sproutfs_pager_seal_seconds_bucket{kind="ephemeral",le="1.6e-05"} 64654327
+sproutfs_pager_seal_seconds_bucket{kind="ephemeral",le="3.2e-05"} 64654327
+sproutfs_pager_seal_seconds_bucket{kind="ephemeral",le="6.4e-05"} 64654327
+sproutfs_pager_seal_seconds_bucket{kind="ephemeral",le="0.000128"} 64654327
+sproutfs_pager_seal_seconds_bucket{kind="ephemeral",le="0.000256"} 64654327
+sproutfs_pager_seal_seconds_bucket{kind="ephemeral",le="0.000512"} 64654327
+sproutfs_pager_seal_seconds_bucket{kind="ephemeral",le="0.001024"} 64654327
+sproutfs_pager_seal_seconds_bucket{kind="ephemeral",le="0.002048"} 64654327
+sproutfs_pager_seal_seconds_bucket{kind="ephemeral",le="0.004096"} 64654327
+sproutfs_pager_seal_seconds_bucket{kind="ephemeral",le="0.008192"} 64654327
+sproutfs_pager_seal_seconds_bucket{kind="ephemeral",le="0.016384"} 64654327
+sproutfs_pager_seal_seconds_bucket{kind="ephemeral",le="0.032768"} 64654327
+sproutfs_pager_seal_seconds_bucket{kind="ephemeral",le="0.065536"} 64654327
+sproutfs_pager_seal_seconds_bucket{kind="ephemeral",le="0.131072"} 64654327
+sproutfs_pager_seal_seconds_bucket{kind="ephemeral",le="0.262144"} 64654327
+sproutfs_pager_seal_seconds_bucket{kind="ephemeral",le="0.524288"} 64654327
+sproutfs_pager_seal_seconds_bucket{kind="ephemeral",le="1.048576"} 64654327
+sproutfs_pager_seal_seconds_bucket{kind="ephemeral",le="2.097152"} 64654327
+sproutfs_pager_seal_seconds_bucket{kind="ephemeral",le="4.194304"} 64654327
+sproutfs_pager_seal_seconds_bucket{kind="ephemeral",le="+Inf"} 39446107
+sproutfs_pager_seal_seconds_sum{kind="ephemeral"} 0.021576752
+sproutfs_pager_seal_seconds_count{kind="ephemeral"} 39446107
+# HELP sproutfs_checkpoint_attempts_total Interval checkpoints this host began.
+# TYPE sproutfs_checkpoint_attempts_total counter
+sproutfs_checkpoint_attempts_total 25000075
+# HELP sproutfs_checkpoints_total Interval checkpoints that ended, by how.
+# TYPE sproutfs_checkpoints_total counter
+sproutfs_checkpoints_total{outcome="published"} 36000108
+sproutfs_checkpoints_total{outcome="capture_failed"} 49000147
+sproutfs_checkpoints_total{outcome="publish_failed"} 64000192
+sproutfs_checkpoints_total{outcome="fenced"} 13891379
+# HELP sproutfs_checkpoint_uploaded_bytes_total Bytes the published interval checkpoints uploaded.
+# TYPE sproutfs_checkpoint_uploaded_bytes_total counter
+sproutfs_checkpoint_uploaded_bytes_total 32891436
+# HELP sproutfs_checkpoint_pause_seconds How long each interval checkpoint paused its guest.
+# TYPE sproutfs_checkpoint_pause_seconds histogram
+sproutfs_checkpoint_pause_seconds_bucket{le="1e-06"} 34782779
+sproutfs_checkpoint_pause_seconds_bucket{le="2e-06"} 96565639
+sproutfs_checkpoint_pause_seconds_bucket{le="4e-06"} 96565639
+sproutfs_checkpoint_pause_seconds_bucket{le="8e-06"} 96565639
+sproutfs_checkpoint_pause_seconds_bucket{le="1.6e-05"} 96565639
+sproutfs_checkpoint_pause_seconds_bucket{le="3.2e-05"} 96565639
+sproutfs_checkpoint_pause_seconds_bucket{le="6.4e-05"} 96565639
+sproutfs_checkpoint_pause_seconds_bucket{le="0.000128"} 96565639
+sproutfs_checkpoint_pause_seconds_bucket{le="0.000256"} 96565639
+sproutfs_checkpoint_pause_seconds_bucket{le="0.000512"} 96565639
+sproutfs_checkpoint_pause_seconds_bucket{le="0.001024"} 96565639
+sproutfs_checkpoint_pause_seconds_bucket{le="0.002048"} 96565639
+sproutfs_checkpoint_pause_seconds_bucket{le="0.004096"} 96565639
+sproutfs_checkpoint_pause_seconds_bucket{le="0.008192"} 96565639
+sproutfs_checkpoint_pause_seconds_bucket{le="0.016384"} 96565639
+sproutfs_checkpoint_pause_seconds_bucket{le="0.032768"} 96565639
+sproutfs_checkpoint_pause_seconds_bucket{le="0.065536"} 96565639
+sproutfs_checkpoint_pause_seconds_bucket{le="0.131072"} 96565639
+sproutfs_checkpoint_pause_seconds_bucket{le="0.262144"} 96565639
+sproutfs_checkpoint_pause_seconds_bucket{le="0.524288"} 96565639
+sproutfs_checkpoint_pause_seconds_bucket{le="1.048576"} 96565639
+sproutfs_checkpoint_pause_seconds_bucket{le="2.097152"} 96565639
+sproutfs_checkpoint_pause_seconds_bucket{le="4.194304"} 96565639
+sproutfs_checkpoint_pause_seconds_bucket{le="+Inf"} 53891499
+sproutfs_checkpoint_pause_seconds_sum 0.009782704
+sproutfs_checkpoint_pause_seconds_count 53891499
+# HELP sproutfs_checkpoint_upload_seconds How long each interval checkpoint took to publish, behind the running guest.
+# TYPE sproutfs_checkpoint_upload_seconds histogram
+sproutfs_checkpoint_upload_seconds_bucket{le="1e-06"} 20565411
+sproutfs_checkpoint_upload_seconds_bucket{le="2e-06"} 76130927
+sproutfs_checkpoint_upload_seconds_bucket{le="4e-06"} 76130927
+sproutfs_checkpoint_upload_seconds_bucket{le="8e-06"} 76130927
+sproutfs_checkpoint_upload_seconds_bucket{le="1.6e-05"} 76130927
+sproutfs_checkpoint_upload_seconds_bucket{le="3.2e-05"} 76130927
+sproutfs_checkpoint_upload_seconds_bucket{le="6.4e-05"} 76130927
+sproutfs_checkpoint_upload_seconds_bucket{le="0.000128"} 76130927
+sproutfs_checkpoint_upload_seconds_bucket{le="0.000256"} 76130927
+sproutfs_checkpoint_upload_seconds_bucket{le="0.000512"} 76130927
+sproutfs_checkpoint_upload_seconds_bucket{le="0.001024"} 76130927
+sproutfs_checkpoint_upload_seconds_bucket{le="0.002048"} 76130927
+sproutfs_checkpoint_upload_seconds_bucket{le="0.004096"} 76130927
+sproutfs_checkpoint_upload_seconds_bucket{le="0.008192"} 76130927
+sproutfs_checkpoint_upload_seconds_bucket{le="0.016384"} 76130927
+sproutfs_checkpoint_upload_seconds_bucket{le="0.032768"} 76130927
+sproutfs_checkpoint_upload_seconds_bucket{le="0.065536"} 76130927
+sproutfs_checkpoint_upload_seconds_bucket{le="0.131072"} 76130927
+sproutfs_checkpoint_upload_seconds_bucket{le="0.262144"} 76130927
+sproutfs_checkpoint_upload_seconds_bucket{le="0.524288"} 76130927
+sproutfs_checkpoint_upload_seconds_bucket{le="1.048576"} 76130927
+sproutfs_checkpoint_upload_seconds_bucket{le="2.097152"} 76130927
+sproutfs_checkpoint_upload_seconds_bucket{le="4.194304"} 76130927
+sproutfs_checkpoint_upload_seconds_bucket{le="+Inf"} 23674083
+sproutfs_checkpoint_upload_seconds_sum 0.054674176
+sproutfs_checkpoint_upload_seconds_count 23674083
+# HELP sproutfs_migrations_total Migrations this host began as the source, by outcome.
+# TYPE sproutfs_migrations_total counter
+sproutfs_migrations_total{outcome="succeeded"} 25456763
+sproutfs_migrations_total{outcome="failed"} 64456880
+# HELP sproutfs_forks_total Forks this host took of a VM it runs, by outcome.
+# TYPE sproutfs_forks_total counter
+sproutfs_forks_total{outcome="succeeded"} 38348139
+sproutfs_forks_total{outcome="failed"} 14239404
+# HELP sproutfs_receives_total Migrated and forked VMs this host took in, by outcome.
+# TYPE sproutfs_receives_total counter
+sproutfs_receives_total{outcome="succeeded"} 59239539
+sproutfs_receives_total{outcome="failed"} 39130816
+# HELP sproutfs_received_pause_seconds What each guest this host took in paid, from the source's pause to its resume here.
+# TYPE sproutfs_received_pause_seconds histogram
+sproutfs_received_pause_seconds_bucket{kind="migration",le="1e-06"} 57913547
+sproutfs_received_pause_seconds_bucket{kind="migration",le="2e-06"} 103718395
+sproutfs_received_pause_seconds_bucket{kind="migration",le="4e-06"} 103718395
+sproutfs_received_pause_seconds_bucket{kind="migration",le="8e-06"} 103718395
+sproutfs_received_pause_seconds_bucket{kind="migration",le="1.6e-05"} 103718395
+sproutfs_received_pause_seconds_bucket{kind="migration",le="3.2e-05"} 103718395
+sproutfs_received_pause_seconds_bucket{kind="migration",le="6.4e-05"} 103718395
+sproutfs_received_pause_seconds_bucket{kind="migration",le="0.000128"} 103718395
+sproutfs_received_pause_seconds_bucket{kind="migration",le="0.000256"} 103718395
+sproutfs_received_pause_seconds_bucket{kind="migration",le="0.000512"} 103718395
+sproutfs_received_pause_seconds_bucket{kind="migration",le="0.001024"} 103718395
+sproutfs_received_pause_seconds_bucket{kind="migration",le="0.002048"} 103718395
+sproutfs_received_pause_seconds_bucket{kind="migration",le="0.004096"} 103718395
+sproutfs_received_pause_seconds_bucket{kind="migration",le="0.008192"} 103718395
+sproutfs_received_pause_seconds_bucket{kind="migration",le="0.016384"} 103718395
+sproutfs_received_pause_seconds_bucket{kind="migration",le="0.032768"} 103718395
+sproutfs_received_pause_seconds_bucket{kind="migration",le="0.065536"} 103718395
+sproutfs_received_pause_seconds_bucket{kind="migration",le="0.131072"} 103718395
+sproutfs_received_pause_seconds_bucket{kind="migration",le="0.262144"} 103718395
+sproutfs_received_pause_seconds_bucket{kind="migration",le="0.524288"} 103718395
+sproutfs_received_pause_seconds_bucket{kind="migration",le="1.048576"} 103718395
+sproutfs_received_pause_seconds_bucket{kind="migration",le="2.097152"} 103718395
+sproutfs_received_pause_seconds_bucket{kind="migration",le="4.194304"} 103718395
+sproutfs_received_pause_seconds_bucket{kind="migration",le="+Inf"} 21022099
+sproutfs_received_pause_seconds_sum{kind="migration"} 0.004913388
+sproutfs_received_pause_seconds_count{kind="migration"} 21022099
+sproutfs_received_pause_seconds_bucket{kind="fork",le="1e-06"} 21478787
+sproutfs_received_pause_seconds_bucket{kind="fork",le="2e-06"} 38848899
+sproutfs_received_pause_seconds_bucket{kind="fork",le="4e-06"} 38848899
+sproutfs_received_pause_seconds_bucket{kind="fork",le="8e-06"} 38848899
+sproutfs_received_pause_seconds_bucket{kind="fork",le="1.6e-05"} 38848899
+sproutfs_received_pause_seconds_bucket{kind="fork",le="3.2e-05"} 38848899
+sproutfs_received_pause_seconds_bucket{kind="fork",le="6.4e-05"} 38848899
+sproutfs_received_pause_seconds_bucket{kind="fork",le="0.000128"} 38848899
+sproutfs_received_pause_seconds_bucket{kind="fork",le="0.000256"} 38848899
+sproutfs_received_pause_seconds_bucket{kind="fork",le="0.000512"} 38848899
+sproutfs_received_pause_seconds_bucket{kind="fork",le="0.001024"} 38848899
+sproutfs_received_pause_seconds_bucket{kind="fork",le="0.002048"} 38848899
+sproutfs_received_pause_seconds_bucket{kind="fork",le="0.004096"} 38848899
+sproutfs_received_pause_seconds_bucket{kind="fork",le="0.008192"} 38848899
+sproutfs_received_pause_seconds_bucket{kind="fork",le="0.016384"} 38848899
+sproutfs_received_pause_seconds_bucket{kind="fork",le="0.032768"} 38848899
+sproutfs_received_pause_seconds_bucket{kind="fork",le="0.065536"} 38848899
+sproutfs_received_pause_seconds_bucket{kind="fork",le="0.131072"} 38848899
+sproutfs_received_pause_seconds_bucket{kind="fork",le="0.262144"} 38848899
+sproutfs_received_pause_seconds_bucket{kind="fork",le="0.524288"} 38848899
+sproutfs_received_pause_seconds_bucket{kind="fork",le="1.048576"} 38848899
+sproutfs_received_pause_seconds_bucket{kind="fork",le="2.097152"} 38848899
+sproutfs_received_pause_seconds_bucket{kind="fork",le="4.194304"} 38848899
+sproutfs_received_pause_seconds_bucket{kind="fork",le="+Inf"} 35696155
+sproutfs_received_pause_seconds_sum{kind="fork"} 0.027587468
+sproutfs_received_pause_seconds_count{kind="fork"} 35696155
+# HELP sproutfs_vms_given_up_total VMs this host gave up, by why.
+# TYPE sproutfs_vms_given_up_total counter
+sproutfs_vms_given_up_total{reason="vmm_ended"} 15261443
+sproutfs_vms_given_up_total{reason="fenced"} 15152780
+sproutfs_vms_given_up_total{reason="stopped_for_a_bound"} 17044123
+# HELP sproutfs_template_imports_total Templates this host imported, by outcome.
+# TYPE sproutfs_template_imports_total counter
+sproutfs_template_imports_total{outcome="succeeded"} 20935472
+sproutfs_template_imports_total{outcome="failed"} 26826827
+# HELP sproutfs_template_import_seconds How long each import took, from its image's digest to its pin.
+# TYPE sproutfs_template_import_seconds histogram
+sproutfs_template_import_seconds_bucket{le="1e-06"} 56500928
+sproutfs_template_import_seconds_bucket{le="2e-06"} 59784371
+sproutfs_template_import_seconds_bucket{le="4e-06"} 59784371
+sproutfs_template_import_seconds_bucket{le="8e-06"} 59784371
+sproutfs_template_import_seconds_bucket{le="1.6e-05"} 59784371
+sproutfs_template_import_seconds_bucket{le="3.2e-05"} 59784371
+sproutfs_template_import_seconds_bucket{le="6.4e-05"} 59784371
+sproutfs_template_import_seconds_bucket{le="0.000128"} 59784371
+sproutfs_template_import_seconds_bucket{le="0.000256"} 59784371
+sproutfs_template_import_seconds_bucket{le="0.000512"} 59784371
+sproutfs_template_import_seconds_bucket{le="0.001024"} 59784371
+sproutfs_template_import_seconds_bucket{le="0.002048"} 59784371
+sproutfs_template_import_seconds_bucket{le="0.004096"} 59784371
+sproutfs_template_import_seconds_bucket{le="0.008192"} 59784371
+sproutfs_template_import_seconds_bucket{le="0.016384"} 59784371
+sproutfs_template_import_seconds_bucket{le="0.032768"} 59784371
+sproutfs_template_import_seconds_bucket{le="0.065536"} 59784371
+sproutfs_template_import_seconds_bucket{le="0.131072"} 59784371
+sproutfs_template_import_seconds_bucket{le="0.262144"} 59784371
+sproutfs_template_import_seconds_bucket{le="0.524288"} 59784371
+sproutfs_template_import_seconds_bucket{le="1.048576"} 59784371
+sproutfs_template_import_seconds_bucket{le="2.097152"} 59784371
+sproutfs_template_import_seconds_bucket{le="4.194304"} 59784371
+sproutfs_template_import_seconds_bucket{le="+Inf"} 34718188
+sproutfs_template_import_seconds_sum 0.044609555
+sproutfs_template_import_seconds_count 34718188
+# HELP sproutfs_image_read_bytes_total Guest image bytes this host read, for a digest or an import.
+# TYPE sproutfs_image_read_bytes_total counter
+sproutfs_image_read_bytes_total 19174828
+# HELP sproutfs_pages_requests_total Page requests this host's peer server has answered.
+# TYPE sproutfs_pages_requests_total counter
+sproutfs_pages_requests_total 37208256
+# HELP sproutfs_pages_served_total Pages served to a peer.
+# TYPE sproutfs_pages_served_total counter
+sproutfs_pages_served_total 29338931
+# HELP sproutfs_pages_absent_total Page requests for a page this host does not hold.
+# TYPE sproutfs_pages_absent_total counter
+sproutfs_pages_absent_total 23469612
+# HELP sproutfs_pages_refused_total Page requests refused, which is a peer at its budget.
+# TYPE sproutfs_pages_refused_total counter
+sproutfs_pages_refused_total 19600299
+# HELP sproutfs_peers Hosts this host has asked anything of, by what its table of peers knows of them.
+# TYPE sproutfs_peers gauge
+sproutfs_peers{state="up"} 0
+sproutfs_peers{state="down"} 0
+sproutfs_peers{state="incompatible"} 2
+# HELP sproutfs_memory_limit_bytes The RAM allotment the pager takes its pages from.
+# TYPE sproutfs_memory_limit_bytes gauge
+sproutfs_memory_limit_bytes 57649036
+# HELP sproutfs_memory_used_bytes How much of that allotment is taken.
+# TYPE sproutfs_memory_used_bytes gauge
+sproutfs_memory_used_bytes 26670979
+# HELP sproutfs_cache_limit_bytes The page cache's own cap, which nothing else draws on.
+# TYPE sproutfs_cache_limit_bytes gauge
+sproutfs_cache_limit_bytes 64801792
+# HELP sproutfs_cache_used_bytes How much of the page cache is resident.
+# TYPE sproutfs_cache_used_bytes gauge
+sproutfs_cache_used_bytes 37823747
+# HELP sproutfs_cache_disk_limit_bytes The page cache's disk, which holds what pulls copy.
+# TYPE sproutfs_cache_disk_limit_bytes gauge
+sproutfs_cache_disk_limit_bytes 12845708
+# HELP sproutfs_cache_disk_used_bytes How much of the page cache's disk the pulls hold.
+# TYPE sproutfs_cache_disk_used_bytes gauge
+sproutfs_cache_disk_used_bytes 56976539
+# HELP sproutfs_cache_memory_entries The pages and page tables the page cache holds in memory.
+# TYPE sproutfs_cache_memory_entries gauge
+sproutfs_cache_memory_entries 13663276
+# HELP sproutfs_cache_memory_page_tables The segments' page tables the page cache holds decoded in memory.
+# TYPE sproutfs_cache_memory_page_tables gauge
+sproutfs_cache_memory_page_tables 19252195
+# HELP sproutfs_cache_memory_page_table_bytes What the page tables the page cache holds are charged.
+# TYPE sproutfs_cache_memory_page_table_bytes gauge
+sproutfs_cache_memory_page_table_bytes 12948224
+# HELP sproutfs_cache_memory_page_table_lookups_total Lookups of segments' page tables, by outcome: answered by a held table, a fetch and decode of the segment, or a table a publication kept.
+# TYPE sproutfs_cache_memory_page_table_lookups_total counter
+sproutfs_cache_memory_page_table_lookups_total{outcome="hit"} 8644259
+sproutfs_cache_memory_page_table_lookups_total{outcome="load"} 6340300
+sproutfs_cache_memory_page_table_lookups_total{outcome="kept"} 6036347
+# HELP sproutfs_cache_memory_reads_total Reads of pages from the page cache's memory, by outcome: served from it, fetched from the disk, the cluster or the store, or joined to a fetch in flight.
+# TYPE sproutfs_cache_memory_reads_total counter
+sproutfs_cache_memory_reads_total{outcome="hit"} 64468139
+sproutfs_cache_memory_reads_total{outcome="miss"} 50164144
+sproutfs_cache_memory_reads_total{outcome="coalesced"} 37860155
+# HELP sproutfs_cache_memory_evictions_total Entries the page cache's memory gave up.
+# TYPE sproutfs_cache_memory_evictions_total counter
+sproutfs_cache_memory_evictions_total 27556172
+# HELP sproutfs_cache_disk_regions The regions the page cache's disk holds.
+# TYPE sproutfs_cache_disk_regions gauge
+sproutfs_cache_disk_regions 17124524
+# HELP sproutfs_cache_disk_entries The stripes of pages and segments the page cache's disk holds.
+# TYPE sproutfs_cache_disk_entries gauge
+sproutfs_cache_disk_entries 24820595
+# HELP sproutfs_cache_disk_hits_total Reads the page cache's disk served, which made no request of the object store.
+# TYPE sproutfs_cache_disk_hits_total counter
+sproutfs_cache_disk_hits_total 46212755
+# HELP sproutfs_cache_disk_lost_total Copies the page cache's disk could not give back intact, which the object store served instead.
+# TYPE sproutfs_cache_disk_lost_total counter
+sproutfs_cache_disk_lost_total 59908844
+# HELP sproutfs_cache_disk_evicted_regions_total Regions the page cache's disk gave back.
+# TYPE sproutfs_cache_disk_evicted_regions_total counter
+sproutfs_cache_disk_evicted_regions_total 8496075
+# HELP sproutfs_cache_disk_writes_refused_total Writes the page cache's disk refused.
+# TYPE sproutfs_cache_disk_writes_refused_total counter
+sproutfs_cache_disk_writes_refused_total 45888283
+# HELP sproutfs_cache_disk_opened_regions What the host did with the regions it found in its cache's file when it started.
+# TYPE sproutfs_cache_disk_opened_regions gauge
+sproutfs_cache_disk_opened_regions{how="tables"} 475532
+sproutfs_cache_disk_opened_regions{how="scanned"} 24171651
+sproutfs_cache_disk_opened_regions{how="given-back"} 49867776
+# HELP sproutfs_cache_fills_total Windows this host filled the cluster's cache with, by what it read them for.
+# TYPE sproutfs_cache_fills_total counter
+sproutfs_cache_fills_total{from="read"} 23270411
+sproutfs_cache_fills_total{from="publication"} 37857840
+# HELP sproutfs_cache_fills_without_right_total Windows this host read from the store and filled nothing of, for want of the fill right.
+# TYPE sproutfs_cache_fills_without_right_total counter
+sproutfs_cache_fills_without_right_total 54445275
+# HELP sproutfs_cache_fill_rights_granted_total Fill rights this host's cache gave out as a window's rank 1.
+# TYPE sproutfs_cache_fill_rights_granted_total counter
+sproutfs_cache_fill_rights_granted_total 5923852
+# HELP sproutfs_cache_fill_stripes_sent_total Stripes this host's keeps carried that their holders kept.
+# TYPE sproutfs_cache_fill_stripes_sent_total counter
+sproutfs_cache_fill_stripes_sent_total 26511299
+# HELP sproutfs_cache_fill_bytes_sent_total Bytes of the keeps their holders kept.
+# TYPE sproutfs_cache_fill_bytes_sent_total counter
+sproutfs_cache_fill_bytes_sent_total 49098752
+# HELP sproutfs_cache_fill_stripes_kept_total Stripes fills wrote to this host's disk, its own and its peers' keeps.
+# TYPE sproutfs_cache_fill_stripes_kept_total counter
+sproutfs_cache_fill_stripes_kept_total 6577347
+# HELP sproutfs_cache_fill_stripes_dropped_total Stripes fills dropped, by why.
+# TYPE sproutfs_cache_fill_stripes_dropped_total counter
+sproutfs_cache_fill_stripes_dropped_total{reason="queue"} 38452812
+sproutfs_cache_fill_stripes_dropped_total{reason="rate"} 23931491
+sproutfs_cache_fill_stripes_dropped_total{reason="budget"} 25230896
+sproutfs_cache_fill_stripes_dropped_total{reason="busy"} 57818379
+sproutfs_cache_fill_stripes_dropped_total{reason="down"} 25297004
+sproutfs_cache_fill_stripes_dropped_total{reason="stale"} 61884499
+sproutfs_cache_fill_stripes_dropped_total{reason="peer"} 33363136
+sproutfs_cache_fill_stripes_dropped_total{reason="disk"} 6841779
+sproutfs_cache_fill_stripes_dropped_total{reason="failed"} 49429292
+# HELP sproutfs_cache_fill_stripes_duplicate_total Stripes a fill or a keep carried that this host's cache held or was writing already.
+# TYPE sproutfs_cache_fill_stripes_duplicate_total counter
+sproutfs_cache_fill_stripes_duplicate_total 52955131
+# HELP sproutfs_cache_keep_stripes_refused_total Stripes of keeps refused: for a window this host's list does not rank its cache for, or that did not hold together.
+# TYPE sproutfs_cache_keep_stripes_refused_total counter
+sproutfs_cache_keep_stripes_refused_total 48433840
+# HELP sproutfs_cache_fill_queued_bytes What the queue of writes to this host's disk holds now.
+# TYPE sproutfs_cache_fill_queued_bytes gauge
+sproutfs_cache_fill_queued_bytes 45912555
+# HELP sproutfs_cache_fill_queue_limit_bytes The bound of the queue of writes to this host's disk.
+# TYPE sproutfs_cache_fill_queue_limit_bytes gauge
+sproutfs_cache_fill_queue_limit_bytes 45391276
+# HELP sproutfs_cache_fill_queued_peak_bytes The most the queue of writes to this host's disk has held.
+# TYPE sproutfs_cache_fill_queued_peak_bytes gauge
+sproutfs_cache_fill_queued_peak_bytes 46870003
+# HELP sproutfs_cache_fill_publication_waits_total Waits of publications' fills: for room in the queue, the rate, the background budget or a busy holder.
+# TYPE sproutfs_cache_fill_publication_waits_total counter
+sproutfs_cache_fill_publication_waits_total 50348736
+# HELP sproutfs_cache_fill_publication_waited_seconds_total How long publications' fills waited in all.
+# TYPE sproutfs_cache_fill_publication_waited_seconds_total counter
+sproutfs_cache_fill_publication_waited_seconds_total 3.1961381598142857e+10
+# HELP sproutfs_cache_fill_publications_gave_up_total Publications that waited out the bound for their fills and waited no more.
+# TYPE sproutfs_cache_fill_publications_gave_up_total counter
+sproutfs_cache_fill_publications_gave_up_total 63306220
+# HELP sproutfs_cache_reads_total Envelopes this host read from the cluster's cache, by outcome.
+# TYPE sproutfs_cache_reads_total counter
+sproutfs_cache_reads_total{outcome="hit"} 5676107
+sproutfs_cache_reads_total{outcome="miss"} 46112396
+# HELP sproutfs_cache_read_own_hits_total Envelopes this host's own stripes rebuilt alone, with no request.
+# TYPE sproutfs_cache_read_own_hits_total counter
+sproutfs_cache_read_own_hits_total 17154864
+# HELP sproutfs_cache_read_earlier_hits_total Envelopes rebuilt from stripes of a code the deployment used before its own.
+# TYPE sproutfs_cache_read_earlier_hits_total counter
+sproutfs_cache_read_earlier_hits_total 30633627
+# HELP sproutfs_cache_read_requests_total Stripe requests this host sent its peers.
+# TYPE sproutfs_cache_read_requests_total counter
+sproutfs_cache_read_requests_total 63591171
+# HELP sproutfs_cache_read_replaced_total Holders replaced at once for answering with nothing, BUSY or an error.
+# TYPE sproutfs_cache_read_replaced_total counter
+sproutfs_cache_read_replaced_total 15961088
+# HELP sproutfs_cache_read_second_requests_total Reads that asked the rest of a window's ranks after the delay.
+# TYPE sproutfs_cache_read_second_requests_total counter
+sproutfs_cache_read_second_requests_total 37439875
+# HELP sproutfs_cache_read_refused_by_budget_total Reads whose second request the budget refused.
+# TYPE sproutfs_cache_read_refused_by_budget_total counter
+sproutfs_cache_read_refused_by_budget_total 60918668
+# HELP sproutfs_cache_read_store_hedges_total Reads past the bound that read the store as well, by outcome.
+# TYPE sproutfs_cache_read_store_hedges_total counter
+sproutfs_cache_read_store_hedges_total{outcome="won"} 9644301
+sproutfs_cache_read_store_hedges_total{outcome="lost"} 9644302
+sproutfs_cache_read_store_hedges_total{outcome="refused"} 9137355
+# HELP sproutfs_cache_read_wrong_stripes_total Stripes found wrong.
+# TYPE sproutfs_cache_read_wrong_stripes_total counter
+sproutfs_cache_read_wrong_stripes_total 40616172
+# HELP sproutfs_cache_read_drops_sent_total Drops sent to the holders of stripes found wrong.
+# TYPE sproutfs_cache_read_drops_sent_total counter
+sproutfs_cache_read_drops_sent_total 6986131
+# HELP sproutfs_cache_read_repairs_total Stripes sent to ranks that lacked them, of indices no rank held.
+# TYPE sproutfs_cache_read_repairs_total counter
+sproutfs_cache_read_repairs_total 42464960
+# HELP sproutfs_cache_read_timeouts_total Stripe requests that timed out.
+# TYPE sproutfs_cache_read_timeouts_total counter
+sproutfs_cache_read_timeouts_total 12834931
+# HELP sproutfs_cache_read_marked_down_total Hosts this host's reads marked down.
+# TYPE sproutfs_cache_read_marked_down_total counter
+sproutfs_cache_read_marked_down_total 52313772
+# HELP sproutfs_cache_read_mark_capped_total Marks refused because a fifth of the list was marked down already.
+# TYPE sproutfs_cache_read_mark_capped_total counter
+sproutfs_cache_read_mark_capped_total 26683755
+# HELP sproutfs_cache_read_mark_cleared_total Marks a probe cleared.
+# TYPE sproutfs_cache_read_mark_cleared_total counter
+sproutfs_cache_read_mark_cleared_total 3053744
+# HELP sproutfs_cache_read_down_hosts Hosts this host's reads have marked down now.
+# TYPE sproutfs_cache_read_down_hosts gauge
+sproutfs_cache_read_down_hosts 48532603
+# HELP sproutfs_cache_read_head_checks_total Sampled hits whose part was checked with a HEAD.
+# TYPE sproutfs_cache_read_head_checks_total counter
+sproutfs_cache_read_head_checks_total 28902604
+# HELP sproutfs_cache_read_head_missing_total Sampled hits whose part the store no longer had.
+# TYPE sproutfs_cache_read_head_missing_total counter
+sproutfs_cache_read_head_missing_total 11272611
+# HELP sproutfs_cache_read_delay_seconds The delay before a read of a size class asks the rest of a window's ranks.
+# TYPE sproutfs_cache_read_delay_seconds gauge
+sproutfs_cache_read_delay_seconds{up_to_bytes="62751488"} 0.037491532
+sproutfs_cache_read_delay_seconds{up_to_bytes="20231600"} 0.010971692
+# HELP sproutfs_cache_read_bound_seconds The bound before a read of a size class reads the store too.
+# TYPE sproutfs_cache_read_bound_seconds gauge
+sproutfs_cache_read_bound_seconds{up_to_bytes="62751488"} 0.027861563
+sproutfs_cache_read_bound_seconds{up_to_bytes="20231600"} 0.009341747
+# HELP sproutfs_cache_read_class_reads_total Reads of a size class that had their stripes, which its delay is drawn from.
+# TYPE sproutfs_cache_read_class_reads_total counter
+sproutfs_cache_read_class_reads_total{up_to_bytes="62751488"} 49121507
+sproutfs_cache_read_class_reads_total{up_to_bytes="20231600"} 14601643
+# HELP sproutfs_cache_serve_reads_total Reads of this host's stripes its peer server answered with them.
+# TYPE sproutfs_cache_serve_reads_total counter
+sproutfs_cache_serve_reads_total 9711808
+# HELP sproutfs_cache_serve_stripes_total Stripes this host served its peers.
+# TYPE sproutfs_cache_serve_stripes_total counter
+sproutfs_cache_serve_stripes_total 12081875
+# HELP sproutfs_cache_serve_bytes_total Bytes of stripes this host served its peers.
+# TYPE sproutfs_cache_serve_bytes_total counter
+sproutfs_cache_serve_bytes_total 16451948
+# HELP sproutfs_cache_serve_busy_total Reads this host answered BUSY because its serving bandwidth was spent.
+# TYPE sproutfs_cache_serve_busy_total counter
+sproutfs_cache_serve_busy_total 22822027
+# HELP sproutfs_hot_tier_reads_total Reads of checkpoint objects through the hot tier, by how they ended.
+# TYPE sproutfs_hot_tier_reads_total counter
+sproutfs_hot_tier_reads_total{result="hit"} 31192112
+sproutfs_hot_tier_reads_total{result="miss"} 41562203
+sproutfs_hot_tier_reads_total{result="skipped"} 33353955
+# HELP sproutfs_hot_tier_failures_total Reads the hot tier failed, which the regional bucket served, by why.
+# TYPE sproutfs_hot_tier_failures_total counter
+sproutfs_hot_tier_failures_total{reason="error"} 53936851
+sproutfs_hot_tier_failures_total{reason="slow"} 19198144
+sproutfs_hot_tier_failures_total{reason="corrupt"} 53568307
+# HELP sproutfs_hot_tier_marked_down_total Times the hot tier failed three reads in a row and reads skipped it for a while.
+# TYPE sproutfs_hot_tier_marked_down_total counter
+sproutfs_hot_tier_marked_down_total 14615296
+# HELP sproutfs_hot_tier_down Whether reads skip the hot tier now.
+# TYPE sproutfs_hot_tier_down gauge
+sproutfs_hot_tier_down 0
+# HELP sproutfs_hot_tier_fills_total Fills of the hot tier handed over and held, by what handed them over.
+# TYPE sproutfs_hot_tier_fills_total counter
+sproutfs_hot_tier_fills_total{from="read"} 50246860
+sproutfs_hot_tier_fills_total{from="publication"} 37508219
+# HELP sproutfs_hot_tier_fills_sent_total Fills the hot tier took.
+# TYPE sproutfs_hot_tier_fills_sent_total counter
+sproutfs_hot_tier_fills_sent_total 18030955
+# HELP sproutfs_hot_tier_fill_bytes_sent_total Bytes of the fills the hot tier took.
+# TYPE sproutfs_hot_tier_fill_bytes_sent_total counter
+sproutfs_hot_tier_fill_bytes_sent_total 11292332
+# HELP sproutfs_hot_tier_fills_present_total Fills that found the object in the hot tier already.
+# TYPE sproutfs_hot_tier_fills_present_total counter
+sproutfs_hot_tier_fills_present_total 6553715
+# HELP sproutfs_hot_tier_fills_duplicate_total Misses of an object a fill was already held for.
+# TYPE sproutfs_hot_tier_fills_duplicate_total counter
+sproutfs_hot_tier_fills_duplicate_total 26769584
+# HELP sproutfs_hot_tier_fills_dropped_total Fills of the hot tier dropped, by why.
+# TYPE sproutfs_hot_tier_fills_dropped_total counter
+sproutfs_hot_tier_fills_dropped_total{reason="queue"} 59843376
+sproutfs_hot_tier_fills_dropped_total{reason="rate"} 15995979
+sproutfs_hot_tier_fills_dropped_total{reason="read"} 41257452
+sproutfs_hot_tier_fills_dropped_total{reason="write"} 1410067
+sproutfs_hot_tier_fills_dropped_total{reason="closed"} 30671552
+# HELP sproutfs_hot_tier_head_checks_total Sampled hits whose regional object was checked with a HEAD.
+# TYPE sproutfs_hot_tier_head_checks_total counter
+sproutfs_hot_tier_head_checks_total 61933043
+# HELP sproutfs_hot_tier_head_missing_total Sampled hits whose regional object the regional bucket no longer held.
+# TYPE sproutfs_hot_tier_head_missing_total counter
+sproutfs_hot_tier_head_missing_total 28085676
+# HELP sproutfs_hot_tier_fill_queued_bytes What the fills of the hot tier held now come to.
+# TYPE sproutfs_hot_tier_fill_queued_bytes gauge
+sproutfs_hot_tier_fill_queued_bytes 63347179
+# HELP sproutfs_hot_tier_fill_queue_limit_bytes The bound of the fills of the hot tier held.
+# TYPE sproutfs_hot_tier_fill_queue_limit_bytes gauge
+sproutfs_hot_tier_fill_queue_limit_bytes 33499824
+# HELP sproutfs_disk_total_bytes The size of the filesystem the host writes to, as last read.
+# TYPE sproutfs_disk_total_bytes gauge
+sproutfs_disk_total_bytes 61254636
+# HELP sproutfs_disk_available_bytes What the filesystem had available, as last read.
+# TYPE sproutfs_disk_available_bytes gauge
+sproutfs_disk_available_bytes 16059211
+# HELP sproutfs_disk_smooth_free_bytes What the filesystem has free, smoothed, as the limiter acts on it.
+# TYPE sproutfs_disk_smooth_free_bytes gauge
+sproutfs_disk_smooth_free_bytes 65886107
+# HELP sproutfs_disk_floor_bytes What the free-space goals keep free.
+# TYPE sproutfs_disk_floor_bytes gauge
+sproutfs_disk_floor_bytes 26690700
+# HELP sproutfs_disk_reserve_bytes What the cache leaves free above the floor for promises.
+# TYPE sproutfs_disk_reserve_bytes gauge
+sproutfs_disk_reserve_bytes 56604163
+# HELP sproutfs_disk_band_bytes How far above the floor and the reserve the cache is kept.
+# TYPE sproutfs_disk_band_bytes gauge
+sproutfs_disk_band_bytes 21408768
+# HELP sproutfs_disk_promised_bytes What each user that cannot give space back is promised.
+# TYPE sproutfs_disk_promised_bytes gauge
+sproutfs_disk_promised_bytes{user="s2m4.609373827s"} 24126860
+sproutfs_disk_promised_bytes{user="s2m6.736380208s"} 9649611
+# HELP sproutfs_disk_allocated_bytes What each user that cannot give space back holds.
+# TYPE sproutfs_disk_allocated_bytes gauge
+sproutfs_disk_allocated_bytes{user="s2m4.609373827s"} 62040347
+sproutfs_disk_allocated_bytes{user="s2m6.736380208s"} 53563116
+# HELP sproutfs_disk_cache_share_bytes What the cache may hold, below zero when the promises do not fit.
+# TYPE sproutfs_disk_cache_share_bytes gauge
+sproutfs_disk_cache_share_bytes 63085939
+# HELP sproutfs_disk_cache_held_bytes What the cache holds.
+# TYPE sproutfs_disk_cache_held_bytes gauge
+sproutfs_disk_cache_held_bytes 13172416
+# HELP sproutfs_disk_binding The goal that sets the cache's share.
+# TYPE sproutfs_disk_binding gauge
+sproutfs_disk_binding{goal="free-bytes"} 0
+sproutfs_disk_binding{goal="free-percent"} 0
+sproutfs_disk_binding{goal="used-bytes"} 0
+sproutfs_disk_binding{goal="filesystem"} 0
+# HELP sproutfs_disk_promises_fit One while the host's promises fit under its goals with an empty cache, and zero when they do not.
+# TYPE sproutfs_disk_promises_fit gauge
+sproutfs_disk_promises_fit 0
+# HELP sproutfs_disk_device_written_bytes_total What the device wrote since the host started, by every writer.
+# TYPE sproutfs_disk_device_written_bytes_total counter
+sproutfs_disk_device_written_bytes_total 7109324
+# HELP sproutfs_disk_cache_admitted_bytes_total What the cache was admitted to write.
+# TYPE sproutfs_disk_cache_admitted_bytes_total counter
+sproutfs_disk_cache_admitted_bytes_total 1914019
+# HELP sproutfs_disk_write_budget_left_bytes What the cache's write budget has left, below zero when the device wrote past it.
+# TYPE sproutfs_disk_write_budget_left_bytes gauge
+sproutfs_disk_write_budget_left_bytes 65827584
+# HELP sproutfs_disk_cache_writes_refused_total The cache's writes the budget refused, by priority.
+# TYPE sproutfs_disk_cache_writes_refused_total counter
+sproutfs_disk_cache_writes_refused_total{priority="0"} 64632291
+sproutfs_disk_cache_writes_refused_total{priority="1"} 65437004
+# HELP sproutfs_store_calls_total Object store calls this host has made.
+# TYPE sproutfs_store_calls_total counter
+sproutfs_store_calls_total{operation="head"} 35998512
+sproutfs_store_calls_total{operation="get"} 3327436
+sproutfs_store_calls_total{operation="put"} 36439232
+sproutfs_store_calls_total{operation="delete"} 1116172
+sproutfs_store_calls_total{operation="list"} 31575984
+# HELP sproutfs_store_failures_total Object store calls that reported an error.
+# TYPE sproutfs_store_failures_total counter
+sproutfs_store_failures_total{operation="head"} 17020491
+sproutfs_store_failures_total{operation="get"} 4349475
+sproutfs_store_failures_total{operation="put"} 57461331
+sproutfs_store_failures_total{operation="delete"} 42138331
+sproutfs_store_failures_total{operation="list"} 25489339
+# HELP sproutfs_store_bytes_total Object bytes moved, which only get and put move.
+# TYPE sproutfs_store_bytes_total counter
+sproutfs_store_bytes_total{operation="head"} 42476
+sproutfs_store_bytes_total{operation="get"} 7371520
+sproutfs_store_bytes_total{operation="put"} 13374572
+sproutfs_store_bytes_total{operation="delete"} 18051632
+sproutfs_store_bytes_total{operation="list"} 21402700
+# HELP sproutfs_store_retries_total Object store attempts made again after one outlived its bound.
+# TYPE sproutfs_store_retries_total counter
+sproutfs_store_retries_total{operation="head"} 4305403
+sproutfs_store_retries_total{operation="get"} 17417139
+sproutfs_store_retries_total{operation="put"} 29202883
+sproutfs_store_retries_total{operation="delete"} 39662635
+sproutfs_store_retries_total{operation="list"} 48796395
+# HELP sproutfs_store_timeouts_total Object store attempts cancelled at a bound: waiting for the first byte, or stalled between two.
+# TYPE sproutfs_store_timeouts_total counter
+sproutfs_store_timeouts_total{operation="head",bound="first_byte"} 12261355
+sproutfs_store_timeouts_total{operation="head",bound="stall"} 7283376
+sproutfs_store_timeouts_total{operation="get",bound="first_byte"} 52481835
+sproutfs_store_timeouts_total{operation="get",bound="stall"} 395052
+sproutfs_store_timeouts_total{operation="put",bound="first_byte"} 24267459
+sproutfs_store_timeouts_total{operation="put",bound="stall"} 59289600
+sproutfs_store_timeouts_total{operation="delete",bound="first_byte"} 61835955
+sproutfs_store_timeouts_total{operation="delete",bound="stall"} 49749292
+sproutfs_store_timeouts_total{operation="list",bound="first_byte"} 30969595
+sproutfs_store_timeouts_total{operation="list",bound="stall"} 38882992
+# HELP sproutfs_store_seconds How long each object store call took, failed ones and every attempt included.
+# TYPE sproutfs_store_seconds histogram
+sproutfs_store_seconds_bucket{operation="head",le="1e-06"} 28217331
+sproutfs_store_seconds_bucket{operation="head",le="2e-06"} 47456671
+sproutfs_store_seconds_bucket{operation="head",le="4e-06"} 47456671
+sproutfs_store_seconds_bucket{operation="head",le="8e-06"} 47456671
+sproutfs_store_seconds_bucket{operation="head",le="1.6e-05"} 47456671
+sproutfs_store_seconds_bucket{operation="head",le="3.2e-05"} 47456671
+sproutfs_store_seconds_bucket{operation="head",le="6.4e-05"} 47456671
+sproutfs_store_seconds_bucket{operation="head",le="0.000128"} 47456671
+sproutfs_store_seconds_bucket{operation="head",le="0.000256"} 47456671
+sproutfs_store_seconds_bucket{operation="head",le="0.000512"} 47456671
+sproutfs_store_seconds_bucket{operation="head",le="0.001024"} 47456671
+sproutfs_store_seconds_bucket{operation="head",le="0.002048"} 47456671
+sproutfs_store_seconds_bucket{operation="head",le="0.004096"} 47456671
+sproutfs_store_seconds_bucket{operation="head",le="0.008192"} 47456671
+sproutfs_store_seconds_bucket{operation="head",le="0.016384"} 47456671
+sproutfs_store_seconds_bucket{operation="head",le="0.032768"} 47456671
+sproutfs_store_seconds_bucket{operation="head",le="0.065536"} 47456671
+sproutfs_store_seconds_bucket{operation="head",le="0.131072"} 47456671
+sproutfs_store_seconds_bucket{operation="head",le="0.262144"} 47456671
+sproutfs_store_seconds_bucket{operation="head",le="0.524288"} 47456671
+sproutfs_store_seconds_bucket{operation="head",le="1.048576"} 47456671
+sproutfs_store_seconds_bucket{operation="head",le="2.097152"} 47456671
+sproutfs_store_seconds_bucket{operation="head",le="4.194304"} 47456671
+sproutfs_store_seconds_bucket{operation="head",le="+Inf"} 52173331
+sproutfs_store_seconds_sum{operation="head"} 0.039195328
+sproutfs_store_seconds_count{operation="head"} 52173331
+sproutfs_store_seconds_bucket{operation="get",le="1e-06"} 28437691
+sproutfs_store_seconds_bucket{operation="get",le="2e-06"} 67897451
+sproutfs_store_seconds_bucket{operation="get",le="4e-06"} 67897451
+sproutfs_store_seconds_bucket{operation="get",le="8e-06"} 67897451
+sproutfs_store_seconds_bucket{operation="get",le="1.6e-05"} 67897451
+sproutfs_store_seconds_bucket{operation="get",le="3.2e-05"} 67897451
+sproutfs_store_seconds_bucket{operation="get",le="6.4e-05"} 67897451
+sproutfs_store_seconds_bucket{operation="get",le="0.000128"} 67897451
+sproutfs_store_seconds_bucket{operation="get",le="0.000256"} 67897451
+sproutfs_store_seconds_bucket{operation="get",le="0.000512"} 67897451
+sproutfs_store_seconds_bucket{operation="get",le="0.001024"} 67897451
+sproutfs_store_seconds_bucket{operation="get",le="0.002048"} 67897451
+sproutfs_store_seconds_bucket{operation="get",le="0.004096"} 67897451
+sproutfs_store_seconds_bucket{operation="get",le="0.008192"} 67897451
+sproutfs_store_seconds_bucket{operation="get",le="0.016384"} 67897451
+sproutfs_store_seconds_bucket{operation="get",le="0.032768"} 67897451
+sproutfs_store_seconds_bucket{operation="get",le="0.065536"} 67897451
+sproutfs_store_seconds_bucket{operation="get",le="0.131072"} 67897451
+sproutfs_store_seconds_bucket{operation="get",le="0.262144"} 67897451
+sproutfs_store_seconds_bucket{operation="get",le="0.524288"} 67897451
+sproutfs_store_seconds_bucket{operation="get",le="1.048576"} 67897451
+sproutfs_store_seconds_bucket{operation="get",le="2.097152"} 67897451
+sproutfs_store_seconds_bucket{operation="get",le="4.194304"} 67897451
+sproutfs_store_seconds_bucket{operation="get",le="+Inf"} 12393571
+sproutfs_store_seconds_sum{operation="get"} 0.019415628
+sproutfs_store_seconds_count{operation="get"} 12393571
+sproutfs_store_seconds_bucket{operation="put",le="1e-06"} 27332059
+sproutfs_store_seconds_bucket{operation="put",le="2e-06"} 85686247
+sproutfs_store_seconds_bucket{operation="put",le="4e-06"} 85686247
+sproutfs_store_seconds_bucket{operation="put",le="8e-06"} 85686247
+sproutfs_store_seconds_bucket{operation="put",le="1.6e-05"} 85686247
+sproutfs_store_seconds_bucket{operation="put",le="3.2e-05"} 85686247
+sproutfs_store_seconds_bucket{operation="put",le="6.4e-05"} 85686247
+sproutfs_store_seconds_bucket{operation="put",le="0.000128"} 85686247
+sproutfs_store_seconds_bucket{operation="put",le="0.000256"} 85686247
+sproutfs_store_seconds_bucket{operation="put",le="0.000512"} 85686247
+sproutfs_store_seconds_bucket{operation="put",le="0.001024"} 85686247
+sproutfs_store_seconds_bucket{operation="put",le="0.002048"} 85686247
+sproutfs_store_seconds_bucket{operation="put",le="0.004096"} 85686247
+sproutfs_store_seconds_bucket{operation="put",le="0.008192"} 85686247
+sproutfs_store_seconds_bucket{operation="put",le="0.016384"} 85686247
+sproutfs_store_seconds_bucket{operation="put",le="0.032768"} 85686247
+sproutfs_store_seconds_bucket{operation="put",le="0.065536"} 85686247
+sproutfs_store_seconds_bucket{operation="put",le="0.131072"} 85686247
+sproutfs_store_seconds_bucket{operation="put",le="0.262144"} 85686247
+sproutfs_store_seconds_bucket{operation="put",le="0.524288"} 85686247
+sproutfs_store_seconds_bucket{operation="put",le="1.048576"} 85686247
+sproutfs_store_seconds_bucket{operation="put",le="2.097152"} 85686247
+sproutfs_store_seconds_bucket{operation="put",le="4.194304"} 85686247
+sproutfs_store_seconds_bucket{operation="put",le="+Inf"} 38396683
+sproutfs_store_seconds_sum{operation="put"} 0.0654188
+sproutfs_store_seconds_count{operation="put"} 38396683
+sproutfs_store_seconds_bucket{operation="delete",le="1e-06"} 24900435
+sproutfs_store_seconds_bucket{operation="delete",le="2e-06"} 33714195
+sproutfs_store_seconds_bucket{operation="delete",le="4e-06"} 33714195
+sproutfs_store_seconds_bucket{operation="delete",le="8e-06"} 33714195
+sproutfs_store_seconds_bucket{operation="delete",le="1.6e-05"} 33714195
+sproutfs_store_seconds_bucket{operation="delete",le="3.2e-05"} 33714195
+sproutfs_store_seconds_bucket{operation="delete",le="6.4e-05"} 33714195
+sproutfs_store_seconds_bucket{operation="delete",le="0.000128"} 33714195
+sproutfs_store_seconds_bucket{operation="delete",le="0.000256"} 33714195
+sproutfs_store_seconds_bucket{operation="delete",le="0.000512"} 33714195
+sproutfs_store_seconds_bucket{operation="delete",le="0.001024"} 33714195
+sproutfs_store_seconds_bucket{operation="delete",le="0.002048"} 33714195
+sproutfs_store_seconds_bucket{operation="delete",le="0.004096"} 33714195
+sproutfs_store_seconds_bucket{operation="delete",le="0.008192"} 33714195
+sproutfs_store_seconds_bucket{operation="delete",le="0.016384"} 33714195
+sproutfs_store_seconds_bucket{operation="delete",le="0.032768"} 33714195
+sproutfs_store_seconds_bucket{operation="delete",le="0.065536"} 33714195
+sproutfs_store_seconds_bucket{operation="delete",le="0.131072"} 33714195
+sproutfs_store_seconds_bucket{operation="delete",le="0.262144"} 33714195
+sproutfs_store_seconds_bucket{operation="delete",le="0.524288"} 33714195
+sproutfs_store_seconds_bucket{operation="delete",le="1.048576"} 33714195
+sproutfs_store_seconds_bucket{operation="delete",le="2.097152"} 33714195
+sproutfs_store_seconds_bucket{operation="delete",le="4.194304"} 33714195
+sproutfs_store_seconds_bucket{operation="delete",le="+Inf"} 63073803
+sproutfs_store_seconds_sum{operation="delete"} 0.042987116
+sproutfs_store_seconds_count{operation="delete"} 63073803
+sproutfs_store_seconds_bucket{operation="list",le="1e-06"} 21142819
+sproutfs_store_seconds_bucket{operation="list",le="2e-06"} 46199023
+sproutfs_store_seconds_bucket{operation="list",le="4e-06"} 46199023
+sproutfs_store_seconds_bucket{operation="list",le="8e-06"} 46199023
+sproutfs_store_seconds_bucket{operation="list",le="1.6e-05"} 46199023
+sproutfs_store_seconds_bucket{operation="list",le="3.2e-05"} 46199023
+sproutfs_store_seconds_bucket{operation="list",le="6.4e-05"} 46199023
+sproutfs_store_seconds_bucket{operation="list",le="0.000128"} 46199023
+sproutfs_store_seconds_bucket{operation="list",le="0.000256"} 46199023
+sproutfs_store_seconds_bucket{operation="list",le="0.000512"} 46199023
+sproutfs_store_seconds_bucket{operation="list",le="0.001024"} 46199023
+sproutfs_store_seconds_bucket{operation="list",le="0.002048"} 46199023
+sproutfs_store_seconds_bucket{operation="list",le="0.004096"} 46199023
+sproutfs_store_seconds_bucket{operation="list",le="0.008192"} 46199023
+sproutfs_store_seconds_bucket{operation="list",le="0.016384"} 46199023
+sproutfs_store_seconds_bucket{operation="list",le="0.032768"} 46199023
+sproutfs_store_seconds_bucket{operation="list",le="0.065536"} 46199023
+sproutfs_store_seconds_bucket{operation="list",le="0.131072"} 46199023
+sproutfs_store_seconds_bucket{operation="list",le="0.262144"} 46199023
+sproutfs_store_seconds_bucket{operation="list",le="0.524288"} 46199023
+sproutfs_store_seconds_bucket{operation="list",le="1.048576"} 46199023
+sproutfs_store_seconds_bucket{operation="list",le="2.097152"} 46199023
+sproutfs_store_seconds_bucket{operation="list",le="4.194304"} 46199023
+sproutfs_store_seconds_bucket{operation="list",le="+Inf"} 19316067
+sproutfs_store_seconds_sum{operation="list"} 0.01922944
+sproutfs_store_seconds_count{operation="list"} 19316067
+# HELP sproutfs_hot_tier_store_calls_total Hot tier bucket calls this host has made.
+# TYPE sproutfs_hot_tier_store_calls_total counter
+sproutfs_hot_tier_store_calls_total{operation="head"} 5652475
+sproutfs_hot_tier_store_calls_total{operation="get"} 38505907
+sproutfs_hot_tier_store_calls_total{operation="put"} 2924483
+sproutfs_hot_tier_store_calls_total{operation="delete"} 33125931
+sproutfs_hot_tier_store_calls_total{operation="list"} 62001387
+# HELP sproutfs_hot_tier_store_failures_total Hot tier bucket calls that reported an error.
+# TYPE sproutfs_hot_tier_store_failures_total counter
+sproutfs_hot_tier_store_failures_total{operation="head"} 46913996
+sproutfs_hot_tier_store_failures_total{operation="get"} 32658624
+sproutfs_hot_tier_store_failures_total{operation="put"} 17077260
+sproutfs_hot_tier_store_failures_total{operation="delete"} 169904
+sproutfs_hot_tier_store_failures_total{operation="list"} 49045420
+# HELP sproutfs_hot_tier_store_bytes_total Object bytes moved, which only get and put move.
+# TYPE sproutfs_hot_tier_store_bytes_total counter
+sproutfs_hot_tier_store_bytes_total{operation="head"} 23066659
+sproutfs_hot_tier_store_bytes_total{operation="get"} 28811347
+sproutfs_hot_tier_store_bytes_total{operation="put"} 33230043
+sproutfs_hot_tier_store_bytes_total{operation="delete"} 36322747
+sproutfs_hot_tier_store_bytes_total{operation="list"} 38089459
+# HELP sproutfs_hot_tier_store_retries_total Hot tier bucket attempts made again after one outlived its bound.
+# TYPE sproutfs_hot_tier_store_retries_total counter
+sproutfs_hot_tier_store_retries_total{operation="head"} 46353196
+sproutfs_hot_tier_store_retries_total{operation="get"} 57880576
+sproutfs_hot_tier_store_retries_total{operation="put"} 973100
+sproutfs_hot_tier_store_retries_total{operation="delete"} 9848496
+sproutfs_hot_tier_store_retries_total{operation="list"} 17397900
+# HELP sproutfs_hot_tier_store_timeouts_total Hot tier bucket attempts cancelled at a bound: waiting for the first byte, or stalled between two.
+# TYPE sproutfs_hot_tier_store_timeouts_total counter
+sproutfs_hot_tier_store_timeouts_total{operation="head",bound="first_byte"} 938928
+sproutfs_hot_tier_store_timeouts_total{operation="head",bound="stall"} 56200491
+sproutfs_hot_tier_store_timeouts_total{operation="get",bound="first_byte"} 39575052
+sproutfs_hot_tier_store_timeouts_total{operation="get",bound="stall"} 47727811
+sproutfs_hot_tier_store_timeouts_total{operation="put",bound="first_byte"} 9776320
+sproutfs_hot_tier_store_timeouts_total{operation="put",bound="stall"} 37929139
+sproutfs_hot_tier_store_timeouts_total{operation="delete",bound="first_byte"} 45760460
+sproutfs_hot_tier_store_timeouts_total{operation="delete",bound="stall"} 26804475
+sproutfs_hot_tier_store_timeouts_total{operation="list",bound="first_byte"} 13309744
+sproutfs_hot_tier_store_timeouts_total{operation="list",bound="stall"} 14353819
+# HELP sproutfs_hot_tier_store_seconds How long each hot tier bucket call took, failed ones and every attempt included.
+# TYPE sproutfs_hot_tier_store_seconds histogram
+sproutfs_hot_tier_store_seconds_bucket{operation="head",le="1e-06"} 30633548
+sproutfs_hot_tier_store_seconds_bucket{operation="head",le="2e-06"} 45419783
+sproutfs_hot_tier_store_seconds_bucket{operation="head",le="4e-06"} 45419783
+sproutfs_hot_tier_store_seconds_bucket{operation="head",le="8e-06"} 45419783
+sproutfs_hot_tier_store_seconds_bucket{operation="head",le="1.6e-05"} 45419783
+sproutfs_hot_tier_store_seconds_bucket{operation="head",le="3.2e-05"} 45419783
+sproutfs_hot_tier_store_seconds_bucket{operation="head",le="6.4e-05"} 45419783
+sproutfs_hot_tier_store_seconds_bucket{operation="head",le="0.000128"} 45419783
+sproutfs_hot_tier_store_seconds_bucket{operation="head",le="0.000256"} 45419783
+sproutfs_hot_tier_store_seconds_bucket{operation="head",le="0.000512"} 45419783
+sproutfs_hot_tier_store_seconds_bucket{operation="head",le="0.001024"} 45419783
+sproutfs_hot_tier_store_seconds_bucket{operation="head",le="0.002048"} 45419783
+sproutfs_hot_tier_store_seconds_bucket{operation="head",le="0.004096"} 45419783
+sproutfs_hot_tier_store_seconds_bucket{operation="head",le="0.008192"} 45419783
+sproutfs_hot_tier_store_seconds_bucket{operation="head",le="0.016384"} 45419783
+sproutfs_hot_tier_store_seconds_bucket{operation="head",le="0.032768"} 45419783
+sproutfs_hot_tier_store_seconds_bucket{operation="head",le="0.065536"} 45419783
+sproutfs_hot_tier_store_seconds_bucket{operation="head",le="0.131072"} 45419783
+sproutfs_hot_tier_store_seconds_bucket{operation="head",le="0.262144"} 45419783
+sproutfs_hot_tier_store_seconds_bucket{operation="head",le="0.524288"} 45419783
+sproutfs_hot_tier_store_seconds_bucket{operation="head",le="1.048576"} 45419783
+sproutfs_hot_tier_store_seconds_bucket{operation="head",le="2.097152"} 45419783
+sproutfs_hot_tier_store_seconds_bucket{operation="head",le="4.194304"} 45419783
+sproutfs_hot_tier_store_seconds_bucket{operation="head",le="+Inf"} 1219328
+sproutfs_hot_tier_store_seconds_sum{operation="head"} 0.048480867
+sproutfs_hot_tier_store_seconds_count{operation="head"} 1219328
+sproutfs_hot_tier_store_seconds_bucket{operation="get",le="1e-06"} 29269552
+sproutfs_hot_tier_store_seconds_bucket{operation="get",le="2e-06"} 62691851
+sproutfs_hot_tier_store_seconds_bucket{operation="get",le="4e-06"} 62691851
+sproutfs_hot_tier_store_seconds_bucket{operation="get",le="8e-06"} 62691851
+sproutfs_hot_tier_store_seconds_bucket{operation="get",le="1.6e-05"} 62691851
+sproutfs_hot_tier_store_seconds_bucket{operation="get",le="3.2e-05"} 62691851
+sproutfs_hot_tier_store_seconds_bucket{operation="get",le="6.4e-05"} 62691851
+sproutfs_hot_tier_store_seconds_bucket{operation="get",le="0.000128"} 62691851
+sproutfs_hot_tier_store_seconds_bucket{operation="get",le="0.000256"} 62691851
+sproutfs_hot_tier_store_seconds_bucket{operation="get",le="0.000512"} 62691851
+sproutfs_hot_tier_store_seconds_bucket{operation="get",le="0.001024"} 62691851
+sproutfs_hot_tier_store_seconds_bucket{operation="get",le="0.002048"} 62691851
+sproutfs_hot_tier_store_seconds_bucket{operation="get",le="0.004096"} 62691851
+sproutfs_hot_tier_store_seconds_bucket{operation="get",le="0.008192"} 62691851
+sproutfs_hot_tier_store_seconds_bucket{operation="get",le="0.016384"} 62691851
+sproutfs_hot_tier_store_seconds_bucket{operation="get",le="0.032768"} 62691851
+sproutfs_hot_tier_store_seconds_bucket{operation="get",le="0.065536"} 62691851
+sproutfs_hot_tier_store_seconds_bucket{operation="get",le="0.131072"} 62691851
+sproutfs_hot_tier_store_seconds_bucket{operation="get",le="0.262144"} 62691851
+sproutfs_hot_tier_store_seconds_bucket{operation="get",le="0.524288"} 62691851
+sproutfs_hot_tier_store_seconds_bucket{operation="get",le="1.048576"} 62691851
+sproutfs_hot_tier_store_seconds_bucket{operation="get",le="2.097152"} 62691851
+sproutfs_hot_tier_store_seconds_bucket{operation="get",le="4.194304"} 62691851
+sproutfs_hot_tier_store_seconds_bucket{operation="get",le="+Inf"} 26964076
+sproutfs_hot_tier_store_seconds_sum{operation="get"} 0.027116811
+sproutfs_hot_tier_store_seconds_count{operation="get"} 26964076
+sproutfs_hot_tier_store_seconds_bucket{operation="put",le="1e-06"} 26579564
+sproutfs_hot_tier_store_seconds_bucket{operation="put",le="2e-06"} 77311935
+sproutfs_hot_tier_store_seconds_bucket{operation="put",le="4e-06"} 77311935
+sproutfs_hot_tier_store_seconds_bucket{operation="put",le="8e-06"} 77311935
+sproutfs_hot_tier_store_seconds_bucket{operation="put",le="1.6e-05"} 77311935
+sproutfs_hot_tier_store_seconds_bucket{operation="put",le="3.2e-05"} 77311935
+sproutfs_hot_tier_store_seconds_bucket{operation="put",le="6.4e-05"} 77311935
+sproutfs_hot_tier_store_seconds_bucket{operation="put",le="0.000128"} 77311935
+sproutfs_hot_tier_store_seconds_bucket{operation="put",le="0.000256"} 77311935
+sproutfs_hot_tier_store_seconds_bucket{operation="put",le="0.000512"} 77311935
+sproutfs_hot_tier_store_seconds_bucket{operation="put",le="0.001024"} 77311935
+sproutfs_hot_tier_store_seconds_bucket{operation="put",le="0.002048"} 77311935
+sproutfs_hot_tier_store_seconds_bucket{operation="put",le="0.004096"} 77311935
+sproutfs_hot_tier_store_seconds_bucket{operation="put",le="0.008192"} 77311935
+sproutfs_hot_tier_store_seconds_bucket{operation="put",le="0.016384"} 77311935
+sproutfs_hot_tier_store_seconds_bucket{operation="put",le="0.032768"} 77311935
+sproutfs_hot_tier_store_seconds_bucket{operation="put",le="0.065536"} 77311935
+sproutfs_hot_tier_store_seconds_bucket{operation="put",le="0.131072"} 77311935
+sproutfs_hot_tier_store_seconds_bucket{operation="put",le="0.262144"} 77311935
+sproutfs_hot_tier_store_seconds_bucket{operation="put",le="0.524288"} 77311935
+sproutfs_hot_tier_store_seconds_bucket{operation="put",le="1.048576"} 77311935
+sproutfs_hot_tier_store_seconds_bucket{operation="put",le="2.097152"} 77311935
+sproutfs_hot_tier_store_seconds_bucket{operation="put",le="4.194304"} 77311935
+sproutfs_hot_tier_store_seconds_bucket{operation="put",le="+Inf"} 51382832
+sproutfs_hot_tier_store_seconds_sum{operation="put"} 0.004426763
+sproutfs_hot_tier_store_seconds_count{operation="put"} 51382832
+sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="1e-06"} 22563584
+sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="2e-06"} 89280035
+sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="4e-06"} 89280035
+sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="8e-06"} 89280035
+sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="1.6e-05"} 89280035
+sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="3.2e-05"} 89280035
+sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="6.4e-05"} 89280035
+sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="0.000128"} 89280035
+sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="0.000256"} 89280035
+sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="0.000512"} 89280035
+sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="0.001024"} 89280035
+sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="0.002048"} 89280035
+sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="0.004096"} 89280035
+sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="0.008192"} 89280035
+sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="0.016384"} 89280035
+sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="0.032768"} 89280035
+sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="0.065536"} 89280035
+sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="0.131072"} 89280035
+sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="0.262144"} 89280035
+sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="0.524288"} 89280035
+sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="1.048576"} 89280035
+sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="2.097152"} 89280035
+sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="4.194304"} 89280035
+sproutfs_hot_tier_store_seconds_bucket{operation="delete",le="+Inf"} 7366732
+sproutfs_hot_tier_store_seconds_sum{operation="delete"} 0.047519587
+sproutfs_hot_tier_store_seconds_count{operation="delete"} 7366732
+sproutfs_hot_tier_store_seconds_bucket{operation="list",le="1e-06"} 17221612
+sproutfs_hot_tier_store_seconds_bucket{operation="list",le="2e-06"} 31487287
+sproutfs_hot_tier_store_seconds_bucket{operation="list",le="4e-06"} 31487287
+sproutfs_hot_tier_store_seconds_bucket{operation="list",le="8e-06"} 31487287
+sproutfs_hot_tier_store_seconds_bucket{operation="list",le="1.6e-05"} 31487287
+sproutfs_hot_tier_store_seconds_bucket{operation="list",le="3.2e-05"} 31487287
+sproutfs_hot_tier_store_seconds_bucket{operation="list",le="6.4e-05"} 31487287
+sproutfs_hot_tier_store_seconds_bucket{operation="list",le="0.000128"} 31487287
+sproutfs_hot_tier_store_seconds_bucket{operation="list",le="0.000256"} 31487287
+sproutfs_hot_tier_store_seconds_bucket{operation="list",le="0.000512"} 31487287
+sproutfs_hot_tier_store_seconds_bucket{operation="list",le="0.001024"} 31487287
+sproutfs_hot_tier_store_seconds_bucket{operation="list",le="0.002048"} 31487287
+sproutfs_hot_tier_store_seconds_bucket{operation="list",le="0.004096"} 31487287
+sproutfs_hot_tier_store_seconds_bucket{operation="list",le="0.008192"} 31487287
+sproutfs_hot_tier_store_seconds_bucket{operation="list",le="0.016384"} 31487287
+sproutfs_hot_tier_store_seconds_bucket{operation="list",le="0.032768"} 31487287
+sproutfs_hot_tier_store_seconds_bucket{operation="list",le="0.065536"} 31487287
+sproutfs_hot_tier_store_seconds_bucket{operation="list",le="0.131072"} 31487287
+sproutfs_hot_tier_store_seconds_bucket{operation="list",le="0.262144"} 31487287
+sproutfs_hot_tier_store_seconds_bucket{operation="list",le="0.524288"} 31487287
+sproutfs_hot_tier_store_seconds_bucket{operation="list",le="1.048576"} 31487287
+sproutfs_hot_tier_store_seconds_bucket{operation="list",le="2.097152"} 31487287
+sproutfs_hot_tier_store_seconds_bucket{operation="list",le="4.194304"} 31487287
+sproutfs_hot_tier_store_seconds_bucket{operation="list",le="+Inf"} 29133504
+sproutfs_hot_tier_store_seconds_sum{operation="list"} 0.022177555
+sproutfs_hot_tier_store_seconds_count{operation="list"} 29133504

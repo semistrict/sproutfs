@@ -404,3 +404,40 @@ func TestMetricsExposeTemplateImports(t *testing.T) {
 		}
 	}
 }
+
+// An embedder registers the families with its own metrics library, so they
+// carry what the text does: the kind, the labels, and a histogram's cumulative
+// buckets, sum and count.
+func TestMetricFamiliesAreWhatAnEmbedderRegisters(t *testing.T) {
+	families := hostapi.MetricFamilies(hostapi.Status{
+		Pager: hostapi.Pager{RAM: hostapi.PagerKind{Spills: 5}},
+		Checkpoints: hostapi.Checkpoints{Pause: hostapi.Latency{Count: 3, TotalNS: 4_500_000,
+			Buckets: []uint64{1, 0, 2}}},
+	})
+	byName := map[string]hostapi.MetricFamily{}
+	for _, family := range families {
+		if _, ok := byName[family.Name]; ok {
+			t.Fatalf("two families are named %s", family.Name)
+		}
+		byName[family.Name] = family
+	}
+	spills := byName["sproutfs_pager_spills_total"]
+	if spills.Kind != hostapi.Counter || len(spills.Samples) != 3 ||
+		spills.Samples[0].Labels[0] != (hostapi.Label{Name: "kind", Value: "ram"}) || spills.Samples[0].Value != 5 {
+		t.Fatalf("sproutfs_pager_spills_total is %+v, want a counter whose ram sample is 5", spills)
+	}
+	pause := byName["sproutfs_checkpoint_pause_seconds"]
+	if pause.Kind != hostapi.Histogram || len(pause.Samples) != 1 {
+		t.Fatalf("sproutfs_checkpoint_pause_seconds is %+v, want one histogram sample", pause)
+	}
+	got := pause.Samples[0]
+	if got.Count != 3 || got.Sum != 0.0045 || len(got.Buckets) != hostapi.LatencyBuckets-1 {
+		t.Fatalf("the pause histogram has count %d, sum %v and %d buckets, want 3, 0.0045 and %d",
+			got.Count, got.Sum, len(got.Buckets), hostapi.LatencyBuckets-1)
+	}
+	if first, third, last := got.Buckets[0], got.Buckets[2], got.Buckets[len(got.Buckets)-1]; first != (hostapi.Bucket{UpperBound: 1e-6, Count: 1}) ||
+		third.Count != 3 || last.Count != 3 {
+		t.Fatalf("the pause buckets begin %+v and hold %d by the third and %d by the last, want {1e-06 1}, 3 and 3",
+			first, third.Count, last.Count)
+	}
+}

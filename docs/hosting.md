@@ -71,8 +71,10 @@ VM of the tenant, including VMs no host runs and deleted VMs whose pinned
 checkpoints remain. See [billing](volumes.md#billing).
 
 `GET /metrics` is `hostapi.Metrics` of the host's `Status`, in the Prometheus
-text format. An embedder serves the same text by passing the supervisor's
-`Status` to `hostapi.Metrics`. It covers the pager's dirty and window waits and
+text format. `hostapi.MetricFamilies` gives the same metrics as data: each
+family's name, help, kind and samples, with a histogram's buckets, sum and
+count. An embedder registers them with its own metrics library, or serves the
+text of `hostapi.Metrics`; sproutfs links no metrics library. The metrics cover the pager's dirty and window waits and
 stalls, refused mappings and repeated faults; histograms of faults, loads,
 seals and object-store calls; interval checkpoints; migrations, forks and
 receives by outcome; VMs given up and why; template imports; peers by whether
