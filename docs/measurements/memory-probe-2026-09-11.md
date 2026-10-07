@@ -113,7 +113,7 @@ The managed probes each flushed only 2,424,832 bytes and uploaded 3,885,323
 object bytes. The one-vCPU probe advanced the volume checkpoint sequence from
 34 to 35 while recording **zero** RAM sealing or protection activity. Ordinary
 volume checkpoints publish bytes already ingested into volumes; they do not
-periodically capture guest RAM. See [capture and restore](../vm-memory.md#capture-and-restore).
+periodically capture guest RAM. See [capture and restore](../vm-memory.md#capture-fork-and-restore).
 
 `CopyOnWrites` includes the initial allocation of private writable pages from
 sparse zeroes. It is not a count of post-checkpoint rewrites. Both probes also

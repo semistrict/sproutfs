@@ -149,7 +149,7 @@ one pause. A VM's loss window is the oldest unpublished write across its memory
 regions in both pagers. If neither pager can admit a store, only that VM is
 stopped.
 
-**RAM's page is 4 KiB and PMEM's is 2 MiB**, on a real host and in the
+**RAM's page and PMEM's are both 2 MiB** by default, on a real host and in the
 simulation, unless a host's deployment names another
 (`SPROUTFS_RAM_PAGE_BYTES`, `SPROUTFS_PMEM_PAGE_BYTES`). A 2 MiB page comes from
 the host's provisioned HugeTLB pool. A 4 KiB page comes from an ordinary shared
@@ -260,8 +260,8 @@ since a range is 512 pages and an extent 512 offsets), plus `ResidentPages` for
 the read-ahead runs. PMEM's offset count equals its page count, which a
 configuration that leaves `ArenaOffsets` zero describes.
 
-The host must provision a 2 MiB HugeTLB pool for the **PMEM** arena before it
-starts VMs. The **RAM** arena is an ordinary memfd charged to the pod's memory.
+The host must provision a 2 MiB HugeTLB pool for its arenas before it starts
+VMs. An arena at 4 KiB pages is an ordinary memfd charged to the pod's memory.
 Each arena reserves virtual address space without reserving its whole logical
 capacity, and allocates each resident slot before it touches the slot's
 mapping: the HugeTLB arena with `fallocate`, the ordinary arena with a
@@ -1568,7 +1568,7 @@ is read-write, and the only one a writable MAP may name. A shared arena sends on
 file, the arena, as file 0, and maps every page from it; a MAP of file 0 encodes
 as MAP did in version 9. An [isolated arena](#the-isolated-arena) sends the
 region's private file as file 0 and its tenant's shared file as file 1 when the
-session attaches. It sends a fork point's file as file 2 or up in the middle of a
+session attaches. It sends a fork point's file as file 3 or up in the middle of a
 session, just before the first MAP that names it, and DROP_FILE when the point's
 seal ends. Numbers are the session's own: another session may name the same fork
 file by another number.
@@ -2240,7 +2240,7 @@ The simulated pager tests in `vmmemory/isolation_test.go` and
 - A published page whose VMM changed it through its private file ends that
   session with `ErrTampered`, and the inheritor reads its volume.
 - A fork point's page is copied into the point's file once, and two children map
-  that copy as file 2. Ending the seal revokes their mappings, drops the file
+  that copy as file 3 or up. Ending the seal revokes their mappings, drops the file
   from both and gives it back.
 - A detached region's private file lasts as long as its idle pages, and so does
   a tenant's shared file once the tenant's last region has detached.
