@@ -142,6 +142,12 @@ func (h *Host) window(r *MemoryRegion) windowAnswer {
 	if !r.askWindow() {
 		return windowAdmit
 	}
+	// The callback is read under h.mu and called without it, since it must
+	// not run under the host's lock. An owner that cleared it in between is
+	// still asked, and declines for a VM it no longer runs. No checkpoint of
+	// the VM seals between the look at sealState above and the ask: a seal
+	// needs a pause, and the pause waits for the vCPU this store holds. The
+	// hold after only counts.
 	h.mu.Lock()
 	request := h.pressure.Checkpoint
 	h.mu.Unlock()

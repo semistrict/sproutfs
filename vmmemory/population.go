@@ -355,6 +355,12 @@ func (h *Host) residentSlots(candidates []candidate) ([]fileSlot, []bool) {
 			slots[i] = fileSlot{slot: -1}
 		}
 		if root != nil {
+			// The root was read under one hold of h.mu, its pages under its
+			// own lock and its fork point under a later hold. A root lives
+			// until the pager closes, which no attached region allows. A
+			// page given up or a fork point ended in between is what this
+			// reports anyway: it orders the populate's budget, and p.take
+			// looks at each page again under its lock.
 			root.slotsOf(candidates[at:at+run], slots[at:at+run], ps)
 			h.mu.Lock()
 			lent := root.lent != nil

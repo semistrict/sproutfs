@@ -385,7 +385,11 @@ func (p *plan) splitPrefetch(ctx context.Context, index uint64, into []*arenaFil
 		prefetchSendSeam(p.start)
 	}
 	// In a controlled run another task may go on here, between the plan and
-	// the send: a fault of another region of the same root, say.
+	// the send: a fault of another region of the same root, say. Nothing
+	// read before this point is acted on after it but the reserved slots,
+	// which are this plan's alone; the reads under way are read again under
+	// the hold that sends. A fault cancelled here gives its slots back under
+	// one hold and sends nothing.
 	if err := sim.Admit(ctx, "vmmemory/prefetch-send"); err != nil {
 		for _, page := range pages {
 			back = append(back, page.at)
@@ -609,9 +613,19 @@ func (pf *prefetch) land(ctx context.Context) []prefetchPage {
 	if err == nil {
 		err = sim.Admit(ctx, "vmmemory/prefetch-land")
 	}
+	// From this hold no allocation cancels the prefetch: one short of a slot
+	// waits for it to settle instead (cancelPrefetchesLocked). A cancel that
+	// came after the read ended may land the pages or drop them; either way
+	// the slots come back when the prefetch settles, as idle pages or free.
 	h.mu.Lock()
 	pf.reading = false
 	h.mu.Unlock()
+	if err == nil {
+		// In a controlled run an allocation or a fault on these pages may go
+		// on here, with the prefetch no longer reading and its pages not
+		// landed yet.
+		err = sim.Admit(ctx, "vmmemory/prefetch-landing")
+	}
 	if err != nil {
 		if context.Cause(ctx) == nil {
 			slog.DebugContext(ctx, "vmmemory: a prefetch's read failed; its pages are left to their faults",
@@ -627,6 +641,10 @@ func (pf *prefetch) land(ctx context.Context) []prefetchPage {
 	if prefetchSettleSeam != nil {
 		prefetchSettleSeam()
 	}
+	// This hold and those below between the pages only count: nothing read
+	// under one is acted on under another. Each page's slot is the
+	// prefetch's until it lands or goes back, and its frame is locked from
+	// its making until the supply.
 	h.mu.Lock()
 	h.stats.Loads++
 	h.stats.LoadedPages += uint64(len(pf.pages))
@@ -757,6 +775,12 @@ func (pf *prefetch) drop(ctx context.Context, pages []prefetchPage) {
 // mapPrefetched maps the pages a prefetch landed into the region whose fault
 // asked for them, as MemoryRegion.mapPrefetched does.
 func (r *MemoryRegion) mapPrefetched(ctx context.Context, pf *prefetch, landed []prefetchPage) {
+	// A detach holds live from before it waits for this prefetch to end, so
+	// the prefetch only tries it: one that fails leaves its pages idle. One
+	// that succeeds holds it until the pages are mapped, so no detach runs in
+	// between. What landed was read under earlier holds, and may have been
+	// evicted or mapped since: bindLanded looks at each page again under the
+	// window's locks and its root's.
 	if !r.live.TryRLock() {
 		return
 	}
@@ -831,6 +855,13 @@ func (p *plan) bindLanded(page prefetchPage) bool {
 // reports whether any prefetch still holds slots, reading, cancelled, or
 // giving them back or landing its pages in them: the allocation waits for
 // those slots to come back free or as idle pages. Caller holds h.mu.
+//
+// The caller acts on the answer after giving h.mu up, so it takes the host's
+// signal under the same hold (reclaimStep): a prefetch that settles after
+// this look gives its slots back and signals under a later hold, which wakes
+// it. A prefetch whose read ended before the cancel lands what it read, and
+// one past its read is not cancelled at all (land); either way its slots come
+// back when it settles.
 func (h *Host) cancelPrefetchesLocked(ctx context.Context) bool {
 	holding := false
 	for pf := range h.prefetches {
@@ -849,7 +880,10 @@ func (h *Host) cancelPrefetchesLocked(ctx context.Context) bool {
 }
 
 // cancelPrefetches cancels this region's prefetches and waits until none of
-// them runs, which a detach does before it takes anything away.
+// them runs, which a detach does before it takes anything away. The count and
+// the signal are read under one hold, so a prefetch that ends after it wakes
+// the wait. None starts once the count is zero: only a fault splits one off,
+// and the detach holds live.
 func (r *MemoryRegion) cancelPrefetches(ctx context.Context) error {
 	h := r.host
 	for {
