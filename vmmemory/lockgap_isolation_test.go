@@ -12,77 +12,6 @@ import (
 // lock in an isolated arena's paths, where the work before the release looked
 // at something the work after relies on (TASK-108).
 
-// forkedTwice is a parent whose pages 0 and 1 hold 44 and 45 at their first
-// byte, sealed and shared as a fork point that lends both pages to its two
-// children on this host. Each child's backing reaches the bytes the seal
-// holds, as a child's does through the seal. The children attach before the
-// point is shared, so neither maps a lent page before it faults.
-type forkedTwice struct {
-	parent *vmmemory.MemoryRegion
-	pm     *mapping
-	a, b   *vmmemory.MemoryRegion
-	am, bm *mapping
-	bb     *backing
-}
-
-func forkTwice(t *testing.T, f *fixture) forkedTwice {
-	t.Helper()
-	var w forkedTwice
-	w.parent, w.pm, _ = f.memoryRegion(4)
-	accessUnder(f.ctx, t, w.parent, w.pm, 0, true)[0] = 44
-	accessUnder(f.ctx, t, w.parent, w.pm, 1, true)[0] = 45
-	point := control.Ref{VM: f.source.VM + "-point", Sequence: 7}
-	child := func() (*vmmemory.MemoryRegion, *mapping, *backing) {
-		cb := f.newBacking(4)
-		cb.source = point
-		cb.data[0], cb.data[f.pageSize] = 44, 45
-		r, m := f.attach(cb)
-		return r, m, cb
-	}
-	w.a, w.am, _ = child()
-	w.b, w.bm, w.bb = child()
-	if err := w.parent.Seal(f.ctx); err != nil {
-		t.Fatal(err)
-	}
-	if err := w.parent.Checkpoint().Share(f.ctx, point, "v"); err != nil {
-		t.Fatal(err)
-	}
-	return w
-}
-
-// endTheSealInAForkCopy has child b copy page 0 while the parent detaches,
-// with the seal ending while b's copy is at the seam set installs. Child a
-// copies page 1 first and waits at the same seam, so the detach gives page 0
-// up at once and then waits for page 1. Once b's copy reaches the seam, a's
-// goes on, and the detach ends the seal and finishes before b's copy does.
-// It reports what b reads of page 0.
-func endTheSealInAForkCopy(t *testing.T, f *fixture, w forkedTwice, set func(*testing.T, func(uint64))) byte {
-	t.Helper()
-	release := make(chan struct{})
-	detached := make(chan error, 1)
-	set(t, func(page uint64) {
-		if page == 1 {
-			<-release
-			return
-		}
-		close(release)
-		synctest.Wait()
-		requireOver(t, "the parent's detach", detached)
-	})
-	copied := make(chan error, 1)
-	go func() { copied <- w.a.Fault(f.ctx, 1, false) }()
-	synctest.Wait()
-	// The parent's VMM has gone, as a detach requires.
-	f.a.mu.Lock()
-	clear(w.pm.pages)
-	f.a.mu.Unlock()
-	go func() { detached <- w.parent.Detach(f.ctx) }()
-	synctest.Wait()
-	got := accessUnder(f.ctx, t, w.b, w.bm, 0, false)[0]
-	requireOver(t, "the other child's copy", copied)
-	return got
-}
-
 // requireOver reports a goroutine's error, and fails the test where it has
 // not finished.
 func requireOver(t *testing.T, what string, done <-chan error) {
@@ -117,50 +46,72 @@ func unheldFilesOpen(f *fixture, mappings ...*mapping) int {
 	return open
 }
 
-// A child copies a page its fork point lends while the parent detaches, and
-// the end of the seal falls between the copy being made and its taking the
-// lent page's place. The point no longer lends, so the copy goes back and the
-// child reads its own volume; the point's file goes back with the seal.
-// Before TASK-108 the copy took the lent page's place first and became one of
-// the point's copies only after: the end of the seal missed it, gave it back
-// with the root and the point's file with it, and the child was then given
-// the file the point no longer had, which panicked on its holders.
-func TestAForkCopyWhosePointsSealEndsBeforeItIsKeptGoesBack(t *testing.T) {
+// A child's copy of a page its fork point lends holds the end of the seal
+// back: the parent detaches while the copy is under way, and its detach waits
+// for the copy, then takes it back with the point's file. The end takes each
+// page's lent name away under the page's lock, which the copy holds, so the
+// copy never has to look again whether its point still lends: forkCopy relies
+// on this.
+func TestTheEndOfASealWaitsForAForkCopyUnderWay(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := isolatedFixture(t, vmmemory.Config{ResidentPages: 8, LogicalPages: 32, DirtyPages: 8})
-		w := forkTwice(t, f)
-		if got := endTheSealInAForkCopy(t, f, w, vmmemory.SetForkCopySeam); got != 44 {
-			t.Fatalf("the child reads %d, want the 44 the seal held", got)
+		parent, pm, _ := f.memoryRegion(4)
+		accessUnder(f.ctx, t, parent, pm, 0, true)[0] = 44
+		// The child attaches before the point is shared, so it maps no lent
+		// page before it faults. Its backing reaches the bytes the seal holds,
+		// as a child's does through the seal.
+		point := control.Ref{VM: f.source.VM + "-point", Sequence: 7}
+		cb := f.newBacking(4)
+		cb.source = point
+		cb.data[0] = 44
+		child, cm := f.attach(cb)
+		if err := parent.Seal(f.ctx); err != nil {
+			t.Fatal(err)
 		}
-		if s := hostStats(t, f); s.ForkCopies != 1 || w.bb.loads != 1 {
-			t.Fatalf("%d fork copies and %d reads of the child's volume, want 1 and 1", s.ForkCopies, w.bb.loads)
+		if err := parent.Checkpoint().Share(f.ctx, point, "v"); err != nil {
+			t.Fatal(err)
 		}
-		if open := unheldFilesOpen(f, w.am, w.bm); open != 0 {
-			t.Fatalf("%d files no child holds are open after the seal ended, want none", open)
+		copying, release := make(chan struct{}), make(chan struct{})
+		vmmemory.SetForkCopySeam(t, func(uint64) {
+			close(copying)
+			<-release
+		})
+		faulted := make(chan error, 1)
+		go func() { faulted <- child.Fault(f.ctx, 0, false) }()
+		synctest.Wait()
+		select {
+		case <-copying:
+		default:
+			t.Fatal("the child's fault made no copy of the lent page")
 		}
-		if got := accessUnder(f.ctx, t, w.a, w.am, 1, false)[0]; got != 45 {
-			t.Fatalf("the other child reads %d after the seal ended, want 45", got)
+		// The parent's VMM has gone, as a detach requires.
+		f.a.mu.Lock()
+		clear(pm.pages)
+		f.a.mu.Unlock()
+		detached := make(chan error, 1)
+		go func() { detached <- parent.Detach(f.ctx) }()
+		synctest.Wait()
+		select {
+		case err := <-detached:
+			close(release)
+			t.Fatalf("the parent's detach finished (%v) while a child's copy of its page was under way", err)
+		default:
 		}
-	})
-}
-
-// A child copies a page its fork point lends while the parent detaches, and
-// the end of the seal falls between its look at the point and its making the
-// point's file. The point no longer lends, so no file is made and the child
-// reads its own volume. Before TASK-108 a file was made for the point after
-// its seal had ended, and nothing ever gave it back.
-func TestAForkCopyMakesNoFileForAPointWhoseSealEnded(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		f := isolatedFixture(t, vmmemory.Config{ResidentPages: 8, LogicalPages: 32, DirtyPages: 8})
-		w := forkTwice(t, f)
-		if got := endTheSealInAForkCopy(t, f, w, vmmemory.SetForkFileSeam); got != 44 {
-			t.Fatalf("the child reads %d, want the 44 the seal held", got)
+		close(release)
+		synctest.Wait()
+		requireOver(t, "the child's fault", faulted)
+		requireOver(t, "the parent's detach", detached)
+		if s := hostStats(t, f); s.ForkCopies != 1 || cb.loads != 0 {
+			t.Fatalf("%d fork copies and %d reads of the child's volume, want 1 and none", s.ForkCopies, cb.loads)
 		}
-		if s := hostStats(t, f); s.ForkCopies != 1 || w.bb.loads != 1 {
-			t.Fatalf("%d fork copies and %d reads of the child's volume, want 1 and 1", s.ForkCopies, w.bb.loads)
+		if _, mapped := cm.mappedPage(0); mapped {
+			t.Fatal("the child still maps the point's copy after the seal ended")
 		}
-		if open := unheldFilesOpen(f, w.am, w.bm); open != 0 {
-			t.Fatalf("%d files no child holds are open after the seal ended, want none", open)
+		if open := unheldFilesOpen(f, cm); open != 0 {
+			t.Fatalf("%d files the child does not hold are open after the seal ended, want none", open)
+		}
+		if got := accessUnder(f.ctx, t, child, cm, 0, false)[0]; got != 44 || cb.loads != 1 {
+			t.Fatalf("the child reads %d after %d reads of its volume, want 44 from one", got, cb.loads)
 		}
 	})
 }

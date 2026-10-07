@@ -2,16 +2,8 @@ package vmmemory
 
 import "testing"
 
-// SetForkFileSeam installs what a fork copy runs between its look at the
-// point and its making the point's file, given the page it copies.
-func SetForkFileSeam(t *testing.T, seam func(page uint64)) {
-	previous := forkFileSeam
-	forkFileSeam = seam
-	t.Cleanup(func() { forkFileSeam = previous })
-}
-
 // SetForkCopySeam installs what a fork copy runs between its making the copy
-// and the point's keeping it, given the page it copies.
+// and the copy's taking the lent page's place, given the page it copies.
 func SetForkCopySeam(t *testing.T, seam func(page uint64)) {
 	previous := forkCopySeam
 	forkCopySeam = seam
