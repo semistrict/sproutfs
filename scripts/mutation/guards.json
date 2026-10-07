@@ -880,6 +880,18 @@
     "purpose": "Ignore a shard's lease: open a shard under an assignment older than the one its header names, and keep writing one whose lease another member took."
   },
   {
+    "id": "journal-answer-before-sync",
+    "package": "journal",
+    "run": "^(TestACommitIsAnsweredOnlyAfterItsBatchSyncs|TestACommitWhoseSyncAPowerLossInterruptsIsNotAnswered)$",
+    "purpose": "Answer a journal batch's commits once its write returns, before its sync. A commit is answered while its sync is held, and one whose sync a power loss interrupted is answered and then lost."
+  },
+  {
+    "id": "journal-read-without-fence",
+    "package": "journal",
+    "run": "^TestAReadFencesTheVMAndWaitsForTheBatchInFlight$",
+    "purpose": "Serve a journal read without fencing its VM at the reader's epoch, so a commit at the older epoch is still placed and answered after the read."
+  },
+  {
     "id": "membership-let-attached-shard",
     "package": "membership",
     "run": "^TestAShardIsLetGoOnlyOnceTheCloudHasItOnNoMachine$",

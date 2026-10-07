@@ -47,6 +47,9 @@ var checked = []string{
 	"membership",
 	// Which stripes rebuild an envelope, and which are named wrong.
 	"stripe",
+	// When a flush's blocks are on the journal disk, and which entries a
+	// reader gets back.
+	"journal",
 }
 
 // forbiddenImports are the packages that draw from a source no seed reaches.
