@@ -311,6 +311,9 @@ func (r *staticResolver) Locate(offset uint64) (*CowPages, uint64, bool) {
 	return r.root, rootPage * r.ps, true
 }
 
+// Holds keeps every root Locate names: these tests give no page up between.
+func (r *staticResolver) Holds(*CowPages, uint64) bool { return true }
+
 // A region's layer reads an identity root's page in place, copies it to
 // store into it, and asks its own source for what no root holds.
 func TestARegionReadsItsIdentityRootAndCopiesItToStore(t *testing.T) {

@@ -3,9 +3,11 @@ package vmmemory_test
 import (
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 
+	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/vmmemory"
 )
@@ -174,6 +176,142 @@ func TestAStoreGivesUpNoOwnPlaceASettleHandedBackWhileItLocked(t *testing.T) {
 		}
 		if got, err := memoryByte(f.ctx, r, m, 0, nil); err != nil || got != next {
 			t.Fatalf("page 0 reads %d after the store, want %d: %v", got, next, err)
+		}
+	})
+}
+
+// A lookup's resolver finds a root holding the page under the root's lock,
+// lets it go, and the lookup locks the root again to go down into it. An idle
+// drop in between gives the page up. Going on down, the lookup sent a READ to
+// the root's source with no h.mu held, so it could land inside another fork's
+// prefetch, between its look for the reads under way and its send, and the
+// prefetch's request met it: the pager panicked, as TASK-105 did by another
+// path. The lookup looks again under the root's lock and asks its own source.
+func TestALookupAsksNoRootThatGaveItsPageUpBeforeItWentDown(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := newConfiguredFixture(t, prefetchConfig())
+		c, cm := f.attach(f.slowBacking(8))
+		a, am := f.attach(f.slowBacking(8))
+		b, bm := f.attach(f.slowBacking(8))
+		// A third fork reads the window in and goes: every page of it is
+		// idle in the forks' root.
+		if err := c.Fault(f.ctx, 0, false); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.SettlePrefetches(f.ctx); err != nil {
+			t.Fatal(err)
+		}
+		requirePage(t, cm, 4)
+		clear(cm.pages)
+		if err := c.Detach(f.ctx); err != nil {
+			t.Fatal(err)
+		}
+		located, checked, sent := make(chan struct{}), make(chan struct{}), make(chan struct{})
+		var locating, checking, sending atomic.Bool
+		vmmemory.SetLocateSeam(t, func(page uint64) {
+			if page != 4 || !locating.CompareAndSwap(false, true) {
+				return
+			}
+			// The root's page goes before the lookup goes down into it.
+			if _, err := f.h.DropIdle(f.ctx); err != nil {
+				t.Error(err)
+			}
+			close(located)
+			<-checked
+		})
+		vmmemory.SetPrefetchCheckedSeam(t, func(uint64) {
+			if !checking.CompareAndSwap(false, true) {
+				return
+			}
+			close(checked)
+			<-sent
+		})
+		vmmemory.SetLookupSentSeam(t, func(page uint64) {
+			if page == 4 && sending.CompareAndSwap(false, true) {
+				close(sent)
+			}
+		})
+		// Each fault runs on a goroutine of its own, so that a pager whose
+		// requests meet panics there and ends the run at once.
+		faulted := make(chan error, 2)
+		go func() { faulted <- a.Fault(f.ctx, 4, false) }()
+		<-located
+		go func() { faulted <- b.Fault(f.ctx, 0, false) }()
+		for range 2 {
+			if err := <-faulted; err != nil {
+				t.Fatal(err)
+			}
+		}
+		if !sending.Load() {
+			t.Fatal("the lookup of page 4 sent no READ request")
+		}
+		for _, r := range []*vmmemory.MemoryRegion{a, b} {
+			if err := r.SettlePrefetches(f.ctx); err != nil {
+				t.Fatal(err)
+			}
+		}
+		requirePage(t, am, 4)
+		requirePage(t, bm, 0)
+	})
+}
+
+// A child's lookup finds a page in the root its parent's fork point lends,
+// and the point's seal ends before the lookup goes down into the root: the
+// root leaves Host.roots and its pages go. Going on down, the lookup sent a
+// READ to the source of a root no longer there, and the pager panicked. The
+// lookup looks again under the root's lock and reads the page from its own
+// backing, as every child does once the seal has ended.
+func TestALookupAsksNoLentRootWhoseSealEndedBeforeItWentDown(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := newFixture(t, 8, 32, 8)
+		parent, pm, _ := f.memoryRegion(4)
+		stored := byte(44)
+		if _, err := memoryByte(f.ctx, parent, pm, 0, &stored); err != nil {
+			t.Fatal(err)
+		}
+		// The child attaches before the point lends anything, so it maps
+		// nothing at attach and its first access is a fault.
+		point := control.Ref{VM: f.source.VM + "-point", Sequence: 7}
+		cb := f.newBacking(4)
+		cb.source = point
+		child, cm := f.attach(cb)
+		if err := parent.Seal(f.ctx); err != nil {
+			t.Fatal(err)
+		}
+		if err := parent.Checkpoint().Share(f.ctx, point, "v"); err != nil {
+			t.Fatal(err)
+		}
+		var ended atomic.Bool
+		vmmemory.SetLocateSeam(t, func(page uint64) {
+			if page != 0 || !ended.CompareAndSwap(false, true) {
+				return
+			}
+			// The point's seal ends before the lookup goes down into its root.
+			if err := parent.Checkpoint().Retire(f.ctx, false); err != nil {
+				t.Error(err)
+			}
+		})
+		// The fault runs on a goroutine of its own, so that a pager that
+		// panics ends the run at once.
+		var got byte
+		var faultErr error
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			got, faultErr = memoryByte(f.ctx, child, cm, 0, nil)
+		}()
+		<-done
+		if faultErr != nil {
+			t.Fatal(faultErr)
+		}
+		if !ended.Load() {
+			t.Fatal("the child's lookup found no page in the lent root")
+		}
+		if want := cb.data[0]; got != want {
+			t.Fatalf("the child reads %d after the point's seal ended, want its backing's %d", got, want)
+		}
+		if got, err := memoryByte(f.ctx, parent, pm, 0, nil); err != nil || got != stored {
+			t.Fatalf("the parent reads %d after its seal ended, want its own %d: %v", got, stored, err)
 		}
 	})
 }

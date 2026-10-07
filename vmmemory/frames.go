@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync/atomic"
 
 	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/internal/ctxsync"
@@ -351,6 +352,9 @@ type identityRoot struct {
 	// it keeps the pages published under it when the seal ends. Guarded by
 	// Host.mu.
 	published bool
+	// gone marks a lent root its seal's end took out of Host.roots, which a
+	// resolver that cached it then looks up again.
+	gone atomic.Bool
 }
 
 // rootLocked is the identity root key names, made where there is none.
@@ -417,8 +421,9 @@ func (h *Host) supply(ctx context.Context, object *zirconvm.ObjectPaged, first u
 type rootResolver struct {
 	region *MemoryRegion
 	// located is what the fault holding the layer's lock located, nil
-	// otherwise. Guarded by the layer's lock.
+	// otherwise, and ctx that fault's context. Guarded by the layer's lock.
 	located *locations
+	ctx     context.Context
 	// last caches the root of the identity last resolved: a run of pages is
 	// mostly of one checkpoint. Guarded by the layer's lock.
 	last     rootKey
@@ -442,7 +447,7 @@ func (res *rootResolver) Locate(offset uint64) (*zirconvm.CowPages, uint64, bool
 		return nil, 0, false
 	}
 	root := rootOf(key)
-	if res.lastRoot == nil || res.last != root {
+	if res.lastRoot == nil || res.last != root || res.lastRoot.gone.Load() {
 		res.last, res.lastRoot = root, r.host.root(root)
 	}
 	pages, offset := res.lastRoot.pages, key.id.Page*ps
@@ -453,8 +458,31 @@ func (res *rootResolver) Locate(offset uint64) (*zirconvm.CowPages, uint64, bool
 	if !held {
 		return nil, 0, false
 	}
+	if locateSeam != nil {
+		locateSeam(page)
+	}
 	return pages, offset, true
 }
+
+// Holds reports, with the root's lock held, whether the root still holds the
+// page Locate named. Locate let the root's lock go, and in between an idle
+// drop may have given the page up, or a fork point's seal ended and took its
+// lent root away. A lookup that went down into the root then would send a
+// READ to the root's page source with no h.mu held, where a prefetch that
+// had just looked for the reads under way would meet it, or to the source of
+// a root no longer in Host.roots. Where it does not hold the page, the
+// lookup asks the region's own source, so no lookup ever asks a root's.
+func (res *rootResolver) Holds(root *zirconvm.CowPages, rootOffset uint64) bool {
+	if sim.Bug(res.ctx, "pager-look-into-a-root-that-gave-its-page-up") {
+		return true
+	}
+	return root.PageLocked(rootOffset) != nil
+}
+
+// locateSeam runs in Locate once it has found the root holding a page and let
+// the root's lock go, before the lookup goes down into the root. Production
+// leaves it nil.
+var locateSeam func(page uint64)
 
 // identityAt is the identity of a page of located: the store page whose bytes
 // it reads, which a page is shared under only at its own number.

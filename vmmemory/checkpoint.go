@@ -1215,6 +1215,7 @@ func (r *MemoryRegion) endFork(ctx context.Context, c *MemoryRegionCheckpoint) e
 		root.lent = nil
 		if !root.published {
 			delete(r.host.roots, key)
+			root.gone.Store(true)
 		}
 	}
 	h.mu.Unlock()

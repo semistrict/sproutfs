@@ -451,8 +451,8 @@ func (p *plan) readFirst(ctx context.Context, index uint64) error {
 // takeFaulting takes the faulting page into the plan before any other, by the
 // layer's lookup of it: a page an object holds is bound, a hole is a zero, and
 // a missing page is a READ request on the region's own source, which this plan
-// answers and takes a slot for. It reports again where the lookup met a
-// request of a root that a read answered meanwhile, and the fault must look
+// answers and takes a slot for. It reports again where the page it found was
+// held by something else, which it waited for, and the fault must look
 // again.
 func (p *plan) takeFaulting(ctx context.Context, index uint64) (again bool, err error) {
 	r := p.region
@@ -504,14 +504,6 @@ func (p *plan) takeFaulting(ctx context.Context, index uint64) (again bool, err 
 			h.mu.Unlock()
 		}
 		return false, nil
-	}
-	if request != nil && request.source != r.reads {
-		// The root the resolver named gave the page up between the
-		// resolver's look and the lookup's, which then asked the root. Its
-		// request is answered at once, so nothing waits on it, and the fault
-		// looks again: the page is the region's own to read now.
-		request.answer(nil)
-		return true, nil
 	}
 	p.request = request
 	// A slot is taken with the region given up and the request outstanding
@@ -624,8 +616,8 @@ func (r *MemoryRegion) lookup(ctx context.Context, page uint64, loc *locations) 
 	lock := r.pages.Lock()
 	lock.Lock()
 	defer lock.Unlock()
-	r.resolver.located = loc
-	defer func() { r.resolver.located = nil }()
+	r.resolver.located, r.resolver.ctx = loc, ctx
+	defer func() { r.resolver.located, r.resolver.ctx = nil, nil }()
 	cursor, err := r.pages.GetLookupCursorLocked(zirconvm.CowRange{Offset: page * ps, Len: ps})
 	if err != nil {
 		return nil, nil, err
@@ -635,6 +627,9 @@ func (r *MemoryRegion) lookup(ctx context.Context, page uint64, loc *locations) 
 	// A read changes no mapping and frees no page, so it defers nothing: no
 	// DeferredOps to finish.
 	result, err := cursor.RequireReadPage(ctx, 1, nil, multi)
+	if lookupSentSeam != nil && errors.Is(err, zirconvm.ErrShouldWait) {
+		lookupSentSeam(page)
+	}
 	if !errors.Is(err, zirconvm.ErrShouldWait) {
 		// No request was made, so the request goes back as it came.
 		r.host.multis.Put(multi)
@@ -661,39 +656,25 @@ func (r *MemoryRegion) lookup(ctx context.Context, page uint64, loc *locations) 
 	return nil, nil, err
 }
 
-// requestOf is the request a lookup sent: on the region's own source, where
-// only the faults of one window ask, one at a time, so it is always sent; or
-// on a root's, where a supply may have answered it already.
+// lookupSentSeam runs in a lookup that sent a READ request, before the request
+// is looked at under h.mu. Production leaves it nil.
+var lookupSentSeam func(page uint64)
+
+// requestOf is the request a lookup sent, which is on the region's own
+// source. A lookup goes down into a root only where the root still holds the
+// page under the root's lock (rootResolver.Holds), so it never asks a root's
+// source, and every READ of a root is sent under h.mu. Only the faults of one
+// window ask the region's own source, one at a time, so the request is always
+// sent.
 func (r *MemoryRegion) requestOf(multi *zirconvm.MultiPageRequest) *readRequest {
 	request := multi.ReadRequest()
-	source := zirconvm.RequestSource(request)
-	rs := r.reads
-	if source != rs.source {
-		rs = nil
-		h := r.host
-		h.mu.Lock()
-		for _, root := range r.host.roots {
-			if root.reads.source == source {
-				rs = root.reads
-				break
-			}
-		}
-		h.mu.Unlock()
-		if rs == nil {
-			panic("vmmemory: a lookup asked a page source no root and no region has")
-		}
+	if zirconvm.RequestSource(request) != r.reads.source {
+		panic("vmmemory: a lookup asked an identity root's page source")
 	}
-	if !rs.proxy.Holds(request) {
-		if rs == r.reads {
-			panic("vmmemory: a fault's read request met another read of its memory region's pages")
-		}
-		// It waits on a read of the root's, which the caller looks again
-		// after: withdrawn, it waits on nothing, and goes back.
-		multi.CancelRequests()
-		r.host.multis.Put(multi)
-		return &readRequest{source: rs, answered: true}
+	if !r.reads.proxy.Holds(request) {
+		panic("vmmemory: a fault's read request met another read of its memory region's pages")
 	}
-	return &readRequest{host: r.host, multi: multi, source: rs, offset: zirconvm.RequestOffset(request),
+	return &readRequest{host: r.host, multi: multi, source: r.reads, offset: zirconvm.RequestOffset(request),
 		length: zirconvm.RequestLen(request)}
 }
 
