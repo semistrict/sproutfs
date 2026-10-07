@@ -260,11 +260,80 @@ func (s *vmJournal) release(region *vmmemory.MemoryRegion, pages []uint64) {
 	}
 }
 
+// waitingFlush is a durable flush of a memory region no VM here is registered
+// for yet.
+type waitingFlush struct {
+	region *vmmemory.MemoryRegion
+	done   func(error)
+}
+
+// registeredFor is the VM registered here that maps region. A VMM sends the
+// flushes it held when it stopped again as soon as it runs, which is before
+// the host that started it registers it: answered then, such a flush would
+// be answered with nothing journaled, ahead of a destination's post-copy. So
+// a flush of a region no VM here is registered for waits until its VM is,
+// and goes unanswered with a VMM given up before then, as every flush of a
+// VM that leaves a host does. It reports false for such a flush.
+func (h *Host) registeredFor(region *vmmemory.MemoryRegion, done func(error)) (string, *registration, bool) {
+	h.machines.mu.Lock()
+	defer h.machines.mu.Unlock()
+	for vmID, entry := range h.machines.running {
+		for _, mapped := range entry.runtime.MemoryRegions() {
+			if mapped == region {
+				return vmID, entry, true
+			}
+		}
+	}
+	if sim.Bug(h.ctx, "journal-answer-before-registered") {
+		done(nil)
+		return "", nil, false
+	}
+	if h.machines.waiting == nil {
+		h.machines.waiting = make(map[*vmmemory.MemoryRegion][]func(error))
+	}
+	h.machines.waiting[region] = append(h.machines.waiting[region], done)
+	return "", nil, false
+}
+
+// takeWaitingLocked takes the flushes waiting for runtime's registration, in
+// the order of its memory regions' names. Caller holds h.machines.mu.
+func (h *Host) takeWaitingLocked(runtime Machine) []waitingFlush {
+	regions := runtime.MemoryRegions()
+	var taken []waitingFlush
+	for _, name := range slices.Sorted(maps.Keys(regions)) {
+		region := regions[name]
+		for _, done := range h.machines.waiting[region] {
+			taken = append(taken, waitingFlush{region: region, done: done})
+		}
+		delete(h.machines.waiting, region)
+	}
+	return taken
+}
+
+// dropWaiting drops unanswered the flushes of a VMM this host started that
+// wait for its registration: it is given up.
+func (h *Host) dropWaiting(runtime Machine) {
+	h.machines.mu.Lock()
+	defer h.machines.mu.Unlock()
+	h.takeWaitingLocked(runtime)
+}
+
+// closeRuntime closes a VMM process this host started, and drops the flushes
+// of it still waiting.
+func (h *Host) closeRuntime(runtime Machine) error {
+	err := runtime.Close()
+	h.dropWaiting(runtime)
+	return err
+}
+
 // flushedDurable answers a flush of one disk in the durable flush mode: once
 // its changed blocks are in the journal, or with the reason they could not be.
 func (h *Host) flushedDurable(region *vmmemory.MemoryRegion, done func(error)) {
-	vmID, entry := h.machineFor(region)
-	if entry == nil || entry.now == nil || entry.cadence.flushBound <= 0 {
+	vmID, entry, registered := h.registeredFor(region, done)
+	if !registered {
+		return
+	}
+	if entry.now == nil || entry.cadence.flushBound <= 0 {
 		// Nothing would ever trim what such a VM's flushes journal: a VM with
 		// no checkpoint loop, or one that asked for no checkpoints, was
 		// given disks that are not durable, as the flush bound treats it.

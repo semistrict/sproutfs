@@ -352,7 +352,7 @@ func (h *Host) receive(ctx context.Context, handoff vmmigrate.Handoff) (*vmmigra
 		}
 		if err := h.validateMachine(runtime); err != nil {
 			if runtime != nil {
-				err = errors.Join(err, runtime.Close())
+				err = errors.Join(err, h.closeRuntime(runtime))
 			}
 			return nil, err
 		}
@@ -362,6 +362,10 @@ func (h *Host) receive(ctx context.Context, handoff vmmigrate.Handoff) (*vmmigra
 	received, err := vmmigrate.Receive(ctx, h.volumes, handoff, h.peers, start,
 		vmmigrate.Options{Point: point, Journal: h.joiningJournal()})
 	if err != nil {
+		if started != nil {
+			// The receive gave up the VMM it started, flushes and all.
+			h.dropWaiting(started)
+		}
 		return nil, err
 	}
 	if point != nil {
@@ -573,7 +577,7 @@ func (h *Host) discardReceived(ctx context.Context, vmID string, runtime Machine
 	ctx, cancel := cleanup(ctx)
 	defer cancel()
 	h.RemoveMachine(vmID)
-	errs := []error{runtime.Close()}
+	errs := []error{h.closeRuntime(runtime)}
 	if vm != nil && vm.Status().Root {
 		errs = append(errs, vm.Close(ctx))
 	} else if vm != nil {
@@ -666,7 +670,7 @@ func (h *Host) release(vmID string, abandoning bool) (claimed bool, err error) {
 	if migrated == nil {
 		return claimed, nil
 	}
-	return claimed, migrated.runtime.Close()
+	return claimed, h.closeRuntime(migrated.runtime)
 }
 
 // expire releases a handover whose deadline has passed: a fork hold nothing

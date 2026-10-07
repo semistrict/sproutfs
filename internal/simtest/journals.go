@@ -390,6 +390,25 @@ func (w *World) FlushOn(index int, id, name string) <-chan error {
 	return answered
 }
 
+// FlushAtStart has the next guest the host at index starts for a VM it takes
+// in flush one of its disks the moment it exists, before the host has
+// registered it: a VMM sends the flushes it held when it stopped again as
+// soon as it runs on its next host.
+func (w *World) FlushAtStart(index int, id, name string) <-chan error {
+	answered := make(chan error, 1)
+	h := w.hosts[index]
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.flushAtStart[id] = func(g *guest) {
+		g.flush(name, func(error) {}, func(took bool, err error) {
+			if took {
+				answered <- err
+			}
+		})
+	}
+	return answered
+}
+
 // lastGuest is the last guest of a VM this incarnation of the host started
 // and has not ended, nil for none.
 func (h *hostState) lastGuest(id string) *guest {

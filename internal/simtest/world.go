@@ -341,6 +341,9 @@ type hostState struct {
 	loseAnswer bool
 	beginning  map[string]chan struct{}
 	outlived   map[string]*outliving
+	// flushAtStart is, by VM, what the next guest a receive here starts for
+	// it does the moment it exists: see FlushAtStart.
+	flushAtStart map[string]func(*guest)
 	// started records the guest a receive built, so the world can adopt the
 	// model of a VM this host took in, and guests every VMM process this
 	// incarnation runs, which is what a kill ends: a machine whose host died is
@@ -490,7 +493,7 @@ func start(ctx context.Context, config Config) (*World, error) {
 		h := &hostState{name: id, address: platform.Address(id),
 			pages: platform.Address(id + "/pages"), dead: new(atomic.Bool),
 			started: map[string]*guest{}, beginning: map[string]chan struct{}{},
-			outlived: map[string]*outliving{}}
+			outlived: map[string]*outliving{}, flushAtStart: map[string]func(*guest){}}
 		h.clock = w.runtime.NewClock(id)
 		h.disk = w.runtime.NewDisk(id,
 			// A killed host's disk comes back with its unsynced modifications
@@ -850,10 +853,15 @@ func (w *World) starter(h *hostState) host.StartFunc {
 		h.mu.Lock()
 		h.started[vm.ID()] = g
 		h.guests = append(h.guests, g)
+		flush := h.flushAtStart[vm.ID()]
+		delete(h.flushAtStart, vm.ID())
 		h.mu.Unlock()
 		w.mu.Lock()
 		w.receivedGuests[vm.ID()]++
 		w.mu.Unlock()
+		if flush != nil {
+			flush(g)
+		}
 		return g, nil
 	}
 }

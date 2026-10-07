@@ -312,6 +312,63 @@ func TestADestinationAnswersNoFlushBeforeItsPostCopyEnds(t *testing.T) {
 	})
 }
 
+// A VMM sends the flushes it held when it stopped again as soon as it runs on
+// its next host, which may be before that host has registered it. Such a flush
+// is a destination's like any other: it waits for the post-copy, and here goes
+// unanswered, since the source dies and the destination gives the VM up.
+func TestAFlushSentAsTheDestinationStartsWaitsForThePostCopy(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		runtime := newCampaignRuntime(39, false)
+		ctx := sim.WithRuntime(t.Context(), runtime)
+		world := journalWorld(t, ctx, runtime, "flush-at-start/", 3)
+		flushed(t, world, []uint64{0}, 4)
+		// Only the source's memory holds this store.
+		if err := world.StorePages("vm-0", simtest.DiskVolume, []uint64{0}, 5); err != nil {
+			t.Fatal(err)
+		}
+		answer := world.FlushAtStart(1, "vm-0", simtest.DiskVolume)
+		stall := simtest.StalledStream(1)
+		if err := stall.Begin(ctx, world); err != nil {
+			t.Fatal(err)
+		}
+		guests := world.ReceivedGuests("vm-0")
+		moved := make(chan error, 1)
+		go func() { moved <- world.Migrate(ctx, "vm-0", 1) }()
+		waitFor(t, func() bool { return world.ReceivedGuests("vm-0") > guests },
+			"the destination never started the VM it was taking in")
+		synctest.Wait()
+		select {
+		case err := <-answer:
+			t.Fatalf("the destination answered a flush sent as its guest started, during its post-copy: %v", err)
+		default:
+		}
+		if err := world.Kill(ctx, 0, sim.PowerLoss); err != nil {
+			t.Fatal(err)
+		}
+		if err := stall.End(ctx, world); err != nil {
+			t.Fatal(err)
+		}
+		if err := <-moved; err != nil {
+			t.Fatal(err)
+		}
+		if err := world.Settle(ctx); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case err := <-answer:
+			t.Fatalf("the destination answered a flush of a VM it gave up: %v", err)
+		default:
+		}
+		readsPage(t, ctx, world, 0, 4)
+		if err := world.VerifyFlushes(); err != nil {
+			t.Fatal(err)
+		}
+		if err := world.Close(ctx); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
 // A host is cut off from the others with the VM running on it. Another host
 // cannot read its journal, so the takeover waits. An operator gives the cut
 // off host up: its member is drained and its journal disk detached from its
@@ -372,11 +429,17 @@ func membershipOf(t *testing.T, ctx context.Context, world *simtest.World) membe
 	if err != nil {
 		t.Fatal(err)
 	}
-	m, err := store.Read(ctx)
-	if err != nil {
-		t.Fatal(err)
+	// The store's read-fails site may be on: read again.
+	var errs []error
+	for range 16 {
+		m, err := store.Read(ctx)
+		if err == nil {
+			return m
+		}
+		errs = append(errs, err)
 	}
-	return m
+	t.Fatalf("the membership could not be read: %v", errors.Join(errs...))
+	return membership.Membership{}
 }
 
 // journalOf is the journal disk the membership keeps for machine.

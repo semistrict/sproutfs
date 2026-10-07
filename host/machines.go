@@ -134,6 +134,9 @@ type machines struct {
 	stopping map[*registration]string
 	// receiving is the VMs a receive is in flight for.
 	receiving map[string]bool
+	// waiting is, by memory region, the durable flushes of a VMM this host
+	// started and has not registered yet (journal.go).
+	waiting map[*vmmemory.MemoryRegion][]func(error)
 }
 
 // AddMachine registers the VMM process of a VM this host runs, which is what a
@@ -175,12 +178,16 @@ func (h *Host) AddMachineWith(vmID string, runtime Machine, terms MachineTerms) 
 		}
 	}
 	h.machines.mu.Lock()
-	defer h.machines.mu.Unlock()
 	// This identity is being run again — received back, or created anew after a
 	// deletion — so whatever fenced it before is history.
 	delete(h.machines.fenced, vmID)
 	h.run(vmID, entry)
 	h.machines.running[vmID] = entry
+	waiting := h.takeWaitingLocked(runtime)
+	h.machines.mu.Unlock()
+	for _, flush := range waiting {
+		h.flushed(flush.region, flush.done)
+	}
 	return nil
 }
 
@@ -283,7 +290,7 @@ func (h *Host) discard(ctx context.Context, vmID string, entry *registration, me
 		h.pages.Discard(vmID)
 	}
 	if entry != nil {
-		errs = append(errs, entry.runtime.Close())
+		errs = append(errs, h.closeRuntime(entry.runtime))
 	}
 	if vm := h.vm(vmID); vm != nil {
 		errs = append(errs, vm.Close(ctx))
@@ -440,7 +447,7 @@ func (h *Host) Delete(ctx context.Context, vmID string) error {
 		h.pages.Discard(vmID)
 	}
 	if entry != nil {
-		errs = append(errs, entry.runtime.Close())
+		errs = append(errs, h.closeRuntime(entry.runtime))
 	}
 	if vm := h.vm(vmID); vm != nil {
 		errs = append(errs, vm.Close(ctx))
@@ -523,7 +530,7 @@ func (h *Host) Stop(ctx context.Context, vmID string, request hostapi.StopReques
 	if h.pages != nil {
 		h.pages.Discard(vmID)
 	}
-	errs := []error{entry.runtime.Close()}
+	errs := []error{h.closeRuntime(entry.runtime)}
 	if held := h.vm(vmID); held != nil {
 		errs = append(errs, held.Close(ctx))
 	}

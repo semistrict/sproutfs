@@ -1130,5 +1130,11 @@
     "package": "internal/simtest",
     "run": "^TestADestinationAnswersNoFlushBeforeItsPostCopyEnds$",
     "purpose": "Answer a flush on a migration's destination before its post-copy ends, though the pages the guest stored into on the source are in no journal yet."
+  },
+  {
+    "id": "journal-answer-before-registered",
+    "package": "internal/simtest",
+    "run": "^TestAFlushSentAsTheDestinationStartsWaitsForThePostCopy$",
+    "purpose": "Answer a durable flush of a VMM the host started and has not registered yet, with nothing journaled, as a destination's guest sends the flushes it held again as soon as it runs."
   }
 ]
