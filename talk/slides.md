@@ -105,30 +105,6 @@ Checkpoint: the operation that makes a running VM durable, and the objects it wr
 -->
 
 ---
-
-# Three design decisions
-
-<div class="text-2xl mt-8 space-y-8">
-
-<div v-click>1. A VM's durable state is <b>one published checkpoint</b>. The interval checkpoints the <b>disks</b>; RAM is saved only on request.</div>
-
-<div v-click>2. <b>Every page is named</b> by the checkpoint that published it. A fork keeps its parent's names.</div>
-
-<div v-click>3. A checkpoint is a <b>pause</b> followed by an <b>upload</b>. Only the pause affects latency.</div>
-
-</div>
-
-<!--
-The rest of the design depends on these three decisions.
-
-One: a VM's durable state is the one published checkpoint its control record selects. Nothing is durable between checkpoints, so losing a host loses the writes since each VM's last checkpoint. The interval checkpoint covers the disks, not RAM. The target use is an agent sandbox: the disk must survive, and software rebuilds its in-memory state from the disk. RAM is uploaded only by an explicit capture or a suspend. A checkpoint without VMM state is opened by booting the guest from its disks.
-
-Two: each page is named by the checkpoint that published it, and a fork keeps its parent's names. The store, host memory and the network share pages by name: a named page is referenced, not copied. A page that no checkpoint holds reads as zeroes.
-
-Three: a checkpoint is a pause followed by an upload, and only the pause affects latency. The pause stops the vCPUs and write-protects the dirty pages. On the interval this covers the disks only; a capture covers every memory region and also saves the VMM state. It takes milliseconds. The upload runs while the guest continues. A fork or migration takes the pause and uploads nothing; the pager moves the unpublished pages to the other side.
--->
-
----
 layout: section
 ---
 
