@@ -617,7 +617,25 @@ func (r *MemoryRegion) copyOnWrite(ctx context.Context, index uint64, spill *res
 	if err != nil {
 		return false, err
 	}
-	if src != nil && frameOf(src).layer == r && held == nil {
+	readIn := false
+	if src == nil && held == nil && !r.zeroMapped(index) {
+		// The region holds nothing of the page, so the copy has nothing to be
+		// made from. Reading it in first is the read fault this store often
+		// really is: it lands in its root, so the copy has an origin and every
+		// region that inherits the identity maps it rather than reading it.
+		origin, again, err := r.readIn(ctx, index)
+		if err != nil || again {
+			return again, err
+		}
+		src, readIn = origin, true
+	}
+	// A page read in may land in the region's own file rather than a root: a
+	// page a fork point names is read there, since the name lasts only as
+	// long as the point's seal. It is then the region's own Clean page, as
+	// one with no identity is, and the layer holds it, so it is dirtied where
+	// it is: a copy's supply would lose to it.
+	inPlace := !readIn || !sim.Bug(ctx, "pager-copy-a-page-read-into-its-own-file")
+	if src != nil && frameOf(src).layer == r && held == nil && inPlace {
 		// The region's own page, Clean, read with no identity: it is dirtied
 		// where it is.
 		defer r.host.unlockPage(src)
@@ -634,17 +652,6 @@ func (r *MemoryRegion) copyOnWrite(ctx context.Context, index uint64, spill *res
 			return false, r.fail(err)
 		}
 		return false, nil
-	}
-	if src == nil && held == nil && !r.zeroMapped(index) {
-		// The region holds nothing of the page, so the copy has nothing to be
-		// made from. Reading it in first is the read fault this store often
-		// really is: it lands in its root, so the copy has an origin and every
-		// region that inherits the identity maps it rather than reading it.
-		origin, again, err := r.readIn(ctx, index)
-		if err != nil || again {
-			return again, err
-		}
-		src = origin
 	}
 	// A copy of a root's page remembers it: its bytes cannot change while the
 	// root holds it, so a settle can tell a page the guest stored into from
@@ -1047,7 +1054,8 @@ var ruleSeam func(page uint64)
 // reservation.
 func (r *MemoryRegion) takeOneShared(ctx context.Context, index, page uint64, replaced *replacement) (bool, error) {
 	h := r.host
-	if stripe := r.stripe(page); stripe != r.stripe(index) && !sim.Bug(ctx, "pager-rule-takes-a-page-of-another-window") {
+	waits := sim.Bug(ctx, "pager-rule-takes-a-page-of-another-window")
+	if stripe := r.stripe(page); stripe != r.stripe(index) && !waits {
 		if !stripe.TryLock() {
 			// A fault of that window is under way: the run ends here.
 			return false, nil
@@ -1065,9 +1073,20 @@ func (r *MemoryRegion) takeOneShared(ctx context.Context, index, page uint64, re
 		// The checkpoint's page: the run ends here.
 		return false, nil
 	}
-	src, err := r.host.lockedPage(ctx, b)
-	if err != nil {
-		return false, err
+	// The page is tried, never waited for: the store holds the region, and
+	// whatever holds the page may be waiting to take the region back behind
+	// a seal that waits for the store. A page held ends the run.
+	var src *zirconvm.VmPage
+	if waits {
+		// The bug waits for the page, as every rule did.
+		var err error
+		if src, err = r.host.lockedPage(ctx, b); err != nil {
+			return false, err
+		}
+	} else if p, busy := r.host.tryLockedPage(b); busy {
+		return false, nil
+	} else {
+		src = p
 	}
 	unlock := func() {
 		if src != nil {
@@ -1143,6 +1162,30 @@ func (r *MemoryRegion) takeOneShared(ctx context.Context, index, page uint64, re
 	return true, nil
 }
 
+// tryLockedPage is lockedPage that never waits: the page b names, locked, nil
+// where it names none, and busy where something else holds that page's lock.
+func (h *Host) tryLockedPage(b *binding) (page *zirconvm.VmPage, busy bool) {
+	h.mu.Lock()
+	p := b.page
+	h.mu.Unlock()
+	if p == nil {
+		return nil, false
+	}
+	if !frameOf(p).mu.TryLock() {
+		return nil, true
+	}
+	h.mu.Lock()
+	same := b.page == p
+	h.mu.Unlock()
+	if !same {
+		// An eviction or a move took the page from b between the two looks:
+		// a rule reads nothing it would have to wait for, so it ends there.
+		h.unlockPage(p)
+		return nil, true
+	}
+	return p, false
+}
+
 // joinRun takes into a store's run a page the region stores into where it is
 // already, and holds it until the store's command lands: an eviction between
 // the look and the command would leave the command mapping a slot that went
@@ -1163,19 +1206,14 @@ func (r *MemoryRegion) joinRun(ctx context.Context, page uint64, replaced *repla
 	h.mu.Lock()
 	p := b.page
 	h.mu.Unlock()
-	if p == nil {
-		return false
-	}
-	if slices.Contains(replaced.made, p) {
+	if p != nil && slices.Contains(replaced.made, p) {
 		return r.joinsRun(page)
 	}
-	if !frameOf(p).mu.TryLock() {
+	p, busy := h.tryLockedPage(b)
+	if busy || p == nil {
 		return false
 	}
-	h.mu.Lock()
-	same := b.page == p
-	h.mu.Unlock()
-	if !same || !r.joinsRun(page) {
+	if !r.joinsRun(page) {
 		h.unlockPage(p)
 		return false
 	}

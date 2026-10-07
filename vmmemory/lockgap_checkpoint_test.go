@@ -597,12 +597,11 @@ func (p *forkingParent) run(ctx context.Context, random *rand.Rand, end int) err
 }
 
 // runForkChild reads a child's pages, half the time the page after the last
-// and otherwise one at random, and now and then stores into one it maps. A
-// child stores into no page it does not map: in an isolated arena such a
-// store, into a page the point names and does not hold, ends the child's
-// region (a store copies a page it read into its own file, and the copy's
-// supply loses to the page it was copied from), which is a bug of the store
-// and no lock's.
+// and otherwise one at random, and now and then stores into one, mapped or
+// not. Before 2026-10-07 a child stored only into pages it mapped: in an
+// isolated arena a store into a page the point names and does not hold ended
+// the child's region, because the store copied the page it had read into its
+// own file and the copy's supply lost to it.
 func runForkChild(ctx context.Context, g *forkGuest, random *rand.Rand) error {
 	page := uint64(0)
 	for op := range 24 {
@@ -614,9 +613,8 @@ func runForkChild(ctx context.Context, g *forkGuest, random *rand.Rand) error {
 		} else {
 			page = random.Uint64N(forkCampaignPages)
 		}
-		_, mapped := g.m.mappedPage(page)
 		var value *byte
-		if random.IntN(6) == 0 && mapped {
+		if random.IntN(6) == 0 {
 			stored := byte(0x20 + op)
 			value = &stored
 		}

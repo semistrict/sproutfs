@@ -7,6 +7,7 @@ import (
 	"testing/synctest"
 
 	"github.com/semistrict/sproutfs/checkpoint"
+	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/vmmemory"
 )
 
@@ -189,6 +190,100 @@ func TestARangeMadeWholeAroundACopyAwayFromACheckpointMapsTheGuestsOwnCopy(t *te
 		}
 		if got := access(t, r, m, page, false)[0]; got != 9 {
 			t.Fatalf("page %d reads %d, want the %d the guest stored after the seal", page, got, 9)
+		}
+	})
+}
+
+// A rule never waits for a page: the store holds the region, and whatever
+// holds the page may be waiting to take the region back. Here a read fault of
+// another window holds the pages of its window it took from their root across
+// its read, a seal waits for the store to give the region up, and the fault's
+// retake of the region waits behind the seal. The rule ends the store's run
+// at the held page. Before 2026-10-07 the rule waited for the page there, and
+// the three waited on each other for ever.
+func TestARuleEndsItsRunAtAPageAFaultOfAnotherWindowHolds(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const pages = 2 * rangePages
+		f := newConfiguredFixture(t, vmmemory.Config{PageSize: checkpoint.PageSize4KiB,
+			ResidentPages: 2 * pages, ArenaOffsets: 4 * pages, LogicalPages: 2 * pages, DirtyPages: 2 * pages,
+			ReadAheadPages: 4, WriteAheadPages: 1})
+		// A sibling makes the pages after 112 resident in their root, and
+		// not 112 itself.
+		sibling, sm, _ := f.memoryRegion(pages)
+		for page := uint64(113); page < 116; page++ {
+			access(t, sibling, sm, page, false)
+		}
+		if evicted, err := vmmemory.EvictPage(f.ctx, sibling, 112); err != nil || !evicted {
+			t.Fatalf("evicting the sibling's page 112: %t %v", evicted, err)
+		}
+		r, m := f.attach(f.slowBacking(pages))
+		access(t, r, m, 116, false)
+		access(t, r, m, 100, true)[0] = 7
+		r.PressMappings()
+		// A fault in the window before 112's, so the fault at 112 follows it
+		// and takes the rest of its window from the root.
+		access(t, r, m, 108, false)
+		var wg sync.WaitGroup
+		var read, stored, sealed error
+		wg.Go(func() { read = r.Fault(f.ctx, 112, false) })
+		synctest.Wait()
+		// The store at 116 closes the gap to 100, working down from 115,
+		// which the fault holds.
+		wg.Go(func() { stored = r.Fault(f.ctx, 116, true) })
+		synctest.Wait()
+		wg.Go(func() { sealed = r.Seal(f.ctx) })
+		wg.Wait()
+		if read != nil || stored != nil || sealed != nil {
+			t.Fatalf("the read returned %v, the store %v and the seal %v, want none", read, stored, sealed)
+		}
+		if got := hostStats(t, f).RuleCopies; got != 0 {
+			t.Fatalf("the store's rule copied %d pages, want none past the held page", got)
+		}
+		if p, ok := m.mappedPage(116); !ok || !p.mappedWritable {
+			t.Fatalf("page 116 is mapped %t writable %t, want both", ok, p.mappedWritable)
+		}
+	})
+}
+
+// A store into a page a fork point names and does not hold, which the child
+// does not map yet, makes the page the child's own. In an isolated arena such
+// a page is read into the child's own file, since the name lasts only as long
+// as the point's seal, so the store dirties the page it read where it is.
+// Before 2026-10-07 the store copied it as it copies a root's page, the
+// copy's supply lost to the page read, and the child mapped a slot that went
+// back.
+func TestAStoreIntoAPageAForkPointNamesIsTheChildsOwn(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const pages = 4
+		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 16, LogicalPages: 64, DirtyPages: 32,
+			ReadAheadPages: 1})
+		// The parent stores into its first two pages, which the point holds,
+		// and names the other two, which it does not.
+		parent, pm, _ := f.memoryRegion(pages)
+		for page := range uint64(pages / 2) {
+			access(t, parent, pm, page, true)[0] = byte(0x40 + page)
+		}
+		if err := parent.Seal(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		point := control.Ref{VM: f.source.VM + "-point", Sequence: 7}
+		if err := parent.Checkpoint().Share(t.Context(), point, "v"); err != nil {
+			t.Fatal(err)
+		}
+		b := f.newBacking(pages)
+		b.source = point
+		for page := range pages / 2 {
+			b.data[page*f.pageSize] = byte(0x40 + page)
+		}
+		child, cm := f.attach(b)
+		accessUnder(f.ctx, t, child, cm, 3, true)[0] = 0x99
+		for page, want := range map[uint64]byte{1: 0x41, 2: 3, 3: 0x99} {
+			if got := access(t, child, cm, page, false)[0]; got != want {
+				t.Fatalf("the child's page %d reads %#x, want %#x", page, got, want)
+			}
+		}
+		if got := access(t, parent, pm, 3, false)[0]; got != 4 {
+			t.Fatalf("the parent's page 3 reads %#x, want %#x", got, 4)
 		}
 	})
 }
