@@ -130,6 +130,11 @@ type MemoryRegion struct {
 	// heldReported marks the one line this memory region's unreclaimable pages are
 	// worth; see heldPages.
 	heldReported atomic.Bool
+	// detaching marks a memory region a detach has begun on, set before it
+	// asks for live. An eviction takes no page of its own layer from then on
+	// (usableVictimLocked): it would have to hold live shared to write the
+	// page's bytes to the region's reservations, and that is not to be had.
+	detaching atomic.Bool
 	// unwindowed marks a memory region its owner holds to no loss window; see
 	// HoldToNoWindow.
 	unwindowed atomic.Bool
@@ -685,7 +690,13 @@ func (r *MemoryRegion) Verify(ctx context.Context) error {
 // pages go back, and its layer goes.
 func (r *MemoryRegion) Detach(ctx context.Context) error {
 	h := r.host
+	// An eviction of one of the region's own pages holds live shared from
+	// before it reads the page's reservations until its bytes are written to
+	// them, so the reservations and the layer given back below are given back
+	// only once no eviction is writing into them, and none starts after.
+	r.detaching.Store(true)
 	if err := r.live.Lock(ctx); err != nil {
+		r.detaching.Store(false)
 		return err
 	}
 	defer r.live.Unlock()
@@ -729,10 +740,6 @@ func (r *MemoryRegion) Detach(ctx context.Context) error {
 		}
 	})
 	r.bindingsMu.Unlock()
-	own, err := r.holdOwnPages(ctx, bound)
-	if err != nil {
-		return err
-	}
 	r.releaseDirty()
 	h.mu.Lock()
 	for _, b := range bound {
@@ -770,9 +777,6 @@ func (r *MemoryRegion) Detach(ctx context.Context) error {
 	// hold below: Close refuses while they are counted, and no other region
 	// gives back a file this one still holds.
 	r.layer.Destroy()
-	for _, page := range own {
-		h.unlockPage(page)
-	}
 	h.mu.Lock()
 	h.forgetFilesLocked(r)
 	if !early {
@@ -787,50 +791,3 @@ func (r *MemoryRegion) Detach(ctx context.Context) error {
 	return nil
 }
 
-// holdOwnPages takes the lock of every page of this region's own layer that
-// bound maps, which a detach holds until the layer has gone. An eviction of
-// such a page holds its lock and nothing of the region's while it reads the
-// page's reservation, revokes the page and writes its bytes into that
-// reservation. A detach in that moment gave the reservation back and freed
-// the page under it, and the eviction then read a slot no longer the page's
-// into a reservation no longer the region's. So a detach waits for an
-// eviction under way to end, and none starts while it holds the locks.
-//
-// Each lock is tried under h.mu, which keeps what a binding maps from
-// changing as it is tried. One that is held is waited for with nothing held,
-// as a fault waits for a page an eviction holds, and then every lock is tried
-// again, so a detach never holds one page while it waits for another. On
-// error it holds none.
-func (r *MemoryRegion) holdOwnPages(ctx context.Context, bound []*binding) ([]*zirconvm.VmPage, error) {
-	h := r.host
-	if sim.Bug(ctx, "pager-detach-under-an-eviction") {
-		return nil, nil
-	}
-	for {
-		var held []*zirconvm.VmPage
-		var busy *zirconvm.VmPage
-		h.mu.Lock()
-		for _, b := range bound {
-			page := b.page
-			if page == nil || frameOf(page).layer != r {
-				continue
-			}
-			if !frameOf(page).mu.TryLock() {
-				busy = page
-				break
-			}
-			held = append(held, page)
-		}
-		h.mu.Unlock()
-		if busy == nil {
-			return held, nil
-		}
-		for _, page := range held {
-			h.unlockPage(page)
-		}
-		if err := h.lockPage(ctx, busy); err != nil {
-			return nil, err
-		}
-		h.unlockPage(busy)
-	}
-}
