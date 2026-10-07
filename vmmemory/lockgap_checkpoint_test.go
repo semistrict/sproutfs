@@ -1,11 +1,16 @@
 package vmmemory_test
 
 import (
+	"bytes"
 	"context"
+	"fmt"
+	"math/rand/v2"
+	"sync"
 	"testing"
 	"testing/synctest"
 
 	"github.com/semistrict/sproutfs/control"
+	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/vmmemory"
 )
 
@@ -273,4 +278,265 @@ func TestAShareAfterItsSealEndedLendsNothing(t *testing.T) {
 				got, sibling.loads)
 		}
 	})
+}
+
+// forkCampaignSeeds are the seeds the fork campaign runs.
+var forkCampaignSeeds = []uint64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}
+
+// forkCampaignPages is the parent's memory, and each child's, in pages.
+const forkCampaignPages = 8
+
+// forkGuest is one guest of the fork campaign: its memory region, what it
+// maps, and the byte it must read at each page.
+type forkGuest struct {
+	name   string
+	region *vmmemory.MemoryRegion
+	m      *mapping
+	want   []byte
+}
+
+// step is one access of a guest, a store where value is set, which must read
+// what the guest holds.
+func (g *forkGuest) step(ctx context.Context, page uint64, value *byte) error {
+	got, err := memoryByte(ctx, g.region, g.m, page, value)
+	if err != nil {
+		return fmt.Errorf("%s at page %d: %w", g.name, page, err)
+	}
+	if value != nil {
+		g.want[page] = *value
+		return nil
+	}
+	if got != g.want[page] {
+		return fmt.Errorf("%s reads %d at page %d, want %d", g.name, got, page, g.want[page])
+	}
+	return nil
+}
+
+// A fork point's children read and store into what it lends while its
+// parent stores into the same pages and the point's seal ends: by a
+// publication's retire, by an unseal, or by the parent's detach. Every read
+// of a child returns what the point lent it or what it stored since, and
+// every read of the parent what it stored. The seal's end, the fork point's
+// lending and the children's faults go on at the points a seed's scheduler
+// chooses, which is what puts a child's fault between two pages of the end.
+func TestAForkPointsChildrenReadWhatItLentWhileItsSealEnds(t *testing.T) {
+	vmmemory.SetCheckpointBatchPages(t, 2)
+	for _, seed := range forkCampaignSeeds {
+		t.Run(fmt.Sprintf("seed-%d", seed), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) { forkCampaign(t, seed) })
+		})
+	}
+}
+
+// A seed of the fork campaign replays: run twice, it releases every operation
+// in the same order.
+func TestForkCampaignReplaysItsSeeds(t *testing.T) {
+	vmmemory.SetCheckpointBatchPages(t, 2)
+	for _, seed := range []uint64{2, 9} {
+		t.Run(fmt.Sprintf("seed-%d", seed), func(t *testing.T) {
+			var orders [2][]byte
+			for run := range 2 {
+				synctest.Test(t, func(t *testing.T) { orders[run] = forkCampaign(t, seed) })
+			}
+			if !bytes.Equal(orders[0], orders[1]) {
+				t.Fatalf("seed %d released its operations in another order on its second run", seed)
+			}
+		})
+	}
+}
+
+// forkCampaign runs one seed and reports the order its scheduler released
+// every operation in.
+func forkCampaign(t *testing.T, seed uint64) []byte {
+	scheduler := sim.NewScheduler(seed)
+	runtime := sim.New(sim.Config{Seed: seed, Wait: scheduler.Wait, Buggify: true})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ctx := sim.WithRuntime(t.Context(), runtime)
+		disk := sim.New(sim.Config{Seed: seed}).NewDisk("pager", sim.DiskConfig{})
+		f, err := newFixtureOn(t, ctx, disk, vmmemory.Config{PageSize: uint64(pageSize), Arena: suiteArena,
+			ResidentPages: 16, LogicalPages: 64, DirtyPages: 32, ReadAheadPages: 1})
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		random := rand.New(rand.NewPCG(seed, 0))
+		parent, err := forkParent(sim.WithTask(ctx, "parent"), f)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		var children []*forkGuest
+		for _, name := range []string{"child-a", "child-b"} {
+			b := f.newBacking(forkCampaignPages)
+			b.source = parent.point
+			for page, value := range parent.lent {
+				b.data[page*f.pageSize] = value
+			}
+			r, m := f.attach(b)
+			children = append(children, &forkGuest{name: name, region: r, m: m, want: bytes.Clone(parent.lent)})
+		}
+		end := random.IntN(3)
+		var wg sync.WaitGroup
+		wg.Go(func() {
+			if err := parent.run(sim.WithTask(ctx, "parent"), rand.New(rand.NewPCG(seed, 1)), end); err != nil {
+				t.Error(err)
+			}
+		})
+		for at, child := range children {
+			wg.Go(func() {
+				if err := runForkChild(sim.WithTask(ctx, child.name), child,
+					rand.New(rand.NewPCG(seed, uint64(2+at)))); err != nil {
+					t.Error(err)
+				}
+			})
+		}
+		wg.Wait()
+		guests := children
+		if end != forkEndDetach {
+			guests = append(guests, &parent.forkGuest)
+		}
+		for _, g := range guests {
+			for page := range uint64(forkCampaignPages) {
+				if err := g.step(sim.WithTask(ctx, g.name+"-check"), page, nil); err != nil {
+					t.Errorf("at the end: %v", err)
+				}
+			}
+		}
+		// The guests stop and detach while the scheduler still runs.
+		for _, g := range guests {
+			g.m.arena.mu.Lock()
+			clear(g.m.pages)
+			g.m.arena.mu.Unlock()
+			if err := g.region.Detach(ctx); err != nil {
+				t.Error(err)
+			}
+		}
+	}()
+	if err := scheduler.Run(done); err != nil {
+		t.Fatal(err)
+	}
+	recording, err := scheduler.Recording(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return recording.Execution
+}
+
+// How the fork campaign's parent ends the point's seal.
+const (
+	forkEndRetire = iota
+	forkEndUnseal
+	forkEndDetach
+)
+
+// forkingParent is the fork campaign's parent: a guest whose every page it
+// stored into is sealed and lent under point, lent being the bytes it lent.
+type forkingParent struct {
+	forkGuest
+	f       *fixture
+	backing *backing
+	point   control.Ref
+	lent    []byte
+}
+
+// forkParent attaches the parent, stores into every page, seals and lends
+// the sealed pages under a fork point's name.
+func forkParent(ctx context.Context, f *fixture) (*forkingParent, error) {
+	r, m, b := f.memoryRegion(forkCampaignPages)
+	p := &forkingParent{forkGuest: forkGuest{name: "parent", region: r, m: m, want: initialBytes(forkCampaignPages)},
+		f: f, backing: b, point: control.Ref{VM: f.source.VM + "-point", Sequence: 7}}
+	for page := range uint64(forkCampaignPages) {
+		value := byte(0x40 + page)
+		if err := p.step(ctx, page, &value); err != nil {
+			return nil, err
+		}
+	}
+	if err := r.Seal(ctx); err != nil {
+		return nil, err
+	}
+	p.lent = bytes.Clone(p.want)
+	return p, r.Checkpoint().Share(ctx, p.point, "v")
+}
+
+// run stores into and reads the parent's pages, so the checkpoint keeps the
+// pages it lent where the guest copies away from them, and then ends the
+// seal as end says, and goes on.
+func (p *forkingParent) run(ctx context.Context, random *rand.Rand, end int) error {
+	steps := func(count int, from byte) error {
+		for op := range count {
+			if err := sim.Admit(ctx, "campaign/access"); err != nil {
+				return err
+			}
+			page := random.Uint64N(forkCampaignPages)
+			var value *byte
+			if random.IntN(2) == 0 {
+				stored := from + byte(op)
+				value = &stored
+			}
+			if err := p.step(ctx, page, value); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if err := steps(6, 0x80); err != nil {
+		return err
+	}
+	if err := sim.Admit(ctx, "campaign/end"); err != nil {
+		return err
+	}
+	checkpoint := p.region.Checkpoint()
+	switch end {
+	case forkEndRetire:
+		published, err := p.f.publishCheckpoint(ctx, p.region, p.backing)
+		if err != nil {
+			return err
+		}
+		if err := checkpoint.Retire(ctx, published); err != nil {
+			return err
+		}
+	case forkEndUnseal:
+		if err := p.region.Unseal(ctx); err != nil {
+			return err
+		}
+	case forkEndDetach:
+		p.m.arena.mu.Lock()
+		clear(p.m.pages)
+		p.m.arena.mu.Unlock()
+		return p.region.Detach(ctx)
+	}
+	return steps(6, 0xc0)
+}
+
+// runForkChild reads a child's pages, half the time the page after the last
+// and otherwise one at random, and now and then stores into one it maps. A
+// child stores into no page it does not map: in an isolated arena such a
+// store, into a page the point names and does not hold, ends the child's
+// region (a store copies a page it read into its own file, and the copy's
+// supply loses to the page it was copied from), which is a bug of the store
+// and no lock's.
+func runForkChild(ctx context.Context, g *forkGuest, random *rand.Rand) error {
+	page := uint64(0)
+	for op := range 24 {
+		if err := sim.Admit(ctx, "campaign/access"); err != nil {
+			return err
+		}
+		if random.IntN(2) == 0 {
+			page = (page + 1) % forkCampaignPages
+		} else {
+			page = random.Uint64N(forkCampaignPages)
+		}
+		_, mapped := g.m.mappedPage(page)
+		var value *byte
+		if random.IntN(6) == 0 && mapped {
+			stored := byte(0x20 + op)
+			value = &stored
+		}
+		if err := g.step(ctx, page, value); err != nil {
+			return err
+		}
+	}
+	return nil
 }
