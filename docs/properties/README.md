@@ -1,8 +1,7 @@
 # Desired properties
 
-Properties the system should have, one per file, each stated as a user would
-observe it. Some hold today and some do not yet. Each file ends with its
-status and the tests that show it.
+Properties the system should have, one per file, stated as a user would
+observe them. Each file ends with its status and the tests that show it.
 
 - [Stopping does not evict](stop-does-not-evict.md)
 - [Tiers evict independently](tiers-evict-independently.md)

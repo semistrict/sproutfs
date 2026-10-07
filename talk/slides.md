@@ -38,7 +38,7 @@ We have a set of hosts and an object store. We want many VMs that are mostly ide
 
 Most of a VM's data comes from the image, from its parent, or from its own earlier checkpoints. Only a small part is new.
 
-With the usual tools, each of these operations copies the whole VM. A snapshot writes all of memory out and a restore reads it back. A live migration streams memory while the guest changes it. A fork is a snapshot plus a restore. The cost grows with the VM's size, and most of the copied bytes are inherited data that nobody changed.
+With the usual tools, each of these operations copies the whole VM. A snapshot writes all of memory out and a restore reads it back. A live migration streams memory while the guest changes it. A fork is a snapshot plus a restore. The cost grows with the VM's size, and most of the copied bytes are unchanged inherited data.
 -->
 
 ---
@@ -62,7 +62,7 @@ Cost scales with what the VM changed, not with what it inherited or its size.
 </v-clicks>
 
 <!--
-All three have to hold. Inherited data is shared rather than copied in the object store, in host memory, and between hosts. Making a VM durable pauses it for milliseconds, not for the length of an upload. A VM's durable state is reachable from every host, so a host can be lost or drained, and the data lost is bounded by the loss window.
+All three have to hold. A VM's durable state is reachable from every host, so a host can be lost or drained, and the data lost is bounded by the loss window.
 -->
 
 ---
@@ -99,9 +99,9 @@ All three have to hold. Inherited data is shared rather than copied in the objec
 </div>
 
 <!--
-VM: one identity with one series of checkpoints. Volume: a byte-addressed image of the VM's RAM or of one of its PMEM disks; fixed size; one writer at a time. Page: 2 MiB of a volume. It is the unit that is stored, faulted in and owned. A deployment can run RAM with 4 KiB pages; disks always use 2 MiB. Resident: a page currently in host memory. Pages that have not been touched are loaded on a fault. Pager: one service per host. It owns all resident pages, handles the VMM's page faults, and maps guest memory.
+VM: one identity with one series of checkpoints. Volume: a byte-addressed image of the VM's RAM or of one of its PMEM disks; fixed size; one writer at a time. Page: 2 MiB of a volume, the unit that is stored, faulted in and owned. A deployment can run RAM with 4 KiB pages; disks always use 2 MiB. Resident: a page currently in host memory; others are loaded on a fault. Pager: one service per host. It owns all resident pages, handles the VMM's page faults, and maps guest memory.
 
-Checkpoint: the operation that makes a running VM durable, and the objects it writes, numbered by a sequence. Control record: the one mutable object per VM. It records which process may write and which checkpoint is current. Page identity: the checkpoint that published a page's bytes. A fork's pages keep the parent's identities until the fork writes them. Fork: a new VM created from one pause of a running VM. Migration: the same VM moved, while running, to another host. Host: a machine that runs VMs. Orchestrator: the process that places VMs and coordinates moves and forks.
+Checkpoint: the operation that makes a running VM durable, and the objects it writes, numbered by a sequence. Control record: the one mutable object per VM, recording which process may write and which checkpoint is current. Page identity: the checkpoint that published a page's bytes. A fork's pages keep the parent's identities until the fork writes them. Fork: a new VM created from one pause of a running VM. Migration: the same VM moved, while running, to another host. Host: a machine that runs VMs. Orchestrator: the process that places VMs and coordinates moves and forks.
 -->
 
 ---
@@ -142,9 +142,7 @@ layout: section
 <!--
 Identity: one id, never reused. The orchestrator assigns ids, and the store refuses to create a VM under an id that still has objects.
 
-Checkpoint objects are stored under vm/<id>/ckpt/<seq>/. The control record is stored separately at control/<id>. The two sets differ: control/ lists exactly the VMs that exist, while vm/ also keeps objects of deleted VMs whose checkpoints are pinned by forks. Listing vm/ would therefore include deleted VMs.
-
-The record holds four fields. The epoch says which process may write the VM and is incremented on every open. The nonce is a random value chosen by the process that took the epoch. Selected is the current checkpoint. Pins are sequences that forks were taken at; they are never deleted.
+Checkpoint objects are stored under vm/<id>/ckpt/<seq>/. The control record is stored separately at control/<id>. control/ lists the VMs that exist; vm/ also keeps objects of deleted VMs whose checkpoints forks pinned.
 
 The writer is the process holding the current epoch. Each open increments the epoch, which fences the previous writer: its next write to the record is refused.
 
@@ -162,15 +160,15 @@ clicks: 4
 <LossTimeline />
 
 <!--
-A guest store writes to a resident page. It does not contact the network or the store, so it cannot fail for those reasons, and it is not durable.
+A guest store writes to a resident page. It does not touch the network or the store, and it is not durable.
 
 The next checkpoint makes it durable: the dirty pages upload in parts, then the index object with the root, and then a conditional write selects the checkpoint in the control record.
 
-If the host is lost before that, the disk writes since the last selected checkpoint are lost, and so is RAM. The interval checkpoints disks only, so the VM restarts by booting from its last disk checkpoint, as after a power failure; the guest filesystem's journal handles recovery. This trade-off keeps guest writes from ever waiting on the object store.
+If the host is lost before that, the disk writes since the last selected checkpoint are lost, and so is RAM. The interval checkpoints disks only, so the VM boots from its last disk checkpoint, as after a power failure, and the guest filesystem's journal recovers. In exchange, guest writes never wait on the object store.
 
 The interval is 60 s with jitter. It is a target, not a guarantee. The loss window is the guarantee for disk writes: if a VM has held an unpublished disk write for longer than the window (5 minutes by default; 0 disables it), its stores block until a checkpoint lands, and the host requests one immediately. The age of unpublished writes is carried across migrations and forks. The dirty budget bounds unpublished data in bytes.
 
-An fsync is a guest flush that the device holds until the host answers. The host answers immediately if the VM has no unpublished disk write older than the flush bound (twice the checkpoint interval, 120 s by default). Otherwise it answers after the checkpoint it requests has landed. As a result, data is durable within the flush bound plus one interval after an fsync returns, and fsync blocks if the disks cannot be published.
+An fsync is a guest flush that the device holds until the host answers. The host answers at once if the VM has no unpublished disk write older than the flush bound (twice the checkpoint interval, 120 s by default), and otherwise after the checkpoint it requests has landed. So data is durable within the flush bound plus one interval after an fsync returns, and fsync blocks if the disks cannot be published.
 -->
 
 ---
@@ -211,9 +209,9 @@ clicks: 7
 </div>
 
 <!--
-The pause stops the vCPUs and write-protects the dirty pages in place, for each memory region being checkpointed. A memory region is one volume mapped into one VMM process. The interval covers the disks; a capture covers every memory region and also saves the VMM state. No data is copied. The sealed pages belong to the checkpoint while the guest keeps running.
+The pause stops the vCPUs and write-protects the dirty pages in place, for each memory region being checkpointed. A memory region is one volume mapped into one VMM process. The interval covers the disks; a capture covers every memory region and also saves the VMM state. No data is copied; the sealed pages belong to the checkpoint while the guest runs.
 
-If the guest stores to a sealed page, the pager copies that page to a new private page, which counts against the dirty budget. The dirty budget limits how much unpublished data a host holds. The checkpoint keeps reading the sealed original.
+A store to a sealed page gets a new private copy, counted against the dirty budget, which limits the unpublished data a host holds. The checkpoint keeps reading the sealed original.
 
 The numbers are from GCE: the pause of each 60 s disk checkpoint while the guest runs cargo build, against Cloud Storage; and a fork's pause and a migration's stop for 512 MiB guests.
 
@@ -257,11 +255,11 @@ clicks: 3
 <!--
 Parts upload as they fill, 64 MiB each, while the guest runs. A part that never completes is garbage under a key that nothing refers to.
 
-The index object is written last with a create-if-absent PUT. At that point the checkpoint is published: complete and readable. No one else can write that key, because sequences are epoch-major and only one process holds the epoch. The precondition therefore always succeeds; it only makes the object immutable.
+The index object is written last with a create-if-absent PUT. At that point the checkpoint is published: complete and readable. Sequences are epoch-major and only one process holds the epoch, so the precondition always succeeds; it only makes the object immutable.
 
-The control record then selects the sequence with a conditional write from the writer's epoch. This is the only contended step, and it is where a fenced writer is refused. After it, the checkpoint is the VM's state.
+The control record then selects the sequence with a conditional write from the writer's epoch. This is the only contended step, where a fenced writer is refused.
 
-Retiring the seal: the sealed pages are now published. Each page takes its name from this checkpoint, returns its dirty reservation, and stays mapped to the guest as a clean page. Pages the guest wrote in the meantime were already copied; those copies are the new dirty state. This step runs right after selection, because until then every store to a sealed page still makes a copy.
+Retiring the seal: the sealed pages are now published. Each page takes its name from this checkpoint, returns its dirty reservation, and stays mapped to the guest as a clean page. Pages the guest wrote in the meantime were already copied and are the new dirty state. This runs right after selection, since until then every store to a sealed page makes a copy.
 
 Reclaim: delete the checkpoints that the old root referenced and the new root does not, except pinned ones. Whole checkpoints are deleted, index object first.
 
@@ -300,7 +298,7 @@ sequence = (epoch << 32) | counter
 <!--
 Every sequence a writer allocates is greater than any sequence an earlier epoch could allocate. A fenced writer that is still uploading cannot collide with the new writer, because every checkpoint object is create-if-absent under a key the new writer never uses.
 
-The first epoch is random. If two VMs were ever created under the same id, which the orchestrator does not do but cannot rule out, they would still allocate different sequences, page identities and keys.
+The first epoch is random, so two VMs created under the same id would still allocate different sequences, page identities and keys.
 
 A fenced host finds out at its next publication, or earlier: it re-reads the record on a timer, and a migration or fork checks the record before pausing, because the pages it hands to another host cannot be recalled afterwards.
 -->
@@ -363,9 +361,7 @@ The pager keeps one resident page per name regardless of how many VMs map it, an
 </v-clicks>
 
 <!--
-The pager does for guest memory what the kernel's page cache and swap do for files: it decides what is resident, faults the rest in, shares pages, tracks dirty pages, writes back, evicts and spills. We do not use the kernel for this, for six reasons.
-
-One: duplication, as shown on the previous slide.
+The pager does for guest memory what the kernel's page cache and swap do for files: residency, faults, sharing, dirty tracking, writeback, eviction and spill. We do not use the kernel, for six reasons. One is duplication, from the previous slide.
 
 Two: sharing is by name, across VMs and checkpoints. A child's memory is its parent's checkpoints plus its own writes, at 2 MiB over tens of thousands of pages. With kernel mappings this needs one VMA per run, runs into the kernel's mapping limit, and changes at every checkpoint.
 
@@ -375,7 +371,7 @@ Four: the backing is not only a file. After a fork or migration, a page may be o
 
 Five: the budgets belong to the host. Resident, logical and dirty pages are admitted explicitly, so a guest that dirties memory faster than it publishes is checkpointed early or stalled, not swapped or killed. HugeTLB memory cannot be swapped anyway.
 
-Six: the same pager runs in the simulation on a simulated arena, disk and clock. The kernel's page cache cannot.
+Six: the same pager runs in the simulation on a simulated arena, disk and clock.
 -->
 
 ---
@@ -412,7 +408,7 @@ A memory region is one volume mapped into one VMM process. It loads pages from t
 
 The Rust library manages the mappings inside the VMM process. It does not depend on Firecracker; the Firecracker fork maps guest memory through it.
 
-Each private page reserves a spill slot before the store resumes, so a store never needs to ask for space later. If the pool is exhausted, allocation fails; there is no fallback to small pages.
+Each private page reserves a spill slot before the store resumes. If the pool is exhausted, allocation fails; there is no fallback to small pages.
 
 The host process derives the production bounds from the node, such as 8 MiB read-ahead and four I/O permits per processor, and logs them at startup.
 -->
@@ -485,7 +481,7 @@ A one-byte store costs a whole page in memory: 2 MiB copied and counted against 
 </div>
 
 <!--
-The pager's page layer is a Go port of the page layer of Zircon, Fuchsia's kernel. It is copied from zircon/kernel/vm at fuchsia revision 90e54e09, and it is not redesigned. We chose Zircon for four reasons.
+The pager's page layer is a Go port of the page layer of Zircon, Fuchsia's kernel, copied from zircon/kernel/vm at fuchsia revision 90e54e09. We chose Zircon for four reasons.
 
 One: Zircon is built for a pager outside the kernel. A VMO's pages can come from a user-space pager through page requests. The pager supplies pages, is asked before a clean page becomes dirty, and writes dirty pages back. Our pager is that user-space pager, and its sources are the store, the cluster and a peer.
 
@@ -493,11 +489,11 @@ Two: Zircon's dirty tracking is our seal. A page a user pager backs is Clean, Di
 
 Three: its eviction makes the same split as ours. A clean page a pager backs is dropped and read again. An anonymous page is compressed. Ours drops a named page and spills a region's own page.
 
-Four: it comes with its tests. Zircon's VM has 261 unit test cases.
+Four: Zircon's VM has 261 unit test cases.
 
-Zircon's kernel is under the MIT licence, which is compatible with our Apache-2.0. The package keeps Zircon's LICENSE verbatim. Every ported file begins with its source's copyright line and a line naming the Zircon files it comes from at that revision. A test fails on a file without them, or one that names a file that does not exist at that revision.
+Zircon's kernel is under the MIT licence. The package keeps Zircon's LICENSE verbatim. Every ported file begins with its source's copyright line and a line naming the Zircon files it comes from at that revision. A test fails on a file without them, or one that names a file that does not exist at that revision.
 
-FreeBSD's sys/vm was read for comparison. Nothing of it is copied: some of its files are under the four-clause BSD licence, which is not OSI-approved.
+FreeBSD's sys/vm was read for comparison and nothing of it is copied: some of its files are under the four-clause BSD licence, which is not OSI-approved.
 
 Source: plans/zircon-pager-port-2026-10-05.md, Why Zircon and Licence; docs/vm-memory.md, the package layout.
 -->
@@ -581,7 +577,7 @@ Source: plans/zircon-pager-port-2026-10-05.md, Zircon's objects and ours, and Pa
 </v-click>
 
 <!--
-The port copies Zircon's code except at five places. Each is marked in the ported file beside the line it changes.
+Each departure is marked in the ported file beside the line it changes.
 
 D1: Zircon lets a store make an AwaitingClean page Dirty again in place, and the writeback reads bytes that changed after it began. A checkpoint here must hold exactly the bytes of its pause across every page, because a fork's children and a restore read it as one point in time. So the checkpoint keeps its page and the store gets a copy.
 
@@ -660,9 +656,9 @@ Metadata: the page list replaced blocks of 256 bindings. A region that reads one
 
 The fault and capture numbers are Go benchmarks on the Mac, from one test binary with the core chosen by SPROUTFS_PAGER_CORE, ten runs of each core alternated. A chain of forward 4 KiB faults is 3 % faster. The walk behind a 4 KiB capture's pause is 8 % faster. A fork fan-out in the migration suite takes 156 ms a run under either core.
 
-A single 4 KiB fault at random is slower. At step 12 it was 3,072 ns against 2,858, or 7.5 %. Giving each page a lock that allocates nothing, and smaller frames and bindings, took it to 3.6 to 5 % slower than before step 12. A CPU profile diff shows no single hot spot. We are still finding where the rest goes.
+A single 4 KiB fault at random is slower. At step 12 it was 3,072 ns against 2,858, or 7.5 %. Giving each page a lock that allocates nothing, and smaller frames and bindings, took it to 3.6 to 5 % slower than before step 12. A CPU profile diff shows no single hot spot.
 
-The plan was to switch the default only after a GCE run of the fault chains, the capture pause, a fork fan-out and a warm restore under both cores. On 2026-10-06 the owner decided to delete the old core now and keep only the ported one, without that gate. Forward faults and the walk are faster; the fault at random is the cost.
+The plan was to switch the default only after a GCE run of the fault chains, the capture pause, a fork fan-out and a warm restore under both cores. On 2026-10-06 the owner decided to delete the old core without that gate.
 
 Source: TASK-92.4 notes (metadata); TASK-92.12 notes (benchmarks); TASK-92 notes, 2026-10-06 (the decision and the 3.6–5 %).
 -->
@@ -705,7 +701,7 @@ clicks: 4
 </div>
 
 <!--
-Cost: one pause of the parent, the same pause as a checkpoint, plus the child's boot. Nothing is uploaded. On GCE the pause was 0.1 s, and the child ran 1.6 to 10 s later.
+Cost: one pause of the parent, the same as a checkpoint's, plus the child's boot. Nothing is uploaded. On GCE the pause was 0.1 s, and the child ran 1.6 to 10 s later.
 
 Creates: a pin on the parent's published sequence and a control record for the child that selects a root over it. A fork that fails leaves no objects behind.
 
@@ -750,9 +746,9 @@ A handoff is plain data: the VM and the sequence its record selected when the so
 
 A migration hands off a VM the source has released. A fork hands off a child while the parent keeps running. The data is the same, and the destination uses one receive path for both.
 
-The destination refuses a record that selects any other sequence. A migration publishes nothing, so anyone could have opened the VM in between, and streaming pages over another writer's open would silently mix two writers' pages in one VM.
+The destination refuses a record that selects any other sequence. A migration publishes nothing, so another writer could have opened the VM in between, and streaming over it would mix two writers' pages.
 
-Whether the child is on the same host or another only changes how the unpublished pages arrive: through the shared pager, or over TCP.
+On the same host the unpublished pages arrive through the shared pager; on another, over TCP.
 
 A page that only the source has is requested until it arrives, with backoff and no retry limit. The destination cannot distinguish a slow source from a dead one, and its own volume would return data from before the guest's write. The orchestrator ends a migration only when there is evidence that the source host is gone; the VM then reopens from its checkpoint.
 -->
@@ -789,9 +785,9 @@ layout: section
 </v-click>
 
 <!--
-A VM stopped hours ago starts again. Each page it touches should come from the closest tier that still has it: this host's memory, then the disks of all the hosts, then the object store. The object store is the last resort.
+When a VM stopped hours ago starts again, each page it touches should come from the closest tier that has it: this host's memory, then the disks of all the hosts, then the object store.
 
-The hosts run on large, fast local SSDs that were not used for this. A read from another host's disk takes about a millisecond; a GET from the store about a hundred. A guest's faults after a restore are often dependent: the next page is known only when the last one arrives, so each one pays that latency in turn.
+The hosts have large, fast local SSDs. A read from another host's disk takes about a millisecond; a GET from the store about a hundred. A guest's faults after a restore are often dependent: the next page is known only when the last one arrives, so each one pays that latency in turn.
 
 The numbers are from two GCE runs on n2-standard-4 hosts: the stripe benchmark, idle, and the restore benchmark's store case.
 -->
@@ -824,13 +820,13 @@ The numbers are from two GCE runs on n2-standard-4 hosts: the stripe benchmark, 
 </div>
 
 <!--
-The cache is per host, not per VM or tenant. A page is cached once and every VM that names it reads that copy.
+The cache is per host. A page is cached once and every VM that names it reads that copy.
 
-There is no tier of whole local copies. A page read whole from the local disk would save about half a millisecond over a read from the cluster, and keeping it whole on every host that reads it would cost the cluster most of its capacity. So the hosts' disks behave as one cache whose size is the sum of their disks.
+There is no tier of whole local copies: one would save about half a millisecond a read, and keeping a page whole on every host that reads it would cost the cluster most of its capacity.
 
 The unit of placement is the window: the pages of one volume in one aligned 2 MiB span that one checkpoint published. A read-ahead run asks the same hosts for all its pages in one request each.
 
-Placement is computed, not recorded. Every host holds a copy of the membership: one object in the object store that says which disk each host serves, changed only by compare-and-set. Each disk scores a window by w over minus ln u, where u is a hash of the disk's identity and the window, and w is its weight. Rendezvous ranks the next disk exactly, which repair depends on. The comparison is done in integers, so hosts of different architectures rank alike. Every request between hosts names the generation of the membership its sender holds. A host behind it reads the object first; a host ahead of it says the sender is stale. So two hosts never exchange a stripe under different memberships.
+Every host holds a copy of the membership: one object in the object store that says which disk each host serves, changed only by compare-and-set. Each disk scores a window by w over minus ln u, where u is a hash of the disk's identity and the window, and w is its weight. Rendezvous ranks the next disk exactly, which repair depends on. The comparison is done in integers, so hosts of different architectures rank alike. Every request between hosts names the generation of the membership its sender holds. A host behind it reads the object first; a host ahead of it says the sender is stale.
 -->
 
 ---
@@ -874,7 +870,7 @@ GCE, one host drained and one stalled: **4+2** p99.9 1.95 ms · **4+1** 67 % of 
 <!--
 The code is a deployment setting, written in the membership, not derived from the hosts that are up. A drain takes six hosts to five for a while, and a code that followed them would turn every stripe into a miss. While the membership holds fewer disks than k+m, stripes go round the disks it has.
 
-k = 1 is whole copies: 1+1 keeps each envelope whole on two hosts, so two hosts are enough. Replication is not a second mechanism; it is the code at k = 1.
+k = 1 is whole copies: 1+1 keeps each envelope whole on two hosts, so two hosts are enough.
 
 On six GCE hosts, the stripe benchmark drained one host and stalled another, as a rolling restart with one bad host does. Only 4+2 kept every read fast. 4+1 survives one or the other. Whole copies survive neither.
 -->
@@ -904,7 +900,7 @@ On six GCE hosts, the stripe benchmark drained one host and stalled another, as 
 </v-clicks>
 
 <!--
-The first full-load run made 4+2 look worse than whole copies. Tracing it showed the cause was bytes served per host, not the code: no host used more than 1.7 of its 4 CPUs, GC pauses were under 2 ms, and server queueing under 0.3 ms. Past about half the NIC's rate, replies waited in the network.
+The first full-load run made 4+2 look worse than whole copies. The cause was bytes served per host: no host used more than 1.7 of its 4 CPUs, GC pauses were under 2 ms, and server queueing under 0.3 ms. Past about half the NIC's rate, replies waited in the network.
 
 Under 4+2 every host holds a stripe of every window, so a drained host's share moves onto the other five. Under 4+1 the host that stands in holds nothing to send. So serving is a budget: a deployment keeps each host under about 40 % of its NIC after a drain, until its own machine type is measured.
 -->
@@ -930,7 +926,7 @@ Under 4+2 every host holds a stripe of every window, so a drained host's share m
 </v-clicks>
 
 <!--
-The cache was designed for hosts that stay. An autoscaler changes the host count through the day, and a cache whose disks are the hosts' own pays for each change.
+An autoscaler changes the host count through the day, and a cache on the hosts' own disks pays for each change.
 
 A join: rendezvous puts the new host among a window's first k+m ranks for about k+m over N+1 of the windows, six in eleven when a tenth host joins under 4+2. Each of those windows now has one stripe on a host its readers no longer ask, and only a read of that window repairs it. Several joins with no reads in between push cold windows below four reachable stripes.
 
@@ -967,13 +963,13 @@ The code: with none configured, the orchestrator picked the code from the most h
 </div>
 
 <!--
-The fix is to stop tying the cache's disks to the hosts. The cache becomes a fixed number of shards, each a network disk with the same disk log on it. Windows are ranked over the shards, so the ranking changes only when the cache is resized on purpose, and adding or removing compute moves nothing.
+The cache becomes a fixed number of shards, each a network disk with the same disk log on it. Windows are ranked over the shards, so the ranking changes only when the cache is resized, and adding or removing compute moves nothing.
 
-Network disks are the oldest storage every cloud offers: Persistent Disk and Hyperdisk on GCP, EBS on AWS. Nothing needs allowlisting. A network disk outlives the machine it is attached to, and can be detached and attached to another machine in seconds.
+Every cloud offers network disks: Persistent Disk and Hyperdisk on GCP, EBS on AWS. A network disk outlives its machine and can be moved to another machine in seconds.
 
-Which host serves which shard is in the membership: one object in the object store, changed only by compare-and-set on its generation. Correctness rests on that alone; usually the orchestrator makes the changes, one step at a time. A shard is released from one host before it is assigned to another, and a host serves a shard only under the generation that assigns it, so a host that lost a shard can never serve it again. While a shard moves, reads hedge around it, as they do around a slow host.
+Which host serves which shard is in the membership: one object in the object store, changed only by compare-and-set on its generation. Usually the orchestrator makes the changes, one step at a time. A shard is released from one host before it is assigned to another, and a host serves a shard only under the generation that assigns it, so a host that lost a shard can never serve it again. While a shard moves, reads hedge around it, as they do around a slow host.
 
-The cost is latency: a network disk is below a millisecond by Google's figures, where local NVMe is faster but dies with the machine.
+The cost is latency: a network disk is below a millisecond by Google's figures; local NVMe is faster but dies with the machine.
 -->
 
 ---
@@ -1006,7 +1002,7 @@ Three things bring a window to the cluster. A store read splits what the store s
 
 A keep carries a holder's stripes as its disk stores them. A holder refuses a window its own list does not rank it for, and drops stripes it already holds or is writing.
 
-A cold burst would fill one window many times. So a read's fill needs the window's fill right, which rank 1 gives to the first reader that asks, once per window per ten seconds, as Memcache's leases do.
+To keep a cold burst from filling one window many times, a read's fill needs the window's fill right, which rank 1 gives to the first reader that asks, once per window per ten seconds, as Memcache's leases do.
 
 A fault, a publication and a pull never wait for a fill. Fills go through one 64 MiB queue per host, within 128 MiB/s and the host's background budget; anything over is dropped, and the window is read from the store next time.
 -->
@@ -1061,7 +1057,7 @@ clicks: 3
 <!--
 The host opens VMs over object storage and the cluster network, checkpoints every VM's disks on the interval, answers guest flushes, checks its epochs on a timer, and closes a fenced VM instead of leaving it running. It serves migration and fork pages, owns the pager and the VMM processes, and drains before it exits: it migrates every VM away and waits until it serves no pages.
 
-The orchestrator assigns ids, places VMs, and coordinates both sides of every migration and fork. It polls every host periodically for what it runs and serves, and it ends a migration only when there is evidence the source is gone. Its SQLite table is a cache; the control records are authoritative. If two hosts claim the same VM, it does not report either as the VM's host.
+The orchestrator assigns ids, places VMs, and coordinates both sides of every migration and fork. It polls every host periodically for what it runs and serves, and it ends a migration only when there is evidence the source is gone. Its SQLite table is a cache of the control records. If two hosts claim the same VM, it reports neither as its host.
 
 On Kubernetes, hosts are a Deployment with maxSurge 0 and maxUnavailable 1. The preStop drain has 30 minutes to move every VM before the pod is killed. Each node has a 2 MiB HugeTLB pool; the whole control plane uses one bearer token and one object store. Because templates are named by image digest, a restarted host pod does not import anything again.
 -->
@@ -1163,7 +1159,7 @@ simulated: process · disk · clock · network · object store
 </div>
 
 <!--
-A simtest World is one running deployment. Each host is a real host inside a simulated process, with a simulated disk that can lose power, a simulated clock, seeded randomness, and a simulated object store. The components under test are not mocked: the volume managers, the checkpoint store, the control records, the pagers, the peer servers and the migration coordinator are the production code. Go's synctest makes simulated time free, so a test that waits through a 60 s interval takes microseconds.
+A simtest World is one deployment. Each host is a real host inside a simulated process, with a simulated disk that can lose power, a simulated clock, seeded randomness, and a simulated object store. The volume managers, checkpoint store, control records, pagers, peer servers and migration coordinator are the production code. Go's synctest makes a test that waits through a 60 s interval take microseconds.
 
 Tests run a list of operations and check a list of properties: no guest reads data it never wrote; the volume returns the same data; every record selects a checkpoint that some writer published; the store is internally consistent; and a lost host loses at most the loss window of a VM's data.
 
@@ -1194,7 +1190,7 @@ A VM whose host was lost comes back at the checkpoint its record names, and its 
 </v-clicks>
 
 <!--
-Each campaign has a soak variant that runs a range of seeds. The nightly run covers eight ranges of 100 seeds on GitHub's hosted runners. A failing seed can be reproduced anywhere with just soak, the seed, and a count of one.
+Each campaign has a soak variant over a range of seeds. The nightly run covers eight ranges of 100 seeds on GitHub's hosted runners. just soak with the seed and a count of one reproduces a failure.
 
 On simulated power loss, unsynced writes are applied, dropped, torn or corrupted. Swizzled links drop, duplicate, delay and slow down traffic.
 -->
@@ -1251,7 +1247,7 @@ Two hosts on GCE running 512 MiB Alpine guests, each with a 256 MiB memory witne
 <!--
 Measured on GCE against Cloud Storage, with the host checkpointing only the disk every 60 seconds. Changed is the data the guest actually changed, in 4 KiB blocks, measured by checksumming each page when it becomes private and again at the checkpoint. Sealed is the amount covered by 2 MiB pages. Published is what remains after dropping pages whose bytes did not change. Uploaded is after compression.
 
-Small scattered writes, as from a package manager, seal about a hundred times the changed data, but almost all of it is dropped or compressed. Large writes, as from a compiler or a log, seal about as much as changed. Valkey's benchmark writes identical values, so its compression ratio is unrealistically good.
+Small scattered writes, as from a package manager, seal about a hundred times the changed data, and almost all of it is dropped or compressed. Large writes, as from a compiler or a log, seal about as much as changed. Valkey's benchmark writes identical values, so its compression ratio is unrealistic.
 -->
 
 ---
@@ -1340,7 +1336,7 @@ This is a bulk sequential read, and both paths were limited by the reader's CPU 
 </v-clicks>
 
 <!--
-Garbage collector: pins are permanent, and the store grows without limit until we build a collector. We have postponed it.
+Pins are permanent, and the store grows without limit until a collector exists. It is postponed.
 
 If a migration's source is unreachable but still listed, the migration waits. The orchestrator ends a migration only on evidence, never on a timeout, and for a pod it cannot reach it has no evidence beyond what the Kubernetes API reports.
 
@@ -1358,9 +1354,9 @@ The cache's disks are still the hosts' own SSDs. Shards on network disks, which 
 
 A host serving stripes still reads them into memory and writes them out. Sending them from the disk with sendfile is the next step, if a plain copy turns out to cost enough to matter.
 
-A single 4 KiB fault at random is 3.6 to 5 % slower under the page layer ported from Zircon. A CPU profile diff shows no single hot spot, and we are still finding where it goes.
+A single 4 KiB fault at random is 3.6 to 5 % slower under the page layer ported from Zircon, and the cause is not yet found.
 
-The plan measured the ported core against the old one on GCE before switching: fault chains, the capture pause, a fork fan-out and a warm restore. On 2026-10-06 the owner waived that gate, and the old core is deleted. The ported core has passed the Linux suites on GCE, but no GCE run timed it against the old one.
+The ported core has passed the Linux suites on GCE, but no GCE run timed it against the old one, which is deleted.
 -->
 
 ---

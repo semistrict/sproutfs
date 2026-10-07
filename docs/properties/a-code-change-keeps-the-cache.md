@@ -7,8 +7,7 @@ summary: Changing the cache's erasure code on purpose reads no page the cluster 
 **when** the operator changes the code and names the old one as earlier, or
 when hosts join, leave or are lost,
 **then** every host still reads those pages from the cluster's disk cache, and
-none reads them from the object store. The code changes only when the
-operator changes it.
+none reads them from the object store. Only the operator changes the code.
 
 **Status, 2026-10-03.** Holds inside the share.
 `TestAChangedCodeReadsEveryEarlierWindowWithNoStoreRead` changes six hosts

@@ -14,7 +14,8 @@ summary: The limiter keeps a minimum percentage or number of bytes free and a ma
 back space gradually as the disk nears the goal, before any part of the host
 is refused space it needs.
 
-**Status, 2026-10-03.** Holds. `TestTheShareFollowsTheDiskFilledFromOutside` and
+**Status, 2026-10-03.** Holds.
+`TestTheShareFollowsTheDiskFilledFromOutside` and
 `TestTheDiskLimiterStaysSafeUnderFaults` fill a simulated filesystem from
 outside under each combination of goals; the strictest binds, and the cache
 gives regions back across the band.

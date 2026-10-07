@@ -1,82 +1,75 @@
 # Demo manifests
 
 Plain YAML for the one-node demo of
-[the demo plan](../plans/demo-gce-2026-09-13.md). No kustomize, no Helm: the
-whole deployment is a namespace, two Deployments, two Services, two
-NetworkPolicies, a PodDisruptionBudget, and the ServiceAccount, Role and
-RoleBinding the orchestrator reads the Kubernetes API with.
+[the demo plan](../plans/demo-gce-2026-09-13.md): a namespace, two Deployments,
+two Services, two NetworkPolicies, a PodDisruptionBudget, and the
+ServiceAccount, Role and RoleBinding the orchestrator reads the Kubernetes API
+with.
 
 ```
 kubectl apply -f deploy/
 ```
 
 `scripts/demo-gce.sh create` applies these on the demo VM. Files apply in name
-order, so the namespace exists before anything in it. `deploy/testdata` holds a
-probe pod the script runs by name; `kubectl apply -f` does not recurse, so it
-never applies with the rest.
+order, so the namespace exists first. `deploy/testdata` holds a probe pod the
+script runs by name; `kubectl apply -f` does not recurse into it.
 
 ## What the manifests assume
 
 Both containers come from one image, `sproutfs:demo`, with
 `imagePullPolicy: Never`: the image is imported into the node's containerd
-(`k3s ctr -n k8s.io images import`) and never pulled from a registry. Until
-that image exists the pods stay in `ErrImageNeverPull`, which is the expected
-state of a freshly created demo VM.
+(`k3s ctr -n k8s.io images import`). Until it is, the pods stay in
+`ErrImageNeverPull`.
 
-The node must have a 2 MiB HugeTLB pool of 12 GiB and `/dev/kvm`;
+The node must have a 2 MiB HugeTLB pool of 12 GiB and `/dev/kvm`.
 `scripts/lib/gce-demo-startup.sh` sets both up before k3s starts, so kubelet
-advertises `hugepages-2Mi: 12Gi` when it first registers the node. A host runs
-one pager per kind of memory region and both run 2 MiB pages on the pool, so both
-arenas come out of the pod's `hugepages-2Mi` allotment. A deployment that runs
-RAM at 4 KiB (`SPROUTFS_RAM_PAGE_BYTES=4096`) puts its RAM arena on ordinary
-memory charged to the pod's `memory` request instead, and one that runs PMEM at
-4 KiB (`SPROUTFS_PMEM_PAGE_BYTES=4096`) does the same with its PMEM and
-ephemeral arenas. The sizes are what they
-are because of the workload template: a 2 GiB guest and a few forks of it need
-an arena of about 5 GiB per host to stay resident, of which the default share
-gives 3.75 GiB to RAM and 1.25 GiB to PMEM.
+advertises `hugepages-2Mi: 12Gi` when it registers the node. A host runs one
+pager per kind of memory region, both on 2 MiB pages from the pool, so both
+arenas come out of the pod's `hugepages-2Mi` allotment. RAM at 4 KiB
+(`SPROUTFS_RAM_PAGE_BYTES=4096`) puts the RAM arena on ordinary memory charged
+to the pod's `memory` request; PMEM at 4 KiB (`SPROUTFS_PMEM_PAGE_BYTES=4096`)
+does the same for the PMEM and ephemeral arenas. The sizes come from the
+workload template: a 2 GiB guest and a few forks need about 5 GiB of arena per
+host to stay resident, which the default share splits into 3.75 GiB of RAM and
+1.25 GiB of PMEM.
 
-The node's disk is one 200 GiB disk, a 193 GiB filesystem, that holds both pods' scratch
-`emptyDir`s and the page caches' files under `/opt/sproutfs-demo/cache`.
-The caches' files outlive the pods, so a replaced pod reads back what its
-predecessor kept. Both must be on one filesystem, because each host's one disk
-limiter measures one filesystem; a host whose cache directory is elsewhere
-refuses to start.
+The node has one 200 GiB disk, a 193 GiB filesystem, holding both pods'
+scratch `emptyDir`s and the page caches' files under
+`/opt/sproutfs-demo/cache`. The caches' files outlive the pods, so a replaced
+pod reads back what its predecessor kept. Both must be on one filesystem,
+because a host's disk limiter measures one filesystem; a host whose cache
+directory is elsewhere refuses to start.
 
 ## What the image brings, and what the node brings
 
-`deploy/Dockerfile` puts three fixed paths in the image, which the host binary
-can rely on without configuration:
+`deploy/Dockerfile` puts these fixed paths in the image:
 
 | Path | What |
 | ---- | ---- |
 | `/usr/local/bin/firecracker` | the static x86_64 VMM |
 | `/usr/share/sproutfs/seccomp.bpf` | its compiled x86_64 seccomp policy |
 | `/usr/share/sproutfs/vmlinux` | the pinned guest kernel |
-| `/usr/local/bin/sproutfs-guest-agent` | the agent that runs inside a guest, carried here to be copied into the guest image rather than run from this one |
-| `/usr/local/bin/sproutfs-guest-witness` | the witness that says whether a guest's memory and disk are what it wrote, carried here for the same reason and copied into both guest images |
-| `/usr/local/bin/sproutfs-guest-chase` | the client that loads Valkey with data whose reads depend on each other and walks it, carried here for the same reason and copied into the valkey guest image that `scripts/bench-app-restore-gce.sh` builds |
+| `/usr/local/bin/sproutfs-guest-agent` | the agent that runs inside a guest, copied into the guest image |
+| `/usr/local/bin/sproutfs-guest-witness` | the witness that checks a guest's memory and disk, copied into both guest images |
+| `/usr/local/bin/sproutfs-guest-chase` | the client that loads Valkey with dependent reads and walks it, copied into the valkey guest image that `scripts/bench-app-restore-gce.sh` builds |
 
-The guest root images are not in the container image: they are built on the node
-by `scripts/lib/demo-image.sh` at `/opt/sproutfs-demo/guest/guest.ext4` and
-`/opt/sproutfs-demo/guest/workload.ext4`, and the host pods mount that directory
+The guest root images are built on the node by `scripts/lib/demo-image.sh` at
+`/opt/sproutfs-demo/guest/guest.ext4` and
+`/opt/sproutfs-demo/guest/workload.ext4`. The host pods mount that directory
 read-only at `/usr/share/sproutfs/guest` (named by `SPROUTFS_TEMPLATES`). The
-mount is `DirectoryOrCreate`, so a pod still starts on a node where the build has
-not run — it just finds no image there.
+mount is `DirectoryOrCreate`, so a pod starts on a node where the build has not
+run and finds no image.
 
 Two templates are registered. `alpine` is the minirootfs with an interactive
-shell, which every flow of `demo-gce.sh run` uses. `workload` is that plus git,
-ripgrep, Node, pnpm and three MIT-licensed TypeScript repositories whose
-dependencies are in a pnpm store inside the image, which is what
-`demo-gce.sh workload` measures the checkpoint model against; its VMs get 2 GiB
-of RAM rather than the deployment's 512 MiB default.
+shell, used by every flow of `demo-gce.sh run`. `workload` adds git, ripgrep,
+Node, pnpm and three MIT-licensed TypeScript repositories with their
+dependencies in a pnpm store; `demo-gce.sh workload` measures it. Its VMs get
+2 GiB of RAM rather than the 512 MiB default.
 
 ## Generated configuration
 
-`deploy/` carries the topology, which is the same everywhere. What is not is
-which bucket the demo writes to and which arena mode its hosts run, so
 `scripts/demo-gce.sh` generates a ConfigMap next to these files in the copy it
-applies on the VM:
+applies on the VM, naming the bucket and the arena mode:
 
 ```yaml
 apiVersion: v1
@@ -90,13 +83,12 @@ data:
   arena: isolated
 ```
 
-`arena` is `SPROUTFS_DEMO_ARENA`, `isolated` unless that names `shared`, and
-`scripts/demo-gce.sh redeploy` with it set is how the demo changes mode. The
-host reads it as `SPROUTFS_ARENA`, and a ConfigMap without the key leaves the
-host's own default, `isolated`.
+`arena` is `SPROUTFS_DEMO_ARENA`, `isolated` unless that names `shared`;
+`scripts/demo-gce.sh redeploy` with it set changes the mode. The host reads it
+as `SPROUTFS_ARENA`; without the key the host uses its default, `isolated`.
 
-Applying `deploy/` on its own leaves the pods in `CreateContainerConfigError`
-until that ConfigMap exists. Create it by hand for a cluster the script did not
+Applying `deploy/` alone leaves the pods in `CreateContainerConfigError` until
+that ConfigMap exists. Create it by hand for a cluster the script did not
 provision.
 
 ## Ports
@@ -107,153 +99,137 @@ provision.
 | 8081 | `page` | host         | the peer server: memory of every VM this host has handed to another |
 | 8080 | `api`  | orchestrator | the orchestrator's HTTP API, behind the ClusterIP Service |
 
-Both container ports are named, and both Services target the names rather than
-the numbers, so a port change needs an edit in one place.
+Both Services target the port names, not the numbers.
 
 ## Required HTTP endpoints
 
-The manifests depend on these; a binary that does not serve them will not run
-here.
+The manifests depend on these.
 
 | Method | Path       | Workload | Called by | Contract |
 | ------ | ---------- | -------- | --------- | -------- |
-| GET    | `/healthz` | both     | readiness probe | 2xx once the process can take work. A host answers it once every configured guest image has a published template, whoever imported it, so nothing places a VM on a host that would read a whole image inside the request; until then it is not an endpoint of the headless Service. Served without the token: the kubelet reaches a pod before anything has given it one. |
-| GET    | `/livez`   | both     | liveness probe | 2xx while the process can still do the work it exists for, 503 once it cannot — a host whose supervisor has closed, or whose own context has been cancelled, has released its pager and its VMM processes and can serve nothing, and a pod that answered out of the mux would be left running for ever. It is a separate endpoint from readiness so that a host doing an honest import is not restarted for failing it. Served without the token. |
-| GET    | `/version` | both     | an operator | the build's `git describe`, stamped at link time. A cluster is rolled by replacing one image, so asking the pod is the only way to tell what it runs. |
-| GET    | `/metrics` | host     | a scraper | the pager's occupancy, how much sharing it is retaining — `sproutfs_pager_unique_resident_bytes`, `sproutfs_pager_mapped_resident_bytes` and `sproutfs_pager_shared_saved_bytes`, each labelled `kind="ram"` or `kind="pmem"` — what an isolated arena copies between its files, `sproutfs_pager_moved_pages_total` and `sproutfs_pager_fork_copies_total`, the peer server's counters, the memory and cache allotments, the disk limiter's choice, the page cache's disk (`sproutfs_cache_disk_*`: what it holds, its hits and what it read back at start) and the object-store counters per operation, in Prometheus text format. It carries the token: what a host holds is what its VMs are doing, so a scraper is configured with it like any other client and nothing in this namespace scrapes these pods on its own — the demo reads them with `kubectl exec` or a port-forward. |
-| POST   | `/drain`   | host     | preStop hook | Migrate every VM this host runs to another host and return only when none are left to hand over (`Status().Serving` empty). The drain bounds itself: four at a time, 60 s per VM, 30 min overall, and the preStop command waiting on it gives up at 31 min. Kubelet waits for the hook within `terminationGracePeriodSeconds`, 1920 s, which is those 31 min plus the 60 s shutdown behind it — 30 s to stop the API and 30 s for the supervisor's close, which publishes a final checkpoint of every VM that did not move. |
+| GET    | `/healthz` | both     | readiness probe | 2xx once the process can take work. A host answers it once every configured guest image has a published template, so no VM is placed on a host that would read a whole image inside the request. Until then the host is not an endpoint of the headless Service. Served without the token. |
+| GET    | `/livez`   | both     | liveness probe | 2xx while the process can work, 503 once it cannot: a host whose supervisor has closed or whose context was cancelled has released its pager and VMM processes. Separate from readiness so a host importing an image is not restarted. Served without the token. |
+| GET    | `/version` | both     | an operator | the build's `git describe`, stamped at link time |
+| GET    | `/metrics` | host     | a scraper | Prometheus text: the pager's occupancy and sharing (`sproutfs_pager_unique_resident_bytes`, `sproutfs_pager_mapped_resident_bytes`, `sproutfs_pager_shared_saved_bytes`, each labelled `kind="ram"` or `kind="pmem"`), what an isolated arena copies between its files (`sproutfs_pager_moved_pages_total`, `sproutfs_pager_fork_copies_total`), the peer server's counters, the memory and cache allotments, the disk limiter's choice, the page cache's disk (`sproutfs_cache_disk_*`: what it holds, its hits, what it read back at start) and the object-store counters per operation. It requires the token; nothing in this namespace scrapes these pods, and the demo reads them with `kubectl exec` or a port-forward. |
+| POST   | `/drain`   | host     | preStop hook | Migrate every VM to another host and return when none are left to hand over (`Status().Serving` empty). Four at a time, 60 s per VM, 30 min overall; the preStop command gives up at 31 min. `terminationGracePeriodSeconds` is 1920 s: those 31 min plus 60 s of shutdown, 30 s to stop the API and 30 s for the supervisor's close, which publishes a final checkpoint of every VM that did not move. |
 
-Draining is a POST carrying the token, not a GET: a GET is what a proxy, a link
-checker or a curious operator does to every URL it is given, and this one
-migrates every VM off the host. The `preStop` hook is therefore an `exec` of
-`sproutfs-host drain`, which reaches this container's own API over the loopback
-with the environment the server was started with, rather than an `httpGet` hook,
-which can carry neither a method nor a header.
+Draining is a POST carrying the token, because proxies and link checkers GET
+any URL they see. The `preStop` hook therefore execs `sproutfs-host drain`,
+which calls the container's own API over the loopback with the server's
+environment; an `httpGet` hook can carry neither a method nor a header.
 
 ## Authentication
 
-Every request to either API but `/healthz` and `/livez` carries the deployment's
-shared bearer token, `Authorization: Bearer <token>`, and is refused with 401 without
-it. One token admits the whole control plane: the orchestrator to the hosts, a
-draining host to the orchestrator, and `sproutfsctl` to either. It is not
-authority over any VM — a VM's authority is the epoch in its control record —
-and it carries no identity: it says only that the caller is part of this
-deployment.
+Every request to either API except `/healthz` and `/livez` carries the
+deployment's shared bearer token, `Authorization: Bearer <token>`, and is
+refused with 401 without it. One token admits the whole control plane: the
+orchestrator to the hosts, a draining host to the orchestrator, and
+`sproutfsctl` to either. It grants no authority over a VM (that is the epoch in
+its control record) and carries no identity.
 
 `scripts/demo-gce.sh` generates it per deployment into the Secret
-`sproutfs-api-token`, which every pod reads as `SPROUTFS_API_TOKEN`. Every side trims it, so a Secret written with a trailing newline is the same token as one without: one process that trimmed and one that did not refused every request between them with a 401 that said nothing about whitespace. A pod
-without the Secret does not start, rather than serving an API that admits
-anyone. `sproutfsctl` run through `kubectl exec` into the orchestrator pod
-inherits it from that container's environment. A process started by hand with no
-token serves an API that admits anyone and says so at startup.
+`sproutfs-api-token`, which every pod reads as `SPROUTFS_API_TOKEN`. Every side
+trims whitespace from it, so a Secret with a trailing newline is the same
+token. A pod without the Secret does not start. `sproutfsctl` run through
+`kubectl exec` in the orchestrator pod inherits it from the container's
+environment. A process started by hand with no token serves an API that admits
+anyone and says so at startup.
 
-`30-networkpolicy.yaml` is the other half: ingress to the host API, the page
-server and the orchestrator API is restricted to pods carrying this
-deployment's `app.kubernetes.io/part-of: sproutfs` label. k3s enforces these —
-it ships a network-policy controller of its own alongside flannel and applies
-NetworkPolicy objects by default — so on the demo cluster the token is the
-second lock rather than the only one.
+`30-networkpolicy.yaml` restricts ingress to the host API, the page server and
+the orchestrator API to pods labelled `app.kubernetes.io/part-of: sproutfs`.
+k3s enforces NetworkPolicy by default with its own controller.
 
 ## The host API
 
-Everything the host serves on port 8080. Requests and replies are JSON; a
-failure is `{"op":"...","error":"..."}` with a status saying whose problem it
-is — 400 for the request, 404 for a VM this host does not run, 409 for one it
-already runs or cannot hand over, 503 while it is closing.
+Port 8080. Requests and replies are JSON. A failure is
+`{"op":"...","error":"..."}` with 400 for a bad request, 404 for a VM this host
+does not run, 409 for one it already runs or cannot hand over, and 503 while it
+is closing.
 
-Every shape here is declared in `api/host`, which is wire types and
-nothing else: a handoff crossing this API is plain data the control plane
-carries unread, so `sproutfsctl` and the orchestrator speak it without linking a
-pager or a checkpoint store. `host` converts between it and what the
-host actually runs, at its own boundary.
+Every shape is declared in `api/host`, which holds only wire types. A handoff
+is plain data the control plane carries unread, so `sproutfsctl` and the
+orchestrator use it without linking a pager or a checkpoint store. `host`
+converts between it and its own types.
 
 | Method | Path | What it does |
 | ------ | ---- | ------------ |
 | GET | `/healthz` | readiness |
-| GET | `/status` | the VMs this host runs, the handovers it still holds pages for — the VMs it migrated away and the children of every fork point it took, wherever they landed, the VMs a receive is in flight for, the pager's residency and sharing, what the peer server has answered, its RAM allotment and page-cache cap, what the disk limiter chose, the page cache's disk — the file it claimed, what it holds, the reads it served and what it read back when the host started — the host as the membership names it, with its disk, and the generation of the membership it holds, and the object-store counters — calls, failures and bytes per operation — since the process started |
-| POST | `/templates` | the guest image as the body, `?memory=` the RAM a VM of it starts with and `?tenant=` the tenant it is for (a tenant's VMs fork only its own templates): import the image into the template its bytes name, staging it under the scratch first, and report the template's identity and the checkpoint that holds it. An image already imported costs one control record read. Any host creates from the template by that identity |
-| POST | `/vms` | `{"id","template","memory"?,"disk"?,"vcpus"?,"ephemeral"?,"nested"?}`: fork the template's root checkpoint, boot the VM, and publish its own first checkpoint between the two, at the shape asked for: its RAM, the size its root volume grows to, and its processors, each the template's or the host's default where not named. The template is the guest image in a published checkpoint, named by the image's own bytes and imported once by whichever pod of the deployment wanted it first; every create inherits it. The VM's own root is what makes it something the rest of the deployment can act on: until it is published the VM is a fork that runs here and nowhere else, so nothing could recover it and nothing could fork it. Nothing has run when it is taken, so it seals no pages and uploads none. `{"id","from":{"vm","checkpoint"?},...}` starts from another VM's published checkpoint instead of a template: the one its record selects, one it keeps, or one a pin already holds. That VM need not run anywhere. The checkpoint is pinned in its record without its epoch. A checkpoint with VMM state resumes the guest from it, with its memory, unless the create names a shape; any other boots cold over the disk it inherits. `resumed` in the result says which. 409 for a checkpoint that is not published or that its VM's writer may be reclaiming. `ephemeral` gives the VM a second PMEM device of that many bytes that no checkpoint holds (docs/volumes.md#ephemeral-disks). `nested` (experimental, x86_64 only) makes a VM whose guest may run VMs of its own; its RAM is never captured or moved, so a capture, a suspend, a fork and a migration of it are refused (docs/hosting.md#nested-vms) |
-| POST | `/vms/{id}/open` | open a VM from the checkpoint its control record selects and resume it, which is what a host loss is recovered by. `{"cold":true}` instead discards every page of its memory and the VMM state with it, in one checkpoint, and boots the kernel from the root volume — which is exactly what the last checkpoint published, so the guest's filesystem sees a power cut after it and its journal recovers what a journal recovers. `{"memory","disk"}` give the VM its shape from there: any memory the host admits, up or down, and a root volume that may only grow, whose new pages read as zeroes for the guest's own `witness grow` to take. Both are refused without `cold`, which is the one moment nothing in memory describes the VM's shape, and a cold start is refused outright by a host whose VMM starter cannot boot a kernel — before anything is discarded |
-| POST | `/vms/{id}/fork` | `{"ids": [child...], "destination"?}`: seal the running VM once and hand every child of that one pause over. The reply is a handoff per child for the control plane to give its destination's `/vms/receive`, and this host holds the point for each of them until told to release it, or for `hold_seconds` at most. With a destination it serves that child's unpublished pages; without one the child comes back here, over the sealed pages themselves, and nothing of it is served. Nothing is published either way; the parent keeps running |
-| POST | `/vms/{id}/capture` | take a checkpoint now; returns the pause and how long its pages took to become durable. `{"into"}` captures the running VM into a new VM of that identity instead: one pause of the VM, and a new VM whose root publishes the sealed pages and the VMM state and which never boots. The VM keeps running and is unsealed when this returns. The new VM is like a stopped one: any host can open it, and it resumes where the pause left the VM. 409 for an identity that exists. `{"keep":true}` keeps the checkpoint, so a create can start from it after the VM has moved on |
-| GET | `/vms/{id}/console?since=N` | the serial console from byte N, out of the newest 1 MiB the host retains in memory. A read from before that starts at the oldest byte retained, which `offset` reports and `dropped` says |
+| GET | `/status` | the VMs this host runs; the handovers it still holds pages for (VMs it migrated away and the children of every fork point it took); the VMs a receive is in flight for; the pager's residency and sharing; what the peer server has answered; the RAM allotment and page-cache cap; the disk limiter's choice; the page cache's disk (its file, what it holds, the reads it served, what it read back at start); the host's name and disk in the membership and the membership generation it holds; and the object-store calls, failures and bytes per operation since start |
+| POST | `/templates` | the guest image as the body, `?memory=` the RAM a VM of it starts with and `?tenant=` the tenant it is for (a tenant's VMs fork only its own templates): stage the image under the scratch, import it into the template its bytes name, and report the template's identity and checkpoint. An image already imported costs one control record read. Any host creates from the template by that identity |
+| POST | `/vms` | `{"id","template","memory"?,"disk"?,"vcpus"?,"ephemeral"?,"nested"?}`: fork the template's root checkpoint, publish the VM's own first checkpoint, and boot it, with the RAM, root volume size and processors asked for, else the template's or the host's defaults. The template is the guest image in a published checkpoint, named by the image's bytes and imported once per deployment. Until the VM's root is published nothing can recover or fork it; nothing has run yet, so the root seals and uploads no pages. `{"id","from":{"vm","checkpoint"?},...}` starts from another VM's published checkpoint instead: the one its record selects, one it keeps, or one a pin holds. That VM need not run anywhere. The checkpoint is pinned in its record without its epoch. A checkpoint with VMM state resumes the guest unless the create names a shape; any other boots cold over the disk it inherits. `resumed` in the result says which. 409 for a checkpoint that is not published or that its VM's writer may be reclaiming. `ephemeral` adds a PMEM device of that many bytes that no checkpoint holds (docs/volumes.md#ephemeral-disks). `nested` (experimental, x86_64 only) lets the guest run VMs; its RAM is never captured or moved, so capture, suspend, fork and migration of it are refused (docs/hosting.md#nested-vms) |
+| POST | `/vms/{id}/open` | open a VM from the checkpoint its control record selects and resume it; this is how a host loss is recovered. `{"cold":true}` instead discards its memory and VMM state in one checkpoint and boots the kernel from the root volume as the last checkpoint published it; the guest's journal recovers as after a power cut. `{"memory","disk"}` set the VM's shape: any memory the host admits, up or down, and a root volume that may only grow, whose new pages read as zeroes until the guest's `witness grow` takes them. Both require `cold`. A host whose VMM starter cannot boot a kernel refuses a cold start before discarding anything |
+| POST | `/vms/{id}/fork` | `{"ids": [child...], "destination"?}`: seal the running VM once and hand every child over from that pause. The reply is a handoff per child for the control plane to give the destination's `/vms/receive`. This host holds the fork point for each child until told to release it, or for `hold_seconds` at most. With a destination it serves that child's unpublished pages; without one the child comes back here over the sealed pages. Nothing is published; the parent keeps running |
+| POST | `/vms/{id}/capture` | take a checkpoint now; returns the pause and how long its pages took to become durable. `{"into"}` captures the running VM into a new VM of that identity: one pause, and a new VM whose root publishes the sealed pages and the VMM state and which never boots. The VM keeps running. Any host can open the new VM, which resumes where the pause left it. 409 for an identity that exists. `{"keep":true}` keeps the checkpoint, so a create can start from it later |
+| GET | `/vms/{id}/console?since=N` | the serial console from byte N, out of the newest 1 MiB the host keeps in memory. A read from before that starts at the oldest byte kept, which `offset` reports and `dropped` says |
 | POST | `/vms/{id}/console` | `{"data":"..."}`: type into the serial console |
-| POST | `/vms/{id}/exec` | `{"cmd","timeout"}`: run a shell command in the guest over the VM's vsock and return `{"exit","stdout","stderr","seconds"}`. 503 while the guest's agent is not answering, which is a VM that is still booting |
+| POST | `/vms/{id}/exec` | `{"cmd","timeout"}`: run a shell command in the guest over the VM's vsock and return `{"exit","stdout","stderr","seconds"}`. 503 while the guest's agent is not answering, as while the VM boots |
 | POST | `/vms/{id}/migrate` | `{"destination":"host:port"}`: stop the guest and hand the VM over; returns the handoff the control plane carries to the destination |
 | POST | `/vms/receive` | a handoff: open the VM, resume it from the captured state and stream the source's pages in. Returns once the source may release them |
-| POST | `/vms/{id}/released` | stop serving a migrated VM's pages and close the process that held them. 409 while the destination has not fetched every page this host holds that no checkpoint has: those bytes exist nowhere else, and the host keeps serving them until it has answered for each one. For a fork's child, it ends the hold on the fork point instead, and for a child on the parent's own host it is 409 until this host has taken the child in |
-| POST | `/vms/{id}/abandoned` | give one handover up rather than handing it over: the control plane says this VM will never be received — a fork's child whose destination refused it, one a fan-out never offered anywhere — so whatever is still held for it goes and a fork's parent takes its sealed pages back. It refuses nothing, which is the whole difference from `released`: those pages are going either way, and a refusal would only leave the parent sealed until this host's own deadline retired the hold |
-| POST | `/drain` | migrate every VM away and return when none are left to hand over. A POST rather than a GET: a GET is what a proxy or a link checker does to every URL it is given, and this one moves every VM off the host |
-| POST | `/vms/{id}/stop` | publish everything the guest still holds, then close the VMM process, give the pages back and release the handle. The control record and the objects stay, so any host can open the VM again at exactly the bytes this published — which is the whole difference between a stop and losing the host, where the writes since the last checkpoint go with it. Returns the checkpoint it published, which is the pause the VM comes back at and which nothing else records. The checkpoint comes first and nothing is given up until it lands, so a publication the store refused leaves the VM running and checkpointing. 409 for a VM a fork point holds sealed, exactly as a delete of one is refused: a child elsewhere is reading the pages no checkpoint holds out of the memory this would release. `{"suspend":true}` publishes the memory and the VMM state too, and `{"keep":true}` keeps the checkpoint |
-| GET | `/vms/{id}/kept` | the VM's kept checkpoints, read from its control record: each one's `checkpoint`, `time`, `state` (a create from it resumes the guest) and `forked` (a VM was created from it). Any host answers for any VM, running or not |
-| POST | `/vms/{id}/kept/{checkpoint}/release` | give up one kept checkpoint and delete what only it held. 409 for a checkpoint a VM was created from, whose pin nothing releases, and for one the VM does not keep. Any host does this for any VM |
-| DELETE | `/vms/{id}` | close the VM and delete its control record. A VM this host does not run is only a record and its objects here, and those are in the bucket, so it is deleted all the same; one anything still holds sealed is refused, because a fork point reads the pages a close would detach |
+| POST | `/vms/{id}/released` | stop serving a migrated VM's pages and close the process that held them. 409 until the destination has fetched every page this host holds that no checkpoint has. For a fork's child, ends the hold on the fork point instead; for a child on this host it is 409 until this host has taken the child in |
+| POST | `/vms/{id}/abandoned` | give up one handover that will never be received (a fork's child whose destination refused it, or one a fan-out never offered): whatever is held for it goes, and a fork's parent takes its sealed pages back. Unlike `released`, it refuses nothing |
+| POST | `/drain` | migrate every VM away and return when none are left to hand over |
+| POST | `/vms/{id}/stop` | publish everything the guest still holds, then close the VMM process, give the pages back and release the handle. The control record and objects stay, so any host can open the VM again at the bytes this published. Returns the checkpoint it published. Nothing is given up until the checkpoint lands, so a publication the store refused leaves the VM running. 409 for a VM a fork point holds sealed, as for a delete. `{"suspend":true}` also publishes the memory and VMM state, and `{"keep":true}` keeps the checkpoint |
+| GET | `/vms/{id}/kept` | the VM's kept checkpoints from its control record: each one's `checkpoint`, `time`, `state` (a create from it resumes the guest) and `forked` (a VM was created from it). Any host answers for any VM |
+| POST | `/vms/{id}/kept/{checkpoint}/release` | give up one kept checkpoint and delete what only it held. 409 for a checkpoint a VM was created from, and for one the VM does not keep. Any host does this for any VM |
+| DELETE | `/vms/{id}` | close the VM and delete its control record. A VM this host does not run is deleted from the bucket all the same. Refused for one a fork point holds sealed |
 
 ## The orchestrator API
 
-Everything the orchestrator serves on port 8080, and what `sproutfsctl` drives.
-Hosts come from the Kubernetes API and VMs from the control records in the
-bucket — one key each, under `control/`, so a listing costs a page of keys and
-not a walk of every checkpoint object — and from the hosts themselves. One
-survey asks every host at once and waits seconds, not minutes, for each, so a
-host that accepts the connection and never answers is reported with its failure
-rather than holding up the deployment; a survey answers the read requests that
-arrive within a second of it, which is what spares a console being polled a
-fan-out per frame. It keeps one SQLite table on the node
-saying which host each VM is on and what it was last asked to do with it —
-creating, running, migrating between a named pair, stopped or recovering — which
-is what makes a migration or a drain visible while it is happening and what a
-request for one VM is routed by. A row also keeps what a VM is beyond its
-record: its template, its parent, its RAM and whether it is marked to pull its
-memory, which every start, recovery and migration of it then carries. There is no table of hosts: where the hosts
-are is the Kubernetes API's answer and what they run is their own, both read
-fresh for every request that needs them.
+Port 8080; `sproutfsctl` drives it. Hosts come from the Kubernetes API. VMs come
+from the control records in the bucket, one key each under `control/`, so a
+listing reads a page of keys rather than every checkpoint object, and from the
+hosts. A survey asks every host at once and waits seconds for each, so a host
+that never answers is reported with its failure. A survey also answers the read
+requests that arrive within a second of it, so a polled console does not fan
+out per frame.
 
-Nothing in the table is authority: it is rebuilt from a survey and the bucket
-when the process starts and every thirty seconds after that, and a row that
-disagrees with the host that answers loses. Only an operation that moves a VM
-writes it — that is the one that makes it wrong — and the reconciler, which is
-also what releases a handover nothing is waiting on and forgets a VM another
-orchestrator deleted. A read writes nothing: a listing that rewrote the table
-put this process's only SQLite writer behind every console poll.
+The orchestrator keeps one SQLite table on the node: which host each VM is on
+and what it was last asked to do (creating, running, migrating between a named
+pair, stopped or recovering). Requests for one VM are routed by it. A row also
+keeps the VM's template, its parent, its RAM and whether it is marked to pull
+its memory, which every start, recovery and migration carries. There is no
+table of hosts: where they are and what they run are read fresh for each
+request.
 
-A row that says an operation is in flight is taken at its word for two minutes
-and no longer. Everything that reads the table defers to such a row — the
-source's pages are left served, the reconciler leaves it where it is, and a
-recovery is refused — so an operation that died with the process driving it
-would otherwise hold all three open for as long as the deployment ran. Two
-minutes is inside the four checkpoint intervals a host gives one handover of its
-own, so a stale row stops pinning a source before that host gives the pages up
-by itself.
+The table is not authoritative. It is rebuilt from a survey and the bucket at
+start and every thirty seconds, and a row that disagrees with the host loses.
+Only operations that move a VM and the reconciler write it. The reconciler also
+releases handovers nothing waits on and forgets VMs another orchestrator
+deleted. Reads write nothing.
+
+A row saying an operation is in flight is trusted for two minutes. While it is,
+the source's pages stay served, the reconciler leaves the VM, and recovery is
+refused. Two minutes is within the four checkpoint intervals a host holds one
+handover, so a stale row stops pinning a source before the host gives the
+pages up.
 
 | Method | Path | What it does |
 | ------ | ---- | ------------ |
 | GET | `/healthz` | readiness |
 | GET | `/hosts` | every host pod, what it runs, what it still serves, its pager's residency and sharing, its member of the membership, and why it did not answer if it did not |
-| GET | `/vms` | every VM, with the host running it or none when its host is gone. A VM exists exactly while its control record does, so a deleted VM is simply absent |
-| POST | `/templates` | the guest image as the body, `?memory=`: stream it to the ready host with the most memory free, which imports it; reports the template's identity, which any create then takes as its `template` |
-| POST | `/vms` | `{"template","memory"?,"disk"?,"vcpus"?,"ephemeral"?,"nested"?}`: allocate a ULID and create the VM at that shape on the host whose guests have promised the least of its arena, refusing with 503 when the VM's RAM — what it asks for, or else its template's — fits on none. `{"from":{"vm","checkpoint"?},...}` creates it from another VM's published checkpoint instead, such as a stopped VM's. Its RAM is then that VM's unless it asks for its own, and the table records that VM as its parent. A checkpoint with VMM state resumes the guest where its pause left it, unless the create names a shape, and `resumed` in the result says so; any other create boots cold. The checkpoint may be the one that VM's record selects, one it keeps, or one a fork already pinned. `nested` (experimental) makes a nested VM; a migration of one, a drain's included, stops it and boots it cold on the destination, and says `rebooted` |
-| POST | `/vms/{id}/fork` | `{"count", "to"?}`: fork the running VM. Every child comes from one pause, so the parent pauses once however many are asked for, and every child is handed over and received like a migration. The default is its own host, which takes its children in over the pages the seal froze; `to` places them on another host, which pulls the pages no checkpoint holds out of the parent. Either way the fan-out is admitted against the host taking it — each child is a guest with RAM of its own — before the parent is paused, and each child is released once it holds every page it inherited. Returns the children and what the fork cost |
-| POST | `/vms/{id}/capture` | take a checkpoint on the host running it. `{"new":true}` captures the VM into a new VM instead, whose identity this allocates. The new VM never boots, and the table records it `stopped` with the VM as its parent, so `start` opens it and `create --from` starts from it. `{"keep":true}` keeps the checkpoint it publishes; it does not combine with `new` |
-| POST | `/vms/{id}/migrate` | `{"to"}`: migrate out, receive, and only then release. An empty `to` picks the other host with the most memory free, which is what a draining host asks for; a named destination without room for the guest is refused |
-| POST | `/vms/{id}/recover` | `{"force"?}`: reopen a VM on a live host that does not run it. Reopening takes the control record's epoch, which fences whatever held it, so it needs evidence the loss is real: every pod the API lists answered, and none runs the VM. Refused while a live host reports running it, while any host still serves its unpublished pages, and while the table says an operation on it is in flight — the last two are a VM between hosts rather than a lost one, and `force` does not get past them either — and refused, without `force`, while any listed pod is quiet, because a host that missed one request is not a host that is gone |
-| POST | `/vms/{id}/stop` | ask the host running the VM to publish what its guest holds and close it. The VM is then exactly its control record and its objects — still listed, on no host — and the table records it `stopped`. Returns the checkpoint it published. 404 for a VM no host runs, and 409 for one two hosts claim. `{"keep":true}` keeps the checkpoint it publishes |
-| GET | `/vms/{id}/kept` | the VM's kept checkpoints, through any ready host, whether or not anything runs the VM |
+| GET | `/vms` | every VM, with the host running it or none when its host is gone. A deleted VM is absent |
+| POST | `/templates` | the guest image as the body, `?memory=`: stream it to the ready host with the most memory free, which imports it; reports the template's identity for a create's `template` |
+| POST | `/vms` | `{"template","memory"?,"disk"?,"vcpus"?,"ephemeral"?,"nested"?}`: allocate a ULID and create the VM at that shape on the host whose guests have promised the least of its arena; 503 when the VM's RAM (asked for, or its template's) fits on none. `{"from":{"vm","checkpoint"?},...}` creates it from another VM's published checkpoint, such as a stopped VM's: the one its record selects, one it keeps, or one a fork pinned. Its RAM is that VM's unless it asks for its own, and the table records that VM as its parent. A checkpoint with VMM state resumes the guest unless the create names a shape, and `resumed` says so; any other boots cold. `nested` (experimental) makes a nested VM; migrating one, also in a drain, stops it and boots it cold on the destination and says `rebooted` |
+| POST | `/vms/{id}/fork` | `{"count", "to"?}`: fork the running VM. All children come from one pause and are handed over like a migration. By default they go to the parent's host, over the sealed pages; `to` places them on another host, which pulls the pages no checkpoint holds from the parent. The fan-out is admitted against the receiving host before the parent pauses, and each child is released once it holds every page it inherited. Returns the children and what the fork cost |
+| POST | `/vms/{id}/capture` | take a checkpoint on the host running it. `{"new":true}` captures the VM into a new VM whose identity this allocates; the new VM never boots and is recorded `stopped` with the VM as its parent, so `start` and `create --from` work on it. `{"keep":true}` keeps the checkpoint; it does not combine with `new` |
+| POST | `/vms/{id}/migrate` | `{"to"}`: migrate out, receive, then release. An empty `to` picks the other host with the most memory free, as a draining host asks; a named destination without room is refused |
+| POST | `/vms/{id}/recover` | `{"force"?}`: reopen a VM on a live host that does not run it. Reopening takes the record's epoch and fences whatever held it, so it needs every listed pod to answer and none to run the VM. Refused while a live host runs it, while any host still serves its unpublished pages, or while the table shows an operation in flight; `force` does not override these. Without `force`, also refused while any listed pod is silent |
+| POST | `/vms/{id}/stop` | have the host running the VM publish what its guest holds and close it. The VM stays listed on no host, recorded `stopped`. Returns the checkpoint it published. 404 for a VM no host runs, 409 for one two hosts claim. `{"keep":true}` keeps the checkpoint |
+| GET | `/vms/{id}/kept` | the VM's kept checkpoints, through any ready host |
 | POST | `/vms/{id}/kept/{checkpoint}/release` | release one kept checkpoint through any ready host. 409 for one a VM was created from |
-| POST | `/vms/{id}/start` | `{"to"?, "cold"?, "memory"?, "disk"?, "vcpus"?}`: open a stopped VM on a host again, on the one named or on the ready host whose guests have promised the least of its arena, refusing a named one without room for the guest. It is `recover` without the evidence of a loss: a recovery has to prove the VM's host is gone, because opening takes the record's epoch and would fence a guest that is fine, and a stopped VM has no such host, so a host that did not answer this survey does not refuse it. Everything that says the VM is between hosts rather than stopped still does — a host that runs it, two hosts that claim it, a host still serving the pages no checkpoint has, and an operation still in flight in the table. `cold` brings the VM back without its memory, and `memory` and `disk` give it a new shape, both of which the host does; from a resize on, the VM's committed RAM is its own rather than its template's, and that is what every later placement of it admits against |
-| GET | `/check` | run the deployment check over the whole object namespace and report every violation: the object key, what is wrong with it, and the class of host loss that could excuse it. A deployment that disagrees with itself is a 200 with a body of violations rather than a failed request — the request worked, and what is wrong is the answer — and a store this could not read is a 500. The leftovers a live deployment always has are allowed by name: a publication in flight, the checkpoints a deleted VM pinned for its descendants, a VM's own root and a template import's intermediate checkpoints, and the superseded epoch every takeover of a VM leaves behind it — a template whose unfinished import a later one recovered among them |
-| POST | `/hosts/{name}/kill` | delete a host pod with no grace period, which skips the preStop drain: the demo's host loss |
-| DELETE | `/vms/{id}` | close and delete the VM on its host, or on any ready host when no host runs it — a VM's record and objects are in the bucket, so removing them is work any host can do, and a VM whose host is gone would otherwise be undeletable. The record goes, which frees the identity, and then the VM's checkpoint objects — except the checkpoints it was forked at, whose objects a descendant may still read and which a collector reclaims |
+| POST | `/vms/{id}/start` | `{"to"?, "cold"?, "memory"?, "disk"?, "vcpus"?}`: open a stopped VM on the named host, refused without room, or on the ready host whose guests have promised the least of its arena. Unlike `recover` it needs no evidence of a loss, so a silent host does not refuse it. It is refused while a host runs the VM, two hosts claim it, a host still serves its unpublished pages, or an operation is in flight. `cold` starts it without its memory, and `memory` and `disk` resize it. After a resize, the VM's committed RAM is its own rather than its template's, and later placements admit against it |
+| GET | `/check` | check the whole object namespace and report every violation: the key, what is wrong, and the class of host loss that could excuse it. Violations are a 200 with a body; a store that could not be read is a 500. These leftovers are allowed: a publication in flight, the checkpoints a deleted VM pinned, a VM's own root, a template import's intermediate checkpoints, and the superseded epoch every takeover leaves, including a template whose unfinished import a later one recovered |
+| POST | `/hosts/{name}/kill` | delete a host pod with no grace period, skipping the preStop drain: the demo's host loss |
+| DELETE | `/vms/{id}` | close and delete the VM on its host, or on any ready host when none runs it. The record goes, which frees the identity, then the VM's checkpoint objects, except the checkpoints it was forked at, which a descendant may still read |
 | GET | `/vms/{id}/console?since=N` | the VM's console, proxied from its host |
 | POST | `/vms/{id}/console` | type into the VM's console |
-| POST | `/vms/{id}/exec` | `{"cmd","timeout"}`: run a shell command in the VM's guest, through the host the table names; returns `{"host","vm","result"}` |
-| POST | `/drains` | `{"host","vm","phase","error"}`: a draining host reporting that it has begun handing one VM over, or finished. It changes nothing the orchestrator does — it drives the migration itself — and makes the moment visible in the table |
+| POST | `/vms/{id}/exec` | `{"cmd","timeout"}`: run a shell command in the guest through the host the table names; returns `{"host","vm","result"}` |
+| POST | `/drains` | `{"host","vm","phase","error"}`: a draining host reporting that it began or finished handing one VM over. It only updates the table |
 
 ## The CLI
 
-`sproutfsctl` is in the same image and speaks only that API. It reads
-`SPROUTFS_ORCHESTRATOR`, `http://localhost:8080` by default, which is where a
-port-forward puts the orchestrator:
+`sproutfsctl` is in the same image and uses only the orchestrator API. It reads
+`SPROUTFS_ORCHESTRATOR`, `http://localhost:8080` by default:
 
 ```
 kubectl port-forward -n sproutfs service/sproutfs-orchestrator 8080:8080 &
@@ -274,50 +250,40 @@ sproutfsctl create --from vm-01j...@CHECKPOINT
 sproutfsctl release vm-01j...@CHECKPOINT
 ```
 
-`create --from VM` starts a new VM from another VM's published checkpoint
-instead of a template. `--from VM@CHECKPOINT` names a checkpoint that VM keeps,
-or one that a pin already holds. A checkpoint with VMM state resumes the guest
-where its pause left it, and the CLI prints "resumed". A checkpoint without
-state, or a create with `--memory`, `--disk` or `--vcpus`, boots cold over the
-disk it inherits.
+`create --from VM` starts a VM from another VM's published checkpoint.
+`--from VM@CHECKPOINT` names a checkpoint that VM keeps or a pin holds. A
+checkpoint with VMM state resumes the guest and the CLI prints "resumed". A
+checkpoint without state, or a create with `--memory`, `--disk` or `--vcpus`,
+boots cold over the disk it inherits.
 
-`capture VM --keep` and `stop VM --keep` keep the checkpoint they publish, so a
-create can start from it however far the VM has moved on. `kept VM` lists a
-VM's kept checkpoints: when each was taken, whether it holds VMM state, and
-whether a VM was created from it. `release VM@CHECKPOINT` gives one up and
-deletes what only it held. A checkpoint a VM was created from cannot be
-released.
+`capture VM --keep` and `stop VM --keep` keep the checkpoint they publish.
+`kept VM` lists a VM's kept checkpoints: when each was taken, whether it holds
+VMM state, and whether a VM was created from it. `release VM@CHECKPOINT` gives
+one up and deletes what only it held; a checkpoint a VM was created from cannot
+be released.
 
-`capture VM --new` captures a running VM into a new VM that never boots. The VM
-keeps running, and the new VM is stopped: `start` resumes it where the capture
-paused the VM.
+`capture VM --new` captures a running VM into a new, stopped VM; `start`
+resumes it where the capture paused.
 
-`exec` stops parsing at the `--`, so the guest's own flags and quoting reach it
-untouched. What the command printed goes to this process's stdout and what it
-complained about to stderr, and a command that exited non-zero makes
-`sproutfsctl` exit non-zero too. It reaches the guest over the VM's vsock: no
-guest network exists, and a fork or a migration carries the channel without
-anything being allocated or moved.
+`exec` stops parsing at the `--`, so the guest's flags and quoting reach it
+unchanged. The command's stdout and stderr go to this process's, and a non-zero
+exit makes `sproutfsctl` exit non-zero. It uses the VM's vsock, not a guest
+network.
 
-A console session ends with its input, which is what an interactive one wants
-and what a scripted one does not: a command piped in is exhausted long before
-the guest has answered it. `--for` keeps the session reading for a fixed time
-whatever the input does, which is how `scripts/lib/demo-run.sh` asks a guest a
-question and reads the answer:
+A console session ends with its input. `--for` keeps it reading for a fixed
+time, which is how `scripts/lib/demo-run.sh` asks a guest a question:
 
 ```
 echo 'uname -a' | sproutfsctl console vm-01j... --for 8s
 ```
 
-`sproutfsctl hosts` reports each host's resident and shared page counts and the
-pages its peer server has handed to another host, beside what it runs, so a fork
-on the parent's own host and a fork placed elsewhere are both visible without
-reading `/status`. `sproutfsctl store` reports each host's object-store
-counters, one row per host and operation, so two readings subtracted are what a
-stretch of work cost in object traffic. What one checkpoint of one VM cost is a
-line the host logs when its publication ends, which carries the dirty pages the
-pause sealed, the bytes uploaded, the objects written, and the pause and upload
-durations.
+`sproutfsctl hosts` reports each host's resident and shared page counts, the
+pages its peer server has handed to other hosts, and what it runs.
+`sproutfsctl store` reports each host's object-store counters, one row per host
+and operation; subtract two readings for the cost of the work between them. The
+cost of one checkpoint is a line the host logs when its publication ends: the
+dirty pages sealed, the bytes uploaded, the objects written, and the pause and
+upload durations.
 
 ## Environment
 
@@ -328,90 +294,82 @@ durations.
 | `SPROUTFS_BUCKET` | ConfigMap `sproutfs-demo` key `bucket` | `sproutfs-demo-<project>` | the bucket holding control records, checkpoints and pages |
 | `SPROUTFS_PREFIX` | ConfigMap `sproutfs-demo` key `prefix` | `demo` | the deployment's prefix inside that bucket |
 | `SPROUTFS_API_PORT` | literal | `8080` | port for the host API |
-| `SPROUTFS_API_TOKEN` | Secret `sproutfs-api-token` key `token` | generated per deployment | the shared bearer token every request to either API carries. Without it the process serves an API that admits anyone and says so at startup |
-| `SPROUTFS_PAGE_SERVER_PORT` | literal | `8081` | port for the peer server, under the name it had |
-| `SPROUTFS_HUGEPAGE_DIR` | literal | `/hugepages-2Mi` | the pod's hugetlbfs mount. The PMEM arena is a `MFD_HUGETLB` memfd rather than a file in it, but the mount is what the kubelet grants the pod its HugeTLB allotment through, so the host refuses to start without it. The RAM arena is an ordinary memfd and does not touch the pool |
-| `SPROUTFS_SCRATCH_DIR` | literal | `/var/lib/sproutfs` | node-disk `emptyDir` for the spill files and the VMM scratch. A starting host wipes it: a restart is a host loss. It has no size limit: the disk limiter bounds what the host writes, and a kubelet limit would evict the pod, a host loss, where the limiter refuses a promise |
-| `SPROUTFS_CACHE_DIR` | literal | `/var/cache/sproutfs` | the page cache's directory, a `hostPath` at `/opt/sproutfs-demo/cache/<namespace>` that outlives the pod, on the same filesystem as the scratch, which the host checks. The host takes the first file there, `cache-0`, `cache-1` and so on, that no other process holds locked, so the two pods on the node never share one and a replaced pod reads back what its predecessor kept. Unset, the cache is kept in the scratch ([hosting](../docs/hosting.md#the-caches-file)) |
-| `SPROUTFS_ARENA_BYTES` | literal | `5368709120` | the host's whole resident page store. It is divided between the two pagers by `SPROUTFS_RAM_SHARE_PERCENT`; the two arenas are separate memfds and their capacities come to exactly this. The RAM share comes out of the pod's `memory` request and the PMEM share out of its HugeTLB allotment, so a node provisions the two separately |
-| `SPROUTFS_RAM_PAGE_BYTES` | unset | `2097152` | the RAM pager's page: `2097152` on the HugeTLB pool, where the RAM share of the arena comes out of the pod's HugeTLB allotment as PMEM's does, or `4096` on ordinary memory, which holds a tenth of the memory for forks that write little and scattered and is slower at everything else (docs/vm-memory.md). Every RAM budget, template memory and `SPROUTFS_VM_MEMORY_BYTES` is counted in this page |
-| `SPROUTFS_PMEM_PAGE_BYTES` | unset | `2097152` | the PMEM and ephemeral pagers' page: `2097152` on the HugeTLB pool, or `4096` on ordinary memory charged to the pod's `memory` request, so that a checkpoint publishes the 4 KiB pages a guest wrote rather than the 2 MiB pages around them. Every PMEM and ephemeral budget is counted in this page. A disk is still a whole number of 2 MiB, which Firecracker requires of a PMEM device. A host refuses volumes published at the other page, so a host fleet runs one PMEM page, and changing it means new templates and new VMs |
-| `SPROUTFS_RAM_SHARE_PERCENT` | unset | `75` | how much of the arena, the spill file and the page budgets goes to the RAM pager; PMEM takes the rest. Three quarters, because RAM is where a guest's memory diverges and the root is mostly read: the 2026-09-19 fan-out measured a fork holding about 114 MB of RAM privately against 10 MB of root, and one shared root stands behind every fork's own RAM. A share that cannot divide the arena or the spill file into whole pages of both pagers is refused rather than rounded away |
-| `SPROUTFS_ARENA` | ConfigMap `sproutfs-demo` key `arena`, optional | `isolated` | how each pager divides its resident pages between the files of its arena: `isolated` gives each memory region a private file and every VMM read-only files for the pages another memory region may map, and `shared` keeps them in one file that every VMM maps read-write. `isolated` also sends a fork point's lent pages to its children on the host in a read-only file of its own, and checks a published page against the digest of its upload before another memory region shares it. It holds a VMM to its own VM's memory only while the VMM runs as neither root nor the host's user, which is what `SPROUTFS_VMM_JAIL` does. Any other value is refused |
-| `SPROUTFS_MEMORY_BYTES` | literal | `12884901888` | the RAM allotment both pagers take their pages from. It is one budget because it is one machine's memory, and because bytes are the only unit the two pagers' pages add up in. Defaults to the arena plus 1 GiB |
-| `SPROUTFS_CACHE_BYTES` | literal | `1073741824` | the page cache's own cap, which nothing else draws on |
-| `SPROUTFS_EPHEMERAL_BYTES` | literal | `2147483648` | the ephemeral pager's spill file: every ephemeral disk this host admits, in whole 2 MiB pages. Unset, the host runs no ephemeral pager and refuses a VM with an ephemeral disk (docs/volumes.md#ephemeral-disks). A deployment that creates ephemeral disks sets it on every host, because such a VM may be opened, received or recovered on any of them |
-| `SPROUTFS_EPHEMERAL_ARENA_BYTES` | unset | `268435456` | the ephemeral pager's share of the HugeTLB pool, in whole 2 MiB pages, read only where `SPROUTFS_EPHEMERAL_BYTES` is set. It bounds how much of the ephemeral disks is resident, and the default memory allotment grows by it |
-| `SPROUTFS_SPILL_BYTES` | literal | `17179869184` | the host's spill store, in the `emptyDir`, divided by the same share into one file per pager and allocated whole when the host starts. Each file's share is what bounds that pager's dirty pages |
-| `SPROUTFS_CACHE_CLUSTER_PERCENT` | literal | `0` | the share of windows, 0 to 100, the cluster cache is turned on for, chosen by a hash of the window so every host agrees. A window inside it is kept on this host as the stripes the membership ranks this host's disk for, under the membership's code; every other window is kept whole, whatever the membership says. It stays 0 until hosts read stripes from each other, so no deployment reads its pulled pages from the store that it read from its own disk before ([hosting](../docs/hosting.md#the-code)). It and `SPROUTFS_HOT_TIER` are alternatives: a host given both, with this above 0, refuses to start |
-| `SPROUTFS_HOT_TIER` | unset | | a second bucket, as a URL, that every read of a checkpoint object tries before `SPROUTFS_BUCKET`, and that reads and publications fill: `gs://bucket/prefix` or `s3://bucket/prefix`, with an `endpoint` query parameter for an emulator or an S3-compatible server. It is off by default: unset, there is none, and the manifests do not set it. It is an alternative to the cluster cache: a host given both it and a `SPROUTFS_CACHE_CLUSTER_PERCENT` above 0 refuses to start and names both. The regional bucket stays the only durable copy, and nothing expires the hot tier yet ([hosting](../docs/hosting.md#reading-through-a-hot-tier)) |
-| `SPROUTFS_DISK_FREE_PERCENT`, `SPROUTFS_DISK_USED_BYTES` | literal | `20`, `60129542144` | two of the disk limiter's goals for the filesystem under `SPROUTFS_SCRATCH_DIR`: a fifth of it kept free, and at most 56 GiB held by each host. The free share is above the kubelet's eviction marks and its image collection mark, 85 % used. The used goal splits the node's 200 GiB disk, a 193 GiB filesystem, between the two pods, so the first cache to fill does not take all of it and a replaced pod finds room for its spill files at once. That leaves about 37 GiB for the system, k3s, the images and the demo's build before the caches shrink below their goal: 193 less the 38.6 kept free, the 112 of the two hosts, the 1 GiB reserve and the band of up to 4 GiB. The image has no reserved blocks. On 2026-10-03 everything else held 21 GiB (docs/measurements/gce-deploy-cache-2026-10-03.md). The limiter alone sets the page cache's disk: nothing else caps it ([hosting](../docs/hosting.md#budgets)) |
-| `SPROUTFS_DISK_FREE_BYTES` | unset | | the third goal, bytes kept free. Each goal is optional and every one set is kept; with none, the host keeps a tenth free. A host whose promises the filesystem could never keep under them refuses to start. One that does not fit only because other writers hold space starts unready, and is ready once they give it back |
-| `SPROUTFS_DISK_RESERVE_BYTES` | unset | `1073741824` | what the cache leaves free above the floor for promises not yet made, this host's or the other pod's: room to start or receive a VM however full the other pod's cache is |
-| `SPROUTFS_DISK_BAND_BYTES` | unset | `4294967296` | the most the disk limiter keeps the cache above the floor and the reserve: a fifth of the headroom, at most this |
-| `SPROUTFS_CACHE_WRITE_BYTES_PER_DAY` | literal | `1099511627776` | the disk cache's write budget, 1 TiB a day, measured by the counter of the block device under `SPROUTFS_SCRATCH_DIR`. A host that cannot read that counter refuses a budget. The node's disk is a persistent disk with no rated endurance, so this is a ceiling the demo should never meet, about five writes of the disk a day. A node with a local SSD sets a share of the drive's rated endurance |
+| `SPROUTFS_API_TOKEN` | Secret `sproutfs-api-token` key `token` | generated per deployment | the shared bearer token. Without it the process serves an API that admits anyone and says so at startup |
+| `SPROUTFS_PAGE_SERVER_PORT` | literal | `8081` | port for the peer server |
+| `SPROUTFS_HUGEPAGE_DIR` | literal | `/hugepages-2Mi` | the pod's hugetlbfs mount. The PMEM arena is a `MFD_HUGETLB` memfd, not a file in it, but the kubelet grants the HugeTLB allotment through the mount, so the host refuses to start without it. The RAM arena is an ordinary memfd and does not touch the pool |
+| `SPROUTFS_SCRATCH_DIR` | literal | `/var/lib/sproutfs` | node-disk `emptyDir` for the spill files and VMM scratch. A starting host wipes it. It has no size limit: the disk limiter bounds what the host writes, and a kubelet limit would evict the pod |
+| `SPROUTFS_CACHE_DIR` | literal | `/var/cache/sproutfs` | the page cache's directory, a `hostPath` at `/opt/sproutfs-demo/cache/<namespace>` on the same filesystem as the scratch, which the host checks. The host takes the first file (`cache-0`, `cache-1`, ...) no other process holds locked, so the two pods never share one and a replaced pod reads back its predecessor's. Unset, the cache is in the scratch ([hosting](../docs/hosting.md#the-caches-file)) |
+| `SPROUTFS_ARENA_BYTES` | literal | `5368709120` | the host's resident page store, divided between the two pagers by `SPROUTFS_RAM_SHARE_PERCENT` into two memfds. The RAM share comes out of the pod's `memory` request and the PMEM share out of its HugeTLB allotment |
+| `SPROUTFS_RAM_PAGE_BYTES` | unset | `2097152` | the RAM pager's page: `2097152` on the HugeTLB pool, where the RAM arena comes out of the HugeTLB allotment, or `4096` on ordinary memory, which holds a tenth of the memory for forks that write little and scattered and is slower otherwise (docs/vm-memory.md). RAM budgets, template memory and `SPROUTFS_VM_MEMORY_BYTES` are counted in this page |
+| `SPROUTFS_PMEM_PAGE_BYTES` | unset | `2097152` | the PMEM and ephemeral pagers' page: `2097152` on the HugeTLB pool, or `4096` on ordinary memory charged to the pod's `memory` request, so a checkpoint publishes the 4 KiB pages a guest wrote. PMEM and ephemeral budgets are counted in this page. A disk is still a whole number of 2 MiB, as Firecracker requires. A host refuses volumes published at the other page, so a fleet runs one PMEM page; changing it means new templates and VMs |
+| `SPROUTFS_RAM_SHARE_PERCENT` | unset | `75` | the share of the arena, the spill file and the page budgets for the RAM pager; PMEM takes the rest. RAM is where forks diverge and the root is mostly read: the 2026-09-19 fan-out measured a fork holding about 114 MB of RAM privately against 10 MB of root. A share that cannot divide the arena or spill file into whole pages of both pagers is refused |
+| `SPROUTFS_ARENA` | ConfigMap `sproutfs-demo` key `arena`, optional | `isolated` | how each pager divides its resident pages between files: `isolated` gives each memory region a private file and every VMM read-only files for pages another region may map; `shared` keeps them in one file every VMM maps read-write. `isolated` also sends a fork point's lent pages to its children on the host in a read-only file, and checks a published page against its upload's digest before another region shares it. It confines a VMM to its own VM's memory only while the VMM runs as neither root nor the host's user (`SPROUTFS_VMM_JAIL`). Any other value is refused |
+| `SPROUTFS_MEMORY_BYTES` | literal | `12884901888` | the RAM allotment both pagers take their pages from, in bytes. Defaults to the arena plus 1 GiB |
+| `SPROUTFS_CACHE_BYTES` | literal | `1073741824` | the page cache's own cap |
+| `SPROUTFS_EPHEMERAL_BYTES` | literal | `2147483648` | the ephemeral pager's spill file: every ephemeral disk this host admits, in whole 2 MiB pages. Unset, the host runs no ephemeral pager and refuses a VM with an ephemeral disk (docs/volumes.md#ephemeral-disks). Set it on every host if any VM has one, since such a VM may open on any host |
+| `SPROUTFS_EPHEMERAL_ARENA_BYTES` | unset | `268435456` | the ephemeral pager's share of the HugeTLB pool, in whole 2 MiB pages, read only where `SPROUTFS_EPHEMERAL_BYTES` is set. The default memory allotment grows by it |
+| `SPROUTFS_SPILL_BYTES` | literal | `17179869184` | the host's spill store in the `emptyDir`, divided by the same share into one file per pager and allocated whole at start. Each file bounds that pager's dirty pages |
+| `SPROUTFS_CACHE_CLUSTER_PERCENT` | literal | `0` | the share of windows, 0 to 100, the cluster cache is on for, chosen by a hash of the window. A window inside it is kept as the stripes the membership ranks this host's disk for, under the membership's code; every other window is kept whole. The manifest sets 0; a deployment can raise it a share at a time while watching `cache_read` ([hosting](../docs/hosting.md#the-code)). A host given this above 0 and `SPROUTFS_HOT_TIER` refuses to start |
+| `SPROUTFS_HOT_TIER` | unset | | a second bucket URL that every read of a checkpoint object tries before `SPROUTFS_BUCKET`, filled by reads and publications: `gs://bucket/prefix` or `s3://bucket/prefix`, with an `endpoint` query parameter for an emulator or S3-compatible server. Off by default. A host given it and `SPROUTFS_CACHE_CLUSTER_PERCENT` above 0 refuses to start. The regional bucket stays the only durable copy, and nothing expires the hot tier yet ([hosting](../docs/hosting.md#reading-through-a-hot-tier)) |
+| `SPROUTFS_DISK_FREE_PERCENT`, `SPROUTFS_DISK_USED_BYTES` | literal | `20`, `60129542144` | two disk limiter goals for the filesystem under `SPROUTFS_SCRATCH_DIR`: a fifth kept free, and at most 56 GiB used by each host. The free share is above the kubelet's eviction marks and its image collection mark, 85 % used. The used goal splits the 193 GiB filesystem between the two pods. That leaves about 37 GiB for the system, k3s, images and the build: 193 less 38.6 kept free, 112 for the two hosts, the 1 GiB reserve and up to 4 GiB of band. The image has no reserved blocks. On 2026-10-03 everything else held 21 GiB (docs/measurements/gce-deploy-cache-2026-10-03.md). Only the limiter caps the page cache's disk ([hosting](../docs/hosting.md#budgets)) |
+| `SPROUTFS_DISK_FREE_BYTES` | unset | | the third goal, bytes kept free. Each goal is optional and every one set is kept; with none, the host keeps a tenth free. A host whose promises the filesystem could never keep refuses to start; one that does not fit only because other writers hold space starts unready |
+| `SPROUTFS_DISK_RESERVE_BYTES` | unset | `1073741824` | what the cache leaves free above the floor for promises not yet made, so a VM can start or arrive however full the other pod's cache is |
+| `SPROUTFS_DISK_BAND_BYTES` | unset | `4294967296` | the most the limiter keeps the cache above the floor and reserve: a fifth of the headroom, at most this |
+| `SPROUTFS_CACHE_WRITE_BYTES_PER_DAY` | literal | `1099511627776` | the disk cache's write budget, 1 TiB a day, measured by the block device counter under `SPROUTFS_SCRATCH_DIR`. A host that cannot read the counter refuses a budget. The node's persistent disk has no rated endurance, so this is a ceiling, about five disk writes a day. A node with a local SSD sets a share of its rated endurance |
 | `SPROUTFS_CACHE_WRITE_BURST_BYTES` | unset | an hour's average | how far ahead of its average the budget may run |
-| `SPROUTFS_RAM_LOGICAL_PAGES`, `SPROUTFS_PMEM_LOGICAL_PAGES` | unset | that pager's arena pages × 32 | bounds each pager's per-memory-region metadata, including never-faulted pages, and so bounds the VMs a host will start at all — see the arithmetic below. Each is counted in its own pager's page, which is why they are two numbers and never a sum |
-| `SPROUTFS_RAM_DIRTY_PAGES`, `SPROUTFS_PMEM_DIRTY_PAGES` | unset | the smaller of that pager's arena pages and its spill share | bounds volatile private state on RAM and spill together, per pager; each is at most its own logical cap and at most what its spill share holds. The defaults are what a workload guest writing hundreds of megabytes between checkpoints outruns |
-| `SPROUTFS_TEMPLATES` | literal | `alpine=…/guest.ext4,workload=…/workload.ext4:2147483648` | the guest images a VM can be created from, as `name=path` pairs, or `none` for a host that creates only from templates imported on request. A pair may name the RAM its VMs get after a colon, `name=path:bytes`, which is what an image needing more than the default uses. A create request that names none takes the only one |
-| `SPROUTFS_VM_MEMORY_BYTES` | literal | `536870912` | the RAM of a VM whose template names no size of its own, a whole number of 2 MiB pages. It is read when a guest image is imported, which happens once for the whole deployment, so changing it gives no new memory to a VM created from an image already imported — a create with `memory`, or a cold start with `--memory`, is what gives one VM another size |
-| `GOMEMLIMIT` | literal | `6GiB` | Go's own ceiling, under the container's, so the collector runs before the cgroup kills the process |
-| `SPROUTFS_VM_VCPUS` | literal | `1` | the processors of a VM that records none of its own: one created without `vcpus` and never given a count by a cold start |
-| `SPROUTFS_CHECKPOINT_INTERVAL` | literal | `60s` | how often every VM this host runs is checkpointed, which bounds what killing this pod rewinds a guest by. At least 1 s — a checkpoint pauses every VM and uploads its dirty set, so anything shorter is a host spending its guests' time on the object store — or a negative value to disable the loop |
-| `SPROUTFS_LOSS_WINDOW` | unset | `5m` | how long a VM may hold a write no landed checkpoint covers. Past it the pager admits no further dirty page for that VM — every store that needs a dirty reservation waits and a checkpoint of it is asked for out of turn — so what killing this pod can cost one guest is bounded in time as `SPROUTFS_RAM_DIRTY_PAGES` and `SPROUTFS_PMEM_DIRTY_PAGES` bound it in bytes: the lost writes span at most this window plus one checkpoint attempt's pause. At least `SPROUTFS_CHECKPOINT_INTERVAL`, since a shorter window is one every VM is past before its first checkpoint is due, or `0` to disable the bound |
-| `SPROUTFS_BOOT_ARGS` | unset | `console=ttyS0 reboot=k panic=1 i8042.noaux i8042.nomux i8042.nopnp i8042.dumbkbd init=/init rootfstype=ext4 rootflags=dax=always` | the guest kernel command line of a cold boot. It must carry `rootflags=dax=always`, and a host given one that does not refuses to start: without it the guest still boots, and keeps a page cache of pages the host already shares. The `i8042` flags keep the kernel from probing a controller the guest has only for `reboot=k`, which costs half a second of every cold boot; keep them in a line of your own. The root device is the PMEM device declared root, so the line names only the filesystem and DAX |
-| `SPROUTFS_FIRECRACKER` | unset | `/usr/local/bin/firecracker` | the feature-enabled VMM in the image |
+| `SPROUTFS_RAM_LOGICAL_PAGES`, `SPROUTFS_PMEM_LOGICAL_PAGES` | unset | that pager's arena pages × 32 | bounds each pager's per-memory-region metadata, including never-faulted pages, and so the VMs a host will start (see below). Each is in its own pager's page |
+| `SPROUTFS_RAM_DIRTY_PAGES`, `SPROUTFS_PMEM_DIRTY_PAGES` | unset | the smaller of that pager's arena pages and its spill share | bounds private state in RAM and spill together, per pager; at most its logical cap and its spill share |
+| `SPROUTFS_TEMPLATES` | literal | `alpine=…/guest.ext4,workload=…/workload.ext4:2147483648` | the guest images a VM can be created from, as `name=path` pairs, or `none` for a host that creates only from templates imported on request. `name=path:bytes` sets the RAM its VMs get. A create that names none takes the only one |
+| `SPROUTFS_VM_MEMORY_BYTES` | literal | `536870912` | the RAM of a VM whose template names no size, a whole number of 2 MiB pages. It is read when an image is imported, once per deployment, so changing it does not resize VMs from an image already imported; use a create's `memory` or a cold start's `--memory` |
+| `GOMEMLIMIT` | literal | `6GiB` | Go's ceiling, under the container's, so the collector runs before the cgroup kills the process |
+| `SPROUTFS_VM_VCPUS` | literal | `1` | the processors of a VM that records none |
+| `SPROUTFS_CHECKPOINT_INTERVAL` | literal | `60s` | how often every VM on this host is checkpointed, which bounds what killing the pod rewinds a guest by. At least 1 s, or negative to disable the loop |
+| `SPROUTFS_LOSS_WINDOW` | unset | `5m` | how long a VM may hold a write no landed checkpoint covers. Past it the pager admits no further dirty page for that VM: stores that need a dirty reservation wait, and a checkpoint is requested out of turn. Lost writes then span at most this window plus one checkpoint attempt's pause. At least `SPROUTFS_CHECKPOINT_INTERVAL`, or `0` to disable |
+| `SPROUTFS_BOOT_ARGS` | unset | `console=ttyS0 reboot=k panic=1 i8042.noaux i8042.nomux i8042.nopnp i8042.dumbkbd init=/init rootfstype=ext4 rootflags=dax=always` | the guest kernel command line of a cold boot. It must carry `rootflags=dax=always` or the host refuses to start; without it the guest keeps a page cache of pages the host already shares. The `i8042` flags stop the kernel probing a controller the guest has only for `reboot=k`, which costs half a second per cold boot; keep them in a custom line. The root device is the PMEM device declared root |
+| `SPROUTFS_FIRECRACKER` | unset | `/usr/local/bin/firecracker` | the VMM in the image |
 | `SPROUTFS_SECCOMP` | unset | `/usr/share/sproutfs/seccomp.bpf` | its compiled policy, including the memory-worker filter |
-| `SPROUTFS_KERNEL` | unset | `/usr/share/sproutfs/vmlinux` | the guest kernel a cold boot uses. It must have the VMGenID driver built in (`CONFIG_VMGENID=y`), and a host given one without it refuses to start: every child of a fork point and every restore of a checkpoint would draw the same random bytes. On x86_64 the boot arguments must not carry `acpi=off` or `acpi=ht` either, which hide the device; see [a new generation and the right clock](../docs/vm-memory.md#a-new-generation-and-the-right-clock) |
-| `SPROUTFS_VMM_JAIL` | unset | `$SPROUTFS_SCRATCH_DIR/jail` | where the host jails every VMM, as Firecracker's own jailer does: it builds the directory afresh at the first start, with a copy of the VMM, its seccomp policy and the kernel, and a `/dev` of its own on a tmpfs holding `kvm` and `userfaultfd` for the VMMs' group alone; each VMM runs chrooted there, in a directory only it may enter, as a user of its own, so no VMM can reopen a descriptor it holds read-only, reach `/proc`, or signal, trace or read another. It needs the host to run as root (the pod is privileged) and the VMM to be a static binary. `none` runs every VMM unjailed as the host's user, which isolates no VM from another VM's VMM; the host logs so at startup |
-| `SPROUTFS_VMM_FIRST_UID`, `SPROUTFS_VMM_USERS` | unset | `100000`, `1024` | the users jailed VMMs run as: one each, from the first for as many as there are, so that many VMMs may run at once on this host |
+| `SPROUTFS_KERNEL` | unset | `/usr/share/sproutfs/vmlinux` | the guest kernel a cold boot uses. It must have `CONFIG_VMGENID=y` or the host refuses to start: otherwise every child of a fork point and every restore would draw the same random bytes. On x86_64 the boot arguments must not carry `acpi=off` or `acpi=ht`, which hide the device; see [a new generation and the right clock](../docs/vm-memory.md#a-new-generation-and-the-right-clock) |
+| `SPROUTFS_VMM_JAIL` | unset | `$SPROUTFS_SCRATCH_DIR/jail` | where the host jails every VMM, as Firecracker's jailer does: built afresh at first start with a copy of the VMM, its seccomp policy and the kernel, and a tmpfs `/dev` holding `kvm` and `userfaultfd` for the VMMs' group. Each VMM runs chrooted in its own directory as its own user, so it cannot reopen a descriptor it holds read-only, reach `/proc`, or signal, trace or read another. Needs the host to run as root (the pod is privileged) and a static VMM. `none` runs every VMM unjailed as the host's user, which isolates no VM from another's VMM; the host logs this at startup |
+| `SPROUTFS_VMM_FIRST_UID`, `SPROUTFS_VMM_USERS` | unset | `100000`, `1024` | the users jailed VMMs run as, one each, which bounds how many VMMs run at once |
 | `SPROUTFS_VMM_GID` | unset | `100000` | the group every jailed VMM runs in, which alone may open the jail's devices |
-| `SPROUTFS_ORCHESTRATOR_URL` | literal | `http://sproutfs-orchestrator.sproutfs.svc:8080` | the orchestrator's Service: where a drain asks for somewhere to put its VMs and reports what it is doing with each of them |
+| `SPROUTFS_ORCHESTRATOR_URL` | literal | `http://sproutfs-orchestrator.sproutfs.svc:8080` | the orchestrator's Service, where a drain asks where to put its VMs and reports on each |
 | `SPROUTFS_ORCHESTRATOR` | unset | the same, from `SPROUTFS_NAMESPACE` | the older name, for a host started by hand. `SPROUTFS_ORCHESTRATOR_URL` wins |
-| `SPROUTFS_GCS_ENDPOINT` | unset | | a GCS emulator to use instead of the ambient Google credentials, which is how the store is exercised outside GCE |
+| `SPROUTFS_GCS_ENDPOINT` | unset | | a GCS emulator to use instead of the ambient Google credentials |
 | `SPROUTFS_OBJECT_STORE` | unset | `gcs` | the object store provider, `gcs` or `s3`. S3 uses the ambient AWS configuration |
 | `SPROUTFS_S3_ENDPOINT` | unset | | an S3-compatible server to use instead of S3, addressed by path |
 | `SPROUTFS_POD_IP` | downward API `status.podIP` | | the address the host advertises for its API and peer server |
-| `SPROUTFS_POD_NAME` | downward API `metadata.name` | | the host's name to the orchestrator and to an operator. Nothing durable is named after it, which is why the hosts are a Deployment |
+| `SPROUTFS_POD_NAME` | downward API `metadata.name` | | the host's name to the orchestrator and operators. Nothing durable is named after it |
 | `SPROUTFS_NAMESPACE` | downward API `metadata.namespace` | `sproutfs` | |
-| `SPROUTFS_SHARDS` | ConfigMap `sproutfs-demo` key `shards`, optional | unset | `gce` keeps the cache on shards, network disks the orchestrator attaches to this node, instead of a file in `SPROUTFS_CACHE_DIR`, which is then unused. Unset, the host keeps its own cache disk. See [Shards](#shards) |
-| `SPROUTFS_NODE_NAME` | downward API `spec.nodeName` | | the node the host runs on, which is the Compute Engine instance a shard is attached to; read only with `SPROUTFS_SHARDS` |
-| `SPROUTFS_SHARD_DEVICE_DIR` | literal | `/host/dev/disk/by-id` | where the node names its disks, the node's `/dev` mounted at `/host/dev`: a shard attached after the pod started does not appear in the container's own `/dev`. Unset, `/dev/disk/by-id` |
+| `SPROUTFS_SHARDS` | ConfigMap `sproutfs-demo` key `shards`, optional | unset | `gce` keeps the cache on shards, network disks the orchestrator attaches to this node, instead of a file in `SPROUTFS_CACHE_DIR`. Unset, the host keeps its own cache disk. See [Shards](#shards) |
+| `SPROUTFS_NODE_NAME` | downward API `spec.nodeName` | | the node, which is the Compute Engine instance a shard is attached to; read only with `SPROUTFS_SHARDS` |
+| `SPROUTFS_SHARD_DEVICE_DIR` | literal | `/host/dev/disk/by-id` | where the node names its disks, with the node's `/dev` mounted at `/host/dev`: a shard attached after the pod started does not appear in the container's `/dev`. Unset, `/dev/disk/by-id` |
 
 #### Two pagers, and how the budgets are divided
 
-A host runs one pager per kind of memory region: one for its guests' RAM and one for
-their PMEM disks, each with an arena of its own, a spill file of its own and a
-page of its own. **Both pages are 2 MiB by default**, and the arena is the memory
-that page is: a `MFD_HUGETLB` memfd out of the node's 2 MiB pool. A deployment
-may run RAM at 4 KiB instead, on an ordinary memfd out of the pod's own memory,
-where a store into a guest's memory copies and owns 4 KiB rather than 2 MiB;
-that holds a tenth of the memory for forks that write little and scattered, and
-is slower at everything else.
+A host runs one pager for its guests' RAM and one for their PMEM disks, each
+with its own arena, spill file and page. Both pages are 2 MiB by default, with
+the arena a `MFD_HUGETLB` memfd from the node's 2 MiB pool. A deployment may run
+RAM at 4 KiB instead, on an ordinary memfd from the pod's memory, where a store
+copies 4 KiB rather than 2 MiB.
 
-The byte budgets a deployment sets are the host's, and one share divides all of
-them: a deployment that gives RAM three quarters of the arena wants RAM to have
-three quarters of the spill file and of the budgets that fill it too. PMEM takes
-the remainder rather than a second rounding, so the two shares come to exactly
-what the host was given and nothing is counted twice. Page counts are never
-added across the two: a RAM page and a PMEM page need not be the same number of
-bytes, so everything host-wide — `SPROUTFS_MEMORY_BYTES`, the arena total,
-`GET /status` — is in bytes, and the per-pager numbers are reported apart, under
-`pager.ram` and `pager.pmem` and with a `kind` label on every pager metric.
+One share divides all the byte budgets: RAM gets the same fraction of the
+arena, the spill file and the budgets. PMEM takes the remainder, so the two
+come to what the host was given. Page counts are never added across
+pagers, because their pages may differ in size. Host-wide numbers
+(`SPROUTFS_MEMORY_BYTES`, the arena total, `GET /status`) are in bytes, and
+per-pager numbers are reported under `pager.ram` and `pager.pmem` and with a
+`kind` label on every pager metric.
 
 #### How many VMs the logical caps admit
 
-A logical cap is charged one memory region at a time, at attachment, against the pager
-of that memory region's kind, so the two caps together are what decide which VMs a host
-will start. Each reserves nothing — a page never touched has no metadata — and a
-host that ran out of one would otherwise admit a VM's RAM, start its VMM and
-then be refused its root, killing the guest part way through a restore. The host
-refuses such a VM before starting anything, and `GET /status` reports what each
-cap has left under `logical_pages_free`.
+A logical cap is charged one memory region at a time, at attachment, against
+the pager of that region's kind. It reserves nothing, since an untouched page
+has no metadata. A host refuses a VM that would exceed either cap before
+starting anything, rather than starting its VMM and failing part way through a
+restore. `GET /status` reports what each cap has left under
+`logical_pages_free`.
 
-The arithmetic for this deployment, each column in its own pager's page — both
-2 MiB here, though neither is a number to add to the other, since a deployment
-may run RAM at 4 KiB:
+For this deployment, each column in its own pager's page:
 
 | | RAM pages (2 MiB) | PMEM pages (2 MiB) |
 | --- | --- | --- |
@@ -422,43 +380,37 @@ may run RAM at 4 KiB:
 | **what that run charges** | **5,120** | **12,800** |
 | arena × 32 | 61,440 | 20,480 |
 
-Both caps hold that run with room over, and each is sized by the memory regions of its
-own kind rather than by an arena the two share. A deployment with larger guests
-sets `SPROUTFS_RAM_LOGICAL_PAGES` and `SPROUTFS_PMEM_LOGICAL_PAGES` from the
-same arithmetic: the VMs one host holds, times each one's RAM in the first and
-each one's disks in the second.
+A deployment with larger guests sets `SPROUTFS_RAM_LOGICAL_PAGES` and
+`SPROUTFS_PMEM_LOGICAL_PAGES` the same way: the VMs one host holds times each
+one's RAM, and times each one's disks.
 
-The pagers' remaining bounds are not environment variables: the host chooses
-them from the arenas above and the node it lands on, and logs every one of them,
-per pager, when it assembles. Read-ahead is an 8 MiB run, which each pager
-converts into its own pages — four at 2 MiB, 2,048 at 4 KiB — because the run is
-a buffer and a number of pages would mean different amounts of memory in the
-two; write-ahead is the same 8 MiB for each, or one page where that pager's
-dirty budget holds fewer than 64 such runs; concurrent page I/O is four permits per processor, held between 16
-and 256 and never more read-ahead runs than that pager's arena has room for; one
-session serves two faults per processor, between 8 and 64; and a VMM's mappings
-are admitted against half of the node's `/proc/sys/vm/max_map_count`, with the
-budget disabled below 128. A node should allow 1,048,576 mappings
-(`vm.max_map_count`), which current distributions set: a VMM's RAM pager maps a
-scattered store as a mapping of its own until that budget refuses one, and only
-then trades memory for mappings, so a node at the kernel's own 65,530 makes every
-guest that writes scattered pages pay for it in copies. One tuned down far
-enough loses the budget rather than gaining a tighter one, which the host says
-in its log. docs/vm-memory.md carries the reasoning.
+The host chooses the pagers' other bounds from the arenas and the node, and
+logs them per pager at startup:
+
+- read-ahead: an 8 MiB run, converted to each pager's pages (four at 2 MiB,
+  2,048 at 4 KiB);
+- write-ahead: the same 8 MiB, or one page where that pager's dirty budget
+  holds fewer than 64 runs;
+- concurrent page I/O: four permits per processor, between 16 and 256, and
+  never more read-ahead runs than the pager's arena has room for;
+- one session serves two faults per processor, between 8 and 64;
+- a VMM's mappings are admitted against half of the node's
+  `/proc/sys/vm/max_map_count`, with the budget disabled below 128.
+
+A node should allow 1,048,576 mappings (`vm.max_map_count`), which current
+distributions set. A RAM pager maps a scattered store as its own mapping until
+that budget refuses one, then copies instead, so at the kernel's 65,530 every
+guest writing scattered pages pays in copies. A node tuned low enough loses the
+budget entirely, which the host logs. docs/vm-memory.md has the reasoning.
 
 Credentials are not in the environment: the pod reaches GCS through the VM's
 metadata server, whose service account has `roles/storage.objectAdmin` on that
-one bucket. No key file exists anywhere in the demo.
+one bucket. The demo has no key file.
 
-Hosts do not authenticate one another here: `sproutfs-host` uses the default
-plain TCP [transport](../docs/hosting.md#transport). A peer server serves any
-peer that reaches its port, and a destination dials the source's peer-server
-address straight out of the handoff the orchestrator carried. Keeping that
-port to the host pods is the cluster's NetworkPolicy, not the process's.
-
-Guest images are not in the container image. `scripts/lib/demo-image.sh` builds
-one on the node under `/opt/sproutfs-demo/guest`, which the host pod mounts
-read-only at `/usr/share/sproutfs/guest`.
+Hosts do not authenticate one another: `sproutfs-host` uses the default plain
+TCP [transport](../docs/hosting.md#transport). A peer server serves any peer
+that reaches its port, and a destination dials the source's peer-server address
+from the handoff. The NetworkPolicy restricts that port to the host pods.
 
 ### `sproutfs-orchestrator`
 
@@ -467,37 +419,36 @@ read-only at `/usr/share/sproutfs/guest`.
 | `SPROUTFS_BUCKET` | ConfigMap `sproutfs-demo` key `bucket` | `sproutfs-demo-<project>` | where it lists control records to find VMs |
 | `SPROUTFS_PREFIX` | ConfigMap `sproutfs-demo` key `prefix` | `demo` | |
 | `SPROUTFS_API_PORT` | literal | `8080` | port for the orchestrator API |
-| `SPROUTFS_API_TOKEN` | Secret `sproutfs-api-token` key `token` | generated per deployment | the same shared bearer token the hosts carry: it is what the orchestrator's own API demands and what it presents when it calls a host |
+| `SPROUTFS_API_TOKEN` | Secret `sproutfs-api-token` key `token` | generated per deployment | the shared bearer token: required by its API and presented to the hosts |
 | `SPROUTFS_NAMESPACE` | downward API `metadata.namespace` | `sproutfs` | the namespace it lists pods in |
 | `SPROUTFS_HOST_SELECTOR` | literal | `app.kubernetes.io/name=sproutfs-host` | label selector that finds host pods |
 | `SPROUTFS_HOST_API_PORT` | literal | `8080` | port it calls on a host pod |
 | `SPROUTFS_HOST_PAGE_SERVER_PORT` | literal | `8081` | port it names when it tells one host to migrate to another |
-| `SPROUTFS_TABLE_PATH` | literal | `/var/lib/sproutfs/orchestrator.db` | the SQLite file holding the VM table, on a `hostPath` under `/opt/sproutfs-demo/orchestrator` so that a restarted pod does not forget a migration that was in flight. It is rebuilt from a survey at startup. Losing it costs only what it alone keeps: a VM's RAM after a cold start resized it, and the pull mark of a VM nothing runs. The orchestrator Deployment uses `strategy: Recreate` and one replica: one process writes this file |
-| `SPROUTFS_CACHE_CODE` | unset | `4+2` | the code of the hosts' disk caches, `k+m` such as `4+2`, set for the size the cluster usually runs at. It never follows the number of hosts. The orchestrator writes it in [the membership](../docs/hosting.md#the-membership) |
-| `SPROUTFS_CACHE_EARLIER_CODES` | unset | | the codes the deployment used before `SPROUTFS_CACHE_CODE`, newest first and comma-separated, at most three. The orchestrator writes them in the membership with the code. Hosts still read a window stored under one until it ages out. See [the code](../docs/hosting.md#the-code) |
-| `SPROUTFS_SHARDS` | ConfigMap `sproutfs-demo` key `shards`, optional | unset | `gce` has the orchestrator carry the shards out: list them from their claims, assign them over the hosts in the membership, and attach and detach them through Compute Engine's API. See [Shards](#shards) |
+| `SPROUTFS_TABLE_PATH` | literal | `/var/lib/sproutfs/orchestrator.db` | the SQLite VM table, on a `hostPath` under `/opt/sproutfs-demo/orchestrator`, so a restarted pod remembers a migration in flight. It is rebuilt from a survey at startup; losing it loses only a VM's RAM after a resizing cold start and the pull mark of a VM nothing runs. The Deployment uses `strategy: Recreate` and one replica, so one process writes it |
+| `SPROUTFS_CACHE_CODE` | unset | `4+2` | the code of the hosts' disk caches, `k+m`, set for the size the cluster usually runs at. It never follows the number of hosts. The orchestrator writes it in [the membership](../docs/hosting.md#the-membership) |
+| `SPROUTFS_CACHE_EARLIER_CODES` | unset | | the codes used before `SPROUTFS_CACHE_CODE`, newest first, comma-separated, at most three. Written in the membership; hosts still read a window stored under one until it ages out. See [the code](../docs/hosting.md#the-code) |
+| `SPROUTFS_SHARDS` | ConfigMap `sproutfs-demo` key `shards`, optional | unset | `gce` has the orchestrator list the shards from their claims, assign them over the hosts in the membership, and attach and detach them through Compute Engine's API. See [Shards](#shards) |
 | `SPROUTFS_SHARD_CLAIMS` | literal | `app.kubernetes.io/component=sproutfs-shard` | the label selector of the shards' claims in the namespace |
 | `SPROUTFS_GCS_ENDPOINT` | unset | | a GCS emulator to use instead of the ambient Google credentials |
 | `SPROUTFS_OBJECT_STORE` | unset | `gcs` | the object store provider, `gcs` or `s3` |
 | `SPROUTFS_S3_ENDPOINT` | unset | | an S3-compatible server to use instead of S3 |
 
-It authenticates to the Kubernetes API with its ServiceAccount token, mounted
-as usual. Its Role allows `get`, `list`, `watch` and `delete` on pods in
-`sproutfs`, and `get` and `list` on its claims — enough to place VMs, to run
-the kill-host flow and to find the shards — and a ClusterRole allows `get` on
-PersistentVolumes, which name a claim's disk and belong to no namespace.
+It authenticates to the Kubernetes API with its mounted ServiceAccount token.
+Its Role allows `get`, `list`, `watch` and `delete` on pods in `sproutfs`, and
+`get` and `list` on its claims; a ClusterRole allows `get` on
+PersistentVolumes, which name a claim's disk.
 
 ## Shards
 
 A deployment may keep the cluster's cache on shards: a fixed set of network
-disks the membership moves between the hosts as compute scales, so an
-autoscaler adding and removing machines moves no window
+disks the membership moves between hosts as compute scales, so adding and
+removing machines moves no window
 ([hosting](../docs/hosting.md#shards-on-network-disks)). Kubernetes provisions
-the disks and never attaches them; the orchestrator attaches each to the node
+the disks and never attaches them. The orchestrator attaches each to the node
 of the host the membership assigns it to, through Compute Engine's API, and
 the host opens the device through the node's `/dev`.
 
-On GKE, with the Compute Engine persistent disk CSI driver it runs by default:
+On GKE, with its default Compute Engine persistent disk CSI driver:
 
 ```
 kubectl apply -f deploy/
@@ -506,46 +457,43 @@ kubectl -n sproutfs patch configmap sproutfs-demo --type merge -p '{"data":{"sha
 kubectl -n sproutfs rollout restart deployment/sproutfs-orchestrator deployment/sproutfs-host
 ```
 
-The StorageClass names one zone, the one the hosts' node pool runs in, since
-a zonal disk attaches only to an instance of its zone; edit
-`allowedTopologies` for another. The orchestrator needs Compute Engine
-permissions: `compute.disks.get` and `compute.disks.use` on the shards, and
-`compute.instances.get`, `compute.instances.attachDisk` and
-`compute.instances.detachDisk` on the nodes, with `compute.zoneOperations.get`.
-On GKE, bind its ServiceAccount to a Google service account that holds them,
-through Workload Identity. The hosts need nothing new: they are privileged
-already, and their manifest mounts the node's `/dev` at `/host/dev`.
+The StorageClass names the zone the hosts' node pool runs in, since a zonal
+disk attaches only to an instance of its zone; edit `allowedTopologies` for
+another. The orchestrator needs `compute.disks.get` and `compute.disks.use` on
+the shards, and `compute.instances.get`, `compute.instances.attachDisk`,
+`compute.instances.detachDisk` and `compute.zoneOperations.get` on the nodes.
+On GKE, bind its ServiceAccount to a Google service account holding them
+through Workload Identity. The hosts need nothing new: they are privileged and
+mount the node's `/dev` at `/host/dev`.
 
 On k3s on a Compute Engine instance, either run the CSI driver and apply the
-same two files, or make the disks by hand and bind the claims to them with
-`deploy/shards/k3s-volumes.yaml`, whose comments give the commands; the
-StorageClass is then only the name the two share, and no driver is asked for
-anything. The orchestrator uses the instance's own service account, which
-needs the permissions above and the `cloud-platform` or `compute-rw` scope.
+same two files, or make the disks by hand and bind the claims with
+`deploy/shards/k3s-volumes.yaml`, whose comments give the commands. The
+orchestrator then uses the instance's service account, which needs the
+permissions above and the `cloud-platform` or `compute-rw` scope.
 
-Hosts and shards are independent: the shard count is fixed when the cache is
-sized, and the hosts scale as the guests do. A membership of fewer hosts than
-shards puts several shards on each, and each host serves all its shards
-within one serving budget, `SPROUTFS_CACHE_SERVE_BYTES_PER_SECOND`.
+The shard count is fixed when the cache is sized; the hosts scale with the
+guests. With fewer hosts than shards, each host serves several shards within
+one serving budget, `SPROUTFS_CACHE_SERVE_BYTES_PER_SECOND`.
 
 ### Sizing
 
 | Setting | Rule | The manifests |
 | --- | --- | --- |
-| Shard count | Fixed, at least k+m of the code, so every window's stripes are on as many disks as the code is wide; about the number of hosts the cluster runs at its smallest, so every host serves at most one or two. Changing it moves windows, so it is resized on purpose, as the code is | 6, under 4+2 |
-| Disk size | The cache holds the shard count times the size times k/(k+m) of windows, less a 64 MiB header region and a free region a shard. Every shard the same size: a shard's weight is its size in 16 GiB steps | 256 GiB each: 1 TiB of windows under 4+2 |
-| Provisioned throughput | What one shard may be asked for: its host's serving budget, 500 MiB/s, shared by the shards that host serves, plus its fills. A disk slower than the budget is the slowest hop of a read, and a dependent read pays it whole | 500 MiB/s, Hyperdisk Balanced |
-| Provisioned IOPS | A 2 MiB page under 4+2 is a 512 KiB stripe a disk; a 4 KiB page is about 1 KiB, read with its window's other pages; a fault reads an 8 MiB run. So throughput binds before IOPS for 2 MiB pages, and IOPS for 4 KiB pages read one at a time | 6000 |
-| Machine | The disk's limits are per disk and per instance: an instance's network disk throughput depends on its machine type and vCPUs, and caps what every shard it serves may read together. A C3 of 4 vCPUs read 400 MiB/s from Hyperdisk Balanced provisioned for 500; 8 vCPUs allow 800. Hyperdisk Balanced attaches to C3, C4 and N4 machines; the API refused it on N2 | c3, 8 vCPUs to serve the whole budget |
+| Shard count | Fixed, at least k+m, so every window's stripes are on as many disks as the code is wide; about the number of hosts at the cluster's smallest, so each host serves one or two. Changing it moves windows | 6, under 4+2 |
+| Disk size | The cache holds shard count × size × k/(k+m) of windows, less a 64 MiB header region and a free region per shard. All shards the same size: a shard's weight is its size in 16 GiB steps | 256 GiB each: 1 TiB of windows under 4+2 |
+| Provisioned throughput | Its host's serving budget, 500 MiB/s, shared by the shards that host serves, plus its fills. A slower disk is the slowest hop of a read | 500 MiB/s, Hyperdisk Balanced |
+| Provisioned IOPS | A 2 MiB page under 4+2 is a 512 KiB stripe per disk; a 4 KiB page is about 1 KiB, read with its window's other pages; a fault reads an 8 MiB run. Throughput binds first for 2 MiB pages, IOPS for 4 KiB pages read one at a time | 6000 |
+| Machine | An instance's network disk throughput depends on its machine type and vCPUs and caps all its shards together. A C3 of 4 vCPUs read 400 MiB/s from Hyperdisk Balanced provisioned for 500; 8 vCPUs allow 800. Hyperdisk Balanced attaches to C3, C4 and N4; the API refused it on N2 | c3, 8 vCPUs |
 
 `docs/measurements/gce-shards-2026-10-04.md` measures shards on C3. A
 dependent read of a 2 MiB page took 8.6 ms a hop from Hyperdisk Balanced,
 7.3 ms from pd-balanced or pd-ssd and 5.5 ms from local NVMe, against 40 ms
 from the store; of a 4 KiB page, 1.4, 1.0 and 0.56 ms, against 29 ms. A
-persistent disk is a little faster for dependent reads, but its IOPS and
-throughput follow its size, and on C3 it reads at most 240 MiB/s. A shard
-moved off a removed host in 13 to 15 s with a controller passing every
-second, about 10 s of it Compute Engine's detach and attach calls.
+persistent disk's IOPS and throughput follow its size, and on C3 it reads at
+most 240 MiB/s. A shard moved off a removed host in 13 to 15 s with a
+controller passing every second, about 10 s of it Compute Engine's detach and
+attach calls.
 
 ## Resources
 
@@ -559,13 +507,12 @@ second, about 10 s of it Compute Engine's detach and attach calls.
 
 Huge pages are not counted against the container's `memory` limit, so a host
 pod's ceiling on the node is 2 GiB of pages plus 12 GiB of ordinary memory. The
-pages are the PMEM arena, 1.25 GiB of them with room over; the 12 GiB holds the
-RAM arena's 3.75 GiB of guests' memory beside the Go heap, the page cache and
-one Firecracker process per VM. The two pods together request the node's whole
-4 GiB pool and three quarters of its 32 GiB of memory, so there is no room for
-a third: the host Deployment rolls at `maxSurge: 0` and `maxUnavailable: 1`,
-taking a pod down before it starts its replacement and leaving the other pod up
-while it does.
+pages are the PMEM arena, 1.25 GiB with room over; the 12 GiB holds the RAM
+arena's 3.75 GiB beside the Go heap, the page cache and one Firecracker process
+per VM. The two pods together request the node's whole 4 GiB pool and three
+quarters of its 32 GiB of memory, so there is no room for a third: the host
+Deployment rolls at `maxSurge: 0` and `maxUnavailable: 1`, stopping one pod
+before starting its replacement.
 
 A host's publications also hold their fills in memory: a queue of 64 MiB
 (`CacheConfig.FillQueueBytes`) and the parts waiting behind it. The host sends
@@ -574,30 +521,23 @@ the bench's publisher of an 8 GiB guest peaked at 1.8 GiB with them. A 1 GiB
 queue took it to 4.3 GiB and published no faster
 ([the measurement](../docs/measurements/gce-fill-defaults-2026-10-06.md)).
 
-That other pod is what the preStop drain needs: a destination to migrate its VMs
-to. Deleting both pods at once — a `Recreate` strategy, or an eviction that took
-them together — leaves the drain nowhere to put anything and makes every rollout
-a host loss, each VM rewound to its last checkpoint and reopened by a recovery,
-which is exactly what the drain exists to avoid. The PodDisruptionBudget,
-`maxUnavailable: 1`, is what says the same thing to a node drain or a cluster
-upgrade. `scripts/lib/demo-fixes.sh` exercises the rollout end to end: it writes
-a witness into a guest after its last checkpoint, restarts the hosts, and
+The preStop drain needs the other pod as a destination. Deleting both pods at
+once (a `Recreate` strategy, or an eviction of both) makes every rollout a host
+loss: each VM rewound to its last checkpoint and reopened by a recovery. The
+PodDisruptionBudget, `maxUnavailable: 1`, says the same to a node drain or a
+cluster upgrade. `scripts/lib/demo-fixes.sh` tests the rollout: it writes a
+witness into a guest after its last checkpoint, restarts the hosts, and
 requires the guest to still hold it.
 
-The hosts are a Deployment, and their pod names are the Deployment's to choose,
-because nothing durable is named after one. A guest image is imported into a
-template — an ordinary VM whose checkpoint holds the image, so that creating a
-VM is a fork of it — under `template-<sha256 of the image file>`. That is one
-name for one image across the whole deployment: the first pod to want it imports
-it, every other pod and every later pod finds it published and opens nothing,
-and an image that changed under its name is a template of its own rather than
-the same one holding other bytes. A pod deletes no template — another pod may be
-forking from it — so the templates of images nothing creates from any more are a
-collector's, like every other pinned checkpoint.
+The hosts are a Deployment because nothing durable is named after a pod. A
+guest image is imported into a template, an ordinary VM whose checkpoint holds
+the image, under `template-<sha256 of the image file>`. The first pod to want
+it imports it; every other pod finds it published. A changed image is a new
+template. No pod deletes a template, since another may be forking from it, so
+templates no longer used are left for a collector like other pinned
+checkpoints.
 
-A template's record with no pin is an import that has not finished. A pod that
-finds one waits for it, because opening it would take the epoch out from under
-the pod doing the importing; past that wait it takes the record over and imports
-again under it, which is how a pod that died mid-import leaves nothing wedged.
-`SPROUTFS_POD_NAME` is still how a host reports itself to the orchestrator and
-how an operator addresses it, and it is no longer in anything the bucket holds.
+A template's record with no pin is an unfinished import. A pod that finds one
+waits, because opening it would take the epoch from the importing pod; after
+the wait it takes the record over and imports again, so a pod that died
+mid-import leaves nothing stuck.

@@ -6,17 +6,15 @@ Sproutfs combines whole-VM checkpoints in object storage with a shared memory
 pager and a Firecracker integration.
 
 The project is under active development. It provides the host and orchestrator
-commands that the demo deployment runs. It also provides the Rust library
-through which the VMM maps its guest memory. The runtime packages at the
-module root (`host`, `volume`, `vmmemory`, `vmmigrate`, `vmmachine`, `api/host`
-and what they build on) can be imported by a program that embeds a host.
-Helpers and test harnesses stay under `internal`. No production deployment is
-recorded yet.
+commands that the demo deployment runs, and the Rust library through which the
+VMM maps its guest memory. A program that embeds a host can import the runtime
+packages at the module root (`host`, `volume`, `vmmemory`, `vmmigrate`,
+`vmmachine`, `api/host` and what they build on). Helpers and test harnesses are
+under `internal`. No production deployment is recorded yet.
 
-There is no garbage collector. This is a deliberate decision, and the absence
-is not a gap to close before the next release: the collector is deferred
-indefinitely. Until one exists, the object store grows without bound. It keeps
-these objects permanently:
+There is no garbage collector, and the collector is deferred indefinitely.
+Until one exists, the object store grows without bound. It keeps these objects
+permanently:
 
 - every checkpoint at which a VM was ever forked;
 - the checkpoints that checkpoint's index names;
@@ -46,15 +44,8 @@ the [loss model](docs/architecture.md#loss-model) before integrating.
 ## See it run
 
 One disposable GCE VM runs a single-node cluster with two host pods. Five flows
-run against it non-interactively:
-
-- boot;
-- fork;
-- live migration;
-- recovery after a host is killed;
-- running a command inside a guest across a fork and a move.
-
-Run them with:
+run against it non-interactively: boot, fork, live migration, recovery after a
+host is killed, and a command run inside a guest across a fork and a move.
 
 ```sh
 scripts/demo-gce.sh create
@@ -62,8 +53,7 @@ scripts/demo-gce.sh run
 scripts/demo-gce.sh delete
 ```
 
-See [the demo guide](docs/demo.md) for what each command does and what the
-timings look like.
+See [the demo guide](docs/demo.md) for each command and its timings.
 
 ## Build and test
 
@@ -75,15 +65,14 @@ go test ./...
 go test -race ./...
 ```
 
-The core Go tests run with simulated disks, networks and object storage; they
-do not require a cloud account. Linux VM integration tests have additional
-requirements, including KVM and userfaultfd. Follow the
+The core Go tests use simulated disks, networks and object storage and need no
+cloud account. The Linux VM integration tests need KVM and userfaultfd, among
+other things. Follow the
 [managed-memory qualification guide](docs/vm-memory.md#qualification) for those
 tests and the Firecracker build.
 
 If you change protocol definitions, install Buf and run `just generate`
-(or `buf lint` followed by `buf generate`). Generated files should not be
-edited directly.
+(or `buf lint` followed by `buf generate`). Do not edit generated files.
 
 ## Documentation
 

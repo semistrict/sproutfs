@@ -9,13 +9,12 @@ still in the cluster's disk cache,
 **then** that page comes from the hosts' disks, this host's and its peers'
 together, with no object-store read.
 
-This replaced "local disk first, then another host's disk" on 2026-10-02. A
-page read whole from the local disk saves about half a millisecond over one
-read from the cluster, and holding it whole on every host that reads it costs
-the cluster most of its capacity.
+This replaced "local disk first, then another host's disk" on 2026-10-02: a
+whole local copy saves about half a millisecond a read, and holding one on
+every host that reads a page costs the cluster most of its capacity.
 
-**Status, 2026-10-03.** Holds for the windows inside the share the cluster cache is on for
-(`SPROUTFS_CACHE_CLUSTER_PERCENT`, which the manifest still sets to 0).
+**Status, 2026-10-03.** Holds for the windows inside the share the cluster
+cache is on for (`SPROUTFS_CACHE_CLUSTER_PERCENT`, which the manifest still sets to 0).
 `TestAVMOpensFromTheClusterAfterAnyOneHostIsLostDrainedOrRestarted` opens a
 suspended VM on another host of six under 4+2, or of two under 1+1, which
 reads no part of the store but the VMM state, and

@@ -8,8 +8,8 @@ summary: A host with a large, fast local SSD keeps as much of what it reads as t
 **then** the host keeps those pages on the SSD, up to what the disk limiter
 allows, so that later reads come from the SSD and not from the object store.
 
-**Status, 2026-10-03.** Holds inside the share the cluster cache is on for, within the disk limiter's
-share. Reads of the store and publications fill the cluster
+**Status, 2026-10-03.** Holds inside the share the cluster cache is on for,
+within the disk limiter's share. Reads of the store and publications fill the cluster
 (`TestAStoreReadFillsExactlyTheRankedCaches`,
 `TestAPublicationFillsNothingBeforeItsPartIsDurable`), and later reads come
 from the disks (`TestAPageInTheClusterIsReadWithNoStoreRead`). Outside the
@@ -18,5 +18,4 @@ share a host keeps only what pulls copy.
 **A pull, 2026-10-04.** Inside the share a pull fills the cluster with the
 pages it lacks and copies nothing whole
 (`TestAPullOfACheckpointTheClusterPartlyHoldsReadsOnlyWhatItLacks`). It stops
-when the disk limiter shrinks the cache, so it never fills a disk that is
-giving space back (`TestPressureCancelsAPullsReads`).
+when the disk limiter shrinks the cache (`TestPressureCancelsAPullsReads`).
