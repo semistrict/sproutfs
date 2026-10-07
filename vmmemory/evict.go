@@ -145,10 +145,22 @@ func (h *Host) reclaimStep(ctx context.Context, req *evictionRequest, _ bool, _ 
 		return zirconvm.ReclaimAttempt{}, false, err
 	}
 	if !req.preferEviction {
+		// h.mu is given up for the idle drop, which takes it itself. Nothing
+		// read under the hold before is used after it: the rest of the step
+		// looks at the prefetches, the free slots and the queues afresh. A
+		// host that went terminal meanwhile still takes this one victim, as a
+		// step begun just before would, and the allocation's next look
+		// reports it.
 		h.mu.Unlock()
 		if h.takeIdle() {
 			return zirconvm.ReclaimAttempt{Success: zirconvm.ReclaimSuccess{Type: zirconvm.ReclaimEvict, NumPages: 1}},
 				true, nil
+		}
+		// In a controlled run another task may go on here, between the idle
+		// drop that found nothing and the victim: a prefetch that lands idle
+		// pages, or a fault that maps the page this step would take.
+		if err := sim.Admit(ctx, "vmmemory/reclaim-step"); err != nil {
+			return zirconvm.ReclaimAttempt{}, false, err
 		}
 		h.mu.Lock()
 		// The slots of a prefetch still reading come next: nothing waits on
@@ -387,8 +399,21 @@ func (h *Host) evictPage(ctx context.Context, page *zirconvm.VmPage) error {
 		h.stats.Spills += uint64(len(spills))
 		h.mu.Unlock()
 	}
+	// In a controlled run another task may go on here, with the page's
+	// mappings gone and its bytes written away but the page still in its
+	// object: a fault on it, which finds it held and waits, or a seal of a
+	// region that maps it, which joins the checkpoint's copy to it.
+	if err := sim.Admit(ctx, "vmmemory/evict-remove"); err != nil {
+		return err
+	}
 	// Out of its object, so no lookup finds it; then nothing names it, and its
-	// slot goes back.
+	// slot goes back. The aliases are taken off under a hold of h.mu of their
+	// own, whatever they are by then. The page's lock, held throughout, keeps
+	// out every path that names a page but a seal's walk, which names it to
+	// the checkpoint's copy of a binding that maps it, and hands that copy the
+	// binding's reservation, which the bytes went to: so the copy dropped here
+	// with the rest finds its bytes there. Once they are off, nothing names
+	// the page, and releaseFrame's look finds none.
 	h.removeFromObject(page)
 	h.mu.Lock()
 	h.stats.Evictions++
@@ -403,6 +428,13 @@ func (h *Host) evictPage(ctx context.Context, page *zirconvm.VmPage) error {
 
 // removeFromObject takes a locked page out of whichever object holds it, and
 // its name out of the temporary root that lends it.
+//
+// Each object's lock and h.mu are held one after another, not together. The
+// page's lock, which the caller holds, keeps it from being lent anew or moved
+// between them. The name it is lent under is read and cleared under h.mu, as
+// the end of the fork point's seal reads the names it lent, and either may
+// then remove it: RemovePageLocked looks again under the root's lock, so
+// whichever comes second removes nothing.
 func (h *Host) removeFromObject(page *zirconvm.VmPage) {
 	if link, ok := h.node.PageQueues().Backlink(page); ok {
 		lock := link.Cow.Lock()

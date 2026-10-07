@@ -196,6 +196,16 @@ func (r *MemoryRegion) loadOnce(ctx context.Context, index uint64, spill *reserv
 		// once it has landed or failed. The plan holds nothing yet.
 		return false, r.awaitRead(ctx, waiter, index)
 	}
+	// No read of the page was under way when inFlight looked, and the
+	// lookup sends the fault's own under a later hold. A prefetch another
+	// region sends in between is not waited for: the lookup asks this
+	// region's own source for a page its root does not hold yet, so the
+	// fault reads the page beside that prefetch, and whichever supply lands
+	// second gives its copy back (ProbePrefetchDuplicate). In a controlled
+	// run another task may go on here, a fault of another fork say.
+	if err := sim.Admit(ctx, "vmmemory/fault-lookup"); err != nil {
+		return false, err
+	}
 	if plan.unpublished(index) && spill.none() {
 		// The extents say another host still holds this page, so the load
 		// takes it as the region's dirty state, under a reservation the
@@ -265,6 +275,7 @@ func (r *MemoryRegion) refault(ctx context.Context, b *binding) (bool, error) {
 	if err := h.readSpill(ctx, spill, data); err != nil {
 		return false, err
 	}
+	// Counted under a hold of its own, which reads nothing.
 	h.mu.Lock()
 	h.stats.SpillRefaults++
 	h.mu.Unlock()
@@ -285,10 +296,12 @@ func (r *MemoryRegion) refault(ctx context.Context, b *binding) (bool, error) {
 		protected = b.protected
 	}
 	r.bindingsMu.Unlock()
-	// The pages are read under a hold of h.mu of their own. Nothing gives b
-	// or held a page while it is released: the stripe keeps out every fault,
-	// store, give-back and prefetch of the page, and the region held shared
-	// every seal and settle, and an eviction only takes a page away.
+	// b and held are seen to hold no page here, and are given the new frame
+	// under a later hold of h.mu, once it is filled and supplied. Nothing
+	// gives either a page in between: the stripe keeps out every fault,
+	// store, give-back and prefetch landing of the page, the region held
+	// shared every seal, settle and capture, and an eviction only takes a
+	// page away.
 	h.mu.Lock()
 	same = same && b.page == nil && (held == nil || held.page == nil)
 	h.mu.Unlock()
@@ -501,6 +514,11 @@ func (p *plan) takeFaulting(ctx context.Context, index uint64) (again bool, err 
 		return true, nil
 	}
 	p.request = request
+	// A slot is taken with the region given up and the request outstanding
+	// on the region's own source. Only the faults of this window ask that
+	// source, and this one holds the window's stripe, so no other request
+	// meets it; and a seal, retire or capture taken meanwhile changes only
+	// pages the region holds, which this one is not.
 	if p.own(index) {
 		at, err := r.reclaimOwn(ctx, index)
 		if err != nil {
@@ -742,6 +760,13 @@ func (r *MemoryRegion) awaitRead(ctx context.Context, waiter *waiter, page uint6
 
 // awaitLanded waits until no prefetch of this region whose run holds page is
 // still landing: each has given every page it landed up, or dropped it.
+//
+// It looks under h.mu, and the fault acts on what it saw only after giving
+// h.mu up, when it plans again from the top. No prefetch of this region whose
+// run holds page can begin in between: a prefetch is split off by a
+// fault of its own window, and this fault holds that window's stripe
+// throughout. What a prefetch of another region does meanwhile, the new plan
+// meets as it is.
 func (r *MemoryRegion) awaitLanded(ctx context.Context, page uint64) error {
 	h := r.host
 	for {
