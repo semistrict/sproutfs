@@ -6,10 +6,13 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-07 00:26'
+updated_date: '2026-10-07 01:16'
 labels:
   - durability
   - disk-cache
 dependencies: []
+references:
+  - plans/fsync-journal-2026-10-06.md
 priority: high
 ordinal: 124000
 ---
@@ -27,3 +30,9 @@ Today a guest's flush (fsync on its virtio-pmem disk) returns at once unless the
 - [ ] #3 A TLA+ spec checks that no fsynced write is lost and no fenced host's journal is replayed over a newer checkpoint, with TLC runs of a couple of minutes
 - [ ] #4 A GCE measurement gives fsync p50/p99 on Hyperdisk Balanced and the throughput cost
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Plan: plans/fsync-journal-2026-10-06.md. Its ten steps are subtasks TASK-104.1 to TASK-104.10. Steps 1, 2 and 3 can start at once; step 4 waits for step 1. Owner decisions 2026-10-06, recorded in the plan under Decided: one journal disk per host, created and deleted by the orchestrator; changed 4 KiB blocks found by SHA-256 digests, kept across a seal only if MCCapture passes; durable flush is an optional mode, off by default, and on it a flush that cannot be journaled fails with EIO; trust the cloud single attach; a migration keeps the source journal named until the destination first checkpoint after the post-copy.
+<!-- SECTION:NOTES:END -->
