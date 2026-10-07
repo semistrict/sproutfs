@@ -82,13 +82,15 @@ alpine_mirror=https://dl-cdn.alpinelinux.org/alpine/$alpine_branch
 # for the lockfiles: every repository below ships a lockfileVersion 9.0 file,
 # which pnpm 11 reads without rewriting, so `--frozen-lockfile` holds.
 pnpm_version=11.26.0
-# The repositories the workload guest holds, as "directory url". All three are
-# MIT-licensed TypeScript projects that build with pnpm and whose test suites
-# need no network.
+# The repositories the workload guest holds, as "directory url commit". All
+# three are MIT-licensed TypeScript projects that build with pnpm and whose test
+# suites need no network. Each is pinned to the commit the 2026-09-14 workload
+# run measured, so runs compare: at its HEAD of 2026-10-07 unstorage depends on
+# a package with a build script, which pnpm 11 refuses under --frozen-lockfile.
 workload_repos=(
-    "h3 https://github.com/h3js/h3"
-    "unstorage https://github.com/unjs/unstorage"
-    "ofetch https://github.com/unjs/ofetch"
+    "h3 https://github.com/h3js/h3 aa50e96"
+    "unstorage https://github.com/unjs/unstorage 7f773be"
+    "ofetch https://github.com/unjs/ofetch 1dbc37f"
 )
 case $template in
     alpine | valkey) image_size=2G ;;
@@ -252,13 +254,14 @@ git config --global advice.detachedHead false
 
 mkdir -p /root/repos
 : > /root/repos/MANIFEST
-while read -r name url; do
+while read -r name url commit; do
     [ -n "$name" ] || continue
-    echo "cloning $name from $url" >&2
-    # Enough history for `git log` to have something to print, and not the
-    # whole of it: the clone is a workload, not an archive.
-    git clone --quiet --depth 50 "$url" "/root/repos/$name"
+    echo "cloning $name from $url at $commit" >&2
+    # The whole history, because a pinned commit may be further back than a
+    # shallow clone reaches; these repositories are small.
+    git clone --quiet "$url" "/root/repos/$name"
     cd "/root/repos/$name"
+    git checkout --quiet --detach "$commit"
     echo "installing the dependencies of $name" >&2
     pnpm install --frozen-lockfile --reporter=silent
     printf '%s\t%s\t%s\t%s\n' "$name" "$url" "$(git rev-parse --short HEAD)" \
