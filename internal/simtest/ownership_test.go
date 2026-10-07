@@ -83,7 +83,7 @@ func TestOwnershipCatchesWhatTheSpecForbids(t *testing.T) {
 	older := read(t, store, recordKey)
 	second := control.Sequence(control.MinimumEpoch, 2)
 	put(t, store, indexKey(t, prefix, "vm", second), []byte("second"))
-	if _, err := handle.Select(ctx, second); err != nil {
+	if _, err := handle.Select(ctx, second, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := handle.Pin(ctx, first); err != nil {

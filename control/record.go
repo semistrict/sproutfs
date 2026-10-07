@@ -48,6 +48,29 @@ type Record struct {
 	// nothing anyone reads, and it may be released (Client.Release). One that
 	// was forked is pinned too, and the pin is what nothing releases.
 	Kept []Kept
+	// Journals lists the journals that may hold this VM's flushed writes newer
+	// than the selected checkpoint, in ascending order of epoch. A recovery
+	// replays them in that order before the VM runs. A selection writes the
+	// list, an open keeps it, and a migration's open adds the destination's
+	// journal after the source's. A selection that holds every store, as a
+	// stop's and a close's do, writes an empty list.
+	Journals []Journal
+}
+
+// Journal names one journal that may hold a VM's flushed writes newer than its
+// selected checkpoint.
+type Journal struct {
+	// Disk is the identity of the journal's disk, as its header and the
+	// membership name it, and Generation the one drawn when the disk was
+	// formatted. A disk formatted again holds none of the entries the record
+	// names.
+	Disk       [16]byte
+	Generation uint64
+	// Epoch is the VM's writer epoch whose entries the journal holds.
+	Epoch uint64
+	// Covered is the last position whose entries the selected checkpoint
+	// holds. A replay applies only the entries after it.
+	Covered uint64
 }
 
 // Kept is one checkpoint a checkpoint request kept.
@@ -66,6 +89,7 @@ func (r Record) clone() Record {
 	r.Nonce = bytes.Clone(r.Nonce)
 	r.Pinned = slices.Clone(r.Pinned)
 	r.Kept = slices.Clone(r.Kept)
+	r.Journals = slices.Clone(r.Journals)
 	return r
 }
 
@@ -144,7 +168,8 @@ func (r Record) equal(other Record) bool {
 		slices.Equal(r.Pinned, other.Pinned) &&
 		slices.EqualFunc(r.Kept, other.Kept, func(a, b Kept) bool {
 			return a.Sequence == b.Sequence && a.Time.Equal(b.Time) && a.State == b.State
-		})
+		}) &&
+		slices.Equal(r.Journals, other.Journals)
 }
 
 // mine reports whether a record read back is the one this epoch and nonce own.
@@ -164,6 +189,15 @@ func (r Record) marshal() ([]byte, error) {
 			State:    proto.Bool(entry.State),
 		}.Build())
 	}
+	journals := make([]*controlv1.Journal, 0, len(r.Journals))
+	for _, journal := range r.Journals {
+		journals = append(journals, controlv1.Journal_builder{
+			Disk:       bytes.Clone(journal.Disk[:]),
+			Generation: proto.Uint64(journal.Generation),
+			Epoch:      proto.Uint64(journal.Epoch),
+			Covered:    proto.Uint64(journal.Covered),
+		}.Build())
+	}
 	data, err := proto.MarshalOptions{Deterministic: true}.Marshal(controlv1.Record_builder{
 		FormatVersion: proto.Uint32(formatVersion),
 		VmId:          proto.String(r.VM),
@@ -173,6 +207,7 @@ func (r Record) marshal() ([]byte, error) {
 		Pinned:        slices.Clone(r.Pinned),
 		Created:       proto.Bool(r.Created),
 		Kept:          kept,
+		Journals:      journals,
 	}.Build())
 	if err != nil {
 		return nil, err
@@ -185,12 +220,29 @@ func (r Record) marshal() ([]byte, error) {
 
 // valid reports whether a record is one this deployment could have written: an
 // identity, a nonce of the writer's size, an epoch in range, a selection of
-// something, and pins and kept checkpoints that are each a bounded, sorted set
-// of sequences.
+// something, pins and kept checkpoints that are each a bounded, sorted set of
+// sequences, and journals the writers of this record could have named.
 func (r Record) valid() bool {
 	return ValidID(r.VM) && len(r.Nonce) == nonceSize && r.Epoch >= MinimumEpoch && r.Epoch <= MaximumEpoch &&
 		r.Selected != 0 && len(r.Pinned) <= MaximumPins && len(r.Kept) <= MaximumKept &&
-		ascending(r.Pinned) && ascending(r.keptSequences())
+		ascending(r.Pinned) && ascending(r.keptSequences()) && r.validJournals()
+}
+
+// validJournals reports whether the record names at most MaximumJournals
+// journals, each on a disk with an identity, in strictly ascending order of
+// epoch, and none of an epoch past the record's. One epoch is held by one host,
+// which writes into its one journal, so no two journals share an epoch.
+func (r Record) validJournals() bool {
+	if len(r.Journals) > MaximumJournals {
+		return false
+	}
+	for index, journal := range r.Journals {
+		if journal.Disk == [16]byte{} || journal.Epoch < MinimumEpoch || journal.Epoch > r.Epoch ||
+			(index > 0 && r.Journals[index-1].Epoch >= journal.Epoch) {
+			return false
+		}
+	}
+	return true
 }
 
 // keptSequences reports the sequences of the kept checkpoints, in the order the
@@ -216,8 +268,9 @@ func ascending(sequences []uint64) bool {
 
 // unmarshalRecord parses a control record and rejects anything this deployment
 // cannot have written: another format, an identity that is not the one it was
-// read under, an epoch below the first, a selection of nothing, or pins or kept
-// checkpoints that are not a sorted set of sequences.
+// read under, an epoch below the first, a selection of nothing, pins or kept
+// checkpoints that are not a sorted set of sequences, or journals no writer of
+// the record could have named.
 // ParseRecord reads one VM's control record from the bytes of its object, as
 // Client.Read does. It is for a reader that sees the object itself, such as a
 // simulation that watches every change its store applies.
@@ -253,6 +306,14 @@ func unmarshalRecord(vm string, data []byte) (Record, error) {
 		}
 		record.Kept = append(record.Kept, Kept{Sequence: kept.GetSequence(),
 			Time: time.Unix(0, kept.GetTime()).UTC(), State: kept.GetState()})
+	}
+	for _, journal := range message.GetJournals() {
+		if len(journal.ProtoReflect().GetUnknown()) != 0 || len(journal.GetDisk()) != len(Journal{}.Disk) ||
+			!journal.HasGeneration() || !journal.HasEpoch() || !journal.HasCovered() {
+			return Record{}, ErrCorrupt
+		}
+		record.Journals = append(record.Journals, Journal{Disk: [16]byte(journal.GetDisk()),
+			Generation: journal.GetGeneration(), Epoch: journal.GetEpoch(), Covered: journal.GetCovered()})
 	}
 	if record.VM != vm || !record.valid() {
 		return Record{}, ErrCorrupt

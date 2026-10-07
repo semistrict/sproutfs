@@ -42,7 +42,7 @@ func TestASelectionThatKeepsRecordsTheCheckpointKept(t *testing.T) {
 	second := control.Sequence(control.MinimumEpoch, 2)
 	third := control.Sequence(control.MinimumEpoch, 3)
 	keptAt := clock.Now().UTC()
-	record, err := handle.SelectKept(ctx, second, true)
+	record, err := handle.SelectKept(ctx, second, true, nil)
 	if err != nil {
 		t.Fatalf("selecting a kept checkpoint: %v", err)
 	}
@@ -51,10 +51,10 @@ func TestASelectionThatKeepsRecordsTheCheckpointKept(t *testing.T) {
 		t.Fatalf("the selection reported %+v, want %d selected and kept as %+v", record, second, want)
 	}
 	clock.Advance(time.Minute)
-	if again, err := handle.SelectKept(ctx, second, true); err != nil || !keptEqual(again.Kept, want) {
+	if again, err := handle.SelectKept(ctx, second, true, nil); err != nil || !keptEqual(again.Kept, want) {
 		t.Fatalf("keeping the selected checkpoint again = %+v, %v, want it kept as it was", again.Kept, err)
 	}
-	record, err = handle.Select(ctx, third)
+	record, err = handle.Select(ctx, third, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,10 +83,10 @@ func TestAForkedKeptCheckpointCannotBeReleased(t *testing.T) {
 	}
 	second := control.Sequence(control.MinimumEpoch, 2)
 	third := control.Sequence(control.MinimumEpoch, 3)
-	if _, err := handle.SelectKept(ctx, second, false); err != nil {
+	if _, err := handle.SelectKept(ctx, second, false, nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := handle.Select(ctx, third); err != nil {
+	if _, err := handle.Select(ctx, third, nil); err != nil {
 		t.Fatal(err)
 	}
 	handle.Close()
@@ -123,10 +123,10 @@ func TestAReleasedCheckpointCanNoLongerBeForked(t *testing.T) {
 	}
 	second := control.Sequence(control.MinimumEpoch, 2)
 	third := control.Sequence(control.MinimumEpoch, 3)
-	if _, err := handle.SelectKept(ctx, second, true); err != nil {
+	if _, err := handle.SelectKept(ctx, second, true, nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := handle.Select(ctx, third); err != nil {
+	if _, err := handle.Select(ctx, third, nil); err != nil {
 		t.Fatal(err)
 	}
 	released, err := client.Release(ctx, "vm", second)
@@ -143,7 +143,7 @@ func TestAReleasedCheckpointCanNoLongerBeForked(t *testing.T) {
 	// The writer's next write is refused against the record it tracked, and it
 	// adopts the release rather than keeping the checkpoint again.
 	fourth := control.Sequence(control.MinimumEpoch, 4)
-	record, err := handle.Select(ctx, fourth)
+	record, err := handle.Select(ctx, fourth, nil)
 	if err != nil {
 		t.Fatalf("selecting over a record a release moved: %v", err)
 	}
@@ -165,10 +165,10 @@ func TestAPinAndAReleaseOfOneCheckpointAreOrdered(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := handle.SelectKept(t.Context(), second, true); err != nil {
+		if _, err := handle.SelectKept(t.Context(), second, true, nil); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := handle.Select(t.Context(), third); err != nil {
+		if _, err := handle.Select(t.Context(), third, nil); err != nil {
 			t.Fatal(err)
 		}
 		handle.Close()
@@ -215,7 +215,7 @@ func TestALostReleaseReplyIsReconciled(t *testing.T) {
 		t.Fatal(err)
 	}
 	second := control.Sequence(control.MinimumEpoch, 2)
-	if _, err := handle.SelectKept(ctx, second, false); err != nil {
+	if _, err := handle.SelectKept(ctx, second, false, nil); err != nil {
 		t.Fatal(err)
 	}
 	handle.Close()

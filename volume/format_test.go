@@ -34,7 +34,7 @@ var update = flag.Bool("update", false, "rewrite the format fixtures under testd
 // it, and supersededDeployments are the dumps committed before this one, each
 // with the version it was written under — the bytes an older build actually
 // wrote, which is the only thing that makes them worth keeping.
-const fixtureDeployment = "testdata/deployment-record-5-index-9-part-5"
+const fixtureDeployment = "testdata/deployment-record-6-index-9-part-5"
 
 var supersededDeployments = []struct {
 	dir string
@@ -45,24 +45,26 @@ var supersededDeployments = []struct {
 	want     string
 }{
 	// Opening a VM reads its control record before anything the record names,
-	// so every dump written before record format 5 is refused by its record.
+	// so every dump written before record format 6 is refused by its record.
 	{dir: "testdata/deployment-record-3-index-5-part-1", sentinel: control.ErrCorrupt,
-		want: "record format version 3, want 5"},
+		want: "record format version 3, want 6"},
 	{dir: "testdata/deployment-record-4-index-5-part-1", sentinel: control.ErrCorrupt,
-		want: "record format version 4, want 5"},
+		want: "record format version 4, want 6"},
 	{dir: "testdata/deployment-record-4-index-6-part-2", sentinel: control.ErrCorrupt,
-		want: "record format version 4, want 5"},
+		want: "record format version 4, want 6"},
 	{dir: "testdata/deployment-record-4-part-3", sentinel: control.ErrCorrupt,
-		want: "record format version 4, want 5"},
+		want: "record format version 4, want 6"},
 	{dir: "testdata/deployment-record-4-index-7-part-4", sentinel: control.ErrCorrupt,
-		want: "record format version 4, want 5"},
+		want: "record format version 4, want 6"},
 	// Its records keep no checkpoint.
 	{dir: "testdata/deployment-record-4-index-8-part-4", sentinel: control.ErrCorrupt,
-		want: "record format version 4, want 5"},
-	// The set before this one: its envelopes carry a SHA-256. Its record is
-	// current, so the index object it names is what refuses it.
-	{dir: "testdata/deployment-record-5-index-8-part-4", sentinel: checkpoint.ErrCorrupt,
-		want: "checkpoint index format version 8, want 9"},
+		want: "record format version 4, want 6"},
+	// Its envelopes carry a SHA-256.
+	{dir: "testdata/deployment-record-5-index-8-part-4", sentinel: control.ErrCorrupt,
+		want: "record format version 5, want 6"},
+	// The set before this one: its records name no journals.
+	{dir: "testdata/deployment-record-5-index-9-part-5", sentinel: control.ErrCorrupt,
+		want: "record format version 5, want 6"},
 }
 
 // objectsDir and manifestFile are the two halves of a fixture: the store's

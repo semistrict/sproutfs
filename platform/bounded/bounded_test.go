@@ -307,7 +307,7 @@ func TestAControlRecordWrittenAcrossHungRepliesIsReconciled(t *testing.T) {
 			t.Fatalf("creating a record across a hung reply: %v", err)
 		}
 		f.sim.HangNextAfterApply(sim.ObjectPut, 1)
-		record, err := handle.Select(f.ctx, control.Sequence(7, 2))
+		record, err := handle.Select(f.ctx, control.Sequence(7, 2), nil)
 		if err != nil {
 			t.Fatalf("selecting across a hung reply: %v", err)
 		}

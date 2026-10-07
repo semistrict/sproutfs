@@ -10,6 +10,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	controlv1 "github.com/semistrict/sproutfs/control/internal/gen/sproutfs/control/v1"
+	"google.golang.org/protobuf/proto"
 )
 
 // update rewrites the committed fixtures from what this build writes. A format
@@ -21,8 +24,9 @@ var update = flag.Bool("update", false, "rewrite the record fixtures under testd
 
 // fixtureRecords are the records the committed fixtures hold: one VM forked at
 // two of its own checkpoints, in two different writer epochs, that keeps one of
-// them and one it was not forked at, and one forked at the checkpoint it still
-// selects.
+// them and one it was not forked at, and names the journals of a migration's
+// source and destination; and one forked at the checkpoint it still selects,
+// which names no journal.
 var fixtureRecords = []Record{
 	{
 		VM:    "alpha",
@@ -35,6 +39,14 @@ var fixtureRecords = []Record{
 		Kept: []Kept{
 			{Sequence: Sequence(1, 4), Time: time.Unix(1790000000, 123456789).UTC(), State: true},
 			{Sequence: Sequence(3, 2), Time: time.Unix(1790000600, 0).UTC()},
+		},
+		Journals: []Journal{
+			{Disk: [16]byte{0x5a, 0x11, 0x0e, 0x42, 0x9b, 0xc7, 0x03, 0x6d,
+				0xe8, 0x21, 0x77, 0x90, 0x4f, 0xa2, 0x18, 0xd6},
+				Generation: 0x8c3e51a07f29b416, Epoch: 2, Covered: 1 << 33},
+			{Disk: [16]byte{0x07, 0xf3, 0x6a, 0x2e, 0xd1, 0x58, 0xb4, 0x99,
+				0x3c, 0x40, 0xe5, 0x0b, 0x86, 0x1f, 0x72, 0xca},
+				Generation: 0x1d4b9e6c25f08a73, Epoch: 3, Covered: 4096},
 		},
 	},
 	{
@@ -53,12 +65,13 @@ var fixtureRecords = []Record{
 // build of that version actually wrote: a bump adds a directory and rewrites
 // none of them, because bytes this build produced and restamped would prove
 // nothing about what an older build wrote.
-const currentRecords = "testdata/record-5"
+const currentRecords = "testdata/record-6"
 
 var supersededRecords = []struct {
 	dir     string
 	version uint32
 }{
+	{dir: "testdata/record-5", version: 5},
 	{dir: "testdata/record-4", version: 4},
 	{dir: "testdata/record-3", version: 3},
 	{dir: "testdata/record-2", version: 2},
@@ -161,6 +174,58 @@ func TestTheRecordFixtureDirectoriesHoldOnlyTheirRecords(t *testing.T) {
 		}
 		if !slices.Equal(got, want) {
 			t.Fatalf("%s holds %v, want %v", dir, got, want)
+		}
+	}
+}
+
+// A record of this version whose journals no writer could have named is
+// corrupt: a disk identity of another length, a field missing, three journals,
+// epochs out of order, or an epoch past the record's.
+func TestARecordWhoseJournalsNoWriterCouldNameIsRefused(t *testing.T) {
+	record := fixtureRecords[0]
+	disk := func(journal Journal) []byte { return journal.Disk[:] }
+	first, second := record.Journals[0], record.Journals[1]
+	whole := func(journal Journal) *controlv1.Journal {
+		return controlv1.Journal_builder{Disk: disk(journal), Generation: proto.Uint64(journal.Generation),
+			Epoch: proto.Uint64(journal.Epoch), Covered: proto.Uint64(journal.Covered)}.Build()
+	}
+	encode := func(journals []*controlv1.Journal) []byte {
+		data, err := proto.Marshal(controlv1.Record_builder{
+			FormatVersion: proto.Uint32(formatVersion),
+			VmId:          proto.String(record.VM),
+			Epoch:         proto.Uint64(record.Epoch),
+			WriterNonce:   record.Nonce,
+			Selected:      proto.Uint64(record.Selected),
+			Created:       proto.Bool(record.Created),
+			Journals:      journals,
+		}.Build())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return data
+	}
+	// The same record with the journals a writer could name parses.
+	parsed, err := unmarshalRecord(record.VM, encode([]*controlv1.Journal{whole(first), whole(second)}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(parsed.Journals, record.Journals) {
+		t.Fatalf("the record parsed naming %v, want %v", parsed.Journals, record.Journals)
+	}
+	for _, test := range []struct {
+		name     string
+		journals []*controlv1.Journal
+	}{
+		{"a short disk identity", []*controlv1.Journal{controlv1.Journal_builder{Disk: disk(first)[:15],
+			Generation: proto.Uint64(1), Epoch: proto.Uint64(first.Epoch), Covered: proto.Uint64(0)}.Build()}},
+		{"no covered position", []*controlv1.Journal{controlv1.Journal_builder{Disk: disk(first),
+			Generation: proto.Uint64(1), Epoch: proto.Uint64(first.Epoch)}.Build()}},
+		{"three journals", []*controlv1.Journal{whole(Journal{Disk: first.Disk, Epoch: 1}), whole(first), whole(second)}},
+		{"epochs out of order", []*controlv1.Journal{whole(second), whole(first)}},
+		{"an epoch past the record's", []*controlv1.Journal{whole(Journal{Disk: first.Disk, Epoch: record.Epoch + 1})}},
+	} {
+		if _, err := unmarshalRecord(record.VM, encode(test.journals)); !errors.Is(err, ErrCorrupt) {
+			t.Fatalf("a record naming %s parsed with %v, want ErrCorrupt", test.name, err)
 		}
 	}
 }

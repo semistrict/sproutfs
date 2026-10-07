@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -176,9 +177,27 @@ func (c *Client) Create(ctx context.Context, vm string, selected uint64, publish
 //
 // Open reads and writes the record and nothing else. It does not check that the
 // selected checkpoint's index exists — Record reports whether it was ever
-// published, and reading the index is the caller's.
+// published, and reading the index is the caller's. It keeps the record's
+// journals: a recovery replays them before the VM runs.
 func (c *Client) Open(ctx context.Context, vm string) (*Handle, error) {
 	return c.OpenAfter(ctx, vm, 0)
+}
+
+// OpenMigration is Open for a migration's destination. The write that claims
+// the epoch also adds the destination's own journal to the record, after the
+// journals already there: the source's entries stay named until the
+// destination selects a checkpoint that holds every page the source held.
+//
+// journal names the destination's disk, its generation and the covered
+// position. Its Epoch must be zero, because the journal holds the entries of
+// the epoch this open claims, and the open stamps that epoch on it. A record
+// that already names MaximumJournals journals is refused with
+// ErrTooManyJournals, and its epoch is left alone.
+func (c *Client) OpenMigration(ctx context.Context, vm string, journal Journal) (*Handle, error) {
+	if journal.Disk == [16]byte{} || journal.Epoch != 0 {
+		return nil, ErrInvalidConfig
+	}
+	return c.open(ctx, vm, 0, &journal)
 }
 
 // OpenAfter is Open that claims only the epoch after the one its caller read,
@@ -188,6 +207,12 @@ func (c *Client) Open(ctx context.Context, vm string) (*Handle, error) {
 // at its own moment, moved the epoch, and the host that made it may be running
 // the VM. Zero claims whatever epoch comes next, as Open does.
 func (c *Client) OpenAfter(ctx context.Context, vm string, epoch uint64) (*Handle, error) {
+	return c.open(ctx, vm, epoch, nil)
+}
+
+// open claims the next epoch, only the one after epoch when that is not zero,
+// and adds joining to the record's journals when it is not nil.
+func (c *Client) open(ctx context.Context, vm string, epoch uint64, joining *Journal) (*Handle, error) {
 	if !ValidID(vm) {
 		return nil, ErrInvalidConfig
 	}
@@ -206,6 +231,14 @@ func (c *Client) OpenAfter(ctx context.Context, vm string, epoch uint64) (*Handl
 		}
 		next := current.clone()
 		next.Epoch, next.Nonce = current.Epoch+1, nonce
+		if joining != nil {
+			if len(current.Journals) >= MaximumJournals {
+				return nil, fmt.Errorf("%w: %s names %d", ErrTooManyJournals, vm, len(current.Journals))
+			}
+			added := *joining
+			added.Epoch = next.Epoch
+			next.Journals = append(next.Journals, added)
+		}
 		nextETag, err := c.put(ctx, next, platform.PutConditions{IfMatch: &etag})
 		if err == nil {
 			return newHandle(c, next, nextETag), nil
@@ -463,21 +496,30 @@ func (h *Handle) Close() {
 // selecting the one already selected is idempotent, which is what lets a
 // publication whose reply was lost be repeated. It reports the record the
 // selection produced, whose pins are what reclamation must spare.
-func (h *Handle) Select(ctx context.Context, sequence uint64) (Record, error) {
-	return h.selecting(ctx, sequence, nil)
+//
+// journals is the record's list of journals from this selection on, which
+// replaces the one there. It names the journals that may hold flushed writes
+// the checkpoint does not, each with the position the checkpoint covers. A
+// checkpoint that holds every store, as a stop's and a close's do, names
+// none. A list the record could not hold is refused with ErrInvalidConfig.
+func (h *Handle) Select(ctx context.Context, sequence uint64, journals []Journal) (Record, error) {
+	return h.selecting(ctx, sequence, nil, journals)
 }
 
 // SelectKept is Select that also keeps the checkpoint, in the same write:
 // reclamation spares it from then on, and it can be forked after the VM has
 // moved past it. state says whether it holds VMM state. A checkpoint that is
 // selected before it is kept could be reclaimed by the next selection's sweep
-// in between, which is why the two are one write.
-func (h *Handle) SelectKept(ctx context.Context, sequence uint64, state bool) (Record, error) {
-	return h.selecting(ctx, sequence, &Kept{Sequence: sequence, Time: h.client.clock.Now().UTC(), State: state})
+// in between, which is why the two are one write. It writes journals as Select
+// does.
+func (h *Handle) SelectKept(ctx context.Context, sequence uint64, state bool, journals []Journal) (Record, error) {
+	return h.selecting(ctx, sequence,
+		&Kept{Sequence: sequence, Time: h.client.clock.Now().UTC(), State: state}, journals)
 }
 
-// selecting selects a checkpoint, and keeps it when kept is not nil.
-func (h *Handle) selecting(ctx context.Context, sequence uint64, kept *Kept) (Record, error) {
+// selecting selects a checkpoint and writes the record's journals, and keeps
+// the checkpoint when kept is not nil.
+func (h *Handle) selecting(ctx context.Context, sequence uint64, kept *Kept, journals []Journal) (Record, error) {
 	return h.update(ctx, func(current Record) (Record, error) {
 		if !ValidSequence(h.epoch, sequence) && sequence != current.Selected {
 			return Record{}, ErrSequence
@@ -492,6 +534,10 @@ func (h *Handle) selecting(ctx context.Context, sequence uint64, kept *Kept) (Re
 			if next.Kept, err = current.withKept(*kept); err != nil {
 				return Record{}, err
 			}
+		}
+		next.Journals = slices.Clone(journals)
+		if !next.validJournals() {
+			return Record{}, ErrInvalidConfig
 		}
 		return next, nil
 	})

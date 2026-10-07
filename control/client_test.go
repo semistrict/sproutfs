@@ -148,7 +148,7 @@ func TestOpenFencesThePreviousWriter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := first.Select(ctx, control.Sequence(control.MinimumEpoch, 2)); err != nil {
+	if _, err := first.Select(ctx, control.Sequence(control.MinimumEpoch, 2), nil); err != nil {
 		t.Fatal(err)
 	}
 	second, err := client.Open(ctx, "vm")
@@ -161,7 +161,7 @@ func TestOpenFencesThePreviousWriter(t *testing.T) {
 	if got := second.Record().Selected; got != control.Sequence(control.MinimumEpoch, 2) {
 		t.Fatalf("the second open inherited selection %d", got)
 	}
-	if _, err := first.Select(ctx, control.Sequence(control.MinimumEpoch, 3)); !errors.Is(err, control.ErrFenced) {
+	if _, err := first.Select(ctx, control.Sequence(control.MinimumEpoch, 3), nil); !errors.Is(err, control.ErrFenced) {
 		t.Fatalf("the fenced handle selected a checkpoint: %v", err)
 	}
 	if _, err := first.Pin(ctx, control.Sequence(control.MinimumEpoch, 2)); !errors.Is(err, control.ErrFenced) {
@@ -177,7 +177,7 @@ func TestOpenFencesThePreviousWriter(t *testing.T) {
 	if third.Epoch() != control.MinimumEpoch+2 {
 		t.Fatalf("the third open holds epoch %d", third.Epoch())
 	}
-	if _, err := second.Select(ctx, control.Sequence(second.Epoch(), 1)); !errors.Is(err, control.ErrFenced) {
+	if _, err := second.Select(ctx, control.Sequence(second.Epoch(), 1), nil); !errors.Is(err, control.ErrFenced) {
 		t.Fatalf("the superseded handle selected a checkpoint: %v", err)
 	}
 }
@@ -203,7 +203,7 @@ func TestOpenAfterRefusesARecordThatMoved(t *testing.T) {
 	if _, err := client.OpenAfter(ctx, "vm", read); !errors.Is(err, control.ErrMoved) {
 		t.Fatalf("an open after epoch %d of a record at %d = %v, want ErrMoved", read, second.Epoch(), err)
 	}
-	if _, err := second.Select(ctx, control.Sequence(second.Epoch(), 1)); err != nil {
+	if _, err := second.Select(ctx, control.Sequence(second.Epoch(), 1), nil); err != nil {
 		t.Fatalf("the refused open fenced the handle it found: %v", err)
 	}
 }
@@ -218,21 +218,21 @@ func TestSelectRequiresAnAdvancingSequenceOfThisEpoch(t *testing.T) {
 		t.Fatal(err)
 	}
 	second := control.Sequence(control.MinimumEpoch, 2)
-	if _, err := handle.Select(ctx, second); err != nil {
+	if _, err := handle.Select(ctx, second, nil); err != nil {
 		t.Fatal(err)
 	}
-	record, err := handle.Select(ctx, second)
+	record, err := handle.Select(ctx, second, nil)
 	if err != nil || record.Selected != second {
 		t.Fatalf("selecting the current checkpoint again = %+v, %v", record, err)
 	}
-	if _, err := handle.Select(ctx, root()); !errors.Is(err, control.ErrSequence) {
+	if _, err := handle.Select(ctx, root(), nil); !errors.Is(err, control.ErrSequence) {
 		t.Fatalf("selecting backwards = %v, want ErrSequence", err)
 	}
-	if _, err := handle.Select(ctx, control.Sequence(control.MinimumEpoch+5, 1)); !errors.Is(err, control.ErrSequence) {
+	if _, err := handle.Select(ctx, control.Sequence(control.MinimumEpoch+5, 1), nil); !errors.Is(err, control.ErrSequence) {
 		t.Fatalf("selecting a sequence of another epoch = %v, want ErrSequence", err)
 	}
 	handle.Close()
-	if _, err := handle.Select(ctx, control.Sequence(control.MinimumEpoch, 3)); !errors.Is(err, control.ErrClosed) {
+	if _, err := handle.Select(ctx, control.Sequence(control.MinimumEpoch, 3), nil); !errors.Is(err, control.ErrClosed) {
 		t.Fatalf("selecting through a closed handle = %v, want ErrClosed", err)
 	}
 }
@@ -275,7 +275,7 @@ func TestPinsAreASortedSetNothingTakesFrom(t *testing.T) {
 	if !slices.Equal(reopened.Record().Pinned, want) {
 		t.Fatalf("pins after reopening = %v, want %v", reopened.Record().Pinned, want)
 	}
-	selected, err := reopened.Select(ctx, control.Sequence(reopened.Epoch(), 1))
+	selected, err := reopened.Select(ctx, control.Sequence(reopened.Epoch(), 1), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -303,7 +303,7 @@ func TestLostReplyIsReconciledByNonce(t *testing.T) {
 	}
 	second := control.Sequence(control.MinimumEpoch, 2)
 	store.FailNextAfterApply(sim.ObjectPut, 1)
-	record, err := handle.Select(ctx, second)
+	record, err := handle.Select(ctx, second, nil)
 	if err != nil {
 		t.Fatalf("a selection whose reply was lost reported %v, want the selection it made", err)
 	}
@@ -313,7 +313,7 @@ func TestLostReplyIsReconciledByNonce(t *testing.T) {
 	// The handle is not fenced and keeps its validator, so the next selection
 	// needs no repair.
 	third := control.Sequence(control.MinimumEpoch, 3)
-	if _, err := handle.Select(ctx, third); err != nil {
+	if _, err := handle.Select(ctx, third, nil); err != nil {
 		t.Fatalf("the next selection after a lost reply: %v", err)
 	}
 	current, err := client.Read(ctx, "vm")
@@ -342,7 +342,7 @@ func TestALostReplyWhoseReadBackFailedDoesNotFenceTheWriter(t *testing.T) {
 	second := control.Sequence(control.MinimumEpoch, 2)
 	store.FailNextAfterApply(sim.ObjectPut, 1)
 	store.FailNext(sim.ObjectGet, 1)
-	if _, err := handle.Select(ctx, second); !errors.Is(err, platform.ErrInjectedFault) {
+	if _, err := handle.Select(ctx, second, nil); !errors.Is(err, platform.ErrInjectedFault) {
 		t.Fatalf("a selection whose reply and read-back both failed = %v", err)
 	}
 	// The selection landed. The handle's next write is refused, because the
@@ -393,7 +393,7 @@ func TestACreateWhoseRetryRefusedItsOwnWriteStillOwnsTheVM(t *testing.T) {
 		t.Fatalf("the reconciled handle is at epoch %d holding %+v", handle.Epoch(), handle.Record())
 	}
 	// The handle owns the record, so the child's first checkpoint publishes.
-	record, err := handle.Select(ctx, root())
+	record, err := handle.Select(ctx, root(), nil)
 	if err != nil {
 		t.Fatalf("publishing the child's root: %v", err)
 	}
@@ -417,13 +417,13 @@ func TestRefusedWriteLeavesTheHandleUsable(t *testing.T) {
 	}
 	second := control.Sequence(control.MinimumEpoch, 2)
 	store.FailNext(sim.ObjectPut, 1)
-	if _, err := handle.Select(ctx, second); !errors.Is(err, platform.ErrInjectedFault) {
+	if _, err := handle.Select(ctx, second, nil); !errors.Is(err, platform.ErrInjectedFault) {
 		t.Fatalf("a refused selection reported %v, want the injected fault", err)
 	}
 	if got := handle.Record().Selected; got != root() {
 		t.Fatalf("a refused selection changed the tracked record to %d", got)
 	}
-	if _, err := handle.Select(ctx, second); err != nil {
+	if _, err := handle.Select(ctx, second, nil); err != nil {
 		t.Fatalf("repeating the refused selection: %v", err)
 	}
 	current, err := client.Read(ctx, "vm")
@@ -451,7 +451,7 @@ func TestLostOpenReplyClaimsTheEpochAnyway(t *testing.T) {
 	if handle.Epoch() != control.MinimumEpoch+1 {
 		t.Fatalf("the reconciled open holds epoch %d, want %d", handle.Epoch(), control.MinimumEpoch+1)
 	}
-	if _, err := handle.Select(ctx, control.Sequence(handle.Epoch(), 1)); err != nil {
+	if _, err := handle.Select(ctx, control.Sequence(handle.Epoch(), 1), nil); err != nil {
 		t.Fatalf("the reconciled handle could not select: %v", err)
 	}
 }

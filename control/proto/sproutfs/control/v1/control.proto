@@ -5,9 +5,10 @@ package sproutfs.control.v1;
 option go_package = "github.com/semistrict/sproutfs/control/internal/gen/sproutfs/control/v1;controlv1";
 
 // Record is the one mutable durable object a VM owns. It selects the checkpoint
-// the VM's state is, names the writer that may replace it, and lists the
+// the VM's state is, names the writer that may replace it, lists the
 // checkpoints of it that have been forked and the ones a checkpoint request
-// kept, none of which may be reclaimed.
+// kept, none of which may be reclaimed, and names the journals that may hold
+// its flushed writes newer than the selected checkpoint.
 message Record {
   uint32 format_version = 1;
   string vm_id = 2;
@@ -36,6 +37,11 @@ message Record {
   // ascending order of sequence. A kept checkpoint's objects are never
   // reclaimed. A kept checkpoint no fork was taken from may be released.
   repeated Kept kept = 13;
+  // journals lists the journals that may hold this VM's flushed writes newer
+  // than the selected checkpoint, in ascending order of epoch. A recovery
+  // replays them in that order. A selection writes the list, an open keeps it,
+  // and a migration's open adds the destination's journal.
+  repeated Journal journals = 14;
 }
 
 // Kept is one checkpoint a checkpoint request kept: its sequence, when it was
@@ -48,4 +54,19 @@ message Kept {
   // state reports that the checkpoint holds VMM state, so a fork of it resumes
   // the guest rather than booting it.
   bool state = 3;
+}
+
+// Journal names one journal that may hold a VM's flushed writes newer than its
+// selected checkpoint.
+message Journal {
+  // disk is the identity of the journal's disk, 16 bytes.
+  bytes disk = 1;
+  // generation is the one drawn when the disk was formatted. A disk formatted
+  // again holds none of the entries the record names.
+  uint64 generation = 2;
+  // epoch is the VM's writer epoch whose entries the journal holds.
+  uint64 epoch = 3;
+  // covered is the last position whose entries the selected checkpoint holds.
+  // A replay applies only the entries after it.
+  uint64 covered = 4;
 }

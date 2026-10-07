@@ -41,7 +41,7 @@ func TestAPinWithoutTheWriterKeepsTheEpoch(t *testing.T) {
 		t.Fatal(err)
 	}
 	second := control.Sequence(control.MinimumEpoch, 2)
-	if _, err := handle.Select(ctx, second); err != nil {
+	if _, err := handle.Select(ctx, second, nil); err != nil {
 		t.Fatal(err)
 	}
 	stopped := handle.Record()
@@ -109,7 +109,7 @@ func TestAPinWithoutTheWriterRefusesWhatItCannotKeep(t *testing.T) {
 		t.Fatal(err)
 	}
 	second := control.Sequence(control.MinimumEpoch, 2)
-	if _, err := handle.Select(ctx, second); err != nil {
+	if _, err := handle.Select(ctx, second, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := client.Pin(ctx, "vm", root()); !errors.Is(err, control.ErrNotPublished) {
@@ -120,7 +120,7 @@ func TestAPinWithoutTheWriterRefusesWhatItCannotKeep(t *testing.T) {
 		t.Fatal(err)
 	}
 	third := control.Sequence(control.MinimumEpoch, 3)
-	if _, err := handle.Select(ctx, third); err != nil {
+	if _, err := handle.Select(ctx, third, nil); err != nil {
 		t.Fatal(err)
 	}
 	pinned, err := client.Pin(ctx, "vm", second)
@@ -154,7 +154,7 @@ func TestAWriterWhoseRecordGainedAPinCarriesItOn(t *testing.T) {
 		t.Fatal(err)
 	}
 	second := control.Sequence(control.MinimumEpoch, 2)
-	record, err := handle.Select(ctx, second)
+	record, err := handle.Select(ctx, second, nil)
 	if err != nil {
 		t.Fatalf("selecting over a record another pinned: %v", err)
 	}
@@ -202,7 +202,7 @@ func TestAPinRacingASelectionPinsWhatIsSelected(t *testing.T) {
 			}
 			second := control.Sequence(control.MinimumEpoch, 2)
 			store.before = func() {
-				if _, err := handle.Select(ctx, second); err != nil {
+				if _, err := handle.Select(ctx, second, nil); err != nil {
 					t.Error(err)
 				}
 			}
@@ -269,7 +269,8 @@ func equalRecords(a, b control.Record) bool {
 		a.Selected == b.Selected && a.Created == b.Created && slices.Equal(a.Pinned, b.Pinned) &&
 		slices.EqualFunc(a.Kept, b.Kept, func(x, y control.Kept) bool {
 			return x.Sequence == y.Sequence && x.Time.Equal(y.Time) && x.State == y.State
-		})
+		}) &&
+		slices.Equal(a.Journals, b.Journals)
 }
 
 // A pin added without the epoch refuses the writer's next write just as a
@@ -288,11 +289,11 @@ func TestARefusalThatCannotBeReadDoesNotFenceTheWriter(t *testing.T) {
 	}
 	second := control.Sequence(control.MinimumEpoch, 2)
 	store.FailNext(sim.ObjectGet, 1)
-	if _, err := handle.Select(ctx, second); !errors.Is(err, platform.ErrPrecondition) ||
+	if _, err := handle.Select(ctx, second, nil); !errors.Is(err, platform.ErrPrecondition) ||
 		errors.Is(err, control.ErrFenced) {
 		t.Fatalf("a refused selection whose record could not be read = %v, want the refusal and no fence", err)
 	}
-	record, err := handle.Select(ctx, second)
+	record, err := handle.Select(ctx, second, nil)
 	if err != nil {
 		t.Fatalf("repeating the selection: %v", err)
 	}

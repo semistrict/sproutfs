@@ -613,11 +613,15 @@ func (vm *VM) publish(ctx context.Context, ckpt *Checkpoint) (*checkpoint.Index,
 // selecting selects a published checkpoint in the control record, and keeps it
 // in the same write when its capture asked for that, so no sweep can see it
 // selected and replaced without seeing it kept.
+//
+// The selection names no journal, because no journal holds this VM's flushed
+// writes yet. So every selection writes an empty list: the interval's, a
+// stop's and a close's.
 func (vm *VM) selecting(ctx context.Context, ckpt *Checkpoint, index *checkpoint.Index) (control.Record, error) {
 	if ckpt.keep {
-		return vm.control.SelectKept(ctx, ckpt.ref.Sequence, index.HasState())
+		return vm.control.SelectKept(ctx, ckpt.ref.Sequence, index.HasState(), nil)
 	}
-	return vm.control.Select(ctx, ckpt.ref.Sequence)
+	return vm.control.Select(ctx, ckpt.ref.Sequence, nil)
 }
 
 // publishedPages reports every page one volume of a checkpoint publishes: what

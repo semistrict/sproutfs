@@ -6,7 +6,8 @@
 // which. Nothing is durable between checkpoints. The record also carries the
 // writer epoch that fences a superseded host, the sequences a fork
 // inherited, and the checkpoints a checkpoint request kept, none of which
-// reclamation may delete.
+// reclamation may delete. It names the journals that may hold the VM's flushed
+// writes newer than the selected checkpoint, which a recovery replays.
 //
 // Every change is a conditional write against object storage. Creating a record
 // uses a create-if-absent condition; replacing one reads its validator and
@@ -71,16 +72,20 @@ var (
 	// The fork's pin is what nothing releases, because a descendant may read
 	// through it.
 	ErrForked = errors.New("control: checkpoint was forked")
+	// ErrTooManyJournals reports a migration's open of a VM whose record
+	// already names as many journals as one record can carry.
+	ErrTooManyJournals = errors.New("control: too many journals")
 )
 
 const (
-	// formatVersion is the control record's wire format. Version 5 adds the
-	// checkpoints a checkpoint request kept beside the pins. Version 4's pins
-	// are the checkpoints of this VM that have been forked, and nothing
-	// releases one. Version 3 marked a tombstone, version 2 named each pin's
-	// holders and the parent checkpoint a record held a pin on, and version 1's
-	// pins were bare sequences; none of them parses.
-	formatVersion = uint32(5)
+	// formatVersion is the control record's wire format. Version 6 adds the
+	// journals that may hold the VM's flushed writes newer than the selected
+	// checkpoint. Version 5 added the checkpoints a checkpoint request kept
+	// beside the pins. Version 4's pins are the checkpoints of this VM that have
+	// been forked, and nothing releases one. Version 3 marked a tombstone,
+	// version 2 named each pin's holders and the parent checkpoint a record held
+	// a pin on, and version 1's pins were bare sequences; none of them parses.
+	formatVersion = uint32(6)
 	// nonceSize is the writer nonce, large enough that two writers never
 	// choose the same one.
 	nonceSize = 16
@@ -96,6 +101,10 @@ const (
 	// MaximumKept bounds the checkpoints one record may keep. A kept
 	// checkpoint no fork was taken from may be released, which makes room.
 	MaximumKept = 4096
+	// MaximumJournals bounds the journals one record may name. A record names
+	// one journal, or two while a migration's destination has not yet selected
+	// a checkpoint that holds every page its source held.
+	MaximumJournals = 2
 	// MinimumEpoch is the lowest epoch a record may carry. Epoch zero is not
 	// one, so a sequence is never zero.
 	MinimumEpoch = uint64(1)
