@@ -1,9 +1,10 @@
 ---
 id: TASK-104.12
 title: A controller can add back a journal disk another controller deleted
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-10-07 18:56'
+updated_date: '2026-10-07 19:13'
 labels:
   - journal
   - membership

@@ -49,11 +49,15 @@ import (
 //     that disk, which it writes;
 //   - a released disk that is not empty and reserved for no machine is
 //     assigned for reading to the member holding the fewest journal disks.
-func nextJournalStep(m Membership, hosts map[rank.Identity]Host, want Want) (Change, bool) {
+func nextJournalStep(ctx context.Context, m Membership, hosts map[rank.Identity]Host, want Want) (Change, bool) {
 	listed := make(map[rank.Identity]bool, len(want.Journals))
+	// A step over a generation newer than the listing's adds nothing: the
+	// compare-and-set it lost may have been another controller's removal of
+	// a disk the listing still names (spec/bugs.md B8).
+	current := m.Generation() <= want.JournalsAfter || sim.Bug(ctx, "membership-add-from-a-stale-list")
 	for _, journal := range want.Journals {
 		listed[journal.ID] = true
-		if _, ok := m.Disk(journal.ID); !ok {
+		if _, ok := m.Disk(journal.ID); !ok && current {
 			added := journal.Disk
 			added.Kind, added.Empty, added.Machine = Journal, true, ""
 			return func(m Membership) (Membership, error) { return m.Add(added) }, true

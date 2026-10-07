@@ -68,6 +68,7 @@ func (c *ShardControl) Pass(ctx context.Context, want Want) (Membership, bool, e
 	}
 	want.Shards = c.Describe(ctx, current)
 	if c.Journals != nil {
+		want.JournalsAfter = current.Generation()
 		want.Journals, want.JournalsKnown = c.Journals.Describe(ctx)
 		want.Expired = c.Journals.Expired(current)
 	}

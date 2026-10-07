@@ -521,3 +521,28 @@ func TestJournalDisksFollowTheMachines(t *testing.T) {
 		})
 	}
 }
+
+// A step over a generation newer than the listing of journal disks it was
+// given adds none of them: another controller may have deleted and removed a
+// disk the listing still names, and adding it back would offer a disk that no
+// longer exists (spec/bugs.md B8). The next pass lists again.
+func TestAStaleListingAddsNoJournalDisk(t *testing.T) {
+	j := journalOf(1)
+	listed := built(t)(Empty().Add(Disk{ID: j.ID, Volume: j.Volume, Kind: Journal, Empty: true}))
+	deleting := built(t)(listed.Delete(j.ID))
+	removed := built(t)(deleting.Remove(j.ID))
+	ctx := sim.WithRuntime(t.Context(), sim.New(sim.Config{}))
+	want := Want{Journals: []Shard{j}, JournalsKnown: true, JournalsAfter: deleting.Generation()}
+	if _, ok := Next(ctx, removed, want); ok {
+		t.Fatalf("a step over generation %d took a step from a listing made after %d: %s", removed.Generation(),
+			want.JournalsAfter, describe(removed))
+	}
+	want.JournalsAfter = removed.Generation()
+	change, ok := Next(ctx, removed, want)
+	if !ok {
+		t.Fatal("a listing made after the removal adds nothing")
+	}
+	if added := stepped(t, removed, change); !slices.ContainsFunc(added.Disks(), func(d Disk) bool { return d.ID == j.ID }) {
+		t.Fatalf("a fresh listing's step did not add the disk: %s", describe(added))
+	}
+}

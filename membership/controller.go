@@ -32,6 +32,11 @@ type Want struct {
 	JournalsKnown bool
 	Pool          []string
 	Expired       []rank.Identity
+	// JournalsAfter is the generation of the membership the controller read
+	// before it listed Journals. A disk the listing names and a newer
+	// generation does not may be one another controller deleted and removed
+	// since, so only a step over that generation adds it.
+	JournalsAfter uint64
 }
 
 // Host is one host a controller wants in the membership: its identity, the
@@ -246,7 +251,7 @@ func Next(ctx context.Context, m Membership, want Want) (Change, bool) {
 			return func(m Membership) (Membership, error) { return m.Weigh(id, weight) }, true
 		}
 	}
-	if change, ok := nextJournalStep(m, hosts, want); ok {
+	if change, ok := nextJournalStep(ctx, m, hosts, want); ok {
 		return change, true
 	}
 	cacheShards := make(map[rank.Identity]Shard, len(want.Shards))

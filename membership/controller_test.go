@@ -17,11 +17,14 @@ func hostOf(n byte) Host {
 }
 
 // toward takes Next's steps from m to want, each admitted by Step, and
-// returns where they end and every generation on the way.
+// returns where they end and every generation on the way. Each step is a
+// controller's pass whose listing of journal disks follows the generation it
+// steps from.
 func toward(t *testing.T, m Membership, want Want) (Membership, []Membership) {
 	t.Helper()
 	var steps []Membership
 	for {
+		want.JournalsAfter = m.Generation()
 		change, ok := Next(t.Context(), m, want)
 		if !ok {
 			return m, steps

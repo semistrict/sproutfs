@@ -1154,5 +1154,11 @@
     "package": "internal/simtest",
     "run": "^TestAFlushSentAsTheDestinationStartsWaitsForThePostCopy$",
     "purpose": "Answer a durable flush of a VMM the host started and has not registered yet, with nothing journaled, as a destination's guest sends the flushes it held again as soon as it runs."
+  },
+  {
+    "id": "membership-add-from-a-stale-list",
+    "package": "membership",
+    "run": "^TestAStaleListingAddsNoJournalDisk$",
+    "purpose": "Add a journal disk a listing names over a generation newer than the listing's, which may add back a disk another controller deleted and removed."
   }
 ]
