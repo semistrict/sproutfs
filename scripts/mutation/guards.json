@@ -1183,7 +1183,7 @@
     "id": "pager-detach-under-an-eviction",
     "package": "vmmemory",
     "run": "^TestADetachWaitsForAnEvictionOfItsPage$",
-    "purpose": "Let a detach give its reservations back and destroy its layer without waiting for an eviction that holds one of its own pages; the eviction then reads a freed slot and writes into a reservation no longer the region's."
+    "purpose": "Let an eviction of a region's own page go on without holding the region live, so a detach gives its reservations back and destroys its layer under it: the eviction reads a freed slot and writes into a reservation no longer the region's."
   },
   {
     "id": "pager-wait-on-a-supplied-prefetch",
@@ -1262,5 +1262,11 @@
     "package": "vmmemory",
     "run": "^TestADetachWaitsForAPublicationsReadOfASpilledPage$",
     "purpose": "Read a spilled page of a checkpoint without holding the region live, so a detach between the look at its reservation and the read frees the reservation, and the read fails or reads another page's bytes."
+  },
+  {
+    "id": "pager-look-into-a-root-that-gave-its-page-up",
+    "package": "vmmemory",
+    "run": "^(TestALookupAsksNoRootThatGaveItsPageUpBeforeItWentDown|TestALookupAsksNoLentRootWhoseSealEndedBeforeItWentDown)$",
+    "purpose": "Let a lookup go down into the root its resolver named without asking under the root's lock whether it still holds the page, so a READ goes to a root's source without h.mu, where a prefetch's send meets it and panics, or to a lent root its seal's end removed."
   }
 ]

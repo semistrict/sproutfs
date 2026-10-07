@@ -586,7 +586,11 @@ There are two kinds of source:
   its pages. Two prefetches of one page batch: the later one leaves the page to
   the earlier. A fault on a page a prefetch is reading waits on the prefetch's
   request, and plans again when the prefetch supplies or fails it. A page the
-  prefetch failed to land is that fault's to read.
+  prefetch failed to land is that fault's to read. Only a prefetch sends to a
+  root's source, under the host's lock: a fault's lookup goes down into a root
+  only while the root, under its own lock, still holds the page (`Holds`), and
+  otherwise asks the region's own source. A prefetch's look at the reads under
+  way and its send are one hold, so no request meets another.
 - **A memory region's own.** A fault's own reads go there: the faulting page's
   read, a page read alone, a run, and a store's read of the page it copies. Only
   the faults of one window read its pages, one at a time, so these requests
@@ -1892,6 +1896,12 @@ its pages stay mapped there until it is closed and are excluded from every later
 pass. The eviction takes another victim instead of failing the machine that
 needed the page, which may share pages with others. If the arena holds only such
 pages, it reports capacity exhaustion.
+
+An eviction of a memory region's own page holds that region live, shared, from
+before it reads the page's reservation until the page is gone, so a detach
+cannot give the reservation back and destroy the layer under it. One that
+cannot take the hold leaves the victim, and a detach marks its region
+detaching first so the next look passes over the region's own pages.
 
 ### Choosing the victim
 
