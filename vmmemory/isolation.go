@@ -8,6 +8,7 @@ import (
 	"slices"
 
 	"github.com/semistrict/sproutfs/control"
+	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/vmmemory/internal/slots"
 	"github.com/semistrict/sproutfs/vmmemory/internal/zirconvm"
 	"lukechampine.com/blake3"
@@ -99,6 +100,9 @@ func (h *Host) joinShared(ctx context.Context, r *MemoryRegion, key string, numb
 	if f != nil {
 		return f, nil
 	}
+	// While h.mu is released another memory region may make the key's file,
+	// join it or leave it, so the look is made again under the hold that keeps
+	// the new file, and a key never has two.
 	file, err := h.arena.File(ctx, h.cfg.ArenaOffsets)
 	if err != nil {
 		return nil, err
@@ -254,43 +258,80 @@ func (r *MemoryRegion) mapsLocked(f *arenaFile) bool {
 // giveFork hands this memory region's process a fork point's file, once,
 // before anything is mapped from it.
 func (r *MemoryRegion) giveFork(ctx context.Context, f *arenaFile) error {
-	h := r.host
 	if err := r.filesMu.Lock(ctx); err != nil {
 		return err
 	}
 	defer r.filesMu.Unlock()
-	h.mu.Lock()
-	if _, given := r.forks[f]; given {
-		h.mu.Unlock()
+	number, given := r.forkNumber(f)
+	if given {
 		return nil
 	}
-	number := publicFileNumber + 1
-	for _, used := range r.forks {
-		number = max(number, used+1)
+	// filesMu keeps every other give out while h.mu is released, so f is
+	// still not given and no give takes number. The seal of f's point cannot
+	// end meanwhile and take f away: the caller holds a page of f the point
+	// keeps in its root's copies, and the end waits for each of them before
+	// it takes the file back (Host.dropLentRoot). The end of another point's
+	// seal can: it frees its number here before its DROP_FILE lands, and this
+	// may give that number again (TASK-108).
+	if err := sim.Admit(ctx, "vmmemory/give-fork"); err != nil {
+		return err
 	}
-	h.mu.Unlock()
 	if err := r.mapping.GiveFile(ctx, number, f.ArenaFile, false); err != nil {
 		return r.fail(err)
 	}
+	r.keepFork(f, number)
+	return nil
+}
+
+// forkNumber is the number a fork point's file is given to this region's
+// process under: the one it was given, or the next one free.
+func (r *MemoryRegion) forkNumber(f *arenaFile) (number int, given bool) {
+	h := r.host
 	h.mu.Lock()
+	defer h.mu.Unlock()
+	if number, given := r.forks[f]; given {
+		return number, true
+	}
+	number = publicFileNumber + 1
+	for _, used := range r.forks {
+		number = max(number, used+1)
+	}
+	return number, false
+}
+
+// keepFork records that this region's process holds a fork point's file
+// under number.
+func (r *MemoryRegion) keepFork(f *arenaFile, number int) {
+	h := r.host
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	if r.forks == nil {
 		r.forks = make(map[*arenaFile]int)
 	}
 	r.forks[f] = number
 	f.holders[r] = number
-	h.mu.Unlock()
-	return nil
 }
 
 // forkFile is the file this checkpoint lends its pages to children on this
 // host in, made the first time one is copied there. It has a slot for each
-// page of the memory region the checkpoint was taken of.
-func (c *MemoryRegionCheckpoint) forkFile(ctx context.Context) (*arenaFile, error) {
+// page of the memory region the checkpoint was taken of. It is nil once the
+// checkpoint lends root's pages no more: the seal ended, and took back the
+// file it had.
+func (c *MemoryRegionCheckpoint) forkFile(ctx context.Context, root *identityRoot) (*arenaFile, error) {
 	h := c.memoryRegion.host
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.fork != nil {
 		return c.fork, nil
+	}
+	// The end of the seal stops root lending before it takes c.mu to take the
+	// file back (MemoryRegion.endFork), so a root still lent here means that
+	// end sees the file this makes.
+	h.mu.Lock()
+	lending := root.lent == c
+	h.mu.Unlock()
+	if !lending && !sim.Bug(ctx, "pager-fork-file-after-its-seal") {
+		return nil, nil
 	}
 	offsets := c.memoryRegion.pageCount
 	file, err := h.arena.File(ctx, offsets)
@@ -455,21 +496,40 @@ func (r *MemoryRegion) forkCopy(ctx context.Context, lent *zirconvm.VmPage, key 
 		r.host.unlockPage(lent)
 		return nil, nil
 	}
-	fork, err := c.forkFile(ctx)
-	if err != nil {
+	// The point's seal may end from here on, and nothing held keeps that out:
+	// the end of a seal waits for the lock of each of its pages, and then for
+	// those of the copies its roots keep, but this region may take lent's lock
+	// after the first and before the second. So forkFile and keepForkCopy look
+	// again whether c still lends root's pages.
+	if forkFileSeam != nil {
+		forkFileSeam(key.id.Page)
+	}
+	if err := sim.Admit(ctx, "vmmemory/fork-file"); err != nil {
+		r.host.unlockPage(lent)
+		return nil, err
+	}
+	fork, err := c.forkFile(ctx, root)
+	if err != nil || fork == nil {
 		r.host.unlockPage(lent)
 		return nil, err
 	}
 	at := fileSlot{fork, int(key.id.Page)}
 	h.mu.Lock()
 	taken := at.slot < fork.slots.Offsets() && fork.slots.IsFree(at.slot) && h.takeFree(at, 1)
+	// The parent's page goes back only once the seal has ended, which
+	// keepForkCopy finds, so a copy of a slot given back meanwhile is dropped.
+	from := parent.fileSlot
 	h.mu.Unlock()
 	if !taken {
 		r.host.unlockPage(lent)
 		return nil, nil
 	}
+	if from.slot < 0 {
+		r.host.unlockPage(lent)
+		return nil, h.abandonSlots(ctx, at, 1, nil)
+	}
 	data := make([]byte, h.pageSize)
-	if err := parent.file.Read(ctx, parent.slot, data); err != nil {
+	if err := from.file.Read(ctx, from.slot, data); err != nil {
 		r.host.unlockPage(lent)
 		return nil, errors.Join(err, h.abandonSlots(ctx, at, 1, nil))
 	}
@@ -478,6 +538,36 @@ func (r *MemoryRegion) forkCopy(ctx context.Context, lent *zirconvm.VmPage, key 
 		r.host.unlockPage(lent)
 		return nil, err
 	}
+	// A copy made for a root counts as one of its pages from the start, so
+	// releaseFrame counts it out right whichever way it goes back.
+	h.mu.Lock()
+	r.host.rootPages++
+	h.mu.Unlock()
+	drop := func(err error) (*zirconvm.VmPage, error) {
+		r.host.releaseFrame(copied)
+		r.host.unlockPage(copied)
+		r.host.unlockPage(lent)
+		return nil, err
+	}
+	gap := func() error {
+		if forkCopySeam != nil {
+			forkCopySeam(key.id.Page)
+		}
+		return sim.Admit(ctx, "vmmemory/fork-copy")
+	}
+	unkept := sim.Bug(ctx, "pager-fork-copy-unkept")
+	if !unkept {
+		if err := gap(); err != nil {
+			return drop(err)
+		}
+		// The copy is one the point keeps before any child can find it in the
+		// root, so an end of the seal from here on gives it back with the rest,
+		// once this region has given its lock back. An end that began already
+		// leaves the page to this region, which reads its own.
+		if !r.host.keepForkCopy(root, c, copied) {
+			return drop(nil)
+		}
+	}
 	// The copy takes the lent page's place in the root.
 	offset := key.id.Page * h.pageSize
 	lock := root.pages.Lock()
@@ -485,10 +575,21 @@ func (r *MemoryRegion) forkCopy(ctx context.Context, lent *zirconvm.VmPage, key 
 	removed := root.pages.RemovePageLocked(offset, lent)
 	lock.Unlock()
 	if !removed || !r.host.supplyIfEmpty(ctx, root.pages, key.id.Page, copied) {
-		r.host.releaseFrame(copied)
-		r.host.unlockPage(copied)
-		r.host.unlockPage(lent)
-		return nil, nil
+		r.host.forgetForkCopy(root, copied)
+		return drop(nil)
+	}
+	if unkept {
+		// The bug keeps the copy only once a child can find it in the root,
+		// and whether or not the point still lends it: a seal that ends in
+		// between gives the copy back with the root, and its file with it.
+		if err := gap(); err != nil {
+			r.host.unlockPage(copied)
+			r.host.unlockPage(lent)
+			return nil, err
+		}
+		h.mu.Lock()
+		root.copies = append(root.copies, copied)
+		h.mu.Unlock()
 	}
 	h.mu.Lock()
 	if parent.lent == lent {
@@ -500,8 +601,6 @@ func (r *MemoryRegion) forkCopy(ctx context.Context, lent *zirconvm.VmPage, key 
 			break
 		}
 	}
-	r.host.rootPages++
-	root.copies = append(root.copies, copied)
 	h.stats.ForkCopies++
 	h.mu.Unlock()
 	r.host.unlockPage(lent)
@@ -512,6 +611,30 @@ func (r *MemoryRegion) forkCopy(ctx context.Context, lent *zirconvm.VmPage, key 
 		return nil, err
 	}
 	return copied, nil
+}
+
+// forkFileSeam runs in a fork copy between its look at the point and its
+// making the point's file, and forkCopySeam between its making the copy and
+// the point's keeping it, so a test can end the point's seal in either.
+var forkFileSeam, forkCopySeam func(page uint64)
+
+// keepForkCopy makes copied one of the copies root keeps in its point's file,
+// where c still lends root's pages, and reports whether it did.
+func (h *Host) keepForkCopy(root *identityRoot, c *MemoryRegionCheckpoint, copied *zirconvm.VmPage) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if root.lent != c {
+		return false
+	}
+	root.copies = append(root.copies, copied)
+	return true
+}
+
+// forgetForkCopy takes copied off the copies root keeps, where it still is.
+func (h *Host) forgetForkCopy(root *identityRoot, copied *zirconvm.VmPage) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	root.copies = slices.DeleteFunc(root.copies, func(p *zirconvm.VmPage) bool { return p == copied })
 }
 
 // move copies a published page in the private file it was published in into
@@ -529,6 +652,16 @@ func (r *MemoryRegion) move(ctx context.Context, page *zirconvm.VmPage, key page
 	h.mu.Lock()
 	sum, digested := f.file.digests[f.slot]
 	h.mu.Unlock()
+	// The page's lock is held from here to the end, and what that hold read
+	// changes only under it: the page's slot, its digest and its place in its
+	// root go only with a move, an eviction, an idle drop or an unindex of the
+	// page, each of which holds it. Its owner may detach meanwhile, which
+	// unindex and rebind each allow for, and the target file is held by this
+	// region, so it stays.
+	if err := sim.Admit(ctx, "vmmemory/move"); err != nil {
+		r.host.unlockPage(page)
+		return nil, err
+	}
 	var at fileSlot
 	count := 0
 	if digested {
@@ -564,6 +697,11 @@ func (r *MemoryRegion) move(ctx context.Context, page *zirconvm.VmPage, key page
 		r.host.unlockPage(page)
 		return nil, err
 	}
+	// A copy made for a root counts as one of its pages from the start, so
+	// releaseFrame counts it out right whichever way it goes back.
+	h.mu.Lock()
+	r.host.rootPages++
+	h.mu.Unlock()
 	root := r.host.root(rootOf(key))
 	offset := key.id.Page * h.pageSize
 	lock := root.pages.Lock()
@@ -578,7 +716,6 @@ func (r *MemoryRegion) move(ctx context.Context, page *zirconvm.VmPage, key page
 	}
 	h.mu.Lock()
 	delete(f.file.digests, f.slot)
-	r.host.rootPages++
 	h.stats.MovedPages++
 	h.mu.Unlock()
 	if err := r.host.rebind(ctx, page, copied); err != nil {
@@ -609,8 +746,24 @@ func (h *Host) unindex(ctx context.Context, page *zirconvm.VmPage, key pageKey) 
 	h.mu.Lock()
 	h.rootPages--
 	h.notIdleLocked(f)
-	mapped := f.mappedBy(owner)
 	h.mu.Unlock()
+	unheld := sim.Bug(ctx, "pager-unindex-into-a-detached-owner")
+	mapped := unheld && h.mapsPage(owner, f)
+	if unindexSeam != nil {
+		unindexSeam(key.id.Page)
+	}
+	admitGoingOn(ctx, "vmmemory/unindex")
+	if !unheld && owner.live.TryRLock() {
+		// The owner's detach is kept out from the look at its mapping to the
+		// page's return to its layer, which a detach in between would have
+		// destroyed. Where a detach holds it or waits for it, the page goes
+		// back below, and the owner's mapping of it with it.
+		defer owner.live.RUnlock()
+		mapped = h.mapsPage(owner, f)
+	}
+	// The page's lock keeps every other change to it out: until f.layer is
+	// set it is in the owner's layer and counted as no root's, and nothing
+	// but the owner's detach would give it back from there.
 	if mapped && h.supplyIfEmpty(ctx, owner.pages, key.id.Page, page) {
 		h.mu.Lock()
 		f.layer = owner
@@ -627,6 +780,26 @@ func (h *Host) unindex(ctx context.Context, page *zirconvm.VmPage, key pageKey) 
 	h.releaseFrame(page)
 }
 
+// unindexSeam runs in an unindex between its taking a page from its root and
+// its look at the owner's mapping of it, so a test can detach the owner there.
+var unindexSeam func(page uint64)
+
+// mapsPage reports whether r maps the page of f.
+func (h *Host) mapsPage(r *MemoryRegion, f *frame) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return f.mappedBy(r)
+}
+
+// admitGoingOn is an admission point on a path that must finish once it has
+// begun: in a controlled run another task may go on here, and a cancelled
+// caller goes on all the same once the run admits it.
+func admitGoingOn(ctx context.Context, resource string) {
+	if err := sim.Admit(context.WithoutCancel(ctx), resource); err != nil {
+		slog.WarnContext(ctx, "vmmemory: an admission point failed", "resource", resource, "error", err)
+	}
+}
+
 // rebind puts to, which holds the same bytes, in place of every mapping of
 // from, and binds each of from's aliases to to. A region that can neither be
 // given to nor have its mapping taken away keeps the page it has, which is
@@ -637,7 +810,12 @@ func (h *Host) rebind(ctx context.Context, from, to *zirconvm.VmPage) error {
 	for _, b := range h.aliasesOf(frameOf(from)) {
 		byRegion[b.region] = append(byRegion[b.region], b)
 	}
+	// Both pages' locks are held to the end, and from is in no object, so no
+	// fault binds it again and nothing but a detach takes a binding off it;
+	// each region's bindings are looked at again under the hold that rebinds
+	// them, and from's aliases under the one that decides it is idle.
 	for q, bindings := range byRegion {
+		admitGoingOn(ctx, "vmmemory/rebind")
 		if err := q.remap(ctx, bindings, to); err != nil {
 			q.heldPages(ctx, err)
 			continue

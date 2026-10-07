@@ -377,7 +377,10 @@ There are four kinds of file:
   receive the file read-only, as file 3 or up, just before they first map from
   it. The parent keeps its page. When the seal ends, the children's mappings of
   the copies are revoked, each child is sent DROP_FILE, and the file goes back
-  to the arena.
+  to the arena. A copy joins its point's copies before it takes the lent
+  page's place, and only while the point still lends: one whose seal ended
+  meanwhile goes back, and the child reads its own volume. No fork file is made
+  for a point whose seal has ended.
 
 Each file is a memfd of the pager's kind, with mode 0600. A read-only file is
 sent as a new open of the memfd with `O_RDONLY`, so the kernel refuses a VMM a
@@ -424,7 +427,10 @@ a GCE run of first inheritance at 2 MiB recorded 403 copies for 428 moves
 holds the page's lock, which every path of the owner that maps or resolves that
 page also holds, and the owner maps the page read-only, so no store is in flight
 into it. Where the owner's client refuses the MAP for want of mapping budget,
-the move revokes the mapping instead.
+the move revokes the mapping instead. A page that leaves its root while its owner
+still maps it goes back into the owner's layer, and keeps the owner's detach
+out from the look at its mapping until it is there. A page whose owner is
+detaching is taken from its regions and freed instead.
 
 A move that finds no free slot of the shared file does not wait: the page stops
 being named by its identity, and the region that wanted it reads its volume.
@@ -536,6 +542,8 @@ from costing a fault:
   cluster for one asks no second request after the delay, never reads the store
   as a hedge, and is left out of the delay estimate.
 - A detach cancels its memory region's prefetches and waits for them to end.
+- A fault that waits on a prefetch whose supply already answered the page's
+  request waits on nothing: its own request is answered at once.
 
 A post-copy stream's faults read their whole run at once (`vmmemory.WithStream`).
 
