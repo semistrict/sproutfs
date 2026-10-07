@@ -946,6 +946,12 @@
     "purpose": "Answer a journal batch's commits once its write returns, before its sync. A commit is answered while its sync is held, and one whose sync a power loss interrupted is answered and then lost."
   },
   {
+    "id": "journal-full-asks-nothing",
+    "package": "journal",
+    "run": "^TestACommitTheRingHasNoRoomForAsksForIt$",
+    "purpose": "Run no commit's Full hook, so a commit the commits placed ahead of it left no room for waits for trims nobody asks for."
+  },
+  {
     "id": "journal-pad-only-with-a-commit",
     "package": "journal",
     "run": "^TestAFailedRangeACommitDoesNotFitBesideIsPaddedByItself$",

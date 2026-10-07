@@ -30,6 +30,10 @@ type Hooks struct {
 	// entries may be on the disk all the same, so whatever the capture took
 	// has to be taken again by the next.
 	Failed func()
+	// Full runs once the commit is the next to place and the ring has no
+	// room for it: whatever trims the ring has to be asked now. It runs once
+	// a commit, on the writer, with nothing held.
+	Full func()
 }
 
 // commit is one call of Commit, waiting for its batch.
@@ -37,10 +41,12 @@ type commit struct {
 	room      int64
 	capture   Capture
 	hooks     Hooks
-	captured  bool
 	done      chan struct{}
 	positions []uint64
 	err       error
+	// captured marks a commit whose capture made entries, and full one
+	// whose Full hook has run.
+	captured, full bool
 }
 
 // reserve is the room a batch of commits needs on the ring: their room, a pad
@@ -145,6 +151,15 @@ func (j *Journal) nextBatch() []*commit {
 			// alone.
 			j.mu.Unlock()
 			return []*commit{}
+		}
+		if len(j.queue) > 0 && !j.queue[0].full {
+			head := j.queue[0]
+			head.full = true
+			if head.hooks.Full != nil && !sim.Bug(j.ctx, "journal-full-asks-nothing") {
+				j.mu.Unlock()
+				head.hooks.Full()
+				continue
+			}
 		}
 		changed := j.changed
 		if !moved {

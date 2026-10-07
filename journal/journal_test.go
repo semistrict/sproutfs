@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -426,6 +427,53 @@ func TestOldestNamesTheVMsHoldingTheTail(t *testing.T) {
 		j.Trim("vm-b", nil)
 		if got, want := j.Oldest(1), []string{"vm-c"}; !slices.Equal(got, want) {
 			t.Fatalf("after vm-b's trim the VM at the tail is %v, want %v", got, want)
+		}
+	})
+}
+
+// A commit the ring has no room for runs its Full hook once it is the next to
+// place, so its holder can ask for the trims that make the room, and goes on
+// once they have. A commit that fits never runs it.
+func TestACommitTheRingHasNoRoomForAsksForIt(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		runtime := sim.New(sim.Config{})
+		ctx := sim.WithRuntime(t.Context(), runtime)
+		const ring = 64 << 10
+		_, handle := device(t, ctx, runtime, ring, sim.DiskConfig{})
+		clock := runtime.NewClock("journal")
+		j := openWith(t, ctx, handle(), Config{Lease: Lease{Assigned: 1, Member: memberA}, Clock: clock})
+		var full atomic.Int64
+		hooked := func(e Entry) ([]uint64, error) {
+			return j.CommitHooked(ctx, roomOf(e), func(context.Context) ([]Entry, error) { return []Entry{e}, nil },
+				Hooks{Full: func() { full.Add(1) }})
+		}
+		var positions []uint64
+		for i := range 4 {
+			at, err := hooked(entryOf("vm-a", 1, byte(0x10*(i+1)), uint64(2*i), uint64(2*i+1)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			positions = append(positions, at...)
+		}
+		if got := full.Load(); got != 0 {
+			t.Fatalf("commits that fit asked for room %d times", got)
+		}
+		waiting := make(chan error, 1)
+		go func() {
+			_, err := hooked(entryOf("vm-a", 1, 0x50, 8, 9))
+			waiting <- err
+		}()
+		synctest.Wait()
+		if got := full.Load(); got != 1 {
+			t.Fatalf("a commit the ring has no room for asked for it %d times, want once", got)
+		}
+		j.Trim("vm-a", map[uint64]uint64{1: positions[2]})
+		clock.Advance(tailHintInterval)
+		if err := <-waiting; err != nil {
+			t.Fatal(err)
+		}
+		if got := full.Load(); got != 1 {
+			t.Fatalf("the commit asked for room %d times, want once", got)
 		}
 	})
 }

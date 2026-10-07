@@ -425,6 +425,9 @@ func (h *Host) journalFlush(ctx context.Context, j *journal.Journal, entry *regi
 				captured.Fail(ctx)
 			}
 		},
+		// The commits placed ahead of this one may have taken the room it
+		// had when it was asked for.
+		Full: func() { h.relieveRing(j, room) },
 	}
 	_, err := j.CommitHooked(ctx, room, capture, hooks)
 	if captured != nil {
