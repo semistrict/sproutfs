@@ -263,7 +263,9 @@ func (h *Host) allocateFree(f *arenaFile, want int) (fileSlot, int) {
 }
 
 // allocateFreeFrom is allocateFree preferring the whole run to start at
-// prefer, so that a new mapping continues the slots of the one before it.
+// prefer, so that a new mapping continues the slots of the one before it. The
+// preferred run is looked at and taken under one hold of h.mu; where it is
+// not to be had, allocateFree looks again under a hold of its own.
 func (h *Host) allocateFreeFrom(prefer fileSlot, want int) (fileSlot, int) {
 	f := prefer.file
 	h.mu.Lock()
@@ -334,6 +336,16 @@ func (h *Host) allocate(ctx context.Context, r *MemoryRegion, f *arenaFile, plac
 		h.mu.Unlock()
 		if allocateSeam != nil {
 			allocateSeam()
+		}
+		// What the look found may be out of date by the eviction step: a slot
+		// may come free, or be taken by another allocation. The step looks
+		// again under h.mu (reclaimStep), and the loop looks again after it,
+		// so a stale look costs an eviction at most, never a slot twice. A
+		// caller that gave its region up to allocate decides again what it
+		// planned (plan.free). In a controlled run another task may go on
+		// here.
+		if err := sim.Admit(ctx, "vmmemory/allocate-evict"); err != nil {
+			return fileSlot{}, err
 		}
 		evicted, err := h.evictOne(ctx, req)
 		if err != nil {
@@ -430,7 +442,8 @@ func (h *Host) DropIdle(ctx context.Context) (int, error) {
 // abandonSlots gives back reserved slots whose contents failed to arrive, or
 // that their reserver turned out not to need. A failed write may have allocated
 // partial contents, so each is punched before it is accounted free; a failed
-// punch makes the host terminal.
+// punch makes the host terminal. The slots stay taken while they are punched,
+// with h.mu not held, so nothing else is given them until they are put back.
 func (h *Host) abandonSlots(ctx context.Context, at fileSlot, count int, err error) error {
 	var cleanup error
 	for i := range count {
