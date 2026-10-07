@@ -6,6 +6,7 @@ import (
 	"testing"
 	"testing/synctest"
 
+	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/vmmemory"
 )
 
@@ -58,6 +59,51 @@ func TestARefaultMapsAPageACaptureProtectedWhileItReclaimedReadOnly(t *testing.T
 		writableIsUnjournaled(t, r, m)
 		if got := r.Unjournaled(); !slices.Equal(got, []uint64{0}) {
 			t.Fatalf("unjournaled pages %v after storing into the refaulted page, want [0]", got)
+		}
+	})
+}
+
+// A seal leaves out of its set each cold copy the guest did not change, one
+// at a time, and gives those back to the region's dirty set once it has
+// compared them all. A comparison that fails partway, here a spilled copy
+// whose read fails, leaves the copies it had already left out in the set, so
+// the seal takes them as dirty pages. Dropped from both, a copy the guest
+// stores into later is dirty and in no set, and no checkpoint ever holds the
+// store.
+func TestASealWhoseColdCopyCompareFailsKeepsTheCopiesItComparedBefore(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := newFixture(t, 4, 8, 8)
+		r, m, b := f.memoryRegion(4)
+		// Store traps on pages the guest does not map make cold copies, which
+		// hold their origins' bytes: page 1's first, so it is the older.
+		for _, page := range []uint64{1, 0} {
+			same := byte(page + 1)
+			if _, err := memoryByte(f.ctx, r, m, page, &same); err != nil {
+				t.Fatal(err)
+			}
+		}
+		// The arena holds both copies and both origins; a read of page 2
+		// spills the older copy.
+		if _, err := memoryByte(f.ctx, r, m, 2, nil); err != nil {
+			t.Fatal(err)
+		}
+		if _, mapped := m.pages[1]; mapped || hostStats(t, f).Spills != 1 {
+			t.Fatalf("page 1 mapped %t after %d spills, want its copy spilled alone", mapped, hostStats(t, f).Spills)
+		}
+		// The seal compares page 0's copy with its origin, then fails to read
+		// page 1's back from the spill.
+		f.disk.FailNext(sim.DiskRead, 1)
+		if err := r.Seal(f.ctx); err != nil {
+			t.Fatal(err)
+		}
+		f.finishCheckpoint(r, b)
+		stored := byte(0x77)
+		if _, err := memoryByte(f.ctx, r, m, 0, &stored); err != nil {
+			t.Fatal(err)
+		}
+		f.mustCheckpoint(r, b)
+		if got := b.data[0]; got != stored {
+			t.Fatalf("the checkpoint after the store published %d for page 0, want %d", got, stored)
 		}
 	})
 }
