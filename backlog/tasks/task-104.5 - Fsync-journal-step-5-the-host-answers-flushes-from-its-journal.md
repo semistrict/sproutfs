@@ -4,7 +4,7 @@ title: 'Fsync journal step 5: the host answers flushes from its journal'
 status: To Do
 assignee: []
 created_date: '2026-10-07 00:48'
-updated_date: '2026-10-07 01:16'
+updated_date: '2026-10-07 02:26'
 labels:
   - durability
   - host
@@ -35,3 +35,9 @@ Step 5 of the plan. Durable flush is an optional mode, SPROUTFS_DURABLE_FLUSH, o
 - [ ] #5 JOURNAL_READ is served by the disk holder, which first fences the VM at the reader epoch and gives the VM up if it runs it
 - [ ] #6 Status and metrics report durable_flush (whether the mode is on), flush latency, hashing time, live bytes and failed flushes; guards journal-covered-after-seal, journal-read-without-fence, journal-full-answers and journal-failed-write-answers are killed by their tests
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+From TASK-104.2: the guard journal-read-without-fence already exists in package journal (Read fences); reuse it, do not add a second. Commit takes the room a capture may use before the capture runs, so the pager capture (104.4) must fit a room given in advance. Trimmed ring space is reusable only once the tail hint is on disk (once a second), so a full ring can wait up to a second longer.
+<!-- SECTION:NOTES:END -->

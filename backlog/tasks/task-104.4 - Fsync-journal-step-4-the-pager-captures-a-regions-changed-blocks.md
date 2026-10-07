@@ -4,7 +4,7 @@ title: 'Fsync journal step 4: the pager captures a region''s changed blocks'
 status: To Do
 assignee: []
 created_date: '2026-10-07 00:48'
-updated_date: '2026-10-07 01:15'
+updated_date: '2026-10-07 02:26'
 labels:
   - durability
   - pager
@@ -32,3 +32,9 @@ Step 4 of the plan. Guest stores to a PMEM disk are CPU stores into mapped memor
 - [ ] #4 A seal moves the unjournaled pages to the checkpoint and drops their digests; a capture during the seal covers them from the sealed copies; an abandon makes them unjournaled again without digests; other pages keep or drop their digests as step 1 decided
 - [ ] #5 A spilled page is captured from the spill; the Linux userfaultfd test covers the new trap on 2 MiB HugeTLB and 4 KiB pages; guards journal-trap-not-marked, journal-seal-keeps-unjournaled and journal-digests-survive-unjournaled-seal are killed by their tests
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+From TASK-104.2: journal.Commit takes the room the capture's entries may use before the capture runs; the capture must fit that room (split across batches when it does not).
+<!-- SECTION:NOTES:END -->
