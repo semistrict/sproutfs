@@ -138,6 +138,11 @@ func streaming(ctx context.Context) bool {
 // landed. A test holds a prefetch there to put an allocation in that moment.
 var prefetchSettleSeam func()
 
+// prefetchSendSeam runs as a fault splits a prefetch off, before it takes
+// h.mu to look for reads under way and send its own. A test starts a read of
+// the same root there.
+var prefetchSendSeam func(start uint64)
+
 // prefetchUnlockSeam runs as a prefetch that landed gives each of its pages
 // up, once that page is given up and before the next is. A test puts a fault
 // there, which finds the pages after it still held.
@@ -312,16 +317,21 @@ func (h *Host) readingIn(start, end uint64) readingIn {
 }
 
 // of reports whether a read is under way of the page key names, which is in
-// the window: a request of its root is outstanding over it.
+// the window: a request of its root is outstanding over it. What it reports
+// may be out of date by the time the caller acts on it.
 func (in *readingIn) of(key pageKey) bool {
+	in.host.mu.Lock()
+	defer in.host.mu.Unlock()
+	return in.ofLocked(key)
+}
+
+// ofLocked is of with h.mu held.
+func (in *readingIn) ofLocked(key pageKey) bool {
 	h := in.host
 	ps := h.pageSize
 	if root := rootOf(key); !in.asked || root != in.root {
 		in.asked, in.root, in.ranges = true, root, in.ranges[:0]
-		h.mu.Lock()
-		found := h.roots[root]
-		h.mu.Unlock()
-		if found != nil {
+		if found := h.roots[root]; found != nil {
 			in.ranges = found.reads.source.AppendOutstanding(in.ranges, zirconvm.ReadRequest, in.start*ps, in.end*ps)
 		}
 	}
@@ -363,6 +373,17 @@ func (p *plan) splitPrefetch(ctx context.Context, index uint64, into []*arenaFil
 	}
 	refused := sim.Buggify(ctx, buggifyPrefetchRefused, 0.2)
 	reading := r.host.readingIn(p.start, p.end)
+	stale := sim.Bug(ctx, "pager-filter-a-prefetch-unlocked")
+	if stale {
+		// The bug reads the reads under way before the seam, with h.mu not
+		// held, and sends against that copy after it.
+		for _, page := range pages {
+			reading.of(page.key)
+		}
+	}
+	if prefetchSendSeam != nil {
+		prefetchSendSeam(p.start)
+	}
 	h.mu.Lock()
 	defer func() {
 		for _, at := range back {
@@ -379,18 +400,23 @@ func (p *plan) splitPrefetch(ctx context.Context, index uint64, into []*arenaFil
 		}
 		return nil
 	}
-	h.mu.Unlock()
+	// The reads under way are read under the same hold of h.mu that sends
+	// the prefetch's: every READ of a root is sent under it, so none can
+	// start between the look and the send and cover a page twice. A prefetch
+	// of another region forked from the same root is one.
+	if !stale {
+		reading.asked = false
+	}
 	kept := pages[:0]
 	for _, page := range pages {
 		// A read reached this identity between the plan and here: it is
 		// that read's to bring in.
-		if reading.of(page.key) {
+		if reading.ofLocked(page.key) {
 			back = append(back, page.at)
 			continue
 		}
 		kept = append(kept, page)
 	}
-	h.mu.Lock()
 	if len(kept) == 0 {
 		return nil
 	}

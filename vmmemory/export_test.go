@@ -51,6 +51,15 @@ func SetPrefetchUnlockSeam(t *testing.T, seam func(page uint64)) {
 	t.Cleanup(func() { prefetchUnlockSeam = previous })
 }
 
+// SetPrefetchSendSeam installs what a fault runs as it splits a prefetch off
+// the window that begins at start, before it looks for reads under way and
+// sends its own. It is restored when the test ends.
+func SetPrefetchSendSeam(t *testing.T, seam func(start uint64)) {
+	previous := prefetchSendSeam
+	prefetchSendSeam = seam
+	t.Cleanup(func() { prefetchSendSeam = previous })
+}
+
 // SetAllocateSeam installs what an allocation runs between its look for a
 // free slot and its eviction step. It is restored when the test ends.
 func SetAllocateSeam(t *testing.T, seam func()) {

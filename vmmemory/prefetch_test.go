@@ -363,6 +363,60 @@ func TestAFaultThatWaitedForAPrefetchMapsItsWholeRun(t *testing.T) {
 	})
 }
 
+// Two regions forked from one checkpoint that fault the same window at once
+// prefetch it once: a fault that splits a prefetch off looks for the reads
+// under way and sends its own under one hold of the host's lock, so a
+// prefetch the other region sent meanwhile is seen, and its pages are left to
+// it. Before 2026-10-07 the look came before that hold, and the second
+// prefetch's request met the first's and panicked, which ended every VM of an
+// embedder's process.
+func TestTwoForksFaultingOneWindowAtOncePrefetchItOnce(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := newConfiguredFixture(t, prefetchConfig())
+		a, b := f.slowBacking(8), f.slowBacking(8)
+		ra, ma := f.attach(a)
+		rb, mb := f.attach(b)
+		var other error
+		entered := false
+		vmmemory.SetPrefetchSendSeam(t, func(uint64) {
+			if entered {
+				// The other fork's own split, which goes on.
+				return
+			}
+			entered = true
+			// The other fork faults the same window and prefetches it
+			// first, between this fault's plan and its send.
+			other = rb.Fault(f.ctx, 0, false)
+		})
+		if err := ra.Fault(f.ctx, 0, false); err != nil {
+			t.Fatal(err)
+		}
+		if other != nil {
+			t.Fatal(other)
+		}
+		for page := range uint64(8) {
+			for _, fork := range []struct {
+				r *vmmemory.MemoryRegion
+				m *mapping
+			}{{ra, ma}, {rb, mb}} {
+				if _, ok := fork.m.mappedPage(page); !ok {
+					if err := fork.r.Fault(f.ctx, page, false); err != nil {
+						t.Fatal(err)
+					}
+				}
+				requirePage(t, fork.m, page)
+			}
+		}
+		if err := ra.SettlePrefetches(f.ctx); err != nil {
+			t.Fatal(err)
+		}
+		reads := slices.Concat(a.readsOf(true), b.readsOf(true))
+		if len(reads) != 1 || reads[0] != (slowRead{1, 7, true}) {
+			t.Fatalf("the forks' prefetches read %v, want the seven pages after the first once", reads)
+		}
+	})
+}
+
 // Nothing waits on a prefetch but a fault on a page that prefetch is reading.
 // With every prefetch held, faults on other runs, reads and stores, each cost
 // exactly their own page's read.
