@@ -1,9 +1,11 @@
 package journal
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/semistrict/sproutfs/platform/sim"
 )
@@ -67,13 +69,17 @@ func (j *Journal) Read(ctx context.Context, request ReadRequest, yield func(Entr
 		j.mu.Lock()
 	}
 	var wanted []indexed
-	if h := j.held[request.VM][request.Epoch]; h != nil {
+	for epoch, h := range j.held[request.VM] {
+		if epoch != request.Epoch && !sim.Bug(ctx, "journal-replay-any-epoch") {
+			continue
+		}
 		for _, e := range h.entries {
 			if e.position > request.After {
 				wanted = append(wanted, *e)
 			}
 		}
 	}
+	slices.SortFunc(wanted, func(a, b indexed) int { return cmp.Compare(a.position, b.position) })
 	j.mu.Unlock()
 	reader := j.reader()
 	for _, e := range wanted {

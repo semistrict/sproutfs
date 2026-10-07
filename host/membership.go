@@ -80,14 +80,17 @@ func (h *Host) RefreshMembership(ctx context.Context) error {
 	return err
 }
 
-// SettleShards opens and closes the shards the membership this host holds
-// calls for now, and returns once it has: what a test, or a simulated
-// deployment that steps its controller by hand, does after the host read a
-// new generation or the cloud attached a shard. A host that serves no shard
-// does nothing.
-func (h *Host) SettleShards(ctx context.Context) {
+// SettleDisks opens and closes the shards and the journal disks the
+// membership this host holds calls for now, and returns once it has: what a
+// test, or a simulated deployment that steps its controller by hand, does
+// after the host read a new generation or the cloud attached a disk. A host
+// that serves neither does nothing.
+func (h *Host) SettleDisks(ctx context.Context) {
 	if h.shards != nil {
 		h.shards.pass(ctx)
+	}
+	if h.journalDisks != nil {
+		h.journalDisks.pass(ctx)
 	}
 }
 

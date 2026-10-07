@@ -84,6 +84,9 @@ type guest struct {
 	// succeeding against pages nothing is driving.
 	stopped bool
 	closed  bool
+	// flushes is what durable flush promises this VM, which every store is
+	// recorded into: nil in a world without it (journals.go).
+	flushes *flushes
 }
 
 // newGuest attaches one memory region per volume of vm through backing, which is the
@@ -436,6 +439,7 @@ func (g *guest) storeModel(name string, mp *testpager.Mapping, page uint64, valu
 		g.model[name][int(page)*size+i] = value
 	}
 	g.writes++
+	g.flushes.stored(name, page, size, value)
 	return true
 }
 

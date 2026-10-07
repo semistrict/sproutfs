@@ -385,7 +385,7 @@ func TestAHostReopensAShardAssignedToItAgain(t *testing.T) {
 		if err := a.host.RefreshMembership(c.ctx); err != nil {
 			t.Fatal(err)
 		}
-		a.host.SettleShards(c.ctx)
+		a.host.SettleDisks(c.ctx)
 		held, _ := a.host.Member()
 		if len(held.Disks) != 1 {
 			t.Fatalf("the host holds %v, want the shard", held.Disks)
@@ -398,8 +398,8 @@ func TestAHostReopensAShardAssignedToItAgain(t *testing.T) {
 		if err := a.host.RefreshMembership(c.ctx); err != nil {
 			t.Fatal(err)
 		}
-		a.host.SettleShards(c.ctx)
-		a.host.SettleShards(c.ctx)
+		a.host.SettleDisks(c.ctx)
+		a.host.SettleDisks(c.ctx)
 		before, _ := first.Disk(shard.ID)
 		after, _ := again.Disk(shard.ID)
 		held, _ = a.host.Member()

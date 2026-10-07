@@ -1096,7 +1096,7 @@
     "purpose": "Journal and answer a flush before the VM's record names this host's journal at its epoch, so a recovery never replays it."
   },
   {
-    "id": "journal-drop-source-before-post-copy",
+    "id": "journal-drop-source-early",
     "package": "host",
     "run": "^TestADestinationJournalsNothingUntilItsPostCopyEnds$",
     "purpose": "Drop the source's journal from the record at a checkpoint paused before the post-copy ended, which may not hold every page the source held."
@@ -1118,5 +1118,17 @@
     "package": "vmmemory",
     "run": "^TestTwoForksFaultingOneWindowAtOncePrefetchItOnce$",
     "purpose": "Look for the reads under way before taking the host's lock to send a prefetch's requests, so another fork's prefetch of the same root sent in between is unseen and the requests meet: the pager panics."
+  },
+  {
+    "id": "journal-replay-any-epoch",
+    "package": "internal/simtest",
+    "run": "^TestAFlushSurvivesItsDestinationDyingDuringThePostCopy$",
+    "purpose": "Serve a journal read the VM's entries of every epoch after the covered position, so a VM back on a host it ran on replays its entries of the earlier stay over a newer checkpoint."
+  },
+  {
+    "id": "journal-answer-before-post-copy",
+    "package": "internal/simtest",
+    "run": "^TestADestinationAnswersNoFlushBeforeItsPostCopyEnds$",
+    "purpose": "Answer a flush on a migration's destination before its post-copy ends, though the pages the guest stored into on the source are in no journal yet."
   }
 ]

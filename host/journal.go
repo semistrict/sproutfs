@@ -149,7 +149,7 @@ func (s *vmJournal) placedOne(positions []uint64) {
 // the journals the record names, so an entry of any other is never read.
 func (h *Host) mayJournal(vm *volume.VM, j *journal.Journal, state *vmJournal) bool {
 	state.mu.Lock()
-	copying := state.postCopy || state.root
+	copying := state.postCopy && !sim.Bug(h.ctx, "journal-answer-before-post-copy") || state.root
 	state.mu.Unlock()
 	if copying {
 		return false
@@ -456,7 +456,7 @@ func (c *cover) paused(ctx context.Context) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	c.token = s.captures
-	c.earlier = s.postCopy && !sim.Bug(ctx, "journal-drop-source-before-post-copy")
+	c.earlier = s.postCopy && !sim.Bug(ctx, "journal-drop-source-early")
 	if sim.Bug(ctx, "journal-covered-after-seal") {
 		// The covered position is read when the checkpoint is selected, so it
 		// covers the captures made since the pause too, and their entries

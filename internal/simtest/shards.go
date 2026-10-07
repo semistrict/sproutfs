@@ -17,7 +17,9 @@ import (
 // membership towards the hosts that are up and the shards, and attaches and
 // detaches the disks it calls for. The world takes passes, each followed by
 // every host that is up reading the membership and opening and closing what
-// it calls for, until a pass changes nothing.
+// it calls for, until a pass changes nothing. A world with durable flush on
+// keeps its journal disks in the same cloud, under the same controller
+// (journals.go).
 
 // shardBytes is each shard's network disk: room for every window of a
 // topology's VMs many times over, as the hosts' own disks have.
@@ -28,14 +30,15 @@ const shardBytes = clusterCacheBytes
 // shard that cannot be served, which the next settle tries again.
 const maximumShardPasses = 64
 
-// makeShards makes the world's cloud and its shards, and the controller over
-// them.
-func (w *World) makeShards(ctx context.Context) error {
+// makeCloud makes the world's cloud, its shards, and the controller over
+// them, which keeps a journal disk for every machine too where durable flush
+// is on.
+func (w *World) makeCloud(ctx context.Context) error {
 	w.cloud = w.runtime.NewNetworkDisks(sim.NetworkDisksConfig{AttachLatency: 2 * time.Second,
 		DetachLatency: time.Second, DescribeLatency: 50 * time.Millisecond,
 		Device: sim.DiskConfig{PowerLossFaults: true}})
 	w.control = &membership.ShardControl{Store: w.membership, Disks: w.cloud}
-	w.leaving = map[int]bool{}
+	w.leaving, w.givenUpHosts = map[int]bool{}, map[int]bool{}
 	for n := range w.config.Shards {
 		volume := fmt.Sprintf("%sshard-%d", w.config.Namespace, n)
 		if err := w.cloud.Provision(ctx, volume, shardBytes); err != nil {
@@ -43,16 +46,24 @@ func (w *World) makeShards(ctx context.Context) error {
 		}
 		w.control.Volumes = append(w.control.Volumes, volume)
 	}
+	if w.config.Journals {
+		w.control.Journals = w.journalControl()
+	}
 	return nil
 }
 
-// shardWant is every host that is up, as it reports itself now, and leaving
-// where the world took it out of the membership.
+// shardWant is every host that is up and not given up on, as it reports
+// itself now, and leaving where the world took it out of the membership; and
+// where durable flush is on, the pool of machines that each keep a journal
+// disk.
 func (w *World) shardWant() membership.Want {
 	want := membership.Want{Code: w.code}
 	for index := range w.hosts {
 		running := w.up(index)
-		if running == nil {
+		w.mu.Lock()
+		givenUp := w.givenUpHosts[index]
+		w.mu.Unlock()
+		if running == nil || givenUp {
 			continue
 		}
 		self, member := running.Member()
@@ -63,12 +74,19 @@ func (w *World) shardWant() membership.Want {
 		self.Leaving = w.leaving[index]
 		w.mu.Unlock()
 		want.Hosts = append(want.Hosts, self)
+		if w.config.Journals {
+			// Each host is a machine of its own, in the pool while its host is
+			// up: a host that is down is a machine that is gone, whose journal
+			// disk a survivor reads.
+			want.Pool = append(want.Pool, self.Machine)
+		}
 	}
 	return want
 }
 
 // ShardPass is one pass of the controller, then every host that is up
-// reading the membership and opening and closing the shards it calls for. It
+// reading the membership and opening and closing the shards and journal disks
+// it calls for. It
 // reports whether the pass changed the membership or asked anything of the
 // cloud.
 func (w *World) ShardPass(ctx context.Context) bool {
@@ -86,7 +104,7 @@ func (w *World) ShardPass(ctx context.Context) bool {
 		if err := running.RefreshMembership(ctx); err != nil {
 			w.logf("%s: reading the membership: %v", w.hosts[index].name, err)
 		}
-		running.SettleShards(ctx)
+		running.SettleDisks(ctx)
 	}
 	return changed
 }

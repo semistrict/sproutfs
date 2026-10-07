@@ -94,6 +94,17 @@ type Config struct {
 	// whenever the world settles, starts a host or takes one out of the
 	// membership.
 	Shards int
+	// Journals turns durable flush on (journals.go): every host answers a
+	// flush of a disk from its journal, on a network disk of the world's
+	// cloud that the controller keeps for its machine, and a VM opened after
+	// its host was lost replays what its record names. A flush is journaled
+	// only once a checkpoint names the journal, which the host's loop takes
+	// when it has to, so a world with it needs CheckpointInterval. A recovery
+	// is checked against the flushes the guest saw answered rather than
+	// against one whole checkpoint. JournalBytes is each journal disk's size;
+	// zero is a size of the world's own.
+	Journals     bool
+	JournalBytes int64
 	// StoreBounds is what every host's requests to the store and to the hot
 	// tier wait within, as a deployment's commands open them; zero is the
 	// defaults. The bounds run on the wall clock, which inside the bubble is
@@ -195,9 +206,15 @@ type World struct {
 	cloud   *sim.NetworkDisks
 	control *membership.ShardControl
 	leaving map[int]bool
+	// givenUpHosts is each host the controller takes for gone while it
+	// still runs, by index: see GiveUpOn.
+	givenUpHosts map[int]bool
 	// hot is the hot tier's bucket every host reads through, nil in a world
 	// without one.
 	hot *sim.ObjectStore
+	// flushes is, by VM, what durable flush promises its guest, in a world
+	// with it on.
+	flushes map[string]*flushes
 	// mu guards what a kill and the operation it interrupts both touch: which
 	// host runs which VM, the guest running it, and the checkpoints it may have
 	// come back at. Everything else here is single-threaded — the driver runs
@@ -429,6 +446,9 @@ func start(ctx context.Context, config Config) (*World, error) {
 	if config.Shards > 0 && (config.HotTier || config.ClusterCache) {
 		return nil, errors.New("simtest: shards are an alternative to the hosts' own cache disks and the hot tier")
 	}
+	if config.Journals && config.CheckpointInterval <= 0 {
+		return nil, errors.New("simtest: durable flush needs the checkpoint loop, which names the journals")
+	}
 	if config.Log == nil {
 		config.Log = func(string, ...any) {}
 	}
@@ -436,6 +456,7 @@ func start(ctx context.Context, config Config) (*World, error) {
 		instances: map[string]*instance{}, published: map[string]map[uint64]bool{},
 		points: map[string]pendingPoint{},
 		kept:   map[string]map[uint64]durableState{}, receivedGuests: map[string]int{},
+		flushes:   map[string]*flushes{},
 		ownership: newOwnership(config.Prefix.String()), members: map[string]membership.Host{},
 		// The code is the deployment's setting: the one the table gives the
 		// topology's size, as an operator sets it, and never changed by a
@@ -456,8 +477,8 @@ func start(ctx context.Context, config Config) (*World, error) {
 		return nil, err
 	}
 	w.runtime.ObjectStore().Observe(w.ownership.observe)
-	if config.Shards > 0 {
-		if err := w.makeShards(ctx); err != nil {
+	if config.Shards > 0 || config.Journals {
+		if err := w.makeCloud(ctx); err != nil {
 			return nil, err
 		}
 	}
@@ -660,6 +681,15 @@ func (w *World) hostConfig(h *hostState) host.Config {
 		config.Shards = host.ShardsConfig{Devices: w.cloud.Devices(h.name), Machine: h.name}
 		config.MembershipInterval = -1
 	}
+	if w.config.Journals {
+		// The host writes the journal disk the controller keeps for its
+		// machine, which is its own, and reads those the membership gives it
+		// after their writers were lost. It looks at what the membership
+		// assigns it whenever it reads a new generation, which the world has
+		// it do after every pass.
+		config.Journal = host.JournalConfig{DurableFlush: true, Devices: w.cloud.Devices(h.name), Machine: h.name}
+		config.MembershipInterval = -1
+	}
 	if w.config.HotTier {
 		// A read of the hot tier's bound, a mark of it down and the rate of
 		// its fills are choices of time, and whether a burst of fills found
@@ -699,8 +729,9 @@ func (w *World) listMember(ctx context.Context, h *hostState) {
 // that host's pod is no longer listed, which is what a drain ends in: its
 // member drains, its disk is let go and removed, and it leaves. Every host
 // that is up then reads the membership. A host started again joins again. In
-// a world with shards the host is leaving, as a pod being deleted is: its
-// shards move to the others while it still runs.
+// a world with shards or journal disks the host is leaving, as a pod being
+// deleted is: its shards move to the others while it still runs, and it keeps
+// its journal disk until the disk holds nothing a record names.
 func (w *World) Unlist(ctx context.Context, index int) {
 	w.mu.Lock()
 	delete(w.members, w.hosts[index].name)
@@ -708,7 +739,7 @@ func (w *World) Unlist(ctx context.Context, index int) {
 		w.leaving[index] = true
 	}
 	w.mu.Unlock()
-	if w.config.Shards > 0 {
+	if w.cloud != nil {
 		w.settleShards(ctx)
 		return
 	}
@@ -812,6 +843,10 @@ func (w *World) starter(h *hostState) host.StartFunc {
 		if err != nil {
 			return nil, err
 		}
+		// A migration's guest is the one that stopped on the source, and
+		// what was promised it holds here too. A fork's child is given its
+		// own once it has its parent's pages.
+		w.flushesFor(g)
 		h.mu.Lock()
 		h.started[vm.ID()] = g
 		h.guests = append(h.guests, g)
@@ -899,9 +934,10 @@ func (w *World) launch(h *hostState) error {
 	if w.config.ClusterCache {
 		w.listMember(w.ctx, h)
 	}
-	if w.config.Shards > 0 {
+	if w.cloud != nil {
 		w.mu.Lock()
 		delete(w.leaving, slices.Index(w.hosts, h))
+		delete(w.givenUpHosts, slices.Index(w.hosts, h))
 		w.mu.Unlock()
 		w.settleShards(w.ctx)
 	}
@@ -1097,6 +1133,7 @@ func (w *World) create(ctx context.Context, spec VMSpec) error {
 	if err != nil {
 		return err
 	}
+	w.newFlushesFor(g)
 	h.running(g)
 	in := &instance{spec: spec}
 	w.adopt(in)
@@ -1429,7 +1466,8 @@ func (w *World) checkpointDisks(ctx context.Context, id string, terms volume.Ter
 		return nil
 	}
 	at := durableState{model: g.checkpointed(), writes: g.stored(), stateless: true}
-	ckpt, err := host.CaptureDisks(ctx, vm, g, w.hosts[in.host].clock, terms)
+	paused := g.flushPoint()
+	ckpt, err := host.CaptureDisks(ctx, vm, g, w.hosts[in.host].clock, w.journalTerms(in, terms))
 	if err != nil {
 		return fmt.Errorf("%s: disk capture: %w", id, err)
 	}
@@ -1449,6 +1487,7 @@ func (w *World) checkpointDisks(ctx context.Context, id string, terms volume.Ter
 			id, len(ckpt.State()))
 	}
 	w.landed(in, g, at)
+	g.landed(paused)
 	w.notePublished(id, vm.Status().Checkpoint.Sequence)
 	return nil
 }
@@ -1477,7 +1516,8 @@ func (w *World) checkpoint(ctx context.Context, id string, terms volume.Terms) e
 	// only thing that stores at all — so the snapshot taken here is exactly
 	// what the seal froze.
 	at := durableState{model: g.checkpointed(), writes: g.stored()}
-	ckpt, err := host.Capture(ctx, vm, g, w.hosts[in.host].clock, terms)
+	paused := g.flushPoint()
+	ckpt, err := host.Capture(ctx, vm, g, w.hosts[in.host].clock, w.journalTerms(in, terms))
 	if err != nil {
 		return fmt.Errorf("%s: capture: %w", id, err)
 	}
@@ -1514,6 +1554,7 @@ func (w *World) checkpoint(ctx context.Context, id string, terms volume.Terms) e
 			id, len(ckpt.State()), stateBytes)
 	}
 	w.landed(in, g, at)
+	g.landed(paused)
 	w.notePublished(id, vm.Status().Checkpoint.Sequence)
 	return nil
 }
@@ -2642,6 +2683,7 @@ func (w *World) forked(ctx context.Context, source, destination *hostState, spec
 	}
 	root := received.VM().Status().Checkpoint
 	child.adopt(at)
+	w.newFlushesFor(child)
 	in := &instance{spec: spec}
 	w.adopt(in)
 	w.place(in, spec.Host, child)
@@ -2726,6 +2768,11 @@ func (w *World) Settle(ctx context.Context) error {
 	if behind {
 		w.settleMembership(ctx)
 	}
+	if w.config.Journals {
+		// A VM whose host was lost opens only once a survivor serves that
+		// host's journal disk, which the controller moves first.
+		w.settleShards(ctx)
+	}
 	// In identity order rather than the map's: what this world does must come
 	// from the seed and not from where Go happened to put a key.
 	for _, id := range slices.Sorted(maps.Keys(w.orphans)) {
@@ -2765,7 +2812,7 @@ func (w *World) Settle(ctx context.Context) error {
 		}
 	}
 	w.survey()
-	if w.config.Shards > 0 {
+	if w.cloud != nil {
 		w.settleShards(ctx)
 	}
 	errs = append(errs, w.settleFills(ctx))
@@ -3271,6 +3318,9 @@ func (w *World) reopen(ctx context.Context, in *instance, index int, why string)
 // VM comes back as is not the pause it went away at: it is that pause with
 // its memory replaced by zeroes, under a checkpoint this writer published.
 func (w *World) reopenWith(ctx context.Context, in *instance, index int, why string, cold bool) (bool, error) {
+	if w.config.Journals {
+		return w.reopenJournaled(ctx, in, index, why, cold)
+	}
 	h := w.hosts[index]
 	running := w.reach(index)
 	if running == nil {

@@ -142,6 +142,7 @@ func (w *World) CreateFromKept(ctx context.Context, spec VMSpec, sequence uint64
 		w.logf("a page could not be read while a fault was on: %v", unreadable)
 	}
 	g.adopt(came.model)
+	w.newFlushesFor(g)
 	in := &instance{spec: spec}
 	w.adopt(in)
 	w.place(in, spec.Host, g)
