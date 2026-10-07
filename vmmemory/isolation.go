@@ -314,24 +314,13 @@ func (r *MemoryRegion) keepFork(f *arenaFile, number int) {
 
 // forkFile is the file this checkpoint lends its pages to children on this
 // host in, made the first time one is copied there. It has a slot for each
-// page of the memory region the checkpoint was taken of. It is nil once the
-// checkpoint lends root's pages no more: the seal ended, and took back the
-// file it had.
-func (c *MemoryRegionCheckpoint) forkFile(ctx context.Context, root *identityRoot) (*arenaFile, error) {
+// page of the memory region the checkpoint was taken of.
+func (c *MemoryRegionCheckpoint) forkFile(ctx context.Context) (*arenaFile, error) {
 	h := c.memoryRegion.host
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.fork != nil {
 		return c.fork, nil
-	}
-	// The end of the seal stops root lending before it takes c.mu to take the
-	// file back (MemoryRegion.endFork), so a root still lent here means that
-	// end sees the file this makes.
-	h.mu.Lock()
-	lending := root.lent == c
-	h.mu.Unlock()
-	if !lending && !sim.Bug(ctx, "pager-fork-file-after-its-seal") {
-		return nil, nil
 	}
 	offsets := c.memoryRegion.pageCount
 	file, err := h.arena.File(ctx, offsets)
@@ -496,40 +485,33 @@ func (r *MemoryRegion) forkCopy(ctx context.Context, lent *zirconvm.VmPage, key 
 		r.host.unlockPage(lent)
 		return nil, nil
 	}
-	// The point's seal may end from here on, and nothing held keeps that out:
-	// the end of a seal waits for the lock of each of its pages, and then for
-	// those of the copies its roots keep, but this region may take lent's lock
-	// after the first and before the second. So forkFile and keepForkCopy look
-	// again whether c still lends root's pages.
-	if forkFileSeam != nil {
-		forkFileSeam(key.id.Page)
-	}
+	// The point's seal cannot end before this copy is done: the end takes each
+	// page's lent name away under that page's lock (Host.unlend), and lent is
+	// held to the end of the copy, so the end waits for it, and a fault that
+	// takes lent's lock after the name went no longer finds it. So c still
+	// lends root's pages under each hold here, and the copy joins root.copies
+	// before endFork takes them. Before unlend the name went only at endFork,
+	// a seal could end inside a copy, and the copy looked again whether its
+	// point still lent; that look and its guards went with TASK-108.
 	if err := sim.Admit(ctx, "vmmemory/fork-file"); err != nil {
 		r.host.unlockPage(lent)
 		return nil, err
 	}
-	fork, err := c.forkFile(ctx, root)
-	if err != nil || fork == nil {
+	fork, err := c.forkFile(ctx)
+	if err != nil {
 		r.host.unlockPage(lent)
 		return nil, err
 	}
 	at := fileSlot{fork, int(key.id.Page)}
 	h.mu.Lock()
 	taken := at.slot < fork.slots.Offsets() && fork.slots.IsFree(at.slot) && h.takeFree(at, 1)
-	// The parent's page goes back only once the seal has ended, which
-	// keepForkCopy finds, so a copy of a slot given back meanwhile is dropped.
-	from := parent.fileSlot
 	h.mu.Unlock()
 	if !taken {
 		r.host.unlockPage(lent)
 		return nil, nil
 	}
-	if from.slot < 0 {
-		r.host.unlockPage(lent)
-		return nil, h.abandonSlots(ctx, at, 1, nil)
-	}
 	data := make([]byte, h.pageSize)
-	if err := from.file.Read(ctx, from.slot, data); err != nil {
+	if err := parent.file.Read(ctx, parent.slot, data); err != nil {
 		r.host.unlockPage(lent)
 		return nil, errors.Join(err, h.abandonSlots(ctx, at, 1, nil))
 	}
@@ -543,30 +525,14 @@ func (r *MemoryRegion) forkCopy(ctx context.Context, lent *zirconvm.VmPage, key 
 	h.mu.Lock()
 	r.host.rootPages++
 	h.mu.Unlock()
-	drop := func(err error) (*zirconvm.VmPage, error) {
+	if forkCopySeam != nil {
+		forkCopySeam(key.id.Page)
+	}
+	if err := sim.Admit(ctx, "vmmemory/fork-copy"); err != nil {
 		r.host.releaseFrame(copied)
 		r.host.unlockPage(copied)
 		r.host.unlockPage(lent)
 		return nil, err
-	}
-	gap := func() error {
-		if forkCopySeam != nil {
-			forkCopySeam(key.id.Page)
-		}
-		return sim.Admit(ctx, "vmmemory/fork-copy")
-	}
-	unkept := sim.Bug(ctx, "pager-fork-copy-unkept")
-	if !unkept {
-		if err := gap(); err != nil {
-			return drop(err)
-		}
-		// The copy is one the point keeps before any child can find it in the
-		// root, so an end of the seal from here on gives it back with the rest,
-		// once this region has given its lock back. An end that began already
-		// leaves the page to this region, which reads its own.
-		if !r.host.keepForkCopy(root, c, copied) {
-			return drop(nil)
-		}
 	}
 	// The copy takes the lent page's place in the root.
 	offset := key.id.Page * h.pageSize
@@ -575,21 +541,10 @@ func (r *MemoryRegion) forkCopy(ctx context.Context, lent *zirconvm.VmPage, key 
 	removed := root.pages.RemovePageLocked(offset, lent)
 	lock.Unlock()
 	if !removed || !r.host.supplyIfEmpty(ctx, root.pages, key.id.Page, copied) {
-		r.host.forgetForkCopy(root, copied)
-		return drop(nil)
-	}
-	if unkept {
-		// The bug keeps the copy only once a child can find it in the root,
-		// and whether or not the point still lends it: a seal that ends in
-		// between gives the copy back with the root, and its file with it.
-		if err := gap(); err != nil {
-			r.host.unlockPage(copied)
-			r.host.unlockPage(lent)
-			return nil, err
-		}
-		h.mu.Lock()
-		root.copies = append(root.copies, copied)
-		h.mu.Unlock()
+		r.host.releaseFrame(copied)
+		r.host.unlockPage(copied)
+		r.host.unlockPage(lent)
+		return nil, nil
 	}
 	h.mu.Lock()
 	if parent.lent == lent {
@@ -601,6 +556,7 @@ func (r *MemoryRegion) forkCopy(ctx context.Context, lent *zirconvm.VmPage, key 
 			break
 		}
 	}
+	root.copies = append(root.copies, copied)
 	h.stats.ForkCopies++
 	h.mu.Unlock()
 	r.host.unlockPage(lent)
@@ -613,29 +569,10 @@ func (r *MemoryRegion) forkCopy(ctx context.Context, lent *zirconvm.VmPage, key 
 	return copied, nil
 }
 
-// forkFileSeam runs in a fork copy between its look at the point and its
-// making the point's file, and forkCopySeam between its making the copy and
-// the point's keeping it, so a test can end the point's seal in either.
-var forkFileSeam, forkCopySeam func(page uint64)
-
-// keepForkCopy makes copied one of the copies root keeps in its point's file,
-// where c still lends root's pages, and reports whether it did.
-func (h *Host) keepForkCopy(root *identityRoot, c *MemoryRegionCheckpoint, copied *zirconvm.VmPage) bool {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if root.lent != c {
-		return false
-	}
-	root.copies = append(root.copies, copied)
-	return true
-}
-
-// forgetForkCopy takes copied off the copies root keeps, where it still is.
-func (h *Host) forgetForkCopy(root *identityRoot, copied *zirconvm.VmPage) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	root.copies = slices.DeleteFunc(root.copies, func(p *zirconvm.VmPage) bool { return p == copied })
-}
+// forkCopySeam runs in a fork copy between its making the copy and the copy's
+// taking the lent page's place, so a test can start the end of the point's
+// seal there.
+var forkCopySeam func(page uint64)
 
 // move copies a published page in the private file it was published in into
 // the file its identity's pages live in, because another region inherits it,
