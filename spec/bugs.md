@@ -162,3 +162,79 @@ drops their digests, as an abandoned seal does. The model checks the design
 with the fix (`NoLostFlush`). Mutants:
 `spec/journal/mutants/failed-keeps-pages.cfg` and
 `spec/journal/mutants/failed-keeps-digests.cfg`.
+
+## B7. A journal disk marked empty is deleted with an entry written after the mark
+
+Found by `spec/shards` (TASK-104.6) on 2026-10-07, in commit 130a2b85. Open:
+the code must change.
+
+The controller marks a releasing journal disk empty when its host reports no
+live entry and no VM (`membership/journals.go`, `host/journaldisks.go`
+`held`). Nothing stops a VM from reaching that host after the report. The
+orchestrator places from a membership it read earlier, and the host takes the
+VM. The VM flushes into the disk. If the host then dies, or its node is
+deleted when the grace period runs out, it never reports the live entry, so
+nothing unmarks the disk. Let keeps the mark. Once the node leaves the pool
+the reservation is cleared, and the disk, free and marked empty, is deleted an
+hour later with the entry. The answered flush is lost. The close that opens
+the disk again on live entries does not help: a dead host does not close.
+
+The counterexample (`journal-place-on-releasing`): the autoscaler chooses
+host 1's node; its member drains; the host, with no VM and no live entry,
+reports its disk empty; the controller marks it; the orchestrator, from an
+older membership, places a VM on host 1, which flushes; the node is deleted;
+the disk is let go marked empty, its reservation cleared, marked deleting and
+deleted. A report the host made before it read the drain does the same
+(`journal-report-before-release`): the controller drains the host and marks
+the disk from that report, and the host, which still thinks it serves, takes
+a VM.
+
+A third way: a report names only the disk, not the assignment the host holds
+it under. A host that holds a disk under an older assignment, because it
+opened it from a membership it read before the disk was let go and assigned
+to it again, reports it as a reader would, and the controller marks the disk
+it is now to write (`journal-mark-any-assignment`).
+
+The fix, in three parts:
+
+1. A host reports its own journal disk empty only once the membership it
+   holds releases that disk, with no VM and no live entry.
+2. From then on the host takes no VM: it refuses an open or a migration in.
+3. A report names the assignment the host holds each disk under, and the
+   controller marks or unmarks a disk only on a report of the disk's
+   assignment.
+
+Then nothing writes a disk after it is marked, so the mark survives the loss
+of its holder, and the close that finds live entries never happens. Clearing
+the mark when Let finds the holder gone does not do instead: a host that
+starts again under the same identity holds nothing, as one that closed the
+disk does. The model checks the design with the fix (`EmptyIsTrue`,
+`NoLiveDelete`). Mutants: `spec/shards/mutants/journal-report-before-release.cfg`,
+`journal-place-on-releasing.cfg` and `journal-mark-any-assignment.cfg`.
+
+## B8. A controller adds back a journal disk another controller deleted
+
+Found by `spec/shards` (TASK-104.6) on 2026-10-07, in commit 130a2b85. Open:
+the code must change.
+
+`ShardControl.Pass` reads the membership, lists the journal disks, and calls
+`Reconcile`. When its compare-and-set loses, `Store.Update` runs `Next` again
+over the newer generation, with the same list. `Next` adds every listed disk
+the membership does not list, free and empty. So with two controllers: A
+reads a generation in which a disk is deleting, and lists the disk; B deletes
+it in the cloud and removes it from the membership; A's write loses, and A,
+over B's generation, adds the disk again. The membership then offers a disk
+that does not exist. It is reserved for a machine with none and assigned to
+the host there, but never attached, so that host never has a journal and the
+orchestrator places no VM on it. Nothing removes it: `Remove` takes only a
+deleting disk, and a reserved disk is never free to be marked deleting.
+
+The counterexample (`journal-stale-list`): a spare disk free and empty is
+marked deleting, deleted and removed, and a controller whose list predates
+the delete adds it back.
+
+The fix: a step that rests on the list is taken only over the generation the
+pass read before listing. `Want` carries that generation, and `Next` skips the
+add over a newer one; the next pass lists again. The model checks the design
+with the fix (`ListedExists`). Mutant:
+`spec/shards/mutants/journal-stale-list.cfg`.
