@@ -37,8 +37,10 @@ TASK-24 in the [backlog](backlog/tasks).
 
 A VM's durable state is one checkpoint, which the VM's control record in the
 object store selects. A guest write never waits on object-store latency.
-Losing a host rewinds its VMs to their last checkpoint, which is at most one
-checkpoint interval old (60 seconds by default). Read
+Losing a host rewinds its VMs' disks to their last checkpoint. That is
+normally at most one checkpoint interval old (60 seconds by default), and the
+loss window (five minutes by default) bounds it when publishing fails. The
+guest then cold boots, because an interval checkpoint holds no RAM. Read
 the [loss model](docs/architecture.md#loss-model) before integrating.
 
 ## See it run

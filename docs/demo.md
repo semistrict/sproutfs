@@ -92,8 +92,9 @@ the `sproutfsctl` in the deployment's image.
    pod with no grace period, which skips the drain. `sproutfsctl recover <vm>`
    reopens the VM on the surviving host from its last checkpoint, and the guest
    must still hold the variable. The run takes a checkpoint
-   (`sproutfsctl capture`) before the kill. A real loss rewinds the guest by at
-   most the checkpoint interval, 60 s.
+   (`sproutfsctl capture`) before the kill. A real loss rewinds the guest's disks
+   by about the checkpoint interval, 60 s, and at most the loss window, five
+   minutes, and the guest cold boots.
 
    Recovery reopens the VM only when:
    - the deleted pod is no longer listed, and

@@ -180,8 +180,8 @@ spec:
             - name: SPROUTFS_CACHE_WRITE_BYTES_PER_DAY
               value: "1099511627776"
             # The cluster cache is off: every window is kept whole on the
-            # host that reads it, whatever the membership says, until
-            # hosts read stripes from each other.
+            # host that reads it, whatever the membership says. Raise it a
+            # share at a time while watching cache_read.
             - name: SPROUTFS_CACHE_CLUSTER_PERCENT
               value: "0"
             # The ephemeral disks this host admits, as a spill file of their

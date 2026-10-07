@@ -939,7 +939,7 @@ The code: with none configured, the orchestrator picked the code from the most h
 
 # Shards on network disks
 
-<div class="text-base opacity-70 mb-3">decided 2026-10-03 · not built yet</div>
+<div class="text-base opacity-70 mb-3">decided 2026-10-03 · built 2026-10-04 · manifests not yet run on a cluster</div>
 
 <div class="grid grid-cols-2 gap-10 mt-2 text-xl">
 <div class="space-y-5">
@@ -1004,7 +1004,7 @@ A keep carries a holder's stripes as its disk stores them. A holder refuses a wi
 
 To keep a cold burst from filling one window many times, a read's fill needs the window's fill right, which rank 1 gives to the first reader that asks, once per window per ten seconds, as Memcache's leases do.
 
-A fault, a publication and a pull never wait for a fill. Fills go through one 64 MiB queue per host, within 128 MiB/s and the host's background budget; anything over is dropped, and the window is read from the store next time.
+A fault, a publication and a pull never wait for a fill. Fills go through one 64 MiB queue per host, within 192 MiB/s and the host's background budget; anything over is dropped, and the window is read from the store next time.
 -->
 
 ---
@@ -1305,7 +1305,7 @@ Host 0 published 8 GiB of incompressible pages, and the publication's fills put 
 
 The cluster was 1.7 times as fast with a tight tail; the store's tail moved by 51 ms between rounds. A lost host changed nothing: its requests were replaced at once and it was marked down on the refused connection.
 
-This is a bulk sequential read, and both paths were limited by the reader's CPU per page, not by where the page came from. The cluster's real advantage is a dependent fault, which pays one read's latency at a time; that is measured next.
+This is a bulk sequential read, and both paths were limited by the reader's CPU per page, not by where the page came from. The cluster's real advantage is a dependent fault, which pays one read's latency at a time: on 2026-10-04 a dependent 4 KiB fault took 1.05 ms at the median from the cluster and 25.7 ms from the store (docs/measurements/gce-fault-planning-2026-10-04.md).
 -->
 
 ---
@@ -1327,7 +1327,7 @@ This is a bulk sequential read, and both paths were limited by the reader's CPU 
 - **recovery after a real host loss** — tested in simulation, not yet on a cluster
 - **disk checkpoints and the flush bound** — not yet tested on GCE
 - **the cluster cache is off in the deployment** — its share of windows is 0 until the rollout raises it
-- **shards on network disks** — designed for autoscaling, not built yet
+- **shards on network disks** — built and measured on GCE; the manifests are not yet run on a cluster
 - **serving copies through memory** — not yet `sendfile`
 - **the page layer ported from Zircon** — a 4 KiB fault at random is 3.6–5 % slower, not yet attributed; not yet timed on GCE
 
@@ -1348,9 +1348,9 @@ Recovery after a real host loss is tested in simulation and with fakes, not yet 
 
 Disk-only checkpoints, cold boot from a checkpoint without VMM state, and blocking flushes are tested in the simulation, the host test suite and Lima. They have not yet been tested together on GCE.
 
-The cluster cache is built and measured, but the deployment turns it on for none of its windows yet. A setting raises the share of windows gradually, as mcrouter's shadowing does, once the pull asks the cluster first.
+The cluster cache is built and measured, but the deployment turns it on for none of its windows yet. A setting raises the share of windows gradually, as mcrouter's shadowing does.
 
-The cache's disks are still the hosts' own SSDs. Shards on network disks, which keep the cache whole through autoscaling, are designed and tracked as TASK-86, and not built yet.
+The cache's disks are still the hosts' own SSDs. Shards on network disks, which keep the cache whole through autoscaling, are built and measured on GCE (TASK-86); their manifests are not yet run on a cluster.
 
 A host serving stripes still reads them into memory and writes them out. Sending them from the disk with sendfile is the next step, if a plain copy turns out to cost enough to matter.
 

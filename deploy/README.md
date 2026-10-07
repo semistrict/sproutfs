@@ -296,10 +296,10 @@ upload durations.
 | `SPROUTFS_API_PORT` | literal | `8080` | port for the host API |
 | `SPROUTFS_API_TOKEN` | Secret `sproutfs-api-token` key `token` | generated per deployment | the shared bearer token. Without it the process serves an API that admits anyone and says so at startup |
 | `SPROUTFS_PAGE_SERVER_PORT` | literal | `8081` | port for the peer server |
-| `SPROUTFS_HUGEPAGE_DIR` | literal | `/hugepages-2Mi` | the pod's hugetlbfs mount. The PMEM arena is a `MFD_HUGETLB` memfd, not a file in it, but the kubelet grants the HugeTLB allotment through the mount, so the host refuses to start without it. The RAM arena is an ordinary memfd and does not touch the pool |
+| `SPROUTFS_HUGEPAGE_DIR` | literal | `/hugepages-2Mi` | the pod's hugetlbfs mount. The PMEM arena is a `MFD_HUGETLB` memfd, not a file in it, but the kubelet grants the HugeTLB allotment through the mount, so the host refuses to start without it. At the default 2 MiB RAM page the RAM arena is also a `MFD_HUGETLB` memfd; at 4 KiB it is an ordinary memfd and does not touch the pool |
 | `SPROUTFS_SCRATCH_DIR` | literal | `/var/lib/sproutfs` | node-disk `emptyDir` for the spill files and VMM scratch. A starting host wipes it. It has no size limit: the disk limiter bounds what the host writes, and a kubelet limit would evict the pod |
 | `SPROUTFS_CACHE_DIR` | literal | `/var/cache/sproutfs` | the page cache's directory, a `hostPath` at `/opt/sproutfs-demo/cache/<namespace>` on the same filesystem as the scratch, which the host checks. The host takes the first file (`cache-0`, `cache-1`, ...) no other process holds locked, so the two pods never share one and a replaced pod reads back its predecessor's. Unset, the cache is in the scratch ([hosting](../docs/hosting.md#the-caches-file)) |
-| `SPROUTFS_ARENA_BYTES` | literal | `5368709120` | the host's resident page store, divided between the two pagers by `SPROUTFS_RAM_SHARE_PERCENT` into two memfds. The RAM share comes out of the pod's `memory` request and the PMEM share out of its HugeTLB allotment |
+| `SPROUTFS_ARENA_BYTES` | literal | `5368709120` | the host's resident page store, divided between the two pagers by `SPROUTFS_RAM_SHARE_PERCENT` into two memfds. At the default 2 MiB pages both shares come out of the pod's HugeTLB allotment; a pager at 4 KiB takes its share from the pod's `memory` request |
 | `SPROUTFS_RAM_PAGE_BYTES` | unset | `2097152` | the RAM pager's page: `2097152` on the HugeTLB pool, where the RAM arena comes out of the HugeTLB allotment, or `4096` on ordinary memory, which holds a tenth of the memory for forks that write little and scattered and is slower otherwise (docs/vm-memory.md). RAM budgets, template memory and `SPROUTFS_VM_MEMORY_BYTES` are counted in this page |
 | `SPROUTFS_PMEM_PAGE_BYTES` | unset | `2097152` | the PMEM and ephemeral pagers' page: `2097152` on the HugeTLB pool, or `4096` on ordinary memory charged to the pod's `memory` request, so a checkpoint publishes the 4 KiB pages a guest wrote. PMEM and ephemeral budgets are counted in this page. A disk is still a whole number of 2 MiB, as Firecracker requires. A host refuses volumes published at the other page, so a fleet runs one PMEM page; changing it means new templates and VMs |
 | `SPROUTFS_RAM_SHARE_PERCENT` | unset | `75` | the share of the arena, the spill file and the page budgets for the RAM pager; PMEM takes the rest. RAM is where forks diverge and the root is mostly read: the 2026-09-19 fan-out measured a fork holding about 114 MB of RAM privately against 10 MB of root. A share that cannot divide the arena or spill file into whole pages of both pagers is refused |
@@ -506,11 +506,11 @@ attach calls.
 | privileged | yes, plus a `hostPath` `CharDevice` on `/dev/kvm`, the node's read-only guest-image directory, and the node's cache directory | no, one `hostPath` directory for its table |
 
 Huge pages are not counted against the container's `memory` limit, so a host
-pod's ceiling on the node is 2 GiB of pages plus 12 GiB of ordinary memory. The
-pages are the PMEM arena, 1.25 GiB with room over; the 12 GiB holds the RAM
-arena's 3.75 GiB beside the Go heap, the page cache and one Firecracker process
-per VM. The two pods together request the node's whole 4 GiB pool and three
-quarters of its 32 GiB of memory, so there is no room for a third: the host
+pod's ceiling on the node is 6 GiB of pages plus 8 GiB of ordinary memory. The
+pages hold both arenas, 5 GiB, and the ephemeral arena's 256 MiB, with room
+over; the 8 GiB holds the Go heap, the page cache and one Firecracker process
+per VM. The two pods together request the node's whole 12 GiB pool and half of
+its 32 GiB of memory, so there is no room for a third: the host
 Deployment rolls at `maxSurge: 0` and `maxUnavailable: 1`, stopping one pod
 before starting its replacement.
 
