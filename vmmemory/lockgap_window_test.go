@@ -89,12 +89,9 @@ func TestARunReadHoldingItsRegionsOwnPageLetsARetireRun(t *testing.T) {
 			t.Fatal(err)
 		}
 		// Where the fault reads the rest of its run, its read waits until the
-		// retire has started.
+		// retire has started; every read after goes on at once.
 		proceed := make(chan struct{})
-		ab.onLoad = func(uint64, int) {
-			ab.onLoad = nil
-			<-proceed
-		}
+		ab.onLoad = func(uint64, int) { <-proceed }
 		ctx, cancel := context.WithCancel(vmmemory.WithStream(f.ctx))
 		defer cancel()
 		faulted := make(chan error, 1)
