@@ -576,24 +576,36 @@ func (h *Host) evictIdle(root *zirconvm.CowPages, offset uint64) bool {
 	return true
 }
 
+// evictIfIdle gives up page, a root's page its caller holds the lock of,
+// where it is idle: in no layer, mapped by nothing and replaced by no store.
+// Every path that names a page, or moves it, takes its lock first, so what
+// this finds holds until the page has gone. A caller that chose the page
+// before it held the lock must look here, and not act on its choice: a fault
+// or a settle may have named the page in between, and an eviction's look aged
+// it old enough to take. It reports whether the page went.
+func (h *Host) evictIfIdle(page *zirconvm.VmPage) bool {
+	f := frameOf(page)
+	h.mu.Lock()
+	idle := f.layer == nil && f.aliases.len() == 0 && f.replacing == 0
+	h.mu.Unlock()
+	if !idle {
+		return false
+	}
+	link, ok := h.node.PageQueues().Backlink(page)
+	return ok && h.evictIdle(link.Cow, link.Offset)
+}
+
 // dropOrigin gives up a page a region's stores copied from once nothing maps
 // it, which detaching the region does: nothing else would ever give it up
-// ahead of the pages other regions still read.
+// ahead of the pages other regions still read. Whether anything maps it is
+// asked once its lock is held, which every path that maps it takes first.
 func (h *Host) dropOrigin(page *zirconvm.VmPage) {
-	h.mu.Lock()
-	mapped := frameOf(page).aliases.len() > 0
-	h.mu.Unlock()
-	if mapped {
-		return
-	}
 	if !frameOf(page).mu.TryLock() {
 		// Something holds it: it stays idle, for an idle drop to take.
 		return
 	}
 	defer frameOf(page).mu.Unlock()
-	if link, ok := h.node.PageQueues().Backlink(page); ok {
-		h.evictIdle(link.Cow, link.Offset)
-	}
+	h.evictIfIdle(page)
 }
 
 // pageKey identifies immutable bytes by the store page object that holds them.

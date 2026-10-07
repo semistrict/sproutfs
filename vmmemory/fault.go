@@ -250,6 +250,10 @@ func (r *MemoryRegion) isPrivate(b *binding) bool {
 func (r *MemoryRegion) refault(ctx context.Context, b *binding) (bool, error) {
 	h := r.host
 	ps := h.pageSize
+	// Whose the page is and where its bytes are is read with the region held
+	// shared and the window's stripe held, so no seal, retire, capture or
+	// store of this page changes it until the region is given up for the slot
+	// below. The bytes are read from that reservation meanwhile.
 	r.bindingsMu.Lock()
 	dirty, held, protected := b.dirty, b.checkpoint, b.protected
 	spill := b.spill
@@ -264,13 +268,27 @@ func (r *MemoryRegion) refault(ctx context.Context, b *binding) (bool, error) {
 	h.mu.Lock()
 	h.stats.SpillRefaults++
 	h.mu.Unlock()
+	// The region is given up for the slot. A seal, a retire or an unseal
+	// taken meanwhile changes whose the page is, which is decided again from
+	// the top; a seal and its unseal both taken hand the page back the same
+	// reservation, so the bytes read stand. A capture taken meanwhile changes
+	// only whether the page is protected, which is read again: a page it
+	// journaled is mapped read-only, so the guest's next store traps and makes
+	// it unjournaled again.
 	at, err := r.reclaimPrivate(ctx, b.index)
 	if err != nil {
 		return false, err
 	}
 	r.bindingsMu.Lock()
 	same := b.dirty == dirty && b.checkpoint == held
+	if !sim.Bug(ctx, "pager-refault-maps-by-a-stale-protection") {
+		protected = b.protected
+	}
 	r.bindingsMu.Unlock()
+	// The pages are read under a hold of h.mu of their own. Nothing gives b
+	// or held a page while it is released: the stripe keeps out every fault,
+	// store, give-back and prefetch of the page, and the region held shared
+	// every seal and settle, and an eviction only takes a page away.
 	h.mu.Lock()
 	same = same && b.page == nil && (held == nil || held.page == nil)
 	h.mu.Unlock()
@@ -880,24 +898,46 @@ func (r *MemoryRegion) allocateOwn(ctx context.Context, index uint64, clean bool
 		}
 		h.mu.Unlock()
 		if free != nil {
+			// The free place is taken under the allocation's own hold, by
+			// takeOwnLocked again: what was free here may not be by then.
 			at := *free
 			return h.allocate(ctx, r, at.file, func() int { return h.takeOwnLocked(r, index, at).slot }, preferEviction)
 		}
 		if idle == nil {
 			return fileSlot{}, fmt.Errorf("%w: both places of page %d of a memory region hold a page it maps", ErrCapacity, index)
 		}
+		// The idle page was chosen under h.mu, and its lock is taken after.
+		// The caller has given the region up, so a settle may hand the page
+		// back to this region in between, and an eviction's look age it old
+		// enough to take: whether it is idle is asked again under its lock.
+		// The places are looked at again from the top either way.
+		if allocateOwnSeam != nil {
+			allocateOwnSeam(index)
+		}
 		if !frameOf(idle).mu.TryLock() {
 			if err := r.host.lockPage(ctx, idle); err != nil {
 				return fileSlot{}, err
 			}
 		}
-		if link, ok := r.host.node.PageQueues().Backlink(idle); ok && frameOf(idle).layer == nil {
-			r.host.evictIdle(link.Cow, link.Offset)
+		if sim.Bug(ctx, "pager-give-up-an-own-place-as-chosen") {
+			// The bug gives the page up as it was chosen, before its lock was
+			// held: a page the region maps again is freed, and the pager
+			// panics.
+			if link, ok := r.host.node.PageQueues().Backlink(idle); ok && frameOf(idle).layer == nil {
+				r.host.evictIdle(link.Cow, link.Offset)
+			}
+		} else {
+			r.host.evictIfIdle(idle)
 		}
 		r.host.unlockPage(idle)
 	}
 	return fileSlot{}, ErrContended
 }
+
+// allocateOwnSeam runs in allocateOwn once it has chosen the idle page it
+// will give up and before it takes that page's lock, which is where a settle
+// can hand the page back to the region. Production leaves it nil.
+var allocateOwnSeam func(index uint64)
 
 // makeRoom gives up idle pages until want slots of f are free, or no idle
 // page is left, as Host.makeRoom does.
