@@ -12,7 +12,7 @@ spill, until a [checkpoint](vm-memory.md) publishes them. The source hands the
 VM over at the checkpoint its control record already selects, and the
 destination fetches everything written since from the source's pages. If the
 source dies during the post-copy, the guest loses its writes since the source's
-last interval checkpoint, as with any host loss: up to one 60 s interval. So the source keeps serving
+last interval checkpoint, as with any host loss: about one 60 s interval, and at most the loss window. So the source keeps serving
 until the destination reports that it has fetched every one of those pages.
 
 ## Phases
