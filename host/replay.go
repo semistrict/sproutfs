@@ -10,6 +10,7 @@ import (
 	"github.com/semistrict/sproutfs/membership"
 	"github.com/semistrict/sproutfs/peer"
 	"github.com/semistrict/sproutfs/platform"
+	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/rank"
 	"github.com/semistrict/sproutfs/volume"
 )
@@ -23,7 +24,7 @@ const journalReadBytes = 16 << 20
 type replayer struct{ h *Host }
 
 // Served reports volume.ErrJournalPending unless every journal named is held
-// here or served by a member of the membership this host holds.
+// here, served by a member, or holds nothing to read (journalHolder).
 func (r replayer) Served(ctx context.Context, journals []control.Journal) error {
 	var m *membership.Membership
 	for _, named := range journals {
@@ -38,7 +39,7 @@ func (r replayer) Served(ctx context.Context, journals []control.Journal) error 
 			}
 			m = &read
 		}
-		if _, err := journalHolder(*m, disk); err != nil {
+		if _, _, err := journalHolder(ctx, *m, disk); err != nil {
 			return err
 		}
 	}
@@ -67,9 +68,12 @@ func (r replayer) Replay(ctx context.Context, vm string, journals []control.Jour
 			}
 			m = &read
 		}
-		address, err := journalHolder(*m, disk)
+		address, holds, err := journalHolder(ctx, *m, disk)
 		if err != nil {
 			return err
+		}
+		if !holds {
+			continue
 		}
 		for {
 			page, err := r.h.peers.Peer(address).ReadJournal(ctx, disk, request, journalReadBytes)
@@ -101,16 +105,17 @@ func (r replayer) Replay(ctx context.Context, vm string, journals []control.Jour
 }
 
 // journalHolder is the address of the member m says serves journal disk
-// disk.
-func journalHolder(m membership.Membership, disk rank.Identity) (platform.Address, error) {
-	found, listed := m.Disk(disk)
-	if !listed || found.Kind != membership.Journal || found.State != membership.Serving {
-		return "", fmt.Errorf("%w: journal disk %s is served by no member", volume.ErrJournalPending, disk)
+// disk, and whether the disk holds anything to read (Membership.JournalHolder).
+// A disk that does and no member serves is still moving to one, and is
+// volume.ErrJournalPending.
+func journalHolder(ctx context.Context, m membership.Membership, disk rank.Identity) (platform.Address, bool,
+	error) {
+	holder, holds, served := m.JournalHolder(disk)
+	switch {
+	case !holds && !sim.Bug(ctx, "journal-pending-on-a-let-go-disk"):
+		return "", false, nil
+	case !served:
+		return "", false, fmt.Errorf("%w: journal disk %s is served by no member", volume.ErrJournalPending, disk)
 	}
-	member, ok := m.Member(found.Member)
-	if !ok {
-		return "", fmt.Errorf("%w: journal disk %s is served by %s, which is not a member", volume.ErrJournalPending,
-			disk, found.Member)
-	}
-	return member.Address, nil
+	return holder.Address, true, nil
 }

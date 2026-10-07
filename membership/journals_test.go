@@ -177,6 +177,53 @@ func TestALostHostsJournalIsReadOnASurvivorUntilEmpty(t *testing.T) {
 	}
 }
 
+// A replay reads a journal disk from the member that serves it. A lost host's
+// disk holds what it holds while it moves to a survivor, and nothing once the
+// survivor lets it go holding no live entry; nor does a disk not listed, which
+// the controller deleted after it was let go so.
+func TestAJournalDiskIsReadFromItsHolderUntilItIsLetGoEmpty(t *testing.T) {
+	want := Want{Code: rank.Code{K: 2, M: 0}, Hosts: []Host{journalHost(1), journalHost(2)},
+		Journals: []Shard{journalOf(1), journalOf(2)}, JournalsKnown: true, Pool: []string{"machine-1", "machine-2"}}
+	m, _ := toward(t, Empty(), want)
+	own := map[string]Shard{}
+	for _, j := range want.Journals {
+		disk := diskIn(t, m, j.ID)
+		j.Machines = []string{disk.Machine}
+		own[disk.Machine] = j
+	}
+	j1, j2 := own["machine-1"], own["machine-2"]
+	holderIs := func(when string, wantHolds, wantServed bool, wantHolder rank.Identity) {
+		t.Helper()
+		holder, holds, served := m.JournalHolder(j1.ID)
+		if holds != wantHolds || served != wantServed || holder.ID != wantHolder {
+			t.Fatalf("%s the lost host's journal disk is held by %s, holds %t, served %t; want %s, %t, %t: %s",
+				when, holder.ID, holds, served, wantHolder, wantHolds, wantServed, describe(m))
+		}
+	}
+	want.Hosts = []Host{journalHost(1, holding(j1, false)), journalHost(2, holding(j2, false))}
+	want.Journals = []Shard{j1, j2}
+	m, _ = toward(t, m, want)
+	holderIs("while its writer serves it,", true, true, idOf(1))
+	lost := j1
+	lost.Machines = nil
+	want.Hosts = []Host{journalHost(2, holding(j2, false))}
+	want.Journals, want.Pool = []Shard{lost, j2}, []string{"machine-2"}
+	m, _ = toward(t, m, want)
+	holderIs("while it moves to a survivor,", true, false, rank.Identity{})
+	want.Hosts = []Host{journalHost(2, holding(j2, false), holding(j1, false))}
+	m, _ = toward(t, m, want)
+	holderIs("once the survivor serves it,", true, true, idOf(2))
+	want.Hosts = []Host{journalHost(2, holding(j2, false), holding(j1, true))}
+	m, _ = toward(t, m, want)
+	holderIs("once the survivor says it holds nothing,", true, false, rank.Identity{})
+	want.Hosts = []Host{journalHost(2, holding(j2, false))}
+	m, _ = toward(t, m, want)
+	holderIs("once the survivor lets it go,", false, false, rank.Identity{})
+	if _, holds, served := m.JournalHolder(JournalIdentity("sproutfs-journal-deleted")); holds || served {
+		t.Fatalf("a journal disk not listed holds %t and is served %t, want neither", holds, served)
+	}
+}
+
 // A free and empty journal disk that has expired is marked deleting, and
 // removed once the cloud no longer lists it. Step refuses to delete a disk
 // that is not empty, or to bring one back from deleting.

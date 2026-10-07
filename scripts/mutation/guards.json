@@ -1144,6 +1144,12 @@
     "purpose": "Answer a flush on a migration's destination before its post-copy ends, though the pages the guest stored into on the source are in no journal yet."
   },
   {
+    "id": "journal-pending-on-a-let-go-disk",
+    "package": "internal/simtest",
+    "run": "^TestAVMWhoseJournalHoldsNothingOpensOnceItsDiskIsLetGo$",
+    "purpose": "Hold an open back as pending while its record names a journal disk let go holding nothing, so a VM whose host died after a checkpoint covered its flushes never opens again."
+  },
+  {
     "id": "journal-answer-before-registered",
     "package": "internal/simtest",
     "run": "^TestAFlushSentAsTheDestinationStartsWaitsForThePostCopy$",

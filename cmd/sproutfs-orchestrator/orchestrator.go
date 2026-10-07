@@ -1718,9 +1718,10 @@ func (o *orchestrator) RecoverWith(ctx context.Context, id string, request orch.
 }
 
 // journalsServed refuses with errJournalPending while a journal disk the VM's
-// record names is served by no member of the membership: the host the VM
-// would open on could not read the flushes it holds. A deployment that keeps
-// no membership has no journal disks.
+// record names holds something to read and is served by no member of the
+// membership: the host the VM would open on could not read the flushes it
+// holds (membership.Membership.JournalHolder). A deployment that keeps no
+// membership has no journal disks.
 func (o *orchestrator) journalsServed(ctx context.Context, id string) error {
 	if o.members == nil {
 		return nil
@@ -1737,8 +1738,7 @@ func (o *orchestrator) journalsServed(ctx context.Context, id string) error {
 		return fmt.Errorf("reading the membership: %w", err)
 	}
 	for _, named := range journals {
-		disk, listed := m.Disk(rank.Identity(named.Disk))
-		if !listed || disk.Kind != membership.Journal || disk.State != membership.Serving {
+		if _, holds, served := m.JournalHolder(rank.Identity(named.Disk)); holds && !served {
 			return fmt.Errorf("%w: %s names journal disk %s", errJournalPending, id, rank.Identity(named.Disk))
 		}
 	}

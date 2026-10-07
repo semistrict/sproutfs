@@ -163,6 +163,25 @@ func (m Membership) journalDisks() []Disk {
 // free reports a journal disk released and reserved for no machine.
 func (d Disk) free() bool { return d.State == Released && d.Machine == "" }
 
+// JournalHolder is the member that serves journal disk disk, for a replay to
+// read it from. holds is false for a disk that holds nothing to read: its last
+// holder let it go holding no live entry, or the controller has deleted it
+// since, which it does only to such a disk, so a record that still names it
+// names a journal whose entries are all covered or dead. served is false for
+// such a disk, and for any other no member serves, which is still moving to
+// one.
+func (m Membership) JournalHolder(disk rank.Identity) (holder Member, holds, served bool) {
+	found, listed := m.Disk(disk)
+	if !listed || found.Kind == Journal && found.Empty && (found.State == Released || found.State == Deleting) {
+		return Member{}, false, false
+	}
+	if found.Kind != Journal || found.State != Serving {
+		return Member{}, true, false
+	}
+	holder, served = m.Member(found.Member)
+	return holder, true, served
+}
+
 // holdsOwn reports whether member is assigned the journal disk reserved for
 // its machine already.
 func holdsOwn(journals []Disk, member rank.Identity, machine string) bool {

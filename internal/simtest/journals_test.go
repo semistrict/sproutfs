@@ -312,6 +312,53 @@ func TestADestinationAnswersNoFlushBeforeItsPostCopyEnds(t *testing.T) {
 	})
 }
 
+// A VM's last checkpoint covers everything it flushed, so its record names
+// its host's journal with nothing live on it. The host dies, and the survivor
+// that reads the disk finds it holds nothing: it lets it go, and the
+// controller may delete it. The VM opens all the same, with nothing to
+// replay, at what its checkpoint holds.
+func TestAVMWhoseJournalHoldsNothingOpensOnceItsDiskIsLetGo(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		runtime := newCampaignRuntime(40, false)
+		ctx := sim.WithRuntime(t.Context(), runtime)
+		world := journalWorld(t, ctx, runtime, "nothing-to-replay/", 2)
+		flushed(t, world, []uint64{0}, 4)
+		if err := world.Checkpoint(ctx, "vm-0"); err != nil {
+			t.Fatal(err)
+		}
+		lost := journalOf(t, ctx, world, "host-0")
+		if err := world.Kill(ctx, 0, sim.PowerLoss); err != nil {
+			t.Fatal(err)
+		}
+		// The controller moves the disk to host-1, which reads it back, trims
+		// what the record covers on its trim's turn, and lets the disk go,
+		// before anything opens the VM.
+		state := func() membership.Disk {
+			world.ShardPass(ctx)
+			disk, _ := membershipOf(t, ctx, world).Disk(lost.ID)
+			return disk
+		}
+		waitFor(t, func() bool { return state().State == membership.Serving },
+			"the dead host's journal disk was never served on host-1")
+		world.Advance(time.Minute)
+		waitFor(t, func() bool { disk := state(); return disk.State == membership.Released && disk.Empty },
+			"the dead host's journal disk, which holds nothing, was never let go")
+		if err := world.Settle(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if got := world.HostOf("vm-0"); got != 1 {
+			t.Fatalf("the VM runs on host-%d after its host died, want host-1", got)
+		}
+		readsPage(t, ctx, world, 0, 4)
+		if err := world.VerifyFlushes(); err != nil {
+			t.Fatal(err)
+		}
+		if err := world.Close(ctx); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
 // A VMM sends the flushes it held when it stopped again as soon as it runs on
 // its next host, which may be before that host has registered it. Such a flush
 // is a destination's like any other: it waits for the post-copy, and here goes

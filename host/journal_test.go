@@ -507,6 +507,9 @@ func TestAnotherHostsOpenReplaysWhatTheVMFlushed(t *testing.T) {
 	}
 	ctx := sim.WithRuntime(t.Context(), s.h.runtime)
 	other := s.h.hosts[1]
+	// The membership lists the journal disk as its writer's once the writer
+	// is lost, and no member serves it yet.
+	s.writerLost(t)
 	if _, err := other.Volumes().Open(ctx, "vm-1"); !errors.Is(err, volume.ErrJournalPending) {
 		t.Fatalf("an open while no member serves the journal = %v, want ErrJournalPending", err)
 	}
@@ -548,30 +551,43 @@ func TestAnotherHostsOpenReplaysWhatTheVMFlushed(t *testing.T) {
 	}
 }
 
-// servedAt has the membership say that a member at address serves the
-// journal disk, as a holder that opened it does.
-func (s *journalHostOf) servedAt(t *testing.T, address platform.Address) {
+// update applies changes to the membership in turn; one that changes nothing
+// is passed over.
+func (s *journalHostOf) update(t *testing.T, changes ...func(membership.Membership) (membership.Membership, error)) {
 	t.Helper()
 	members, err := membership.NewStore(membership.Config{ObjectStore: s.h.runtime.ObjectStore(),
 		ObjectPrefix: s.h.prefix, Entropy: s.h.runtime.NewEntropy("membership")})
 	if err != nil {
 		t.Fatal(err)
 	}
-	holder := rank.Identity{2}
-	for _, change := range []func(membership.Membership) (membership.Membership, error){
-		func(m membership.Membership) (membership.Membership, error) {
-			return m.Join(membership.Member{ID: holder, Address: address})
-		},
-		func(m membership.Membership) (membership.Membership, error) {
-			return m.Add(membership.Disk{ID: s.j.Identity(), Volume: "journal-0", Kind: membership.Journal})
-		},
-		func(m membership.Membership) (membership.Membership, error) { return m.Assign(s.j.Identity(), holder) },
-		func(m membership.Membership) (membership.Membership, error) { return m.Serve(s.j.Identity(), holder) },
-	} {
-		if _, err := members.Update(t.Context(), change); err != nil {
+	for _, change := range changes {
+		if _, err := members.Update(t.Context(), change); err != nil && !errors.Is(err, membership.ErrUnchanged) {
 			t.Fatal(err)
 		}
 	}
+}
+
+// writerLost has the membership list the journal disk as its writer's is
+// once the writer is lost: released, and not empty.
+func (s *journalHostOf) writerLost(t *testing.T) {
+	t.Helper()
+	s.update(t, func(m membership.Membership) (membership.Membership, error) {
+		return m.Add(membership.Disk{ID: s.j.Identity(), Volume: "journal-0", Kind: membership.Journal})
+	})
+}
+
+// servedAt has the membership say that a member at address serves the
+// journal disk, as a holder that opened it does.
+func (s *journalHostOf) servedAt(t *testing.T, address platform.Address) {
+	t.Helper()
+	holder := rank.Identity{2}
+	s.writerLost(t)
+	s.update(t,
+		func(m membership.Membership) (membership.Membership, error) {
+			return m.Join(membership.Member{ID: holder, Address: address})
+		},
+		func(m membership.Membership) (membership.Membership, error) { return m.Assign(s.j.Identity(), holder) },
+		func(m membership.Membership) (membership.Membership, error) { return m.Serve(s.j.Identity(), holder) })
 }
 
 // A holder the membership still lists and nothing can reach, as a host that
