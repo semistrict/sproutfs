@@ -23,3 +23,30 @@ func (h *Host) AgeEveryPage() {
 		h.node.PageQueues().RotateReclaimQueues()
 	}
 }
+
+// SetLocateSeam installs what a region's resolver runs once it has found the
+// root holding a page and let the root's lock go, before the lookup goes down
+// into the root. It is restored when the test ends.
+func SetLocateSeam(t *testing.T, seam func(page uint64)) {
+	previous := locateSeam
+	locateSeam = seam
+	t.Cleanup(func() { locateSeam = previous })
+}
+
+// SetLookupSentSeam installs what a lookup that sent a READ request runs
+// before the request is looked at under h.mu. It is restored when the test
+// ends.
+func SetLookupSentSeam(t *testing.T, seam func(page uint64)) {
+	previous := lookupSentSeam
+	lookupSentSeam = seam
+	t.Cleanup(func() { lookupSentSeam = previous })
+}
+
+// SetPrefetchCheckedSeam installs what a prefetch runs with h.mu held, once it
+// has looked for the reads under way and before it sends its own. It is
+// restored when the test ends.
+func SetPrefetchCheckedSeam(t *testing.T, seam func(start uint64)) {
+	previous := prefetchCheckedSeam
+	prefetchCheckedSeam = seam
+	t.Cleanup(func() { prefetchCheckedSeam = previous })
+}

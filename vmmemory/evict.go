@@ -265,6 +265,10 @@ func (h *Host) usableVictimLocked(f *frame) bool {
 	if f.replacing != 0 || f.slot < 0 {
 		return false
 	}
+	if f.layer != nil && f.layer.detaching.Load() {
+		// Its region is detaching, and gives the page back itself.
+		return false
+	}
 	for b := range f.aliases.all() {
 		if b.region.terminal.Load() != nil {
 			return false
@@ -326,6 +330,19 @@ func (r *MemoryRegion) spillTarget(b *binding) (spill reservation, elsewhere boo
 // goes back only once the spill has succeeded.
 func (h *Host) evictPage(ctx context.Context, page *zirconvm.VmPage) error {
 	f := frameOf(page)
+	// A page of a region's own layer has its bytes written to that region's
+	// reservations, which a detach gives back, and it is taken out of that
+	// region's layer, which a detach destroys. So the region is held live,
+	// shared, from before its reservations are read until the page is gone,
+	// as a give-back holds it. One that cannot be held without waiting is
+	// detaching, or about to, and gives the page back itself: the victim is
+	// held. The page's lock keeps its layer from changing meanwhile.
+	if owner := f.layer; owner != nil && !sim.Bug(ctx, "pager-detach-under-an-eviction") {
+		if !owner.live.TryRLock() {
+			return errVictimHeld
+		}
+		defer owner.live.RUnlock()
+	}
 	// The reservations the page's bytes go to are read as the alias set
 	// grows: a seal taken while this runs joins the checkpoint's copy to the
 	// page before it hands that copy the page's reservation, so an alias set

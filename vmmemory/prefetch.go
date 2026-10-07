@@ -143,6 +143,11 @@ var prefetchSettleSeam func()
 // the same root there.
 var prefetchSendSeam func(start uint64)
 
+// prefetchCheckedSeam runs with h.mu held, once a prefetch has looked for the
+// reads under way and before it sends its own. A test lets a READ that is not
+// sent under h.mu go there. It must take no lock.
+var prefetchCheckedSeam func(start uint64)
+
 // prefetchUnlockSeam runs as a prefetch that landed gives each of its pages
 // up, once that page is given up and before the next is. A test puts a fault
 // there, which finds the pages after it still held.
@@ -437,6 +442,9 @@ func (p *plan) splitPrefetch(ctx context.Context, index uint64, into []*arenaFil
 	}
 	if len(kept) == 0 {
 		return nil
+	}
+	if prefetchCheckedSeam != nil {
+		prefetchCheckedSeam(p.start)
 	}
 	pf := &prefetch{region: r, start: p.start, end: p.end, pages: kept, reading: true, holding: true}
 	pf.sendLocked()

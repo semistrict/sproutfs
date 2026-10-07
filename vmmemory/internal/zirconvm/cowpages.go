@@ -188,8 +188,16 @@ const (
 // parents describes, so Locate names the identity and the identity the root
 // (plan: Zircon's objects and ours). ok is false where no root holds the
 // content, and the region's own page source is asked.
+//
+// Locate looks at the root under the root's lock and lets it go, and the
+// lookup locks the root again to go down into it. A root may give the page
+// up in between, and a lookup that went on down would ask the root's page
+// source for it. So the lookup asks Holds, with the root's lock held, and
+// falls through to the root only where it still holds the page; otherwise
+// the region's own page source is asked, as where no root held it.
 type RootResolver interface {
 	Locate(offset uint64) (root *CowPages, rootOffset uint64, ok bool)
+	Holds(root *CowPages, rootOffset uint64) bool
 }
 
 // CowPages holds an object's pages in a page list and knows its parent,
@@ -1046,14 +1054,17 @@ func (c *CowPages) findPageContentLocked(offset, maxOwnerLength uint64) pageLook
 	if owner.roots != nil && owner.seesRootLocked(offset) {
 		if root, rootOffset, ok := owner.roots.Locate(offset); ok {
 			assert(root.isIdentityRoot(), "a region falls through to an identity root")
-			cur.release()
 			rootPtr := lockPtr(c, root)
-			return pageLookup{
-				cursor:      root.pageList.LookupMutableCursor(rootOffset),
-				owner:       rootPtr,
-				ownerOffset: rootOffset,
-				visibleEnd:  thisOffset + ps,
+			if owner.roots.Holds(root, rootOffset) {
+				cur.release()
+				return pageLookup{
+					cursor:      root.pageList.LookupMutableCursor(rootOffset),
+					owner:       rootPtr,
+					ownerOffset: rootOffset,
+					visibleEnd:  thisOffset + ps,
+				}
 			}
+			rootPtr.release()
 		}
 	}
 	return pageLookup{
@@ -1106,12 +1117,16 @@ func (c *CowPages) findInitialPageContentLocked(offset uint64) pageLookup {
 	// Departure: a region's layer populates from its identity root.
 	if c.roots != nil {
 		if root, rootOffset, ok := c.roots.Locate(offset); ok {
-			return pageLookup{
-				cursor:      root.pageList.LookupMutableCursor(rootOffset),
-				owner:       lockPtr(c, root),
-				ownerOffset: rootOffset,
-				visibleEnd:  offset + ps,
+			rootPtr := lockPtr(c, root)
+			if c.roots.Holds(root, rootOffset) {
+				return pageLookup{
+					cursor:      root.pageList.LookupMutableCursor(rootOffset),
+					owner:       rootPtr,
+					ownerOffset: rootOffset,
+					visibleEnd:  offset + ps,
+				}
 			}
+			rootPtr.release()
 		}
 	}
 	return pageLookup{cursor: invalidCursor(c.pageList), ownerOffset: offset, visibleEnd: offset + ps}
