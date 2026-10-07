@@ -104,6 +104,10 @@ type vmJournal struct {
 	covers                 []*cover
 	inflight               map[*vmmemory.MemoryRegion]map[uint64]int
 	changed                chan struct{}
+	// postCopy marks a VM a migration brought here whose post-copy has not
+	// ended, and root a fork's child whose root is not selected. Its flushes
+	// wait for both (journaled), unless the VM leaves this host first: ended.
+	postCopy, root, ended bool
 }
 
 // signalLocked wakes whatever waits for the state to move. Caller holds mu.
@@ -132,6 +136,83 @@ func (s *vmJournal) placedOne(positions []uint64) {
 	}
 	clear(s.covers[len(waiting):])
 	s.covers = waiting
+	s.signalLocked()
+}
+
+// mayJournal reports whether a flush of vm may be journaled in j now. A
+// migration's destination journals none until the post-copy ends: the pages
+// the guest stored into on the source since their last capture are in no
+// journal, and reach this host only in the post-copy, where they become
+// unjournaled here. A fork's child journals none until its root is selected:
+// a recovery cannot open a VM whose root was never selected. And no VM
+// journals any until its record names j at its epoch: a recovery replays only
+// the journals the record names, so an entry of any other is never read.
+func (h *Host) mayJournal(vm *volume.VM, j *journal.Journal, state *vmJournal) bool {
+	state.mu.Lock()
+	copying := state.postCopy || state.root
+	state.mu.Unlock()
+	if copying {
+		return false
+	}
+	return names(vm.Journals(), j, vm.Epoch()) || sim.Bug(h.ctx, "journal-answer-unnamed")
+}
+
+// names reports whether journals names j at epoch.
+func names(journals []control.Journal, j *journal.Journal, epoch uint64) bool {
+	return slices.ContainsFunc(journals, func(named control.Journal) bool {
+		return named.Disk == j.Identity() && named.Generation == j.Generation() && named.Epoch == epoch
+	})
+}
+
+// journaled waits until a flush of vmID may be journaled (mayJournal). Where
+// only the record's naming of the journal is missing, it asks for a
+// checkpoint out of the interval's turn, whose selection names it.
+func (h *Host) journaled(ctx context.Context, vmID string, vm *volume.VM, j *journal.Journal,
+	entry *registration) error {
+	state := &entry.journal
+	for {
+		state.mu.Lock()
+		if state.ended {
+			state.mu.Unlock()
+			return errLeft
+		}
+		if state.changed == nil {
+			state.changed = make(chan struct{})
+		}
+		changed, copying := state.changed, state.postCopy || state.root
+		state.mu.Unlock()
+		if h.mayJournal(vm, j, state) {
+			return nil
+		}
+		if !copying {
+			h.askCheckpoint(entry)
+		}
+		select {
+		case <-changed:
+		case <-ctx.Done():
+			return context.Cause(ctx)
+		}
+	}
+}
+
+// errLeft is a flush that waited for a VM that has since left this host. It
+// goes unanswered, as every flush of such a VM does (registration).
+var errLeft = errors.New("host: the VM left this host")
+
+// left ends every wait of journaled: the VM has left this host.
+func (s *vmJournal) left() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ended = true
+	s.signalLocked()
+}
+
+// opened ends one of the waits journaled waits for.
+func (s *vmJournal) opened(postCopy, root bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.postCopy = s.postCopy && !postCopy
+	s.root = s.root && !root
 	s.signalLocked()
 }
 
@@ -204,9 +285,28 @@ func (h *Host) flushedDurable(region *vmmemory.MemoryRegion, done func(error)) {
 		}
 	}
 	began := h.clock.Now()
-	pages := entry.journal.pending(region)
+	// The pages are the ones unjournaled when the flush arrived, unless it
+	// waits: then no capture runs before it, and it takes those unjournaled
+	// when the wait ends, which is all the guest stored before it.
+	state := &entry.journal
+	waits := !h.mayJournal(vm, j, state)
+	var pages []uint64
+	if !waits {
+		pages = state.pending(region)
+	}
 	go func() {
-		err := h.journalFlush(h.ctx, j, entry, vmID, vm.Epoch(), volume, region, pages)
+		var err error
+		if waits {
+			if err = h.journaled(h.ctx, vmID, vm, j, entry); err == nil {
+				pages = state.pending(region)
+			}
+		}
+		if errors.Is(err, errLeft) {
+			return
+		}
+		if err == nil {
+			err = h.journalFlush(h.ctx, j, entry, vmID, vm.Epoch(), volume, region, pages)
+		}
 		h.journals.flushes.ended(err)
 		h.journals.flushTime.Observe(h.clock.Since(began))
 		if err != nil {
@@ -314,6 +414,10 @@ type cover struct {
 	covered  uint64
 	resolved chan struct{}
 	late     bool
+	// earlier marks a checkpoint paused before its VM's post-copy ended: it
+	// may not hold every page the source held, so its selection keeps the
+	// journals of earlier epochs the record names.
+	earlier bool
 }
 
 // coverOf is the cover of a checkpoint of vmID that is about to be taken,
@@ -352,6 +456,7 @@ func (c *cover) paused(ctx context.Context) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	c.token = s.captures
+	c.earlier = s.postCopy && !sim.Bug(ctx, "journal-drop-source-before-post-copy")
 	if sim.Bug(ctx, "journal-covered-after-seal") {
 		// The covered position is read when the checkpoint is selected, so it
 		// covers the captures made since the pause too, and their entries
@@ -379,14 +484,25 @@ func (c *cover) resolve(position uint64) {
 }
 
 // Journals is the list the checkpoint's selection writes: this host's
-// journal, at the position the pause covered.
+// journal, at the position the pause covered, after the journals of earlier
+// epochs the record names where the pause came before the post-copy ended.
 func (c *cover) Journals(ctx context.Context) ([]control.Journal, error) {
 	covered, err := c.position(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return []control.Journal{{Disk: c.j.Identity(), Generation: c.j.Generation(), Epoch: c.epoch,
-		Covered: covered}}, nil
+	var journals []control.Journal
+	if c.earlier {
+		if vm := c.h.vm(c.vmID); vm != nil {
+			for _, named := range vm.Journals() {
+				if named.Epoch < c.epoch {
+					journals = append(journals, named)
+				}
+			}
+		}
+	}
+	return append(journals, control.Journal{Disk: c.j.Identity(), Generation: c.j.Generation(), Epoch: c.epoch,
+		Covered: covered}), nil
 }
 
 // position is the covered position, once every capture the pause covered is
@@ -610,4 +726,48 @@ func (h *Host) ReadJournal(ctx context.Context, disk rank.Identity, request jour
 			"%w: a reader at epoch %d read its journal", volume.ErrNeedsRecovery, request.Reader))
 	}
 	return err
+}
+
+// joiningJournal is what a migration's destination names of its own journal
+// in the VM's record when it opens it (vmmigrate.Options.Journal): nil where
+// durable flush is off or no journal is served here, and otherwise the
+// journal at no covered position, since it holds no entry of the epoch the
+// open takes yet.
+func (h *Host) joiningJournal() *control.Journal {
+	if !h.journals.on {
+		return nil
+	}
+	j := h.journal()
+	if j == nil {
+		return nil
+	}
+	return &control.Journal{Disk: j.Identity(), Generation: j.Generation()}
+}
+
+// postCopied tells durable flush that every page of a VM brought here has
+// arrived: its flushes are journaled from now on, and a checkpoint is asked
+// for out of the interval's turn, since the first selected after this one's
+// pause is the first that names the source's journal no more.
+func (h *Host) postCopied(vmID string) {
+	h.machines.mu.Lock()
+	entry := h.machines.running[vmID]
+	h.machines.mu.Unlock()
+	if entry == nil {
+		return
+	}
+	entry.journal.opened(true, false)
+	if h.journals.on {
+		h.askCheckpoint(entry)
+	}
+}
+
+// rootSelected tells durable flush that a fork's child has its root
+// selected: a recovery can open it now, so its flushes are journaled.
+func (h *Host) rootSelected(vmID string) {
+	h.machines.mu.Lock()
+	entry := h.machines.running[vmID]
+	h.machines.mu.Unlock()
+	if entry != nil {
+		entry.journal.opened(false, true)
+	}
 }

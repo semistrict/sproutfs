@@ -9,6 +9,7 @@ import (
 	"testing/synctest"
 
 	"github.com/semistrict/sproutfs/api/host"
+	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/membership"
 	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/rank"
@@ -517,4 +518,52 @@ func TestTheConfigurationReadsDurableFlush(t *testing.T) {
 		}
 		environment[name] = before
 	}
+}
+
+// A recovery of a VM whose record names a journal disk no member serves yet
+// waits for it: the disk is moving to a survivor after its host was lost, and
+// the host the VM opens on reads the flushes it holds from there. It goes
+// through once the membership says the disk is served.
+func TestARecoveryWaitsForTheJournalItsRecordNames(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := newMembershipFixture(t, map[string][]string{"host-0": {}, "host-1": {}})
+		f.records.ids = []string{"vm-a"}
+		disk := membership.JournalIdentity("sproutfs-journal-0")
+		f.records.journals = map[string][]control.Journal{"vm-a": {{Disk: disk, Generation: 3, Epoch: 1}}}
+		reader := rank.Identity{7}
+		for _, change := range []func(membership.Membership) (membership.Membership, error){
+			func(m membership.Membership) (membership.Membership, error) {
+				return m.Join(membership.Member{ID: reader, Address: "host-1-pages"})
+			},
+			func(m membership.Membership) (membership.Membership, error) {
+				return m.Add(membership.Disk{ID: disk, Volume: "sproutfs-journal-0", Kind: membership.Journal})
+			},
+		} {
+			if _, err := f.orchestrator.members.Update(f.ctx, change); err != nil {
+				t.Fatal(err)
+			}
+		}
+		recovered := make(chan error, 1)
+		go func() {
+			_, err := f.orchestrator.Recover(f.ctx, "vm-a", false)
+			recovered <- err
+		}()
+		synctest.Wait()
+		select {
+		case err := <-recovered:
+			t.Fatalf("a recovery whose journal is served by no member ended with %v, want it to wait", err)
+		default:
+		}
+		for _, change := range []func(membership.Membership) (membership.Membership, error){
+			func(m membership.Membership) (membership.Membership, error) { return m.Assign(disk, reader) },
+			func(m membership.Membership) (membership.Membership, error) { return m.Serve(disk, reader) },
+		} {
+			if _, err := f.orchestrator.members.Update(f.ctx, change); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := <-recovered; err != nil {
+			t.Fatalf("the recovery once its journal is served: %v", err)
+		}
+	})
 }

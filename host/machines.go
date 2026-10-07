@@ -165,6 +165,10 @@ func (h *Host) AddMachineWith(vmID string, runtime Machine, terms MachineTerms) 
 		existing.end()
 	}
 	entry := &registration{runtime: runtime, terms: terms, cadence: h.cadenceOf(terms)}
+	entry.journal.postCopy = terms.PostCopy
+	if vm := h.vm(vmID); vm != nil && vm.Status().Root {
+		entry.journal.root = true
+	}
 	if !entry.cadence.windowed {
 		for _, memoryRegion := range runtime.MemoryRegions() {
 			memoryRegion.HoldToNoWindow()
@@ -243,6 +247,7 @@ func (h *Host) awaitingExit(ctx context.Context, cancel context.CancelFunc, vmID
 // migration racing the epoch timer does. It must not be called from either of
 // those goroutines: it waits for both to return.
 func (m *registration) end() {
+	m.journal.left()
 	m.mu.Lock()
 	stop, done := m.stop, m.done
 	m.stop, m.done = nil, nil

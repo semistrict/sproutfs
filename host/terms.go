@@ -18,6 +18,10 @@ type MachineTerms struct {
 	// writes are held to no loss window and its flushes complete at once. A
 	// host loss loses everything it wrote since it started.
 	CheckpointInterval time.Duration
+	// PostCopy marks a VM a migration or a fork brought here whose pages are
+	// still arriving from its source. With durable flush on, its flushes wait
+	// until PostCopied says the last has (journal.go).
+	PostCopy bool
 }
 
 // DefaultMinimumCheckpointInterval is the shortest interval a VM of a host

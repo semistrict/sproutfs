@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/vmmemory"
 	"github.com/semistrict/sproutfs/vmmigrate"
@@ -153,6 +154,16 @@ func (h *Host) migrate(ctx context.Context, vmID string, destination platform.Ad
 		h.endMigration(entry)
 		return vmmigrate.Handoff{}, fmt.Errorf("%w: %s has not published its own root index",
 			volume.ErrForkPending, vmID)
+	}
+	if named := vm.Journals(); len(named) >= control.MaximumJournals {
+		// A VM moved here so recently that its record still names its last
+		// source's journal: the destination's open would add a third. A
+		// checkpoint of its own drops that journal, and the move is asked
+		// again after it. The refusal comes before the guest is stopped.
+		h.askCheckpoint(entry)
+		h.endMigration(entry)
+		return vmmigrate.Handoff{}, fmt.Errorf("%w: %s names %d journals: %w", ErrNotMigratable, vmID, len(named),
+			control.ErrTooManyJournals)
 	}
 	if err := confirmHandoff(ctx, vm); err != nil {
 		h.endMigration(entry)
@@ -349,7 +360,7 @@ func (h *Host) receive(ctx context.Context, handoff vmmigrate.Handoff) (*vmmigra
 		return runtime, nil
 	}
 	received, err := vmmigrate.Receive(ctx, h.volumes, handoff, h.peers, start,
-		vmmigrate.Options{Point: point})
+		vmmigrate.Options{Point: point, Journal: h.joiningJournal()})
 	if err != nil {
 		return nil, err
 	}
@@ -368,7 +379,7 @@ func (h *Host) receive(ctx context.Context, handoff vmmigrate.Handoff) (*vmmigra
 	// stay in this host's pager until its next checkpoint publishes them.
 	registered := step(ctx, "register")
 	err = h.AddMachineWith(handoff.VMID, started, MachineTerms{Pull: handoff.Pull,
-		CheckpointInterval: handoff.CheckpointInterval})
+		CheckpointInterval: handoff.CheckpointInterval, PostCopy: true})
 	registered()
 	if err != nil {
 		// The same VM in the same state as one whose stream never completed: a
@@ -426,6 +437,7 @@ func (h *Host) receive(ctx context.Context, handoff vmmigrate.Handoff) (*vmmigra
 		pause = &h.activity.forkPause
 	}
 	pause.Observe(post.ResumedAt.Sub(post.PausedAt))
+	h.postCopied(handoff.VMID)
 	if handoff.IsFork() {
 		// The child runs from here, and its root is published behind it rather
 		// than before this returns: see rootBehind.
@@ -464,6 +476,7 @@ func (h *Host) rootBehind(vmID string, vm *volume.VM, runtime Machine) {
 	for attempt := 1; ; attempt++ {
 		err := h.rooted(h.ctx, vm, runtime)
 		if err == nil {
+			h.rootSelected(vmID)
 			return
 		}
 		if context.Cause(h.ctx) != nil || !h.runs(vmID, runtime) {

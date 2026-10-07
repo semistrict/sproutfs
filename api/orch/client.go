@@ -86,8 +86,13 @@ func (c *Client) Capture(ctx context.Context, id string, request CaptureRequest)
 // evidence of that loss, for a pod the Kubernetes API still lists whose host
 // does not answer.
 func (c *Client) Recover(ctx context.Context, id string, force bool) (RecoverResult, error) {
+	return c.RecoverWith(ctx, id, RecoverRequest{Force: force})
+}
+
+// RecoverWith is Recover on the terms request names.
+func (c *Client) RecoverWith(ctx context.Context, id string, request RecoverRequest) (RecoverResult, error) {
 	return jsonhttp.Call[RecoverResult](ctx, c.http, http.MethodPost,
-		c.path("/vms/%s/recover", url.PathEscape(id)), RecoverRequest{Force: force})
+		c.path("/vms/%s/recover", url.PathEscape(id)), request)
 }
 
 // Stop ends a running VM and leaves it behind: the host running it publishes

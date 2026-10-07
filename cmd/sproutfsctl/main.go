@@ -207,7 +207,8 @@ func execute(ctx context.Context, client *orch.Client, command invocation,
 		_, err = fmt.Fprintf(out, "killed %s\n", result.Host)
 		return err
 	case "recover":
-		result, err := client.Recover(ctx, command.Target, command.Force)
+		result, err := client.RecoverWith(ctx, command.Target,
+			orch.RecoverRequest{Force: command.Force, DiscardJournals: command.DiscardJournal})
 		if err != nil {
 			return err
 		}

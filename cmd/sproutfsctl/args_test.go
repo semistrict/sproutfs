@@ -40,6 +40,8 @@ func TestParseReadsEachCommand(t *testing.T) {
 			want: invocation{Command: "recover", Target: "vm-1", Count: 1}},
 		{name: "recover by force", args: []string{"recover", "vm-1", "--force"},
 			want: invocation{Command: "recover", Target: "vm-1", Count: 1, Force: true}},
+		{name: "recover discarding a lost journal", args: []string{"recover", "vm-1", "--discard-journal"},
+			want: invocation{Command: "recover", Target: "vm-1", Count: 1, DiscardJournal: true}},
 		{name: "delete", args: []string{"delete", "vm-1"},
 			want: invocation{Command: "delete", Target: "vm-1", Count: 1}},
 		{name: "stop", args: []string{"stop", "vm-1"},

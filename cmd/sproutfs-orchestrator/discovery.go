@@ -148,6 +148,19 @@ func (b *bucketRecords) Pending(ctx context.Context, id string) (bool, error) {
 	return !record.Created, nil
 }
 
+// Journals reads the journals one VM's record names, none for a VM with no
+// record.
+func (b *bucketRecords) Journals(ctx context.Context, id string) ([]control.Journal, error) {
+	record, err := b.control.Read(ctx, id)
+	if errors.Is(err, platform.ErrNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return record.Journals, nil
+}
+
 // Epoch reads one VM's writer epoch, zero for a VM with no record.
 func (b *bucketRecords) Epoch(ctx context.Context, id string) (uint64, error) {
 	record, err := b.control.Read(ctx, id)

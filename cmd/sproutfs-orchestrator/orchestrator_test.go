@@ -18,6 +18,7 @@ import (
 
 	"github.com/semistrict/sproutfs/api/host"
 	"github.com/semistrict/sproutfs/api/orch"
+	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/internal/handover"
 	"github.com/semistrict/sproutfs/rank"
 )
@@ -67,10 +68,18 @@ type fakeRecords struct {
 	epochs     map[string]uint64
 	mu         *sync.Mutex
 	afterEpoch func()
+	// journals is the journals each record names.
+	journals map[string][]control.Journal
 }
 
 func (f *fakeRecords) Pending(_ context.Context, id string) (bool, error) {
 	return f.pending[id], f.err
+}
+
+func (f *fakeRecords) Journals(_ context.Context, id string) ([]control.Journal, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.journals[id], f.err
 }
 
 func (f *fakeRecords) Epoch(_ context.Context, id string) (uint64, error) {

@@ -76,6 +76,11 @@ func TestEachHostServesTheJournalDiskMadeForItsMachine(t *testing.T) {
 			if !h.host.Activity().Journal.Served {
 				t.Fatalf("%s holds its journal disk and does not serve durable flush", h.machine)
 			}
+			for _, held := range self.Disks {
+				if held.ID == disk.ID && held.Kind != membership.Journal {
+					t.Fatalf("%s holds its journal disk open as a %s disk too", h.machine, held.Kind)
+				}
+			}
 		}
 		drained := ownJournal(t, m, "machine-2")
 		two.leaving = true

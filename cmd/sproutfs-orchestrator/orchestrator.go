@@ -16,6 +16,7 @@ import (
 
 	"github.com/semistrict/sproutfs/api/host"
 	"github.com/semistrict/sproutfs/api/orch"
+	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/internal/ctxsync"
 	"github.com/semistrict/sproutfs/internal/handover"
 	"github.com/semistrict/sproutfs/membership"
@@ -78,6 +79,9 @@ type records interface {
 	Pending(ctx context.Context, id string) (bool, error)
 	// Epoch reads a VM's writer epoch, zero for a VM with no record.
 	Epoch(ctx context.Context, id string) (uint64, error)
+	// Journals reads the journals a VM's record names, none for a VM with
+	// no record.
+	Journals(ctx context.Context, id string) ([]control.Journal, error)
 }
 
 // listing is one control record as the bucket found it, which is the identity
@@ -123,7 +127,17 @@ var (
 	// before its first checkpoint landed. Nothing of it was durable anywhere,
 	// so there is nothing to open, and its identity is freed.
 	errLost = errors.New("the VM was lost before its first checkpoint landed")
+	// errJournalPending refuses to open a VM whose record names a journal
+	// disk no member serves yet: it is moving to a survivor after its host
+	// was lost, and the flushes it holds are replayed once it is served. It
+	// is an errRunning: the VM's flushed writes are between hosts, not lost.
+	errJournalPending = fmt.Errorf("%w: a journal it names is not served yet", errRunning)
 )
+
+// journalPatience bounds how long a recovery waits for the journal disks a
+// VM's record names to be served: a disk moves in about fifteen seconds, and
+// one still not served after this is one an operator has to look at.
+const journalPatience = 2 * time.Minute
 
 // orchestrator places VMs on hosts and carries handoffs between them. It is
 // stateless: every answer is assembled from the Kubernetes API, the bucket and
@@ -1657,7 +1671,7 @@ func (o *orchestrator) recoverLost(ctx context.Context, id, from string) error {
 		if err == nil {
 			break
 		}
-		if !errors.Is(err, errReceiving) || time.Now().After(deadline) {
+		if !errors.Is(err, errReceiving) && !errors.Is(err, errJournalPending) || time.Now().After(deadline) {
 			return fmt.Errorf("recovering %s after losing the host holding its pages: %w", id, err)
 		}
 		if err := ctxsync.Sleep(ctx, o.watchInterval()); err != nil {
@@ -1683,7 +1697,52 @@ func (o *orchestrator) recoverLost(ctx context.Context, id, from string) error {
 // way to produce that evidence, and the one the demo uses, because a deleted pod
 // stops being listed.
 func (o *orchestrator) Recover(ctx context.Context, id string, force bool) (orch.RecoverResult, error) {
-	return o.reopen(ctx, id, recovery(force))
+	return o.RecoverWith(ctx, id, orch.RecoverRequest{Force: force})
+}
+
+// RecoverWith is Recover on the terms request names. A recovery that discards
+// journals does not wait for them to be served.
+func (o *orchestrator) RecoverWith(ctx context.Context, id string, request orch.RecoverRequest) (orch.RecoverResult, error) {
+	terms := recovery(request.Force)
+	terms.open.DiscardJournals = request.DiscardJournals
+	deadline := time.Now().Add(journalPatience)
+	for {
+		recovered, err := o.reopen(ctx, id, terms)
+		if !errors.Is(err, errJournalPending) || time.Now().After(deadline) {
+			return recovered, err
+		}
+		if err := ctxsync.Sleep(ctx, o.watchInterval()); err != nil {
+			return orch.RecoverResult{}, err
+		}
+	}
+}
+
+// journalsServed refuses with errJournalPending while a journal disk the VM's
+// record names is served by no member of the membership: the host the VM
+// would open on could not read the flushes it holds. A deployment that keeps
+// no membership has no journal disks.
+func (o *orchestrator) journalsServed(ctx context.Context, id string) error {
+	if o.members == nil {
+		return nil
+	}
+	journals, err := o.records.Journals(ctx, id)
+	if err != nil {
+		return fmt.Errorf("reading the control record of %s: %w", id, err)
+	}
+	if len(journals) == 0 {
+		return nil
+	}
+	m, err := o.members.Read(ctx)
+	if err != nil {
+		return fmt.Errorf("reading the membership: %w", err)
+	}
+	for _, named := range journals {
+		disk, listed := m.Disk(rank.Identity(named.Disk))
+		if !listed || disk.Kind != membership.Journal || disk.State != membership.Serving {
+			return fmt.Errorf("%w: %s names journal disk %s", errJournalPending, id, rank.Identity(named.Disk))
+		}
+	}
+	return nil
 }
 
 // recovery is the terms a recovery reopens a VM under.
@@ -1854,6 +1913,11 @@ func (o *orchestrator) reopen(ctx context.Context, id string, terms reopening) (
 	pending, err := o.records.Pending(ctx, id)
 	if err != nil {
 		return orch.RecoverResult{}, fmt.Errorf("reading the control record of %s: %w", id, err)
+	}
+	if !terms.open.DiscardJournals {
+		if err := o.journalsServed(ctx, id); err != nil {
+			return orch.RecoverResult{}, err
+		}
 	}
 	if pending {
 		if len(quiet) > 0 && !terms.force {

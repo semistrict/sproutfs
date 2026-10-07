@@ -130,6 +130,8 @@ type VM struct {
 	// poisoned is set when a later writer has taken the control record, after
 	// which nothing this handle holds can ever be published.
 	poisoned error
+	// replayed marks a VM its open wrote journal entries into (replay.go).
+	replayed bool
 	// handedOff is set by Handoff, which releases the VM to another host
 	// without publishing anything.
 	handedOff bool

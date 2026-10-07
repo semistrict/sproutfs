@@ -3,12 +3,14 @@ package host_test
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/host"
 	"github.com/semistrict/sproutfs/journal"
+	"github.com/semistrict/sproutfs/membership"
 	"github.com/semistrict/sproutfs/peer"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/platform/sim"
@@ -31,22 +33,62 @@ type journalHostOf struct {
 	guest *machine
 	j     *journal.Journal
 	disk  *sim.Disk
+	// source is the journal a migration's source named, for a VM that
+	// arrived here.
+	source control.Journal
 }
 
 func journalHost(t *testing.T) *journalHostOf { return journalHostRing(t, journalRing) }
 
-// journalHostRing is journalHost with a journal of a ring of its own.
+// journalHostRing is journalHost with a journal of a ring of its own. Its VM's
+// record names the journal, as it does once the VM's first checkpoint here
+// is selected.
 func journalHostRing(t *testing.T, ring int64) *journalHostOf {
 	t.Helper()
-	h := newSizedHostHarness(t, 1)
+	s := unnamedJournalHost(t, ring)
+	s.checkpoint(t)
+	return s
+}
+
+// unnamedJournalHost is journalHostRing before any checkpoint of its VM: the
+// record names no journal yet.
+func unnamedJournalHost(t *testing.T, ring int64) *journalHostOf {
+	t.Helper()
+	return journalHosts(t, ring, 1)
+}
+
+// journalHosts is unnamedJournalHost among count hosts, all with durable flush
+// on; the VM and the journal are the first one's.
+func journalHosts(t *testing.T, ring int64, count int) *journalHostOf {
+	t.Helper()
+	return journalHostsOf(t, ring, count, false)
+}
+
+// arrivedJournalHost is unnamedJournalHost whose VM a migration brought here:
+// its record names the source's journal at the epoch before, and this host's
+// at the epoch its open took, and its post-copy has not ended.
+func arrivedJournalHost(t *testing.T) *journalHostOf {
+	t.Helper()
+	return journalHostsOf(t, journalRing, 1, true)
+}
+
+func journalHostsOf(t *testing.T, ring int64, count int, arrived bool) *journalHostOf {
+	t.Helper()
+	h := newSizedHostHarness(t, count)
 	clock := sim.New(sim.Config{Seed: 1}).NewClock("host")
-	h.configs[0].Clock = clock
-	h.configs[0].EpochInterval = -1
-	h.configs[0].CheckpointInterval = time.Hour
-	h.configs[0].FlushBound = flushBound
-	h.configs[0].Journal = host.JournalConfig{DurableFlush: true}
-	pagers := newMixedPagers(t, h.configs[0].Resources, func(cfg *vmmemory.Config) { cfg.Clock = clock })
-	h.configs[0].Pagers = pagers.pagers
+	var pagers *hostPagers
+	for n := range count {
+		h.configs[n].Clock = clock
+		h.configs[n].EpochInterval = -1
+		h.configs[n].CheckpointInterval = time.Hour
+		h.configs[n].FlushBound = flushBound
+		h.configs[n].Journal = host.JournalConfig{DurableFlush: true}
+		these := newMixedPagers(t, h.configs[n].Resources, func(cfg *vmmemory.Config) { cfg.Clock = clock })
+		h.configs[n].Pagers = these.pagers
+		if n == 0 {
+			pagers = these
+		}
+	}
 	h.start(t)
 	ctx := sim.WithRuntime(t.Context(), h.runtime)
 	disk := h.runtime.NewDisk("journal", sim.DiskConfig{})
@@ -76,14 +118,47 @@ func journalHostRing(t *testing.T, ring int64) *journalHostOf {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var source control.Journal
+	if arrived {
+		if err := vm.Close(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		// The source's open named its journal; this host's names its own.
+		records := h.hosts[0].Control()
+		opened, err := records.OpenMigration(t.Context(), "vm-1",
+			control.Journal{Disk: [16]byte{0x50}, Generation: 9, Covered: 4096})
+		if err != nil {
+			t.Fatal(err)
+		}
+		opened.Close()
+		source = control.Journal{Disk: [16]byte{0x50}, Generation: 9, Epoch: opened.Epoch(), Covered: 4096}
+		if vm, err = h.hosts[0].Volumes().OpenMigration(t.Context(), "vm-1",
+			&control.Journal{Disk: j.Identity(), Generation: j.Generation()}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	guest, err := newMachine(t, pagers, vm, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := h.hosts[0].AddMachine("vm-1", guest); err != nil {
+	if err := h.hosts[0].AddMachineWith("vm-1", guest, host.MachineTerms{PostCopy: arrived}); err != nil {
 		t.Fatal(err)
 	}
-	return &journalHostOf{h: h, clock: clock, vm: vm, guest: guest, j: j, disk: disk}
+	return &journalHostOf{h: h, clock: clock, vm: vm, guest: guest, j: j, disk: disk, source: source}
+}
+
+// checkpoint takes and selects a checkpoint of vm-1 with its VMM state,
+// which names the journal: a flush is journaled only once the record names it.
+func (s *journalHostOf) checkpoint(t *testing.T) {
+	t.Helper()
+	ckpt, err := host.Capture(sim.WithRuntime(t.Context(), s.h.runtime), s.vm, s.guest, s.clock,
+		volume.Terms{Cover: s.h.hosts[0].JournalCover("vm-1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ckpt.Wait(t.Context()); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // held is what the journal holds of vm-1: its live entries' count and the
@@ -275,5 +350,159 @@ func TestAJournalReadFencesAndGivesUpTheVM(t *testing.T) {
 	if _, err := table.Peer(s.h.pages[0]).ReadJournal(t.Context(), rank.Identity{9}, journal.ReadRequest{VM: "vm-1",
 		Epoch: epoch, Generation: s.j.Generation(), Reader: epoch + 1}, 16<<20); !errors.Is(err, peer.ErrNoJournal) {
 		t.Fatalf("a read of a disk the host does not hold: %v, want peer.ErrNoJournal", err)
+	}
+}
+
+// A flush is journaled only once the VM's record names the journal at its
+// epoch: a recovery replays only what the record names. The first flush after
+// an open asks for a checkpoint out of the interval's turn, whose selection
+// names it, and is answered after that.
+func TestAFlushIsJournaledOnlyOnceTheRecordNamesTheJournal(t *testing.T) {
+	s := unnamedJournalHost(t, journalRing)
+	if got := s.record(t).Journals; len(got) != 0 {
+		t.Fatalf("before any checkpoint the record names %v", got)
+	}
+	before := s.vm.Status().Checkpoint
+	s.guest.store("disk", 0, 7)
+	if err := <-flush(s.guest); err != nil {
+		t.Fatalf("the first durable flush failed: %v", err)
+	}
+	got := s.record(t).Journals
+	if len(got) != 1 || got[0].Disk != s.j.Identity() || got[0].Epoch != s.vm.Epoch() {
+		t.Fatalf("after the first flush the record names %v, want this host's journal at epoch %d", got,
+			s.vm.Epoch())
+	}
+	if after := s.vm.Status().Checkpoint; after == before {
+		t.Fatal("the first flush was answered with no checkpoint naming the journal")
+	}
+}
+
+// A VM another host opens after its host stopped answering reads back what
+// it flushed there: the open finds the journal's holder in the membership and
+// reads its entries over the network, which fences the old instance and gives
+// it up, and the new instance's disk holds the flushed byte. Its cold boot
+// publishes it and leaves the record naming no journal.
+func TestAnotherHostsOpenReplaysWhatTheVMFlushed(t *testing.T) {
+	s := journalHosts(t, journalRing, 2)
+	s.checkpoint(t)
+	published := s.vm.Status().Checkpoint
+	s.guest.store("disk", 0, 7)
+	if err := <-flush(s.guest); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.vm.Status().Checkpoint; got != published {
+		t.Fatalf("the flush took checkpoint %s", got)
+	}
+	ctx := sim.WithRuntime(t.Context(), s.h.runtime)
+	other := s.h.hosts[1]
+	if _, err := other.Volumes().Open(ctx, "vm-1"); !errors.Is(err, volume.ErrJournalPending) {
+		t.Fatalf("an open while no member serves the journal = %v, want ErrJournalPending", err)
+	}
+	// The membership says the first host serves its journal disk.
+	members, err := membership.NewStore(membership.Config{ObjectStore: s.h.runtime.ObjectStore(),
+		ObjectPrefix: s.h.prefix, Entropy: s.h.runtime.NewEntropy("membership")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	holder := rank.Identity{2}
+	for _, change := range []func(membership.Membership) (membership.Membership, error){
+		func(m membership.Membership) (membership.Membership, error) {
+			return m.Join(membership.Member{ID: holder, Address: s.h.pages[0]})
+		},
+		func(m membership.Membership) (membership.Membership, error) {
+			return m.Add(membership.Disk{ID: s.j.Identity(), Volume: "journal-0", Kind: membership.Journal})
+		},
+		func(m membership.Membership) (membership.Membership, error) { return m.Assign(s.j.Identity(), holder) },
+		func(m membership.Membership) (membership.Membership, error) { return m.Serve(s.j.Identity(), holder) },
+	} {
+		if _, err := members.Update(t.Context(), change); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reopened, err := other.Volumes().Open(ctx, "vm-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := reopened.Close(context.WithoutCancel(t.Context())); err != nil {
+			t.Error(err)
+		}
+	}()
+	if !reopened.Replayed() {
+		t.Fatal("an open over a journal holding a flush of the VM replayed nothing")
+	}
+	if got := s.h.hosts[0].Machines(); len(got) != 0 {
+		t.Fatalf("the old instance still runs as %v after the replay fenced it", got)
+	}
+	read := make([]byte, 1)
+	if err := reopened.Volume("disk").Read(t.Context(), 0, read); err != nil {
+		t.Fatal(err)
+	}
+	if read[0] != 7 {
+		t.Fatalf("the replayed disk reads %d, want the 7 the guest flushed", read[0])
+	}
+	state, err := other.Starting(ctx, reopened, "ram0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state != nil {
+		t.Fatal("a replayed VM is resumed from its checkpoint's VMM state rather than cold booted")
+	}
+	record := s.record(t)
+	if record.Selected == published.Sequence || len(record.Journals) != 0 {
+		t.Fatalf("after the cold boot the record selects %d naming %v, want a new checkpoint naming none",
+			record.Selected, record.Journals)
+	}
+}
+
+// A migration's destination journals no flush until its post-copy ends: the
+// pages the guest stored into on the source since their last capture reach it
+// only in the post-copy. A flush that arrives meanwhile is answered after it
+// ends, and a checkpoint paused before then
+// keeps the source's journal named, since it may not hold every page the
+// source held. The first paused after it names this host's journal alone.
+func TestADestinationJournalsNothingUntilItsPostCopyEnds(t *testing.T) {
+	s := arrivedJournalHost(t)
+	own := control.Journal{Disk: s.j.Identity(), Generation: s.j.Generation(), Epoch: s.vm.Epoch()}
+	if got := s.record(t).Journals; !slices.Equal(got, []control.Journal{s.source, own}) {
+		t.Fatalf("the destination's open left the record naming %v, want %v", got, []control.Journal{s.source, own})
+	}
+	s.guest.store("disk", 0, 7)
+	flushed := flush(s.guest)
+	// A page the post-copy brings, stored into on the source.
+	s.guest.store("disk", 1, 8)
+	s.checkpoint(t)
+	if got := s.record(t).Journals; len(got) != 2 || got[0] != s.source || got[1].Disk != own.Disk {
+		t.Fatalf("a checkpoint paused during the post-copy names %v, want the source's journal and then this one", got)
+	}
+	if held := s.held(); held.Entries != 0 {
+		t.Fatalf("the journal holds %+v of the VM during its post-copy, want nothing", held)
+	}
+	select {
+	case err := <-flushed:
+		t.Fatalf("a flush was answered during the post-copy: %v", err)
+	default:
+	}
+	s.h.hosts[0].PostCopied("vm-1")
+	if err := <-flushed; err != nil {
+		t.Fatalf("the flush that waited for the post-copy: %v", err)
+	}
+	s.checkpoint(t)
+	if got := s.record(t).Journals; len(got) != 1 || got[0].Disk != own.Disk || got[0].Epoch != own.Epoch {
+		t.Fatalf("the first checkpoint paused after the post-copy names %v, want this host's journal alone", got)
+	}
+}
+
+// A VM whose record still names its last source's journal is not handed over
+// again: the destination's open would name a third. The refusal comes before
+// the guest stops, and asks for the checkpoint that drops that journal.
+func TestAHandoffIsRefusedWhileTheRecordNamesTwoJournals(t *testing.T) {
+	s := arrivedJournalHost(t)
+	_, err := s.h.hosts[0].Migrate(t.Context(), "vm-1", "elsewhere-pages")
+	if !errors.Is(err, host.ErrNotMigratable) || !errors.Is(err, control.ErrTooManyJournals) {
+		t.Fatalf("a handoff of a VM naming two journals = %v, want ErrNotMigratable for ErrTooManyJournals", err)
+	}
+	if got := s.h.hosts[0].Machines(); !slices.Equal(got, []string{"vm-1"}) {
+		t.Fatalf("the refused handoff left this host running %v", got)
 	}
 }

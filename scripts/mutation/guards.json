@@ -1076,5 +1076,29 @@
     "package": "host",
     "run": "^TestEachHostServesTheJournalDiskMadeForItsMachine$",
     "purpose": "Open a journal disk assigned to this host as a cache shard, which empties it of its flushed writes."
+  },
+  {
+    "id": "volume-publish-a-partial-replay",
+    "package": "volume",
+    "run": "^TestAFailedReplayPublishesNothing$",
+    "purpose": "Close a VM whose replay failed part way with its final checkpoint, which publishes part of the journals' entries and drops the journals that hold the rest."
+  },
+  {
+    "id": "host-resume-over-a-replay",
+    "package": "host",
+    "run": "^TestAnotherHostsOpenReplaysWhatTheVMFlushed$",
+    "purpose": "Resume a VM from its checkpoint's VMM state after its open replayed flushed writes into its disks, so registers from before those writes run over the disks after them."
+  },
+  {
+    "id": "journal-answer-unnamed",
+    "package": "host",
+    "run": "^TestAFlushIsJournaledOnlyOnceTheRecordNamesTheJournal$",
+    "purpose": "Journal and answer a flush before the VM's record names this host's journal at its epoch, so a recovery never replays it."
+  },
+  {
+    "id": "journal-drop-source-before-post-copy",
+    "package": "host",
+    "run": "^TestADestinationJournalsNothingUntilItsPostCopyEnds$",
+    "purpose": "Drop the source's journal from the record at a checkpoint paused before the post-copy ended, which may not hold every page the source held."
   }
 ]

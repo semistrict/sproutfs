@@ -201,8 +201,9 @@ func (s *supervisor) opening(ctx context.Context, id string,
 	request hostapi.OpenRequest) (*volume.VM, []byte, error) {
 	if request.Cold {
 		ended := step(ctx, "open cold")
-		vm, err := s.host.OpenColdAfter(ctx, id, ColdShape{Memory: vmmachine.RAMVolume, Root: rootVolume,
-			MemoryBytes: request.Memory, RootBytes: request.Disk, VCPUs: request.VCPUs}, request.Epoch)
+		vm, err := s.host.OpenColdWith(ctx, id, ColdShape{Memory: vmmachine.RAMVolume, Root: rootVolume,
+			MemoryBytes: request.Memory, RootBytes: request.Disk, VCPUs: request.VCPUs},
+			volume.OpenOptions{Epoch: request.Epoch, DiscardJournals: request.DiscardJournals})
 		ended()
 		if err != nil {
 			return nil, nil, fmt.Errorf("cold starting %s: %w", id, err)
@@ -210,7 +211,8 @@ func (s *supervisor) opening(ctx context.Context, id string,
 		return vm, nil, nil
 	}
 	ended := step(ctx, "open")
-	vm, err := s.host.Volumes().OpenAfter(ctx, id, request.Epoch)
+	vm, err := s.host.Volumes().OpenWith(ctx, id,
+		volume.OpenOptions{Epoch: request.Epoch, DiscardJournals: request.DiscardJournals})
 	ended()
 	if err != nil {
 		return nil, nil, fmt.Errorf("opening %s: %w", id, err)

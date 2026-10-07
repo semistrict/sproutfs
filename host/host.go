@@ -209,8 +209,10 @@ type Host struct {
 	// cache disk and serves no shard, and view the membership it holds.
 	// shards opens and closes the shards the membership assigns it, nil for
 	// a host that serves none.
-	self        membership.Host
-	view        *membership.View
+	self membership.Host
+	view *membership.View
+	// members is the deployment's membership object, which the view reads.
+	members     *membership.Store
 	shards      *shardServer
 	control     *control.Client
 	checkpoints *checkpoint.Store
@@ -489,6 +491,9 @@ func StartHost(ctx context.Context, config Config) (*Host, error) {
 	if err != nil {
 		return nil, err
 	}
+	// The replay of a VM's journals reads it to find their holders, member or
+	// not (replay.go).
+	h.members = members
 	// A host that keeps no cache disk is no member, and routes nothing by the
 	// membership, so it never reads it.
 	if h.self.ID.IsZero() {
@@ -541,7 +546,8 @@ func StartHost(ctx context.Context, config Config) (*Host, error) {
 	}
 	v := config.Volumes
 	h.volumes, err = volume.NewManager(volume.Config{Control: h.control, Store: h.checkpoints,
-		MaxWriteBytes: v.MaxWriteBytes, MaxOpenVMs: v.MaxOpenVMs, PointPublishing: v.PointPublishing})
+		MaxWriteBytes: v.MaxWriteBytes, MaxOpenVMs: v.MaxOpenVMs, PointPublishing: v.PointPublishing,
+		Replay: replayer{h: h}})
 	if err != nil {
 		return nil, err
 	}

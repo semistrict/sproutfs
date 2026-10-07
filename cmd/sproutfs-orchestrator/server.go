@@ -111,7 +111,7 @@ func newServer(o *orchestrator, token string) http.Handler {
 			jsonhttp.Fail(r.Context(), w, http.StatusBadRequest, "recover", err)
 			return
 		}
-		recovered, err := o.Recover(r.Context(), r.PathValue("id"), request.Force)
+		recovered, err := o.RecoverWith(r.Context(), r.PathValue("id"), request)
 		reply(w, r, "recover", recovered, err)
 	})
 	mux.HandleFunc("POST /vms/{id}/stop", func(w http.ResponseWriter, r *http.Request) {

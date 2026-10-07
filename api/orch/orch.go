@@ -242,6 +242,10 @@ type CaptureResult struct {
 // than risk fencing a host whose guest is running perfectly well.
 type RecoverRequest struct {
 	Force bool `json:"force,omitempty"`
+	// DiscardJournals reopens a VM whose record names a journal that is lost
+	// or that no host serves, without the flushes it held. It is an
+	// operator's decision, and the host logs every journal it discards.
+	DiscardJournals bool `json:"discard_journals,omitempty"`
 }
 
 // RecoverResult reports a VM reopened from its last checkpoint on a host that

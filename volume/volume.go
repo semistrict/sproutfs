@@ -102,6 +102,10 @@ type Config struct {
 	// see it land. A caller that keeps its own record of which checkpoints
 	// may exist learns of these nowhere else.
 	PointPublishing func(vm string, sequence uint64)
+	// Replay reads back the journals a VM's record names when an open that
+	// is not a migration's takes it (replay.go). Nil reads none, and an open
+	// of a VM whose record names any is ErrJournalPending.
+	Replay Replayer
 }
 
 const (

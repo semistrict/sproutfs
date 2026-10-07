@@ -33,7 +33,8 @@ func TestAStopWritesNoJournal(t *testing.T) {
 	destination.Close()
 	named := []control.Journal{{Disk: [16]byte{0x07, 0xf3}, Generation: 5, Epoch: destination.Epoch(), Covered: 8192}}
 
-	vm, err := h.hosts[0].Volumes().Open(t.Context(), "vm-1")
+	// An open that reads no journal back, as a migration's destination's is.
+	vm, err := h.hosts[0].Volumes().OpenMigration(t.Context(), "vm-1", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

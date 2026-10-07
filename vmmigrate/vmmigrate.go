@@ -26,6 +26,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/peer"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/platform/sim"
@@ -180,6 +181,11 @@ type Options struct {
 	// child whose parent is elsewhere — which rebuilds the point from the
 	// checkpoint the parent pinned and pulls those pages out of its peer server.
 	Point *volume.ForkPoint
+	// Journal is the destination's journal, which a migration's open names
+	// in the VM's record after the source's, nil where the destination
+	// journals no flush (plans/fsync-journal-2026-10-06.md). A fork's open
+	// does not read it: a child answers no flush until its root is selected.
+	Journal *control.Journal
 }
 
 // Migrate runs the source's half of a live migration.

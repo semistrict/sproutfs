@@ -1217,6 +1217,10 @@ type OpenRequest struct {
 	// and is refused as a conflict once anything else has opened the VM since:
 	// that host may be running it. Zero opens whatever the epoch is.
 	Epoch uint64 `json:"epoch,omitempty"`
+	// DiscardJournals opens a VM whose record names a journal that is lost
+	// or that no member serves, without the flushes it held: an operator's
+	// decision. Every journal discarded is logged.
+	DiscardJournals bool `json:"discard_journals,omitempty"`
 }
 
 // OpenResult reports a VM opened from its last checkpoint, which is what a host

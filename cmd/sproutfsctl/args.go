@@ -34,6 +34,9 @@ type invocation struct {
 	// Force is the operator's own evidence that a VM's host is gone, which
 	// recover needs when the pod is still listed but does not answer.
 	Force bool
+	// DiscardJournal recovers a VM whose record names a journal that is lost
+	// or that no host serves, without the flushes it held.
+	DiscardJournal bool
 	// Cold starts a VM without its memory: the host discards every page of it
 	// and the VMM state with it, and boots the kernel from the root volume.
 	// Memory, Disk and VCPUs are the shape a VM is created at, or the shape it
@@ -104,7 +107,10 @@ const usage = `sproutfsctl drives a sproutfs demo deployment through its orchest
                                            and the VM keeps running; --keep keeps
                                            the checkpoint for later creates
   sproutfsctl kill-host HOST               delete a host pod, losing its unpublished writes
-  sproutfsctl recover VM [--force]         reopen a VM whose host is gone
+  sproutfsctl recover VM [--force] [--discard-journal]
+                                           reopen a VM whose host is gone;
+                                           --discard-journal opens it without the
+                                           flushes a lost journal held
   sproutfsctl stop VM [--suspend] [--keep] checkpoint a VM's disks and close it, keeping
                                            the VM; --suspend keeps its memory too,
                                            so a start resumes it rather than booting it;
@@ -147,7 +153,7 @@ var commands = map[string]struct {
 	"migrate":         {target: "vm", flags: []string{"to"}},
 	"capture":         {target: "vm", switches: []string{"new", "keep"}},
 	"kill-host":       {target: "host"},
-	"recover":         {target: "vm", switches: []string{"force"}},
+	"recover":         {target: "vm", switches: []string{"force", "discard-journal"}},
 	"stop":            {target: "vm", switches: []string{"suspend", "keep"}},
 	"kept":            {target: "vm"},
 	"release":         {target: "checkpoint"},
@@ -207,6 +213,8 @@ func parse(args []string) (invocation, error) {
 			switch flag {
 			case "force":
 				result.Force = true
+			case "discard-journal":
+				result.DiscardJournal = true
 			case "cold":
 				result.Cold = true
 			case "suspend":

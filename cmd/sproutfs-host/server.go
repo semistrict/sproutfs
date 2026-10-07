@@ -333,7 +333,10 @@ func statusOf(err error) int {
 		// A release refused because the destination has not fetched every page
 		// this host holds for it is a request that is merely early: the pages
 		// exist nowhere else, and the caller asks again once they are there.
-		errors.Is(err, vmmigrate.ErrOutstanding):
+		errors.Is(err, vmmigrate.ErrOutstanding),
+		// A VM whose record names a journal whose disk was formatted again
+		// lost the flushes it held: only an operator's discard opens it.
+		errors.Is(err, volume.ErrJournalLost):
 		return http.StatusConflict
 	case errors.Is(err, vmmemory.ErrCapacity):
 		// The pager could not map this VM's memory regions. Another host can.
@@ -342,7 +345,10 @@ func statusOf(err error) int {
 		errors.Is(err, host.ErrClosed), errors.Is(err, volume.ErrClosed),
 		// A guest that is not answering yet is a VM that is still booting, not
 		// a request anybody should change.
-		errors.Is(err, guest.ErrNoGuest):
+		errors.Is(err, guest.ErrNoGuest),
+		// A journal the VM's record names is moving to another member, and
+		// the open is asked again once it is served.
+		errors.Is(err, volume.ErrJournalPending):
 		return http.StatusServiceUnavailable
 	default:
 		return http.StatusInternalServerError

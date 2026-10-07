@@ -31,3 +31,7 @@ var CacheFillReport = cacheFillReport
 
 // HotTierReport is what the host's hot tier did as /status reports it.
 var HotTierReport = hotTierReport
+
+// PostCopied tells durable flush that every page of a VM brought here has
+// arrived, as a receive does once its post-copy ends.
+func (h *Host) PostCopied(vmID string) { h.postCopied(vmID) }

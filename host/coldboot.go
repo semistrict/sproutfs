@@ -7,6 +7,7 @@ import (
 	"log/slog"
 
 	"github.com/semistrict/sproutfs/checkpoint"
+	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/volume"
 )
 
@@ -85,10 +86,15 @@ func (h *Host) OpenCold(ctx context.Context, vmID string, shape ColdShape) (*vol
 // OpenColdAfter is OpenCold conditional on the epoch its caller read, as
 // volume.Manager.OpenAfter is: an open made since refuses it.
 func (h *Host) OpenColdAfter(ctx context.Context, vmID string, shape ColdShape, epoch uint64) (*volume.VM, error) {
+	return h.OpenColdWith(ctx, vmID, shape, volume.OpenOptions{Epoch: epoch})
+}
+
+// OpenColdWith is OpenCold on the open's options (volume.Manager.OpenWith).
+func (h *Host) OpenColdWith(ctx context.Context, vmID string, shape ColdShape, options volume.OpenOptions) (*volume.VM, error) {
 	if _, err := shape.sizes(); err != nil {
 		return nil, err
 	}
-	vm, err := h.volumes.OpenAfter(ctx, vmID, epoch)
+	vm, err := h.volumes.OpenWith(ctx, vmID, options)
 	if err != nil {
 		return nil, err
 	}
@@ -146,15 +152,22 @@ func coldMemoryRegions(vm *volume.VM, sizes map[string]uint64) []MemoryRegion {
 // checkpoint: the memory is discarded here, in a checkpoint of its own, and the
 // guest boots its kernel over the disks and recovers what its journal recovers.
 //
+// A VM its open replayed flushed writes into (volume.VM.Replayed) is cold
+// booted too, whatever its checkpoint holds: registers from before those
+// writes over the disks after them would describe a guest that never existed.
+// Its cold boot's checkpoint publishes the replayed blocks.
+//
 // memory names the volume the guest's memory is in. A VM the state cannot be
 // read for is left open; closing it is the caller's.
 func (h *Host) Starting(ctx context.Context, vm *volume.VM, memory string) ([]byte, error) {
-	state, err := State(ctx, h.Checkpoints(), vm.Status().Checkpoint)
-	if err == nil {
-		return state, nil
-	}
-	if !errors.Is(err, checkpoint.ErrNoState) {
-		return nil, fmt.Errorf("reading the VMM state of %s: %w", vm.ID(), err)
+	if !vm.Replayed() || sim.Bug(ctx, "host-resume-over-a-replay") {
+		state, err := State(ctx, h.Checkpoints(), vm.Status().Checkpoint)
+		if err == nil {
+			return state, nil
+		}
+		if !errors.Is(err, checkpoint.ErrNoState) {
+			return nil, fmt.Errorf("reading the VMM state of %s: %w", vm.ID(), err)
+		}
 	}
 	opened := vm.Status().Checkpoint.Sequence
 	if err := vm.DiscardMemory(ctx, memory, volume.Shape{}); err != nil {

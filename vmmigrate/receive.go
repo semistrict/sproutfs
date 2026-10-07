@@ -277,7 +277,7 @@ func Receive(ctx context.Context, manager *volume.Manager, handoff Handoff, peer
 	if manager == nil || start == nil || peers == nil || handoff.VMID == "" || len(handoff.MemoryRegions) == 0 {
 		return nil, fmt.Errorf("%w: a receive needs a manager, a handoff, a table of peers and a start", ErrInvalid)
 	}
-	vm, err := open(ctx, manager, handoff, opts.Point)
+	vm, err := open(ctx, manager, handoff, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -300,13 +300,18 @@ func Receive(ctx context.Context, manager *volume.Manager, handoff Handoff, peer
 // the pages written since it from the parent, and its own first checkpoint is
 // the root index that makes it a VM anyone can open.
 //
+// A migration's open reads no journal back: what the source journaled is in
+// the pages it hands over. It names the destination's journal, opts.Journal,
+// after the source's.
+//
 // point is the parent's own fork point, for a child whose parent runs here: it
 // carries the parent's sealed pages, which is what makes the pages written
 // since that checkpoint reachable without the network. A child whose parent is
 // elsewhere rebuilds the point from the published checkpoint alone.
-func open(ctx context.Context, manager *volume.Manager, handoff Handoff, point *volume.ForkPoint) (*volume.VM, error) {
+func open(ctx context.Context, manager *volume.Manager, handoff Handoff, opts Options) (*volume.VM, error) {
+	point := opts.Point
 	if !handoff.IsFork() {
-		vm, err := manager.Open(ctx, handoff.VMID)
+		vm, err := manager.OpenMigration(ctx, handoff.VMID, opts.Journal)
 		if err != nil {
 			return nil, err
 		}

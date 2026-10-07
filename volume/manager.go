@@ -165,6 +165,23 @@ func (m *Manager) Open(ctx context.Context, id string) (*VM, error) {
 // nothing runs the VM: an open made since is refused with control.ErrMoved,
 // and fences nothing. Zero opens whatever the epoch is, as Open does.
 func (m *Manager) OpenAfter(ctx context.Context, id string, epoch uint64) (*VM, error) {
+	return m.OpenWith(ctx, id, OpenOptions{Epoch: epoch})
+}
+
+// OpenOptions is how an open that is not a migration's takes a VM.
+type OpenOptions struct {
+	// Epoch is OpenAfter's: zero opens whatever the epoch is.
+	Epoch uint64
+	// DiscardJournals opens a VM whose record names a journal no member
+	// serves, or one formatted again, without the flushes that journal held:
+	// an operator's decision that they are lost. Each journal discarded is
+	// logged. The journals that can be read are replayed as ever.
+	DiscardJournals bool
+}
+
+// OpenWith is Open on options' terms.
+func (m *Manager) OpenWith(ctx context.Context, id string, options OpenOptions) (*VM, error) {
+	epoch := options.Epoch
 	if !validID(id) {
 		return nil, ErrInvalidConfig
 	}
@@ -180,7 +197,55 @@ func (m *Manager) OpenAfter(ctx context.Context, id string, epoch uint64) (*VM, 
 	if !record.Created {
 		return nil, ErrForkPending
 	}
+	// So is finding that a journal it names is not served yet: the open is
+	// asked again once its disk has moved.
+	if err := m.served(ctx, record); err != nil && !options.DiscardJournals {
+		return nil, err
+	}
 	handle, err := m.config.Control.OpenAfter(ctx, id, epoch)
+	if err != nil {
+		return nil, err
+	}
+	index, err := m.index(ctx, id, handle.Record().Selected)
+	if err != nil {
+		handle.Close()
+		return nil, err
+	}
+	vm, err := m.attach(ctx, id, handle, index, nil, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	if err := m.replay(ctx, vm, handle.Record().Journals, options.DiscardJournals); err != nil {
+		return nil, errors.Join(err, vm.abandonReplay(ctx, err))
+	}
+	return vm, nil
+}
+
+// OpenMigration is Open for a migration's destination. It reads no journal
+// back, since the source hands over every page its journal holds, and it
+// names joining, the destination's journal, in the record after the source's
+// (control.Client.OpenMigration). Nil names none, and the record keeps the
+// journals it names.
+func (m *Manager) OpenMigration(ctx context.Context, id string, joining *control.Journal) (*VM, error) {
+	if !validID(id) {
+		return nil, ErrInvalidConfig
+	}
+	if err := m.usable(); err != nil {
+		return nil, err
+	}
+	record, err := m.config.Control.Read(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if !record.Created {
+		return nil, ErrForkPending
+	}
+	var handle *control.Handle
+	if joining != nil {
+		handle, err = m.config.Control.OpenMigration(ctx, id, *joining)
+	} else {
+		handle, err = m.config.Control.OpenAfter(ctx, id, 0)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -191,6 +256,10 @@ func (m *Manager) OpenAfter(ctx context.Context, id string, epoch uint64) (*VM, 
 	}
 	return m.attach(ctx, id, handle, index, nil, nil, nil)
 }
+
+// Journals is the journals this VM's record names as its handle last wrote
+// or read it.
+func (vm *VM) Journals() []control.Journal { return slices.Clone(vm.control.Record().Journals) }
 
 // openAs opens a VM whose identity the deployment already records — which is
 // what a create of an existing identity does — and requires that its volumes
