@@ -1,238 +1,170 @@
 # Terminology
 
-These terms are shared across the [architecture](architecture.md) and its
-supporting documents.
-
 ## Storage
 
-**VM**: One virtual machine. It is the unit of identity, write ownership and
+**VM**: One virtual machine: the unit of identity, write ownership and
 durability. Each VM has one identity, one control record and one series of
 checkpoints.
 
-**Tenant**: The owner a VM belongs to, when it belongs to one. The tenant is
-part of the VM's identity, `<tenant>/<name>`, and so part of every object key
-the VM has: they all live under `tenants/<tenant>/`. Deleting that prefix
-removes the tenant and nothing else. No page crosses between tenants: a fork's
-child belongs to its parent's tenant, and a tenant's templates are its own.
-The exception is a public template. A VM whose identity names no tenant
-belongs to none, and its keys are where every VM's were before tenants
-existed.
+**Tenant**: The owner a VM belongs to, if any. The tenant is part of the VM's
+identity, `<tenant>/<name>`, and every object key of the VM is under
+`tenants/<tenant>/`. Deleting that prefix removes the tenant and nothing else.
+No page crosses between tenants, except a public template's: a fork's child
+belongs to its parent's tenant, and a tenant's templates are its own. A VM of
+no tenant has its keys at the top of the deployment prefix.
 
 **Public template**: A template of no tenant, `template-<digest>`. A VM of any
-tenant is created from it and shares its pages. Its pages are the only ones
-that cross between tenants. A host imports its configured images as public
-templates.
+tenant can be created from it and shares its pages. A host imports its
+configured images as public templates.
 
 **Volume**: One named, byte-addressed image of a VM: its memory (`ram0`) or one
-of its PMEM disks. A volume's size is fixed for the VM's lifetime.
+of its PMEM disks. Its size is fixed for the VM's lifetime.
 
 **Ephemeral disk**: A PMEM volume that no checkpoint holds. Its pages live only
 in the ephemeral pager of the host that runs the VM. A checkpoint records its
-name, size and page size, and none of its pages. It is lost with its host and
-at a stop, it reaches no fork, and a migration carries it. A VM opened anywhere
-gets it back zeroed at the recorded size.
+name, size and page size. It is lost with its host and at a stop, reaches no
+fork, and is carried by a migration. A VM opened elsewhere gets it back zeroed.
+See [volumes](volumes.md#ephemeral-disks).
 
 **Page**: The unit of publication, of faults and of resident ownership.
 
-**Geometry**: A volume's page size, and the number of its pages that one
-segment of its page table covers. The host chooses the page size when it
-creates the volume. The page size is either 4 KiB or 2 MiB. It is recorded in
-every checkpoint of the volume and never changes. A page number is meaningless
-without the page size, so every reader divides by the page size the root
-recorded, not by a constant. A pager instance also has a page size, fixed when
-the pager is built. The pager refuses to attach a volume with any other page
-size. A host runs RAM and PMEM at 2 MiB by default and can run either at 4 KiB
-(`SPROUTFS_RAM_PAGE_BYTES`, `SPROUTFS_PMEM_PAGE_BYTES`); the simulation runs RAM at 4 KiB. The mapping protocol carries each session's page size and the
-kind of memory its arena uses. Both ends refuse a mismatch before any guest
-memory exists.
+**Geometry**: A volume's page size, 4 KiB or 2 MiB, and the number of its pages
+that one segment of its page table covers. The host chooses the page size when
+it creates the volume. It is recorded in every checkpoint of the volume and
+never changes, and readers divide by the page size the root recorded. A pager's
+page size is fixed when it is built, and it refuses a volume of another. A host
+runs RAM and PMEM at 2 MiB by default and can run either at 4 KiB
+(`SPROUTFS_RAM_PAGE_BYTES`, `SPROUTFS_PMEM_PAGE_BYTES`). The simulation runs
+RAM at 4 KiB.
 
 **Overlay**: What a VM has written through the volume package since its last
 checkpoint, held in memory on the host that owns the VM. Only image building
-and tests write through the overlay; a pager never does. The overlay is not
-durable anywhere: losing that host loses it.
+and tests write through it; a pager never does. It is not durable.
 
-**Control record**: The only mutable object a VM owns in the store. It selects
-the writer epoch and the checkpoint. It lists the checkpoints of this VM that
-have been forked. These are the pins. It also lists the kept checkpoints.
-Reclamation spares pinned and kept checkpoints, and nothing releases a pin. The
-record changes only by conditional write. See [Metadata authority](metadata.md).
+**Control record**: The only mutable object a VM owns in the store. It holds
+the writer epoch, the selected checkpoint, the pins (checkpoints of this VM
+that have been forked) and the kept checkpoints. It changes only by
+conditional write. See [metadata](metadata.md).
 
-**Kept checkpoint**: A checkpoint a checkpoint request asked to keep: a
-capture, a stop or a suspending stop with keep. It is kept in the write that
-selects it, and reclamation spares it and everything it reads, so a VM can be
-created from it however far its VM has moved on. A create from one with VMM
-state resumes the guest where its pause left it; one without boots cold. A kept
-checkpoint no VM was created from can be released. One a VM was created from
-is pinned too, and the pin is permanent.
+**Kept checkpoint**: A checkpoint that a checkpoint request (a capture, or a
+stop or suspending stop with keep) asked to keep. Reclamation spares it and
+everything it reads, so a VM can be created from it later. A create from one
+with VMM state resumes the guest; one without boots cold. A kept checkpoint no
+VM was created from can be released. See
+[metadata](metadata.md#kept-checkpoints).
 
-**Checkpoint**: Both the operation that makes a running VM durable and the
-objects that operation leaves in the store. The operation has these steps:
+**Checkpoint**: The operation that makes a running VM durable, and the objects
+it leaves in the store. The steps:
 
-1. The vCPUs pause while the VMM state is saved and every memory region's dirty pages
-   are sealed.
+1. The vCPUs pause while the VMM state is saved, if included, and the dirty
+   pages of each memory region in the checkpoint are sealed.
 2. The guest resumes.
 3. The sealed pages stream out as parts.
-4. The index object is written last. It carries the segments the parts changed
-   and the checkpoint's root.
-5. A conditional write selects the checkpoint in the control record. From this
-   point, the VM survives the loss of this host.
+4. The index object is written last, with the segments the parts changed and
+   the root.
+5. A conditional write selects the checkpoint in the control record. From then
+   on, the VM survives the loss of this host.
 
-Every VM a host runs has its disks checkpointed on an interval. The interval is
-sixty seconds by default. Each wait is jittered by up to an eighth in either
-direction, and the next wait is measured from the last upload. The interval's
-pause seals only the disks and saves no VMM state, and its checkpoint names no
-VMM state. A capture on request and a suspending stop also seal RAM and save
-the VMM state. Capture returns without waiting for the upload. The upload can
-fail, and its pages then go back to the guest. A VM's entire durable state is
-the one checkpoint its record selects. An initial sparse checkpoint writes no
-part.
+The host checkpoints every VM's disks on an interval, 60 s by default. A
+capture on request and a suspending stop also seal RAM and save VMM state. A
+VM's durable state is the one checkpoint its record selects. An initial sparse
+checkpoint writes no part. See
+[architecture](architecture.md#loss-model).
 
-**Cold boot**: Starting a VM over a checkpoint that has no VMM state. Examples
-are the interval's checkpoint of the VM's disks, a plain stop's checkpoint, and
-a template's checkpoint. The host takes a separate checkpoint that discards the
-VM's memory, and boots the kernel over the disks. The guest sees this as a
-power cut at that checkpoint. A VM comes back this way after a host loss, and
-an operator's cold start requests it.
+**Cold boot**: Starting a VM over a checkpoint that has no VMM state, such as an
+interval checkpoint, a plain stop's or a template's. The host takes a
+checkpoint that discards the VM's memory and boots the kernel over the disks.
+The guest sees a power cut at that checkpoint.
 
 **Loss window**: How long a VM may hold a disk write that no landed checkpoint
-covers: `SPROUTFS_LOSS_WINDOW`, five minutes by default, zero to disable. As a
-measurement, the loss window is the age of the VM's oldest such write. Past the
-window, the pager admits no further dirty page for that VM while a sealed
-checkpoint of it is uploading, and the host requests a checkpoint of that VM
-outside the interval's schedule. A store is never held while its checkpoint
-still needs a pause, because a held store holds its vCPU and a pause needs
-every vCPU. So the window bounds in time what losing a host can cost one VM, as
-the dirty budget bounds it in bytes. The lost writes span at most the window
-plus the pause of one checkpoint attempt. The age
-travels with the pages a handoff moves, so a destination inherits the window
-and does not restart it. If a VM can never be checkpointed, the wait ends as a
-full dirty budget does: the host deliberately stops that VM and takes a last
-checkpoint of what it can still capture.
+covers (`SPROUTFS_LOSS_WINDOW`, five minutes by default, zero to disable). As a
+measurement, the age of the VM's oldest such write. Past it, the pager admits
+no further dirty page for that VM while a sealed checkpoint of it is uploading,
+and the host requests a checkpoint out of turn. See
+[architecture](architecture.md#loss-model).
 
-**Index object**: One checkpoint's metadata, at `vm/<id>/ckpt/<seq>/index`. It
-contains a fixed record, the page-table segments the checkpoint changed, the
-**root**, and the fixed record again. So the end of the object is enough to
-locate the root. For every volume, the root says where each segment of the
-volume's page table is fetched from, and which checkpoints this one reads. The
-root copies its parent's segment addresses forward and replaces only the
-segments its own checkpoint changed. So the root is complete on its own and
-does not name a parent. The index object's create-if-absent PUT commits the
-publication.
+**Index object**: One checkpoint's metadata, at `vm/<id>/ckpt/<seq>/index`: a
+fixed record, the page-table segments the checkpoint changed, the **root**, and
+the fixed record again. For each volume, the root says where each segment of
+the page table is and which checkpoints this one reads. It copies its parent's
+segment addresses forward and names no parent. The object's create-if-absent
+PUT commits the publication.
 
-**Part**: One object of a checkpoint's data, at
-`vm/<id>/ckpt/<seq>/part/<n>`. A part is filled to 64 MiB and uploaded as it
-fills. It holds a sequence of encoded members: the VMM state, then each
-volume's changed pages in page order, then the pages compaction rescued. The
-members are followed by a table of at most 1 MiB that names them, and a fixed
-trailer that names the table. So a part describes itself.
+**Part**: One object of a checkpoint's data, at `vm/<id>/ckpt/<seq>/part/<n>`,
+filled to 64 MiB and uploaded as it fills. It holds members (the VMM state,
+then each volume's changed pages in page order, then the pages compaction
+rescued), a table of at most 1 MiB that names them, and a fixed trailer that
+names the table.
 
-**Extent**: A member's location in the part that holds it, and the bytes that
-one ranged read fetches. A read of a range of a volume is a **run** of pages.
-The run's members are grouped by the part they are in and by their position in
-that part. Each group is fetched as one extent and decoded from that one
-buffer. Publishing in page order places the members of consecutive pages next
-to each other. So a pager's cold 2 MiB read-ahead run of 512 4 KiB pages takes
-two requests instead of one per page: one for the segment that locates the
-pages, and one for the extent that holds them.
+**Extent**: A member's location in the part that holds it, and the bytes one
+ranged read fetches. A read of a range of a volume is a **run** of pages, whose
+members are fetched one extent per group of adjacent members in a part. See
+[volumes](volumes.md#reads).
 
-**Seal**: Removing the guest's write access to a memory region's dirty pages in place.
-Those pages then belong to the checkpoint while the guest keeps running.
-Nothing is copied and no bytes move. A later store into a sealed page copies
-only that page. So the pause is only page-table work.
+**Seal**: Removing the guest's write access to a memory region's dirty pages in
+place. The pages then belong to the checkpoint while the guest runs. Nothing is
+copied; a later store into a sealed page copies only that page.
 
 **Flush**: A guest's virtio-pmem flush, which is how its fsync reaches the
-host. The device holds the flush and asks the host over that disk's memory
-session. The guest's flush returns when the host answers. The host answers
-immediately if the VM holds no unpublished disk write older than the flush
-bound: `SPROUTFS_FLUSH_BOUND`, twice the checkpoint interval (120 s) by default, zero
-to disable.
-Otherwise the host answers when a checkpoint that covers those writes lands,
-and it requests that checkpoint outside the interval's schedule. A flush never
-runs a checkpoint directly. The ordering comes from the checkpoint, which is
-one pause across all of the VM's disks.
+host, over that disk's memory session. The host answers at once if the VM holds
+no unpublished disk write older than the flush bound (`SPROUTFS_FLUSH_BOUND`,
+twice the checkpoint interval by default, zero to disable), and otherwise when
+a checkpoint covering those writes lands. See
+[architecture](architecture.md#loss-model).
 
-**Reclamation**: After a checkpoint is selected, deleting the checkpoints that
-its root no longer names and no pin protects. Each such checkpoint is deleted
-whole. Compaction limits what reclamation leaves behind. A checkpoint rewrites
-the live pages of checkpoints that are less than half live into its own parts,
-up to 64 MiB of live bytes, after the guest has resumed.
+**Reclamation**: After a checkpoint is selected, deleting the checkpoints its
+root no longer names and nothing protects. **Compaction** rewrites the live
+pages of checkpoints less than half live into the new checkpoint's parts, up to
+64 MiB of live bytes, after the guest resumes.
 
-**Fork point**: One pause of a running parent. It consists of the checkpoint
-the parent has published, the pages sealed since then, and the VMM state saved
-with them. Taking a fork point publishes nothing before it returns, and the
-parent keeps running. So a fork costs the pause and the child's boot, and one
-pause serves any number of children. Behind the fork, the parent publishes the
-point once, as a checkpoint of its own, and a child on its host builds its
-first checkpoint on that instead of uploading what it inherited. The parent's
-pages stay sealed until every child has published its first checkpoint or
-pulled the pages it inherited.
+**Fork point**: One pause of a running parent: the checkpoint the parent has
+published, the pages sealed since, and the VMM state saved with them. Taking it
+publishes nothing, and the parent keeps running. One point serves any number of
+children. The parent's pages stay sealed until every child has published its
+first checkpoint or pulled the pages it inherited.
 
 **Fork**: A VM created from a parent's fork point without changing any bytes.
 It has its own control record, and its writes are isolated. The parent's
-published sequence is pinned in the parent's record. The pin stops reclamation
-from deleting the checkpoint the child inherits and every checkpoint that
-checkpoint's root names. The pin is permanent. Only a collector, which can see
-every fork, may release a pin. A child runs either on the parent's host,
-sharing the sealed pages, or on another host, pulling them from the parent's
-peer server.
+published sequence is pinned in the parent's record, permanently. A child runs
+on the parent's host, sharing the sealed pages, or on another host, pulling
+them from the parent's peer server.
 
-**Handoff**: The plain data that starts a VM on another host: the VMM state,
-the checkpoint the VM inherits, the runs of unpublished pages, and the address
-of the peer server that serves them. A migration hands off a VM that the source
+**Handoff**: The data that starts a VM on another host: the VMM state, the
+checkpoint the VM inherits, the runs of unpublished pages, and the address of
+the peer server that serves them. A migration hands off a VM the source
 released. A fork hands off a child from a parent that keeps running.
 
 **Hold**: How long a source keeps what a handoff needs when nothing releases
-it: the pages of a VM it handed over, or the fork point of a child. It is four
-checkpoint intervals. A handoff is good for as long as its source holds it, so
-a receive that fails is tried again until then. After it, the pages are gone
-whether or not anything can reach the source, which is what ends a migration
-whose source is listed and unreachable.
+it: the pages of a VM it handed over, or a child's fork point. Four checkpoint
+intervals. A failed receive is retried until the hold ends. After it, the pages
+are gone whether or not the source is reachable.
 
-**Page identity**: The name of the page whose bytes a range reads, reported as
-(checkpoint reference, volume, page). Sparse zeroes have a special identity.
-Every page has one name: the checkpoint that published it. A fork inherits its
-parent's names. Inherited pages keep the same identity. Compaction can move
-their bytes into another checkpoint's parts without changing their identity. A
-named page is referenced and never copied: in the store, on the wire, and in
-host memory. In host memory, pages with the same identity share one resident
-page within a pager.
+**Page identity**: The name of the page whose bytes a range reads, as
+(checkpoint reference, volume, page). Sparse zeroes have a special identity. A
+page is named by the checkpoint that published it, and a fork inherits its
+parent's names. Compaction moves bytes without changing the identity. Pages
+with the same identity share one resident page within a pager.
 
 **Resident page**: The physical backing of one page in one of a host's pagers.
-Several memory regions with the same page identity can share it. A host runs one pager
-per kind of memory region: one for its guests' RAM and one for their PMEM disks. Each
-pager has its own arena, spill file and page size: 2 MiB for PMEM, and 2 MiB
-for RAM by default or 4 KiB when configured. So a page count from one pager says nothing about the other, and
-everything a host reports across both pagers is in bytes. An arena's memory
-matches its page size: the HugeTLB pool for 2 MiB, and an ordinary shared memfd
-for 4 KiB.
+Memory regions with the same page identity share it. A host runs one pager per
+kind of memory region, each with its own arena, spill file and page size, so
+everything a host reports across pagers is in bytes. A 2 MiB arena uses the
+HugeTLB pool, and a 4 KiB arena an ordinary shared memfd.
 
 **Pull**: Fetching every page of the checkpoint a VM started from, in the
 background while the guest runs, so its faults read the hosts' disks and not
 the object store. It is a prefetch with no guarantee. A start marks a VM to
-pull, and the VM keeps the mark: the orchestrator records it, and every start,
-recovery and migration of the VM carries it. Inside the share the cluster
-cache is on for, a pull asks each window's ranks what they hold (a **presence
-check**), reads from the store only the pages the cluster lacks, and fills
-the cluster with them; it copies nothing onto its own host's disk. Outside the
-share it copies the pages whole onto the page cache's disk of the host that
-runs it, keyed by page identity. A pull holds none of what it fetched: the
-pages leave the disks only when they need their space. Once the pull is
-complete, a fault on a page that is not resident makes no request of the
-object store while the disks hold that page. Its reads are a prefetch's, and
-it stops short when the host is short of memory or disk. A VM whose checkpoint
-is larger than the disk can hold, where some of it would be kept whole, is not
-pulled, and reads the store as any VM does. See
+pull, and every start, recovery and migration of the VM carries the mark.
+Inside the share the cluster cache is on for, a pull asks each window's ranks
+what they hold (a **presence check**) and fills the cluster with what it lacks.
+Outside it, the pull copies the pages onto the host's page cache disk. See
 [hosting](hosting.md#pulling-a-vms-memory).
 
-**Hot tier**: A second bucket that holds copies of checkpoint objects under
-their own names, closer to the hosts than the regional bucket, such as a
-zonal bucket in their zone. Every read of a checkpoint object tries it first,
-under a bound, and a miss or a failure reads the regional bucket. A miss is
-filled behind the read with a create-if-absent PUT of the same object, and a
-publication writes each part and index object to it once the regional PUT
-has succeeded. Nothing waits on a fill. The regional bucket stays the only
-durable copy. The hot tier and the cluster's disk cache are alternatives: a
-host refuses to start with both. See
+**Hot tier**: A second bucket, closer to the hosts than the regional bucket,
+that holds copies of checkpoint objects under the same names. Reads try it
+first, and a miss or failure reads the regional bucket and fills the hot tier
+behind the read. The regional bucket is the only durable copy. A host refuses
+to run with both a hot tier and the cluster's disk cache. See
 [hosting](hosting.md#reading-through-a-hot-tier).
 
 ## Cluster
@@ -240,183 +172,122 @@ host refuses to start with both. See
 **Host**: A machine that runs VMs and serves their pages to migration
 destinations and to forks on other hosts.
 
-**Peer server**: The one channel between hosts. Each host runs one, on one
-port, and every other host reaches it there. It serves the pages a handoff left
-on the host and, for the cluster's disk cache, reads, keeps, drops and presence
-checks of stripes. It serves stripes within a serving bandwidth, and answers a
-read past it busy. It speaks a framed protocol over TCP, not gRPC or HTTP. See
-[the transport](migration.md#the-peer-server).
+**Peer server**: The one channel between hosts, one per host on one port. It
+serves the pages a handoff left on the host, and stripe reads, keeps, drops and
+presence checks for the cluster's disk cache. It speaks a framed protocol over
+TCP. See [the peer server](migration.md#the-peer-server).
 
-**Peer**: Another host, as this host's table of peers sees it. There is one
-peer per remote host, whatever asks it for what. It holds a pool of
-connections for each class, the budget the remote host gave each class, and
-whether the remote host is down.
+**Peer**: Another host, as this host's table of peers sees it: one per remote
+host, with a pool of connections per class, the budget the remote host gave
+each class, and whether it is down.
 
-**Class**: What a request is for, which decides the connections it goes over
-and the budget it counts against at the server. A guest fault is the fault
-class. A read of the cluster's disk cache, which a fault waits on, is the
-stripe class: its replies never wait behind a 2 MiB page on a connection. The
-post-copy stream and a request for a fill right, which nothing waits on, are
-bulk reads. Keeps are bulk writes. A bulk request never shares a connection
-with a fault, and never takes a fault's budget.
+**Class**: What a request is for, which decides its connections and the budget
+it counts against at the server. A guest fault is the fault class. A disk cache
+read that a fault waits on is the stripe class. The post-copy stream and a
+request for a fill right are bulk reads. Keeps are bulk writes. A bulk request
+never shares a connection or a budget with a fault.
 
-**Busy**: A peer server's answer to a request that would take its peer's class
-past the class's budget. It says how much the class holds, may hold, and asked
-for. The connection stays open, and the asker tries again or asks elsewhere.
+**Busy**: A peer server's answer to a request that would take its class past
+the class's budget. It says how much the class holds, may hold, and asked for.
+The connection stays open.
 
 **Background budget**: The bytes one host's bulk work may have in flight at all
-its peers at once. It admits unpublished post-copy pages first, then the rest
-of the stream, then fills, then repairs. Fills and repairs over it are dropped,
-not queued. While a guest fault is waiting it shrinks to a quarter, so the
-stream yields the link to the fault.
+its peers. It admits unpublished post-copy pages first, then the rest of the
+stream, then fills, then repairs. Fills and repairs over it are dropped. While a
+guest fault waits, it shrinks to a quarter.
 
-**Down**: A peer that failed hard: a dial or a hello that failed, or a
-connection that heard nothing for four seconds. A caller giving up is never a
-hard failure. A request that can do without a down peer skips it. The table
-probes the peer back, first after about a second and then up to every ten.
+**Down**: A peer that failed hard: a failed dial or hello, or a connection that
+heard nothing for four seconds. See [liveness](migration.md#liveness).
 
-**Marked down**: A host a reader of the cluster's disk cache does not ask for
-stripes and sends no fills, after three of its stripe requests to it in a row
-timed out or one connection to it was refused. Each reader keeps its own
-marks, of at most a fifth of the disks of its membership and at least one
-host. It probes a
-marked host after ten seconds, then up to every sixty, and only a probe that
-answers clears the mark. A miss is not a failure of the host.
+**Marked down**: A host that a reader of the cluster's disk cache stops asking
+for stripes and sending fills, after three of its stripe requests to it in a row
+timed out or one connection was refused. See
+[hosting](hosting.md#reading-from-the-cluster).
 
-**Writer**: The single process allowed to publish a VM's checkpoints. The epoch
-in the control record establishes the writer. Every open advances that epoch,
-which fences the previous writer.
+**Writer**: The single process allowed to publish a VM's checkpoints, set by
+the epoch in the control record.
 
-**Epoch**: The writer token in the control record. It is also the high half of
-every checkpoint sequence that writer allocates.
+**Epoch**: The writer token in the control record. Every open advances it,
+which fences the previous writer. It is the high half of every checkpoint
+sequence the writer allocates.
 
-**Drain**: Migrating every VM on a host to other hosts, so that the host
-process can exit without rewinding any of its VMs.
+**Drain**: Migrating every VM off a host, so that the host process can exit
+without rewinding any of its VMs.
 
 **Window**: The pages of one volume, in one aligned 2 MiB span, that one
-checkpoint published. It is what the cluster's disk cache places. At a 2 MiB
-page it is one envelope, and at a 4 KiB page up to 512. A segment of a page
-table is a window of its own.
+checkpoint published: the unit the cluster's disk cache places. One envelope at
+a 2 MiB page, up to 512 at 4 KiB. A page-table segment is its own window.
 
-**Membership**: Which hosts are in the cluster and which cache disk each
-serves: one object in the object store, at `membership`. It holds a
-generation, the deployment's code, every member and every disk. Anything that
-routes requests between hosts reads it, and the cluster's disk cache places
-windows by it. It changes only by compare-and-set: a change reads the object
-and writes the next generation conditional on the object it read. Any process
-may change it, and usually the orchestrator does, one step at a time. Every
-process holds a copy and never an authority. See
+**Membership**: One object, at `membership`: a generation, the deployment's
+code, every member and every disk. Anything that routes requests between hosts
+reads it, and the disk cache places windows by it. It changes only by
+compare-and-set. Every process holds a copy, never the authority. See
 [hosting](hosting.md#the-membership).
 
-**Generation**: The count of the membership's changes. Every write raises it
-by one. Every request that routes by the membership names the generation its
-sender holds. A host behind it reads the membership first, and a host ahead
-of it answers that the sender is stale, so two hosts never exchange a stripe
-under different memberships.
+**Generation**: The count of the membership's changes. A request that routes by
+the membership names its sender's generation. A host behind it reads the
+membership first, and a host ahead of it answers that the sender is stale.
 
-**Member**: A host in the membership: its identity, which is the identity in
-its cache file's header, so a pod replaced on the same node keeps it, or, for
-a host that serves shards, one drawn when its process starts; the address its
-peer server answers at; and its state, joining, active or draining. A host
-drains before it leaves.
+**Member**: A host in the membership: its identity, its peer server's address,
+and its state (joining, active or draining). The identity is the one in its
+cache file's header, or, for a host that serves shards, one drawn when its
+process starts.
 
-**Disk**: A cache disk in the membership: the identity in its file's header,
-its volume, its weight from the size of the disk it is given, the member it is
-assigned to, its state (attaching, serving, releasing or released), and the
-generation that assigned it. Windows are ranked over disks, so a disk that
-moves to another member keeps its windows. A disk is released before it is
-assigned again, and every answer its member sends names the generation that
-assigned it, so a member that lost a disk is never taken for its server
-again.
+**Disk**: A cache disk in the membership: its identity, its volume, its weight
+from its size, the member it is assigned to, its state (attaching, serving,
+releasing or released), and the generation that assigned it. Windows are
+ranked over disks, so a disk that moves to another member keeps its windows.
 
-**Shard**: One network disk of a fixed set a deployment may keep its cluster
-cache on instead of the hosts' own disks: a single-writer Hyperdisk Balanced
-on GCP, with the disk log on it. It is a disk of the membership whose identity
-is derived from its volume's name. The membership assigns it to a member, the
-controller attaches it to that member's machine through the cloud's attach
-API, and the member opens its device and serves it. A shard moves to another
-member as compute scales, and keeps its windows and its stripes. See
+**Shard**: One network disk of a fixed set that may hold the cluster cache
+instead of the hosts' own disks: a single-writer Hyperdisk Balanced on GCP. It
+is a disk of the membership whose identity is derived from its volume's name,
+and it moves between members as compute scales. See
 [hosting](hosting.md#shards-on-network-disks).
 
-**Lease**: What a shard's header region ends with: the generation of the
-assignment it was last opened under, the member's identity, and the regions
-it has ever opened. A member of an older assignment is refused the shard, and
-a member reads it again before every region it writes, so one that lost the
-shard stops writing it.
+**Lease**: The end of a shard's header region: the generation of the assignment
+it was last opened under, the member's identity, and the regions it has opened.
+A member of an older assignment is refused the shard, and a member reads the
+lease again before every region it writes, so one that lost the shard stops
+writing it.
 
-**Rank**: A disk's place in one window's order. Each disk scores the window
-by its weight over -ln(u), where u is a hash of the disk's identity and the
-window. The highest score ranks first, and equal scores go to the lower
-identity. The disks ranked 1 to k+m hold the window's stripes. Two hosts that
-hold one generation of the membership rank every window alike.
+**Rank**: A disk's place in one window's order. Each disk scores the window as
+its weight over -ln(u), where u is a hash of the disk's identity and the
+window. The highest score ranks first, and ties go to the lower identity. The
+disks ranked 1 to k+m hold the window's stripes.
 
-**Code**: The deployment's erasure code: k data stripes and m parity stripes
-of each envelope, any k of which rebuild it. A code with k = 1 is whole copies.
-It is in the membership: a deployment setting, 4+2 when unset, that never
-follows the number of hosts, with the codes the deployment used before it. A
-host that has read no membership holds its own disk alone under 1+0, so it
-holds each envelope whole. See
-[hosting](hosting.md#the-code).
+**Code**: The deployment's erasure code: k data and m parity stripes per
+envelope, any k of which rebuild it. k = 1 is whole copies. It is in the
+membership, 4+2 when unset. A host that has read no membership holds its own
+disk under 1+0. See [hosting](hosting.md#the-code).
 
-**Earlier code**: A code the deployment used before its code, which the list
-names after it, newest first. A window stored under an earlier code is read
-and rebuilt under it until it ages out, and a read of it fills it under the
-deployment's code. Nothing else is stored under an earlier code. See
-[hosting](hosting.md#the-code).
+**Earlier code**: A code the deployment used before, listed after the current
+one, newest first. A window stored under it is read and rebuilt under it until
+it ages out.
 
-**Stripe**: One of the k+m pieces an envelope is split into under a code. It
-names its index, its code and its envelope's length. Stripe i of a window's
-envelopes goes on rank ((i − 1) mod n) + 1 of its n ranked disks, so a disk
-may hold several indices of a window. An envelope is rebuilt from stripes of
-one code. A stripe of a code the membership does not name is a miss.
+**Stripe**: One of the k+m pieces of an envelope under a code. It names its
+index, its code and its envelope's length. Stripe i of a window goes on rank
+((i − 1) mod n) + 1 of its n ranked disks.
 
-**Fill**: Putting the stripes of a window on the disks the membership ranks
-for it, under the membership's code. Inside the share the cluster cache is on
-for, three things fill: a read of the store, or of the cluster under an
-earlier code, once its callers have their pages; a publication, for each part once
-its PUT has succeeded, in part order, and for its segments once the index
-object's has; and a
-pull, for each window it read from the store because the cluster lacked it. A host decides its fills one at a time from one
-bounded queue, a read's before a publication's. Its own stripes go to its own
-disk, and every other stripe goes as a keep within a bounded rate and the
-background budget. The keeps of a window go to its holders side by side, and
-each holder gets this host's keeps one at a time, in the order decided. A fill of a read or a pull that finds the queue full, the
-rate spent or the budget without room is dropped, and the window is read from
-the store next time; a fault and a pull never wait on a fill. A publication's
-fill waits for room instead, up to a bound, so the publication goes at the
-pace its keeps go. See [hosting](hosting.md#filling-the-cluster).
+**Fill**: Putting a window's stripes on the disks the membership ranks for it.
+A read of the store, a publication and a pull fill. A read's or pull's fill is
+dropped when there is no room; a publication's waits, up to a bound. See
+[hosting](hosting.md#filling-the-cluster).
 
 **Keep**: The peer-server request that fills a cache: the stripes of one window
-the disk holds, each as the disk stores it, with its own checksum, under the
-sender's generation. A cache takes a keep only under that generation, for a
-window it ranks the cache's disk for, under its code. It drops every stripe it
-holds or is writing already.
+for that disk, each with its own checksum, under the sender's generation.
 
-**Read from the cluster**: A read of a page inside the share that misses in
-memory. It takes this host's own stripes of the window, then asks k+1 of the
-window's ranks, chosen by a hash of the reader and the window, for every
-stripe they hold of it, and rebuilds the page from any k distinct indices. A
-rank that answers with nothing is replaced at once. What the membership's
-code does not rebuild is read the same way under each earlier code. The store
-is read only for a page fewer than k stripes of which exist under every code,
-or past the read's bound within a token bucket. A holder ahead of the read's
-generation answers that it is stale, and the read reads the membership and
-asks again.
+**Read from the cluster**: A read of a page that misses in memory, inside the
+share. It takes this host's own stripes of the window, asks k+1 of the window's
+ranks for theirs, and rebuilds the page from any k distinct indices. The store
+is read only for a page the cluster cannot rebuild.
 
-**Second request**: Asking the rest of a window's ranks once k stripes have
-not arrived after a delay, about the 95th percentile of the reader's recent
-reads of the same size class: the bytes a read asks for, so a 4 KiB page, a
-2 MiB page and a run each have a delay of their own. A reader earns a
-twentieth of one with each read that did not need one, so when every holder
-is slow the reader waits rather than doubling their load.
+**Second request**: Asking the rest of a window's ranks once k stripes have not
+arrived after about the 95th percentile of the reader's recent reads of the
+same size.
 
-**Repair**: A stripe a reader sends a rank that holds fewer of a window's
-stripes than the code puts on it: an index no rank holds, of a page it
-rebuilt under the membership's code having heard from every rank. It is a keep of
-the lowest priority, dropped rather than queued.
+**Repair**: A stripe a reader sends to a rank that holds fewer of a window's
+stripes than the code puts on it. It is a keep of the lowest priority.
 
 **Fill right**: The right to fill a window from a read of the store. The
 window's rank 1 gives it to the first reader that asks, once per window per
-interval, and only while it holds nothing of the pages asked for. A reader that
-is not given it sends nothing. So a cold burst of readers fills a window once,
-not once per reader.
+interval, so a burst of readers fills a window once.

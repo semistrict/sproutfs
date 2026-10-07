@@ -48,35 +48,30 @@ destination's next checkpoint for a migration.
 
 | Component | Role |
 | --- | --- |
-| Control record | One object per VM, at `control/<id>`. The `control/` namespace holds only control records, so listing it finds the deployment's VMs. The record holds the writer epoch, the writer nonce, the selected checkpoint sequence, whether that checkpoint is published, the checkpoints of this VM that have been forked, and the ones a checkpoint request kept. Reclamation must spare both. Nothing unpins a forked checkpoint; a kept one that was never forked can be released. A record exists while its VM exists, and not longer. Every change is a conditional write. Only the epoch holder writes, except a pin of the published checkpoint the record selects or of a kept one, which a create from a stopped VM adds without the epoch, and the release of a kept checkpoint ([metadata](metadata.md#the-control-record)). |
-| [Checkpoint](volumes.md) | Its data and one index object under `vm/<id>/ckpt/<seq>/`. Nothing else is stored there. The data is `part/<n>`. A part is a run of members: the VMM state if one was saved, then the dirty pages in page order, then the pages compaction rescued. A part is filled to 64 MiB and closed by a table of at most 1 MiB and a fixed 32-byte trailer, so each part describes itself. Pages are published in page order, so a read of a range of a volume can fetch the members of consecutive pages as one **extent**, in one ranged read. A pager's cold 2 MiB read-ahead run of 512 4 KiB pages therefore takes two requests instead of one per page: one for the segment that locates the pages, and one for the extent that holds their members. The `index` object is written last. It contains a fixed record, the page-table segments this checkpoint changed, the **root**, and the fixed record again. Its create-if-absent PUT commits the publication. The root records each volume's geometry: its page size and the number of pages one segment covers (512 MiB of a 2 MiB-page volume, 64 MiB of a 4 KiB-page volume). For each segment of that volume's page table, the root holds the segment's address inside the index object of the checkpoint that wrote it. For a segment this checkpoint did not change, the root keeps the earlier checkpoint's address. The root lists every checkpoint it reads a page from or addresses a segment in. It also lists the checkpoints its own compaction emptied, which it spares for one checkpoint. The root does not name a parent. It is complete on its own: one GET of the end of the index object returns it, and a reader then fetches the segments that a range falls in. |
+| Control record | One object per VM, at `control/<id>`. It holds the writer epoch, the writer nonce, the selected checkpoint sequence, whether that checkpoint is published, the pins (checkpoints of this VM that were forked) and the kept checkpoints. Every change is a conditional write ([metadata](metadata.md#the-control-record)). |
+| [Checkpoint](volumes.md#objects) | An index object and its parts under `vm/<id>/ckpt/<seq>/`. A part, `part/<n>`, holds the VMM state if one was saved, the dirty pages in page order, and the pages compaction rescued. It is filled to 64 MiB and ends with a table of at most 1 MiB and a 32-byte trailer. The `index` object holds a fixed record, the page-table segments this checkpoint changed, the root, and the fixed record again. Its create-if-absent PUT commits the publication. The root records each volume's geometry and, for each segment, its address in the index object of the checkpoint that wrote it. It names no parent. |
 | Overlay | The in-memory writes of one open VM since its selected checkpoint. The next checkpoint publishes them. The overlay does not survive any failure. |
-| [Pager](vm-memory.md) | The host's page cache for guest memory. It keeps resident pages in an arena of memfds, keyed by page identity, and serves attached memory regions from it. In the isolated mode each memory region has a private file and every VMM reads the pages others may map from read-only files ([the isolated arena](vm-memory.md#the-isolated-arena)). It replaces the kernel's page cache and swap for guest memory ([why](vm-memory.md#why-a-pager-of-its-own)). A host runs one pager instance per kind of memory region: one for RAM and one for PMEM. Each instance has its own arena, spill file and page size. A memory region attaches to the pager of its kind. A pager uses the same page size for every memory region it serves, so it refuses to attach a volume published with any other page size. By default both pagers use 2 MiB pages over the node's HugeTLB pool. A deployment may instead run RAM at 4 KiB over an arena of ordinary memory, as the simulation does. In that mode, a guest's store into its memory copies and owns 4 KiB, while inherited RAM is still mapped in contiguous runs of up to 2 MiB, with one command per run. The mapping protocol carries each session's page size and its arena's kind. Both ends refuse a mismatch before any guest memory exists. |
-| [Host](hosting.md) | `host` contains everything one host does. Its `Host` opens VMs over object storage and the cluster network, checkpoints them on an interval, fences a VM that a later writer took, and serves pages for migrations and forks. The supervisor around it owns the two pagers and drives the VMM processes behind the host API. A `vmmachine.Starter`, which an embedding program can supply, starts each VMM process. The supervisor also imports guest images into the templates that VMs are forked from, and reaches the agent in a guest. `cmd/sproutfs-host` holds the host's configuration, its HTTP handlers and the adapters it chooses. |
-| Orchestrator | `cmd/sproutfs-orchestrator` allocates VM identities, places VMs on host pods, and drives migrations and forks between hosts. Its SQLite table has the states `creating`, `running`, `migrating`, `stopped` and `recovering`. The table is a view. The control records are the authority. |
-| [Membership](hosting.md#the-membership) | One object, at `membership`: which hosts are in the cluster, which cache disk each serves, and the deployment's code. It changes only by compare-and-set, each change one generation. Any process may write it; the orchestrator usually does, one step at a time. Every request between hosts that routes by it names the generation its sender holds, so two hosts never exchange a stripe under different memberships. |
-| [Shard](hosting.md#shards-on-network-disks) | One network disk of a fixed set that a deployment may keep its cluster cache on, instead of the hosts' own disks. Windows are ranked over the shards, so compute scaling moves no window. The membership assigns each shard to a host, the orchestrator attaches it to that host's machine through the cloud's attach API, and the host opens the device and serves it. |
+| [Pager](vm-memory.md) | The host's page cache for guest memory: an arena of memfds keyed by page identity, and a spill file. It replaces the kernel's page cache and swap for guest memory ([why](vm-memory.md#why-a-pager-of-its-own)). A host runs one pager per kind of memory region, each with its own arena, spill file and page size. Both default to 2 MiB pages over the node's HugeTLB pool; a deployment may run RAM at 4 KiB over ordinary memory, as the simulation does. A pager refuses a volume of another page size. In the isolated mode each memory region has a private file ([the isolated arena](vm-memory.md#the-isolated-arena)). |
+| [Host](hosting.md) | `host.Host` opens VMs over object storage and the cluster network, checkpoints them on an interval, fences a VM that a later writer took, and serves pages for migrations and forks. The supervisor around it owns the pagers, drives the VMM processes (each started by a `vmmachine.Starter`, which an embedder may supply), imports guest images into templates, and reaches the agent in a guest. `cmd/sproutfs-host` holds the configuration, the HTTP handlers and the adapters. |
+| Orchestrator | `cmd/sproutfs-orchestrator` allocates VM identities, places VMs on host pods, and drives migrations and forks. Its SQLite table, with the states `creating`, `running`, `migrating`, `stopped` and `recovering`, is a view. The control records are the authority. |
+| [Membership](hosting.md#the-membership) | One object, at `membership`: the hosts in the cluster, the cache disk each serves, and the deployment's code. It changes only by compare-and-set, one generation per change. A request between hosts names its sender's generation, so two hosts never exchange a stripe under different memberships. |
+| [Shard](hosting.md#shards-on-network-disks) | One network disk of a fixed set that may hold the cluster cache instead of the hosts' own disks. Windows are ranked over shards, so scaling compute moves no window. The membership assigns each shard to a host, and the orchestrator attaches it through the cloud's attach API. |
 
 ## Loss model
 
-A volume write applies to an in-memory overlay and returns. The write contacts
-nothing, so it cannot fail because of the network or storage. It is also not
-durable. The next checkpoint makes it durable: the pages upload, the last part
-carries the root, and a conditional write selects the checkpoint in the control
-record. If the host is lost before that, every write since the last selected
-checkpoint is lost. This is accepted, because a guest write must never wait on
-object-store latency.
+A volume write applies to an in-memory overlay and returns. It contacts
+nothing, so it cannot fail on the network or storage, and it is not durable.
+The next checkpoint makes it durable: the pages upload, and a conditional write
+selects the checkpoint in the control record. If the host is lost before that,
+every write since the last selected checkpoint is lost. A guest write never
+waits on object-store latency.
 
-`Status.DirtyBytes` is an upper bound on what a VM would lose at this moment.
-The volume manager's `Stats` sums it over every VM the host runs.
+`Status.DirtyBytes` is an upper bound on what a VM would lose now. The volume
+manager's `Stats` sums it over the host's VMs.
 
-An [ephemeral disk](volumes.md#ephemeral-disks) is outside all of this. No
-checkpoint holds it, so everything on it is lost with its host, at a stop, and
-in every fork, and a VM opened anywhere gets it back zeroed. Its writes do not
-count toward the dirty budget or the loss window, and no checkpoint waits for
-them. Its pages live in a third pager, bounded by that pager's arena in memory
-and by its spill file on disk. A migration carries it, because the guest keeps
-running over it.
+An [ephemeral disk](volumes.md#ephemeral-disks) is outside this model. No
+checkpoint holds it, its writes count toward neither the dirty budget nor the
+loss window, and its pages live in a third pager.
 
 The volume layer has no automatic trigger:
 
@@ -85,244 +80,184 @@ The volume layer has no automatic trigger:
 - `Close` publishes a final checkpoint.
 - `Handoff` and `ForkPoint` publish nothing.
 
-The host owns the interval, because the host runs the guest and knows when the
-vCPUs can be paused. The default is every 60 s
-(`host.Config.CheckpointInterval`, `SPROUTFS_CHECKPOINT_INTERVAL`). Each wait
-is jittered by up to an eighth in either direction, so VMs do not checkpoint in
-lockstep. The next wait is measured from the end of the last upload.
+The host owns the interval, because it knows when the vCPUs can be paused. The
+default is 60 s (`host.Config.CheckpointInterval`,
+`SPROUTFS_CHECKPOINT_INTERVAL`). Each wait is jittered by up to an eighth either
+way and measured from the end of the last upload.
 
-The interval checkpoints only a VM's **disks**. Its pause stops the vCPUs and
-seals the PMEM memory regions. It does not seal or upload RAM, and it does not capture
-VMM state. The target workload is an agent sandbox. In a sandbox, the disk must
-survive the loss of a host, and the software in the guest recovers its
-in-memory state from the disk. This works because most software does not
-assume that RAM outlives the machine. Uploading RAM every interval would cost
-far more than it gains. All disks are sealed inside one pause, so the checkpoint
-is one point in time across all of them.
+The interval checkpoints only a VM's disks. Its pause stops the vCPUs and seals
+the PMEM memory regions. It does not seal or upload RAM, or capture VMM state.
+The target workload is an agent sandbox: its disk must survive a host loss, and
+its software recovers in-memory state from the disk. All disks are sealed in
+one pause, so the checkpoint is one point in time across them.
 
-A checkpoint of the disks names **no VMM state**. It does not name the previous
-checkpoint's state either, although a checkpoint that captured no state would
-otherwise keep naming it. The reason is that the previous registers combined
-with the new disks would describe a guest that never existed. A VM opened at a
-checkpoint without state is **cold booted**. The host takes a separate
-checkpoint that discards the VM's memory (`Host.Starting`), then boots the
-kernel over the VM's disks. For the guest, this is a power cut at that
-checkpoint, and its filesystem recovers what its journal recovers. So after a
-host loss, a VM whose last checkpoint came from the interval restarts cold at
-that checkpoint.
+A disk checkpoint names no VMM state, not even the previous checkpoint's,
+because old registers over new disks would describe a guest that never
+existed. A VM opened at a checkpoint without state is cold booted: the host
+takes a checkpoint that discards its memory (`Host.Starting`) and boots the
+kernel over its disks. The guest sees a power cut at that checkpoint. After a
+host loss, a VM whose last checkpoint came from the interval restarts cold.
 
-RAM is uploaded only on request. An explicit capture (the host API's `capture`)
-seals every memory region and captures the VMM state. A stop that asks to suspend
-(`stop --suspend`) does the same, so the next start resumes the guest where it
-stopped. A plain stop publishes only the disks, like the interval, and the next
-start boots the guest. A migration and a fork upload nothing in either case,
-because RAM moves from pager to pager.
+RAM is uploaded only on request. A capture (the host API's `capture`) and a
+`stop --suspend` seal every memory region and capture the VMM state, so the
+next start resumes the guest. A plain stop publishes only the disks. A
+migration and a fork upload nothing; RAM moves from pager to pager.
 
-The interval bounds what a host loss costs a VM's disks when everything works.
-The **loss window** bounds it when nothing works. The loss window is how long a
-VM may hold a disk write that no landed checkpoint covers:
-`host.Config.LossWindow`, `SPROUTFS_LOSS_WINDOW`, five minutes by default, zero
-to disable. While a VM's oldest unpublished write is older than the window, the
-pager admits no further dirty page for that VM. Every store that needs a dirty
-reservation waits, in the same way that a store past the dirty budget waits.
-The host also requests a checkpoint of that VM outside the interval's schedule.
-So the lost writes of one VM span at most the window plus the pause of one
-checkpoint attempt, measured from the first lost write to the last. If the host
-is lost after an outage longer than the window, writes older than the window
-are still lost, because nothing can publish during an outage. But the guest has
-been unable to build on those writes since the window expired. RAM is outside
-the window. No interval checkpoint covers a RAM write, so RAM memory regions do not age
-and do not request a checkpoint under dirty pressure. A RAM pager's dirty budget
-must hold every private RAM page its guests create. A store past that budget
-stops the VM, as with any full budget.
+The interval bounds what a host loss costs a VM's disks while publications
+succeed. The **loss window** bounds it when they fail: how long a VM may hold a
+disk write that no landed checkpoint covers (`host.Config.LossWindow`,
+`SPROUTFS_LOSS_WINDOW`, five minutes by default, zero to disable). While a VM's
+oldest unpublished write is older than the window, the pager admits no further
+dirty page for it, as for a store past the dirty budget, and the host requests
+a checkpoint out of turn ([the checkpoint loop](hosting.md#the-checkpoint-loop)).
+A VM's lost writes then span at most the window plus one checkpoint pause.
+After an outage longer than the window, older writes are still lost, but the
+guest could not build on them past the window. RAM is outside the window: RAM
+memory regions do not age, and a RAM pager's dirty budget must hold every
+private RAM page its guests create. A store past that budget stops the VM.
 
-A store into a page that the guest has already dirtied, and that no seal covers,
-does not fault and is not blocked. The checkpoint that the pager requests seals
-every dirty page during its pause, so from that pause on, every store of that VM
-waits. The gap runs from the moment the window expires to that seal, which is
-at most one pause away.
+A store into a page the guest already dirtied, and that no seal covers, does
+not fault and is not held. The requested checkpoint seals every dirty page in
+its pause, so this gap is at most one pause.
 
-A migration or a fork moves unpublished pages to another host, and their age
-moves with them. For each memory region, the handoff carries the age of that memory region's
-oldest unpublished write. The destination dates the pages it receives from that
-age, on its own clock. So a destination inherits the window and does not
-restart it. Some VMs can never be checkpointed: their checkpoint loop is off,
-or their memory region belongs to no VM the host runs. A store waiting on the window
-for such a VM would wait for an event that never happens. It ends the same way
-a full dirty budget ends: the host deliberately stops that VM and takes a last
-checkpoint of what it can still capture. A fork hold is different. The hold
+A handoff carries the age of each memory region's oldest unpublished write,
+and the destination dates the pages it receives from it on its own clock, so it
+inherits the window. A VM that can never be checkpointed (its loop is off, or
+its memory region belongs to no VM the host runs) is stopped by the host with a
+last checkpoint of what it can capture, as for a full dirty budget. A fork hold
 ends at its deadline and the parent is checkpointed then, so a parent's stores
 wait.
 
 A failed publication changes nothing durable. The previous checkpoint stays
-selected, the overlay keeps its bytes, and the failure is reported through the
-VM's status and retried. While the VM is inside its window, the retry happens at
-the next interval. While the VM is past its window, the retry happens after an
-eighth of the interval, and the delay doubles up to the full interval. The
-exception is a handle that a later writer has fenced. A fenced host discovers
-the fence at the interval checkpoint, because a running VM writes nothing else.
-The host then closes the VMM and releases the VM. It does this so that no guest
-keeps running whose writes can never be published.
+selected, the overlay keeps its bytes, and the failure is reported in the VM's
+status and retried: at the next interval inside the window, and past it after an
+eighth of the interval, doubling up to the interval. A fenced host discovers
+the fence at its interval checkpoint, then closes the VMM and releases the VM,
+so no guest runs whose writes can never be published.
 
-Guest CPU stores are not durability acknowledgements. A guest's flush (its
-fsync reaching the virtio-pmem device) is a durability acknowledgement within a
-bound. The flush reaches the pager. The host completes it immediately if the VM
-holds no unpublished disk write older than `host.Config.FlushBound`
-(`SPROUTFS_FLUSH_BOUND`, twice the checkpoint interval by default, so 120 s,
-zero to disable). Otherwise the flush
-waits until a checkpoint covers those writes, and the host requests that
-checkpoint outside the interval's schedule. A flush never takes a checkpoint
-when the disks are fresh. As a result:
+A guest CPU store is not a durability acknowledgement. A guest flush (its fsync
+reaching the virtio-pmem device) is one, within a bound. The host completes it
+at once if the VM holds no unpublished disk write older than
+`host.Config.FlushBound` (`SPROUTFS_FLUSH_BOUND`, twice the interval, 120 s, by
+default; zero to disable). Otherwise the flush waits for a checkpoint that
+covers those writes, which the host requests out of turn. A flush of fresh
+disks takes no checkpoint. So:
 
 - When a flush returns, nothing older than the bound is unpublished.
 - The data it flushed is durable within the bound plus one interval.
-- A guest whose disks cannot be published stops making fsync progress. It is
-  not told that its disks are durable.
+- A guest whose disks cannot be published stops making fsync progress.
 
-The ordering is the same as after a power cut. A checkpoint is one point in time
-across the VM's disks, so nothing written after a flush is durable unless
-everything written before it is durable too. Local scratch spill is not durable
-storage.
+A checkpoint is one point in time across the VM's disks, so nothing written
+after a flush is durable unless everything before it is, as after a power cut.
+Local scratch spill is not durable storage.
 
-Published checkpoint objects survive host loss, assuming that the shared object
-store stays durable. A configured host can open a VM by identity once the
-checkpoint its record selects is published and object storage is reachable. A
-fork that has not published its own root index can run only on the host that
-took it in. Resuming a VMM also needs its captured state and a compatible
-runtime configuration.
+Published checkpoint objects survive host loss while the object store is
+durable. A configured host can open a VM once the checkpoint its record selects
+is published and the store is reachable. A fork that has not published its root
+runs only on the host that took it in. Resuming a VMM also needs its captured
+state and a compatible runtime configuration.
 
 ## VM lifecycle
 
 1. The orchestrator allocates a VM identity and chooses a host.
-2. Creation publishes a first checkpoint that contains only the root, and then
-   creates the control record that selects it. Opening reads that record and
-   advances its epoch, which fences the previous writer. Opening then reads the
-   selected checkpoint's root. The overlays start empty, so there is nothing to
-   replay.
+2. Creation publishes a first checkpoint that holds only the root, then creates
+   the control record that selects it. Opening reads the record, advances its
+   epoch, which fences the previous writer, and reads the selected root. The
+   overlays start empty, so there is nothing to replay.
 3. The pager attaches the VM's `ram0` and PMEM volumes. Before the vCPUs run,
-   it populates the pages whose identity is already resident in the same pager.
+   it populates the pages whose identity is already resident in that pager.
    Missing pages load on demand.
-4. Volume writes apply to the overlay and return. The interval checkpoint
-   pauses the guest, seals every dirty page of its disks by write protection,
-   and resumes the guest. The sealed pages stream out as parts while the guest
-   runs. The last part carries the root, and the control record selects it.
-5. A fork takes the same pause and publishes nothing before it returns. A
-   fork is a handoff on any host the child lands on. One `ForkPoint` serves any
-   number of children. Behind the fork, the parent publishes the point once as
-   a checkpoint of its own, and a child on its host builds its first checkpoint
-   on it, so a fan-out uploads the parent's unpublished pages once rather than
-   once a child.
-   The parent pins its last published sequence once and permanently, and keeps
-   its handle. Each child gets a control record that selects a root over that
-   sequence. The child's location changes only how it receives the pages that
-   the parent holds and no checkpoint has:
-   - On the parent's own host, the child maps the sealed pages through the
-     pager.
-   - With `--to <host>`, the child's pager pulls them from the parent's page
-     server, as a migration destination does.
-
-   The destination publishes the child's root behind the running child, as
-   soon as it holds all of those pages; the fork does not wait for it. After
-   that, any host can open the child. Until then the child exists only on its
-   host, and a fork that ends before then leaves no object behind.
+4. Volume writes apply to the overlay. The interval checkpoint pauses the
+   guest, seals its dirty disk pages by write protection and resumes it. The
+   sealed pages stream out as parts while the guest runs, and the control
+   record then selects the checkpoint.
+5. A fork takes the same pause, publishes nothing before it returns, and is a
+   handoff on whichever host the child lands. One `ForkPoint` serves any number
+   of children. The parent pins its last published sequence permanently and
+   keeps its handle. Behind the fork, the parent publishes the point once as its
+   own checkpoint, and a child on its host builds its first checkpoint
+   on it, so a fan-out uploads the parent's unpublished pages once. Each child
+   gets a control record that selects a root over the pinned sequence. On the
+   parent's host the child maps the sealed pages through the pager. With
+   `--to <host>`, its pager pulls them from the parent's peer server. The
+   child's host publishes the child's root behind the running child once it
+   holds those pages. Until then the child exists only on that host, and a fork
+   that ends earlier leaves no object behind.
 6. A live move is post-copy only. The source stops the guest, saves VMM state
    and hands the VM over without uploading anything. The destination opens the
-   same identity, advances the epoch, and resumes from the supplied state. It
-   faults in the pages the source holds from the source's peer server, and the
-   bulk stream runs while the guest runs. The destination's next checkpoint
-   makes those pages durable. The source is released once every unpublished
-   page has reached the destination. A page that no checkpoint holds exists
-   only on the source, so the destination keeps asking for it until it
-   arrives. The destination cannot tell a source that stalled from one that
-   died. If it read the page from its own volume instead, it would roll the
-   guest back past the guest's own write. The asking ends in one of two ways:
-   the source answers that it no longer serves the VM, or the orchestrator ends
-   the migration. The orchestrator ends it when it has evidence that the
-   source no longer has the pages: the source's pod is no longer listed, the
-   source answers without them, or the source's hold is over. In that case the
-   pages are lost, and the VM is recovered from its checkpoint, without the
-   writes made since. A receive that fails for any
-   other reason is tried again, on the same host or another, while the source
-   holds the pages. See [migration](migration.md) for failure handling.
+   same identity, advances the epoch, resumes from the state, and faults in the
+   source's pages from its peer server while a bulk stream runs. Its next
+   checkpoint makes those pages durable. The source is released once every
+   unpublished page has reached the destination. Until then the destination
+   keeps asking for a page only the source holds: it cannot tell a stalled
+   source from a dead one, and reading its own volume would roll the guest
+   back. The asking ends when the source answers that it no longer serves the
+   VM, or when the orchestrator ends the migration on evidence that the source
+   no longer has the pages (its pod is not listed, it answers without them, or
+   its hold is over). The VM is then recovered from its checkpoint without the
+   writes since. A receive that fails for any other reason is tried again while
+   the source holds the pages. See [migration](migration.md).
 
 ## Identities and reclamation
 
-The orchestrator must supply VM identities that are never reused. Sproutfs has
-no global VM identity registry and no limit on the number of VM identities used
-over time. Syntax and local resource limits still apply. Every checkpoint object
-is written under its publisher's VM identity. A fork's root keeps naming its
-parent's checkpoints, which is why a fork copies nothing. A VM's control record
-is stored outside that namespace, at `control/<id>`, because the two namespaces
-hold different sets:
+The orchestrator must supply VM identities that are never reused. There is no
+global identity registry and no limit on identities used over time. Every
+checkpoint object is written under its publisher's identity, and a fork's root
+names its parent's checkpoints, so a fork copies nothing. Control records are
+at `control/<id>`, outside `vm/`, because the two hold different sets:
 
-- `control/` holds the VMs that currently exist. A record is present while its
-  VM exists, and is removed with it.
-- `vm/` holds every identity that ever left objects behind. A deleted VM that
-  was ever forked leaves its pinned checkpoints there, with no record, for a
-  collector that does not exist. So `vm/` only grows. A listing of it, by
-  delimiter or otherwise, would return deleted VMs along with live ones, and
-  each entry would have to be probed for a record.
+- `control/` holds the VMs that exist now. A record is removed with its VM.
+- `vm/` holds every identity that ever left objects. A deleted VM that was
+  forked leaves its pinned checkpoints there with no record, so `vm/` only
+  grows, and a listing of it would return deleted VMs.
 
-Listing `control/` returns only the deployment's VMs. The split also keeps two
-rules short:
+So listing `control/` returns the deployment's VMs. A create is refused if
+`vm/<id>/` holds anything no record accounts for. A delete removes the record
+first, then sweeps the prefix the record governed.
 
-- A create is refused if `vm/<id>/` holds anything that no record accounts for.
-- A delete removes the record first, and then sweeps the prefix the record
-  governed.
-
-Selecting a checkpoint reclaims a set difference: the checkpoints the replaced
-root named, plus the replaced checkpoint, minus everything the new root names
-and everything a pin or a keep protects. A checkpoint request can keep its
-checkpoint, so that a VM can be created from that point later; releasing a
+Selecting a checkpoint reclaims the checkpoints the replaced root named, plus
+the replaced checkpoint, minus everything the new root names and everything a
+pin or a keep protects ([reclamation](volumes.md#reclamation)). Releasing a
 kept checkpoint that no VM was created from sweeps what only it held
-([metadata](metadata.md#kept-checkpoints)). A dead checkpoint is deleted whole, starting
-with its last part. Reclamation deletes only this VM's own checkpoints. It never
-touches another VM's checkpoints. A pinned sequence is spared together with
-every checkpoint its root names. So everything a fork inherits survives,
-including the parts that a grandchild reads directly. A pin is written before
-the child that holds it exists, and the pin is permanent. No component in a
-deployment can establish that no descendant reads through a checkpoint, because
-a descendant sees neither its siblings nor the forks taken below it. So only a
-collector may release a pin.
+([metadata](metadata.md#kept-checkpoints)). A dead checkpoint is deleted whole.
+Reclamation deletes only this VM's own checkpoints. A pinned sequence is spared
+with every checkpoint its root names, so everything a fork inherits survives,
+including parts a grandchild reads directly. A pin is written before the child
+exists and is permanent. No component can establish that no descendant reads
+through a checkpoint, because a descendant sees neither its siblings nor the
+forks taken below it. Only a collector may release a pin.
 
-Without compaction, cold pages would keep mostly dead parts alive. So each
-checkpoint also compacts. If a checkpoint of this VM has less than half its
-bytes still live, it is rewritten into the checkpoint being published, up to
-64 MiB of live bytes at a time, after the guest has resumed. The emptied
-checkpoint then drops out of the root, and reclamation deletes it.
+Each checkpoint also compacts. A checkpoint of this VM with less than half its
+bytes live is rewritten into the one being published, up to 64 MiB of live
+bytes at a time, after the guest resumes. The emptied checkpoint then drops out
+of the root and is reclaimed.
 
-A handle reclaims only the checkpoints it published. The checkpoint it opened on
-is left for a collector. Deleting a VM first removes its control record, which
-makes the identity reusable. The delete then sweeps that VM's own checkpoints,
-except the pinned ones. A descendant may still read the objects of the pinned
-checkpoints, so those are left for a collector. If a record cannot be parsed,
-the delete is refused, because the pins that say what to spare cannot be read.
-That collector would be rooted in the orchestrator's live set. It is
-deliberately deferred indefinitely. Until it exists, the store grows without
-bound, and everything a pin covers is kept permanently. When the collector is
-written, it must protect in-flight publications and forks.
+A handle reclaims only the checkpoints it published. The one it opened on is
+left for a collector. Deleting a VM removes its control record, which makes the
+identity reusable, then sweeps its own checkpoints except the pinned ones. A
+record that cannot be parsed is not deleted. The collector would be rooted in
+the orchestrator's live set. It is deferred indefinitely, and until it exists
+the store grows without bound. It must protect in-flight publications and
+forks.
 
 ## Current state
 
 Control records, checkpoint storage with reclamation and compaction, volumes,
 the pager, capture, fork by handoff, post-copy migration, the host and the
-orchestrator are implemented and covered by simulation tests. Recorded
-Firecracker integration qualification covers Linux aarch64 with real KVM in the
-[documented test environment](vm-memory.md#qualification). The pager's 2 MiB
-HugeTLB qualification is recorded on x86_64. Other environments, and production
-workload and scale acceptance, remain unqualified. Larger-guest measurements
-exist, but the recorded workload run is partial and is not performance
-acceptance. No production deployment is recorded in this repository. Two things
-are not implemented:
+orchestrator are implemented and covered by simulation tests. Firecracker
+integration is qualified on Linux aarch64 with real KVM in the
+[documented test environment](vm-memory.md#qualification), and the pager's
+2 MiB HugeTLB mode on x86_64. Other environments, and production workload and
+scale, are not qualified. The recorded workload run is partial. No production
+deployment is recorded. Not implemented:
 
 - collection, which releases pins and sweeps what deleted VMs left pinned;
 - compatibility and migration paths for legacy data.
 
-Before any deployment's stored data formats change, the compatibility
-requirements for that data must be assessed.
+Assess the compatibility requirements of a deployment's stored data before its
+formats change.
 
-Reliability work uses seeded workloads and simulated dependencies to exercise
-the durability guarantees above. Seeds reproduce dependency choices, not
-arbitrary Go scheduler interleavings. Explicit gates make selected races
-repeatable, and race detection checks shared-memory access separately. See
-[testing](testing.md) for the scope and limits of this evidence.
+Seeded workloads and simulated dependencies exercise the durability guarantees
+above. Seeds reproduce dependency choices, not Go scheduler interleavings.
+Explicit gates make selected races repeatable, and the race detector checks
+shared memory separately. See [testing](testing.md).
