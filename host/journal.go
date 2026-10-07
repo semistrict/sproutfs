@@ -771,3 +771,25 @@ func (h *Host) rootSelected(vmID string) {
 		entry.journal.opened(false, true)
 	}
 }
+
+// DrainJournal waits until the journal this host writes holds no live entry,
+// trimming it every poll rather than on the trimming loop's interval: the last
+// step of a drain, after its VMs have moved. Their destinations select
+// checkpoints of their own soon after their post-copies end, and each
+// selection leaves the record naming this journal no more. A host that writes
+// no journal returns at once.
+func (h *Host) DrainJournal(ctx context.Context, poll time.Duration) error {
+	for {
+		j := h.journal()
+		if j == nil {
+			return nil
+		}
+		h.trimJournal(ctx, j)
+		if len(j.Held()) == 0 {
+			return nil
+		}
+		if err := h.clock.Sleep(ctx, poll); err != nil {
+			return err
+		}
+	}
+}

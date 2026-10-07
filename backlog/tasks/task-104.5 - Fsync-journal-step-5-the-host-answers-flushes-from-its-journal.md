@@ -1,11 +1,11 @@
 ---
 id: TASK-104.5
 title: 'Fsync journal step 5: the host answers flushes from its journal'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-07 00:48'
-updated_date: '2026-10-07 16:06'
+updated_date: '2026-10-07 17:00'
 labels:
   - durability
   - host
@@ -29,12 +29,12 @@ Step 5 of the plan. Durable flush is an optional mode, SPROUTFS_DURABLE_FLUSH, o
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 With the mode off, the flush path and its tests are unchanged and no journal disk is opened
-- [ ] #2 With the mode on, a flush is answered only after the batch holding its entry has synced; a flush that cannot be journaled (no journal served, a failed write or sync, a detached disk) fails with EIO, and the next batch pads the failed range
-- [ ] #3 A full ring is back-pressure: past three quarters the host asks for checkpoints out of turn, a VM over half the ring waits for its own, and a full ring holds captures until trimming frees space
-- [ ] #4 The seal records the VM last captured position and the selection writes it as the covered position
-- [ ] #5 JOURNAL_READ is served by the disk holder, which first fences the VM at the reader epoch and gives the VM up if it runs it
-- [ ] #6 Status and metrics report durable_flush (whether the mode is on), flush latency, hashing time, live bytes and failed flushes; guards journal-covered-after-seal, journal-read-without-fence, journal-full-answers and journal-failed-write-answers are killed by their tests
+- [x] #1 With the mode off, the flush path and its tests are unchanged and no journal disk is opened
+- [x] #2 With the mode on, a flush is answered only after the batch holding its entry has synced; a flush that cannot be journaled (no journal served, a failed write or sync, a detached disk) fails with EIO, and the next batch pads the failed range
+- [x] #3 A full ring is back-pressure: past three quarters the host asks for checkpoints out of turn, a VM over half the ring waits for its own, and a full ring holds captures until trimming frees space
+- [x] #4 The seal records the VM last captured position and the selection writes it as the covered position
+- [x] #5 JOURNAL_READ is served by the disk holder, which first fences the VM at the reader epoch and gives the VM up if it runs it
+- [x] #6 Status and metrics report durable_flush (whether the mode is on), flush latency, hashing time, live bytes and failed flushes; guards journal-covered-after-seal, journal-read-without-fence, journal-full-answers and journal-failed-write-answers are killed by their tests
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -62,4 +62,6 @@ JOURNAL_READ gives the VM up before it answers (synchronously), so the reader kn
 SPROUTFS_DURABLE_FLUSH is not read yet: turned on with no journal disk served, every flush would fail. Step 6 wires it with the journal disks.
 Tests: host/journal_test.go (answered after the entry, no journal fails, failed sync fails and is taken again, selection names the covered position and trims, half ring waits for its checkpoint, JOURNAL_READ fences/answers/gives up/refuses other generations and disks), host/journal_internal_test.go (covered position), journal TestACommitsHooksRunBeforeTheNextBatch, metrics golden.
 Guards: journal-failed-write-answers, journal-failed-write-keeps-pages, journal-covered-after-seal, journal-ignore-half-ring, journal-read-keeps-vm (host), journal-read-without-fence (journal, from 104.2).
+
+Done in 71f5cfab. The full-ring guard is journal-answer-before-sync in journal/; a full ring is back-pressure in the journal itself. Later changes: a flush is journaled only once the record names this host's journal at the VM's epoch (860ee6f7).
 <!-- SECTION:NOTES:END -->

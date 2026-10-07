@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	hostapi "github.com/semistrict/sproutfs/api/host"
 	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/host"
 	"github.com/semistrict/sproutfs/journal"
@@ -504,5 +505,28 @@ func TestAHandoffIsRefusedWhileTheRecordNamesTwoJournals(t *testing.T) {
 	}
 	if got := s.h.hosts[0].Machines(); !slices.Equal(got, []string{"vm-1"}) {
 		t.Fatalf("the refused handoff left this host running %v", got)
+	}
+}
+
+// A drain's last step waits for the journal to hold no live entry: once the
+// VM is stopped, its record names no journal, and the drain trims the entry
+// away at once rather than at the trimming loop's interval.
+func TestADrainWaitsForTheJournalToEmpty(t *testing.T) {
+	s := journalHost(t)
+	s.guest.store("disk", 0, 7)
+	if err := <-flush(s.guest); err != nil {
+		t.Fatal(err)
+	}
+	if held := s.held(); held.Entries != 1 {
+		t.Fatalf("the journal holds %+v of the VM after its flush, want one entry", held)
+	}
+	if _, err := s.h.hosts[0].Stop(t.Context(), "vm-1", hostapi.StopRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.h.hosts[0].DrainJournal(t.Context(), time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if held := s.j.Held(); len(held) != 0 {
+		t.Fatalf("the journal holds %+v after the drain waited for it", held)
 	}
 }

@@ -164,6 +164,12 @@ func (s *supervisor) Drain(ctx context.Context) (hostapi.DrainResult, error) {
 		}
 	}
 	result.Remaining = append(result.Remaining, s.host.Status().Serving...)
+	// The journal last: the moved VMs' records name it until their new hosts
+	// select checkpoints of their own, and a host lost before then would
+	// leave their flushes to be read from its disk on another host.
+	if err := s.host.DrainJournal(ctx, drainPoll); err != nil {
+		errs = append(errs, fmt.Errorf("waiting for the journal to empty: %w", err))
+	}
 	result.Seconds = s.since(began)
 	slog.InfoContext(ctx, "host: drained", "moved", result.Moved, "remaining", result.Remaining,
 		"seconds", float64(result.Seconds))

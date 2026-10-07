@@ -76,10 +76,18 @@ func TestEachHostServesTheJournalDiskMadeForItsMachine(t *testing.T) {
 			if !h.host.Activity().Journal.Served {
 				t.Fatalf("%s holds its journal disk and does not serve durable flush", h.machine)
 			}
+			// A shard pass here opens every cache disk assigned to this host,
+			// and a journal disk must not be one.
+			h.host.SettleShards(c.ctx)
+			self, _ = h.host.Member()
+			opened := 0
 			for _, held := range self.Disks {
-				if held.ID == disk.ID && held.Kind != membership.Journal {
-					t.Fatalf("%s holds its journal disk open as a %s disk too", h.machine, held.Kind)
+				if held.ID == disk.ID {
+					opened++
 				}
+			}
+			if opened != 1 {
+				t.Fatalf("%s holds its journal disk open %d times, want once, as a journal", h.machine, opened)
 			}
 		}
 		drained := ownJournal(t, m, "machine-2")

@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-07 00:48'
-updated_date: '2026-10-07 15:48'
+updated_date: '2026-10-07 17:00'
 labels:
   - durability
   - pager
@@ -27,10 +27,10 @@ Step 4 of the plan. Guest stores to a PMEM disk are CPU stores into mapped memor
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Every page the guest can store into without a fault is unjournaled; the check runs after every step of the existing pager campaigns
-- [ ] #2 MemoryRegion.Capture write-protects the unjournaled runs one command per run, hashes each block once on the settle workers, and returns the blocks whose SHA-256 differs from the digest held; a protect trap on a page no seal holds marks it unjournaled and copies nothing
-- [ ] #3 A page with no digests takes them from its resident origin or the zero block, or is captured whole
-- [ ] #4 A seal moves the unjournaled pages to the checkpoint and drops their digests; a capture during the seal covers them from the sealed copies; an abandon makes them unjournaled again without digests; other pages keep or drop their digests as step 1 decided
+- [x] #1 Every page the guest can store into without a fault is unjournaled; the check runs after every step of the existing pager campaigns
+- [x] #2 MemoryRegion.Capture write-protects the unjournaled runs one command per run, hashes each block once on the settle workers, and returns the blocks whose SHA-256 differs from the digest held; a protect trap on a page no seal holds marks it unjournaled and copies nothing
+- [x] #3 A page with no digests takes them from its resident origin or the zero block, or is captured whole
+- [x] #4 A seal moves the unjournaled pages to the checkpoint and drops their digests; a capture during the seal covers them from the sealed copies; an abandon makes them unjournaled again without digests; other pages keep or drop their digests as step 1 decided
 - [ ] #5 A spilled page is captured from the spill; the Linux userfaultfd test covers the new trap on 2 MiB HugeTLB and 4 KiB pages; guards journal-trap-not-marked, journal-seal-keeps-unjournaled and journal-digests-survive-unjournaled-seal are killed by their tests
 <!-- AC:END -->
 
@@ -58,4 +58,6 @@ Tests: vmmemory/journal_test.go (changed blocks only, trap without copy, capture
 Guards: journal-trap-not-marked, journal-seal-drops-unjournaled, journal-digests-survive-unjournaled-seal, journal-failed-keeps-digests, all killed by just check.
 TestManagedPagerCaptureProtectsAndTrapsOnUFFD (4 KiB and 2 MiB HugeTLB) is written and vets for Linux; it runs in the GCE qualification after step 7.
 just check exit 0.
+
+Done in 5af12d53. AC#5: the spill path is covered (a spilled page is reloaded and captured). The guard is named journal-seal-drops-unjournaled; the plan called it journal-seal-keeps-unjournaled. The Linux userfaultfd run of TestManagedPagerCaptureProtectsAndTrapsOnUFFD is part of the step 9 GCE run and still pending.
 <!-- SECTION:NOTES:END -->

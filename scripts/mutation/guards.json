@@ -1074,7 +1074,7 @@
   {
     "id": "host-open-a-journal-as-a-shard",
     "package": "host",
-    "run": "^TestEachHostServesTheJournalDiskMadeForItsMachine$",
+    "run": "^TestTheShardServerLeavesJournalDisksAlone$",
     "purpose": "Open a journal disk assigned to this host as a cache shard, which empties it of its flushed writes."
   },
   {
