@@ -134,3 +134,31 @@ index that no rank holds, to a rank that holds fewer of the window's
 stripes than the code puts on it. The model checks reads of any index
 (`SurvivesLosses`); it does not count the writes repair makes. Mutant:
 `spec/diskcache/mutants/b5.cfg`.
+
+## B6. A failed batch leaves its pages journaled
+
+Found by `spec/journal` (TASK-104.1) on 2026-10-06, in
+`plans/fsync-journal-2026-10-06.md`, before any code. Fixed in the plan.
+
+A capture takes a page out of the unjournaled set, write-protects it, and
+sets its digests to the blocks it read. The plan said what a failed write or
+sync does to the journal: its flushes fail with EIO, and the next batch pads
+the failed range. It did not say what it does to the pages. Left as they
+are, they are not unjournaled, and their digests describe an entry that may
+not be on the disk. The next capture takes nothing of them, or skips the
+blocks whose digests match. So a flush that succeeds after a failed one does
+not cover the stores the failed one was sent after. A guest that tries its
+flush again after EIO, as a database may, is told its data is durable when
+it is not.
+
+The counterexample: the guest stores into a block and flushes; the capture
+takes the page; the batch fails. The guest flushes again; the capture takes
+no page, the empty entry syncs, and the flush is answered. A replay holds the
+old bytes. With the pages given back but their digests kept, the second
+capture takes the page but skips the block.
+
+The fix: a failed batch gives every page it took back as unjournaled and
+drops their digests, as an abandoned seal does. The model checks the design
+with the fix (`NoLostFlush`). Mutants:
+`spec/journal/mutants/failed-keeps-pages.cfg` and
+`spec/journal/mutants/failed-keeps-digests.cfg`.

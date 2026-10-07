@@ -5,11 +5,13 @@
 #   scripts/check-spec.sh deep   the configurations under deep/, which take
 #                                minutes each
 #
-# Each spec directory holds one module. Every configuration must pass. A
-# mutant puts a defect back into the module through its Bugs constant and must
-# fail: its "\* expect: <name>" line names the invariant or property TLC has to
-# report violated, or "deadlock". That is how a check that has stopped catching
-# anything is caught itself. Each line reports how long TLC took.
+# Each spec directory holds one module, or one module per concern; then each
+# configuration names the module it checks in a "\* module: <name>" line.
+# Every configuration must pass. A mutant puts a defect back into the module
+# through its Bugs constant and must fail: its "\* expect: <name>" line names
+# the invariant or property TLC has to report violated, or "deadlock". That is
+# how a check that has stopped catching anything is caught itself. Each line
+# reports how long TLC took.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -41,9 +43,23 @@ tlc() {
     return "$status"
 }
 
+# module_of <config>: sets module to the module the configuration checks: the
+# one its "\* module: <name>" line names, or else the directory's only module.
+module_of() {
+    local named
+    named=$(sed -n 's/^\\\* module: //p' "$1")
+    if [ -n "$named" ]; then
+        module=$directory$named.tla
+    elif [ "${#modules[@]}" -eq 1 ]; then
+        module=${modules[0]}
+    else
+        echo "FAIL  ${1#"$root"/}: names no module, and its directory holds several"
+        return 1
+    fi
+}
+
 for directory in "$root"/spec/*/; do
     modules=("$directory"*.tla)
-    module=${modules[0]}
     if [ "$mode" = deep ]; then
         configs=("$directory"deep/*.cfg)
     else
@@ -52,6 +68,7 @@ for directory in "$root"/spec/*/; do
     for config in "${configs[@]}"; do
         [ -e "$config" ] || continue
         name=${config#"$root"/}
+        module_of "$config" || { failed=1; continue; }
         if tlc "$module" "$config"; then
             states=$(sed -n 's/^[0-9]* states generated, \([0-9]*\) distinct states found, 0 states left on queue\.$/\1/p' "$log" | tail -1)
             echo "ok    $name: $states states, $took"
@@ -68,6 +85,7 @@ for directory in "$root"/spec/*/; do
         [ -e "$config" ] || continue
         name=${config#"$root"/}
         expect=$(sed -n 's/^\\\* expect: //p' "$config")
+        module_of "$config" || { failed=1; continue; }
         if tlc "$module" "$config"; then
             echo "FAIL  $name: the defect went unnoticed, want $expect, $took"
             failed=1

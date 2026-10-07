@@ -397,11 +397,10 @@ capture's, a stop's and a fork point's.
 **The digests of the other pages.** A page that was not unjournaled at the seal
 holds exactly the bytes its last entry left. Those are also the bytes the
 checkpoint holds for it, and the bytes a replay starts from whether the
-checkpoint lands or not. So its digests could stay, and its next capture would
-write only the blocks that changed. That is the rule to keep, but only if
-`MCCapture` passes with it (step 1). If TLC finds a counterexample, every
-digest is dropped at every seal, and the first capture of each page after a
-seal writes the whole page: about 5 ms more, once per page per interval.
+checkpoint lands or not. So its digests stay, and its next capture writes
+only the blocks that changed. `MCCapture` passes with this rule (step 1, see
+[Decided](#decided)). An unjournaled page that kept its digests would lose a
+store whose bytes go back to the page's last entry.
 
 ### Trimming
 
@@ -595,7 +594,7 @@ In the mode:
 
 | Failure | What happens |
 | --- | --- |
-| A write or sync fails | The batch's flushes fail with EIO. The journal reopens: it reads back to find its head, then writes a pad over the failed range in its next batch. Later flushes are journaled again if that works. |
+| A write or sync fails | The batch's flushes fail with EIO. Every page the batch took becomes unjournaled again and loses its digests, since its entry may not be on the disk (spec/bugs.md, B6). The journal reopens: it reads back to find its head, then writes a pad over the failed range in its next batch. Later flushes are journaled again if that works. |
 | The journal is full | Captures wait for trimming. The host asks for checkpoints out of turn. A VM over half the ring waits for its own. Nothing fails. |
 | The disk is detached while VMs run | Every operation fails, so every flush fails with EIO. If this host was fenced, the epoch timer closes its VMs within 2 s (`host/host.go:312`). If not, its member asks for a journal disk again, and flushes fail until one is served. |
 | A torn batch at a power loss | Reading back stops at the first bad entry. No answered flush is in a torn batch, because a batch is answered only after its sync. |
@@ -631,8 +630,9 @@ and Gremlins before and after on the new code (docs/testing.md:1337, 2106,
 
 - `MCCapture`: one region of two pages of two blocks; stores, flushes,
   captures, syncs, seals, selections, abandons and a crash with a replay. A
-  digest is modelled as the block's value. Each store writes a larger value
-  than the block held, so a lost store shows as a smaller value. Invariants:
+  block holds the bytes "x" or "y" and every store flips them, so a block can
+  go back to bytes an older entry holds; with values that only grow, a digest
+  kept too long would never match, and the model could not show it. Invariants:
   `NoLostFlush` (after a replay every block holds at least the value it held
   when the last answered flush was sent), `NoRegression` (a replay never holds
   less than the selected checkpoint), and the rule that every page writable
@@ -677,7 +677,8 @@ In `vmmemory`: the unjournaled runs, the protect trap on a page no seal holds,
 `MemoryRegion.Capture`, the SHA-256 digests per block and their sources (the
 origin, zeros), the hashing on the settle's workers, the checkpoint's
 unjournaled list across a seal, a selection and an abandon, the digest rule at
-a seal as step 1 decided, and capture of a spilled page.
+a seal as step 1 decided, a failed batch's pages given back as unjournaled
+without digests (B6), and capture of a spilled page.
 
 Tests: the rule that every writable page is unjournaled, checked after every
 step of the existing pager campaigns; a store during a capture lands in the
@@ -809,6 +810,13 @@ The owner decided these on 2026-10-06.
 2. **Changed 4 KiB blocks, found by SHA-256 digests.** 16 KiB of digests per
    2 MiB page, in the pager's memory. Whether digests survive a seal is
    decided by `MCCapture` in step 1; they survive only if TLC passes.
+   **Answer (TASK-104.1): they survive.** A page that was not unjournaled at
+   a seal keeps its digests; a page that was loses them. `MCCapture` and its
+   deep configurations pass `NoLostFlush` and `NoRegression` with this rule.
+   Keeping the digests of an unjournaled page too fails `NoLostFlush`
+   (`spec/journal/mutants/unjournaled-keeps-digests.cfg`). The rule holds
+   only with B6 fixed: a failed batch's pages become unjournaled again and
+   lose their digests.
 3. **Durable flush is an optional mode, off by default.** Off: today's flush
    bound, unchanged. On: a flush that cannot be journaled fails with EIO, with
    no fallback to a checkpoint; a full ring is back-pressure. `durable_flush`
