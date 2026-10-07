@@ -474,6 +474,15 @@ func (r *MemoryRegion) Unseal(ctx context.Context) error {
 // waits for one batch, not for the walk. Each batch's volume metadata is looked
 // up first, with neither the memory region nor any page held. A page already retired
 // is skipped, so a repeated call finishes what a failed one left.
+//
+// What a fork point lends ends page by page, not before the walk: each page's
+// lent name goes under the page's lock as the page leaves the seal, before it
+// is handed back to its guest or to the arena (unlend), unless the page moves
+// into the point's root, where adopt takes the name out. A child maps or
+// copies a lent page only holding that same lock (lookup, forkCopy), so none
+// reaches a page once it has left the seal, and one that reached it before
+// mapped the bytes the seal froze, which dropSharers then takes from it where
+// the guest will store into them again.
 func (r *MemoryRegion) endSeal(ctx context.Context, checkpoint *MemoryRegionCheckpoint, published bool) error {
 	if err := r.live.RLock(ctx); err != nil {
 		return err
@@ -719,10 +728,13 @@ func (r *MemoryRegion) takePages(ctx context.Context, pending map[uint64]*bindin
 // holdInCheckpointLocked hands b's reservation, where it was copied from and
 // whether write-ahead made it to held, the checkpoint's copy, which b shares
 // from here: it stays dirty, and a store must copy away from the checkpoint
-// before it can change its bytes. Caller holds r.bindingsMu.
+// before it can change its bytes. Whether a journal capture write-protected
+// b goes to held too: the seal's own protection stands in for it while the
+// seal lasts, and an abandon gives it back (restoreFromCheckpointLocked).
+// Caller holds r.bindingsMu.
 func (r *MemoryRegion) holdInCheckpointLocked(b, held *binding) {
 	r.uncoldLocked(b)
-	b.protected, b.zeroed = false, false
+	held.protected, b.protected, b.zeroed = b.protected, false, false
 	b.checkpoint, held.spill, b.spill = held, b.spill, noReservation
 	held.ahead, b.ahead = b.ahead, false
 	held.origin, b.origin = b.origin, nil
@@ -889,12 +901,15 @@ func (r *MemoryRegion) retireFromCheckpointLocked(b *binding) {
 // restoreFromCheckpointLocked hands an abandoned checkpoint's copy back to
 // the page it was taken from: its reservation, where it was copied from and
 // whether write-ahead made it, and the page is dirty again, exactly as it was
-// before the seal. Caller holds r.bindingsMu.
+// before the seal: a page a journal capture had write-protected is
+// write-protected again, so it maps writable only through the protect trap
+// that makes it unjournaled. Caller holds r.bindingsMu.
 func (r *MemoryRegion) restoreFromCheckpointLocked(b, held *binding) {
 	r.uncoldLocked(b)
 	b.checkpoint, b.spill, b.dirty, b.ahead = nil, held.spill, true, held.ahead
 	b.origin, held.origin = held.origin, nil
-	held.spill, held.dirty, held.ahead = noReservation, false, false
+	b.protected = held.protected
+	held.spill, held.dirty, held.ahead, held.protected = noReservation, false, false, false
 	if r.dirtySet == nil {
 		r.dirtySet = make(map[uint64]*binding)
 	}
@@ -1255,7 +1270,13 @@ func (r *MemoryRegion) abandonCopies(ctx context.Context, batch []*binding) erro
 			h.mu.Unlock()
 		}
 		if shared {
+			forget := sim.Bug(ctx, "journal-abandon-forgets-protection")
 			r.bindingsMu.Lock()
+			if forget {
+				// The bug gives the page back writable, though no flush will
+				// take what the guest stores into it.
+				held.protected = false
+			}
 			r.restoreFromCheckpointLocked(b, held)
 			r.bindingsMu.Unlock()
 			// An abandoned checkpoint gives the page straight back: the guest
@@ -1313,7 +1334,10 @@ func (r *MemoryRegion) discardCheckpoint(ctx context.Context, c *MemoryRegionChe
 		}
 		if page != nil {
 			// The page goes with the layer: no child may map it from here,
-			// nor find it under the name a fork point lends it under.
+			// nor find it under the name a fork point lends it under. The
+			// name goes under the page's lock, which a child's map or copy
+			// of it holds too, so ending the lending page by page leaves no
+			// window (endSeal).
 			r.host.unlend(ctx, page)
 			err = r.host.dropSharers(ctx, page)
 			h.mu.Lock()
@@ -1508,6 +1532,43 @@ func (h *Host) published(page *zirconvm.VmPage) bool {
 	return f.layer == nil && f.slot >= 0 && !isLent(page)
 }
 
+// endForkFileSeam runs in the end of a seal between taking its fork file's
+// holders and dropping the file from their processes. It is nil in
+// production; a test gives a holder another point's file there.
+var endForkFileSeam func()
+
+// dropFork takes a fork point's file back from one holder's process, and
+// frees the number the file was given under there only once the drop has
+// landed. The holder's filesMu keeps every give of another file to that
+// process out meanwhile (giveFork), so none is given under a number about to
+// be dropped, nor under one still in use. A holder that has detached, or
+// cannot take a command, is dropped from nothing: whether it has detached is
+// asked of the host's regions under h.mu, not of its closed mark, which its
+// own lock guards.
+func (h *Host) dropFork(ctx context.Context, q *MemoryRegion, f *arenaFile, number int, early bool) error {
+	if !early {
+		if err := q.filesMu.Lock(ctx); err != nil {
+			// The file stays given under its number until q detaches.
+			return err
+		}
+		defer q.filesMu.Unlock()
+	}
+	h.mu.Lock()
+	_, attached := h.memoryRegions[q]
+	h.mu.Unlock()
+	if attached && q.terminal.Load() == nil {
+		if err := q.mapping.DropFile(ctx, number); err != nil {
+			q.fail(err)
+		}
+	}
+	h.mu.Lock()
+	if given, ok := q.forks[f]; ok && given == number {
+		delete(q.forks, f)
+	}
+	h.mu.Unlock()
+	return nil
+}
+
 // endForkFile is the part of endFork an isolated arena's fork file needs:
 // each child closes the file, and the file goes back to the arena once its
 // copies, which went with the point's temporary root, are gone.
@@ -1520,33 +1581,31 @@ func (r *MemoryRegion) endForkFile(ctx context.Context, c *MemoryRegionCheckpoin
 	if f == nil {
 		return nil
 	}
+	early := sim.Bug(ctx, "pager-free-a-fork-number-before-its-drop")
 	h.mu.Lock()
 	holders := f.holders
 	f.holders = nil
-	for q := range holders {
-		delete(q.forks, f)
+	if early {
+		// The bug frees each holder's number for the file before its drop
+		// lands, so a give of another point's file meanwhile takes it.
+		for q := range holders {
+			delete(q.forks, f)
+		}
 	}
 	h.mu.Unlock()
 	// No region is given the file from here: a region is given it as it maps
 	// a copy in it (giveFork), holding the copy's lock, and the copies have
 	// gone with the point's roots, whose drop waited for each copy's lock. A
-	// holder may detach meanwhile, which no lock held here keeps out, so
-	// whether it has is asked of the host's regions under h.mu rather than of
-	// its closed mark, which its own lock guards; one that detaches after
-	// that is a stopped process, whose refusal ends nothing that is not
-	// ending. In a controlled run another task goes on here; the file goes
-	// back whatever it says.
+	// holder may be given another point's file meanwhile, which takes the
+	// next number free in its process, so each holder's number for this file
+	// stays taken until its drop has landed (dropFork). In a controlled run
+	// another task goes on here; the file goes back whatever it says.
+	if endForkFileSeam != nil {
+		endForkFileSeam()
+	}
 	cancelled := sim.Admit(ctx, "vmmemory/end-fork-file")
 	for q, number := range holders {
-		h.mu.Lock()
-		_, attached := h.memoryRegions[q]
-		h.mu.Unlock()
-		if !attached || q.terminal.Load() != nil {
-			continue
-		}
-		if err := q.mapping.DropFile(ctx, number); err != nil {
-			q.fail(err)
-		}
+		cancelled = errors.Join(cancelled, r.host.dropFork(ctx, q, f, number, early))
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()

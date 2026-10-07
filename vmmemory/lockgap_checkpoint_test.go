@@ -280,6 +280,92 @@ func TestAShareAfterItsSealEndedLendsNothing(t *testing.T) {
 	})
 }
 
+// A region that reads the pages of two fork points keeps the number its
+// process holds one point's file under until that file's drop has landed, so
+// the other point's file, given meanwhile, takes another. Before 2026-10-07
+// the end of the first point's seal freed the number before its drop, the
+// second file was given under it, and the client refused a file given twice.
+func TestAForkFileIsGivenUnderNoNumberAnotherIsDroppedFrom(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := newPinnedFixture(t, vmmemory.Config{ResidentPages: 16, LogicalPages: 32, DirtyPages: 8,
+			ReadAheadPages: 1})
+		first, _, _, a := lendingParent(t, f)
+		share(t, f, first, a)
+		second, sm, _ := f.memoryRegion(2)
+		access(t, second, sm, 1, true)[0] = 66
+		if err := second.Seal(f.ctx); err != nil {
+			t.Fatal(err)
+		}
+		// The reader's page 0 is the first point's, and its page 1 the
+		// second's, which lends it only once the reader is attached.
+		pointB := control.Ref{VM: f.source.VM + "-second-point", Sequence: 3}
+		rb := f.newBacking(2)
+		rb.source = a.source
+		rb.sources = map[uint64]control.Ref{1: pointB}
+		reader, rm := f.attach(rb)
+		if got := access(t, reader, rm, 0, false)[0]; got != 44 || rm.number(0) != 3 {
+			t.Fatalf("the reader reads %d at page 0 from file %d, want the 44 the first point lends from file 3",
+				got, rm.number(0))
+		}
+		if err := second.Checkpoint().Share(f.ctx, pointB, "v"); err != nil {
+			t.Fatal(err)
+		}
+		var faulted error
+		entered := false
+		vmmemory.SetEndForkFileSeam(t, func() {
+			// The first point's seal is ending, its file not yet dropped: the
+			// reader maps the second point's page, and is given its file.
+			entered = true
+			faulted = reader.Fault(f.ctx, 1, false)
+		})
+		if err := first.Unseal(f.ctx); err != nil {
+			t.Fatal(err)
+		}
+		if !entered || faulted != nil {
+			t.Fatalf("the reader's fault on the second point's page ran %t and returned %v, want it run and served",
+				entered, faulted)
+		}
+		if got := access(t, reader, rm, 1, false)[0]; got != 66 {
+			t.Fatalf("the reader reads %d at page 1, want the 66 the second point lends", got)
+		}
+		if err := second.Unseal(f.ctx); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+// A page a journal capture took stays write-protected through a seal that is
+// abandoned, so the guest's next store into it traps and makes it
+// unjournaled, and the next flush takes it. Before 2026-10-07 the seal
+// dropped the capture's protection and the abandon did not give it back: a
+// read fault mapped the page writable, and a store into it reached no flush.
+func TestAPageACaptureTookStaysProtectedThroughAnAbandonedSeal(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 8, LogicalPages: 16, DirtyPages: 8,
+			ReadAheadPages: 1})
+		r, m, _ := f.pmemRegion(2)
+		f.storeAt(r, m, 0, 0, 0xab)
+		f.capture(r)
+		if got := r.Unjournaled(); len(got) != 0 {
+			t.Fatalf("unjournaled %v after the capture, want none", got)
+		}
+		if err := r.Seal(f.ctx); err != nil {
+			t.Fatal(err)
+		}
+		if err := r.Unseal(f.ctx); err != nil {
+			t.Fatal(err)
+		}
+		if got := accessUnder(f.ctx, t, r, m, 0, false)[0]; got != 0xab {
+			t.Fatalf("page 0 reads %#x after the abandon, want its 0xab", got)
+		}
+		writableIsUnjournaled(t, r, m)
+		f.storeAt(r, m, 0, 0, 0xcd)
+		if got := r.Unjournaled(); len(got) != 1 || got[0] != 0 {
+			t.Fatalf("unjournaled %v after a store into page 0, want [0]", got)
+		}
+	})
+}
+
 // forkCampaignSeeds are the seeds the fork campaign runs.
 var forkCampaignSeeds = []uint64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}
 
