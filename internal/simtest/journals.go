@@ -40,7 +40,9 @@ func (w *World) journalControl() *membership.JournalControl {
 	if bytes == 0 {
 		bytes = defaultJournalBytes
 	}
+	w.controlClock = w.runtime.NewClock(w.config.Namespace + "controller")
 	return &membership.JournalControl{Disks: w.cloud, Deployment: w.config.Namespace + "journals", Bytes: bytes,
+		Expiry: w.config.JournalExpiry, Clock: w.controlClock,
 		Entropy: w.runtime.NewEntropy(w.config.Namespace + "journals")}
 }
 
@@ -319,6 +321,14 @@ func (w *World) flushesFor(g *guest) {
 	g.setFlushes(f)
 }
 
+// JournalPending is how many opens of a VM found a journal its record names
+// served by no member it could read: the disk was still moving to a survivor.
+func (w *World) JournalPending() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.journalPending
+}
+
 // Flushes is how many flushes of one VM its hosts answered with success and
 // with an error.
 func (w *World) Flushes(id string) (answered, failed int) {
@@ -529,7 +539,12 @@ func (w *World) reopenJournaled(ctx context.Context, in *instance, index int, wh
 		// A VM whose journal no member serves yet is not lost: the disk is
 		// still moving to a survivor, and a later step opens it.
 		w.logf("%s: %s could not take it over after %s: %v", id, h.name, why, err)
+		w.mu.Lock()
+		if errors.Is(err, volume.ErrJournalPending) {
+			w.journalPending++
+		}
 		in.host, in.present = index, false
+		w.mu.Unlock()
 		return false, nil
 	}
 	selected := vm.Status().Checkpoint

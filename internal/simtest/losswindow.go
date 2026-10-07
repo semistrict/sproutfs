@@ -17,7 +17,8 @@ import (
 // separate, because a host keeps its own deadlines, but an age that crosses
 // hosts is a comparison between two of them: a destination dates the pages it
 // received from the source's own measurement, and a world whose clocks drifted
-// would be measuring the drift.
+// would be measuring the drift. The controller's clock, which times how long
+// a journal disk has been free, moves with them.
 //
 // What the advance released has run by the time it returns, which is what lets
 // a caller act on the world the advance produced rather than beside it. A
@@ -26,15 +27,21 @@ import (
 // through one of those: a caller that had only settled would go on with an
 // interval checkpoint of its own running beside it, and the next thing it asked
 // a guest for would land in the middle of that checkpoint's pause — where a
-// guest's vCPUs are stopped and it stores nothing. The quiescent point is what
+// guest's vCPUs are stopped and its store waits. The quiescent point is what
 // says the advance is over, so this is a bubble operation: every scenario that
 // moves a world's clocks runs inside testing/synctest.
 func (w *World) Advance(d time.Duration) {
 	for _, h := range w.hosts {
 		h.clock.Advance(d)
 	}
+	if w.controlClock != nil {
+		w.controlClock.Advance(d)
+	}
 	for _, h := range w.hosts {
 		h.clock.Settle()
+	}
+	if w.controlClock != nil {
+		w.controlClock.Settle()
 	}
 	synctest.Wait()
 }

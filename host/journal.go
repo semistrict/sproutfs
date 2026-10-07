@@ -97,13 +97,14 @@ func (h *Host) journal() *journal.Journal {
 // is the pauses waiting for captures to be placed. inflight is, per memory
 // region, the pages captured into commits that have not ended yet, which a
 // flush has to cover as well: if that commit fails they are unjournaled
-// again. changed is closed and replaced whenever placed moves.
+// again. changed is closed and replaced whenever placed moves. pauses counts
+// the checkpoints' pauses.
 type vmJournal struct {
-	mu                     sync.Mutex
-	captures, placed, last uint64
-	covers                 []*cover
-	inflight               map[*vmmemory.MemoryRegion]map[uint64]int
-	changed                chan struct{}
+	mu                             sync.Mutex
+	captures, placed, last, pauses uint64
+	covers                         []*cover
+	inflight                       map[*vmmemory.MemoryRegion]map[uint64]int
+	changed                        chan struct{}
 	// postCopy marks a VM a migration brought here whose post-copy has not
 	// ended, and root a fork's child whose root is not selected. Its flushes
 	// wait for both (journaled), unless the VM leaves this host first: ended.
@@ -217,9 +218,10 @@ func (s *vmJournal) opened(postCopy, root bool) {
 }
 
 // pending is the pages of region a flush now has to cover: the unjournaled
-// ones, and those captured into commits that have not ended.
-func (s *vmJournal) pending(region *vmmemory.MemoryRegion) []uint64 {
-	pages := region.Unjournaled()
+// ones, and those captured into commits that have not ended. pauses is how
+// many checkpoints had paused the VM by then.
+func (s *vmJournal) pending(region *vmmemory.MemoryRegion) (pages []uint64, pauses uint64) {
+	pages = region.Unjournaled()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if inflight := s.inflight[region]; len(inflight) > 0 {
@@ -227,7 +229,7 @@ func (s *vmJournal) pending(region *vmmemory.MemoryRegion) []uint64 {
 		slices.Sort(pages)
 		pages = slices.Compact(pages)
 	}
-	return pages
+	return pages, s.pauses
 }
 
 // holdLocked records the pages of a capture as in flight until its commit
@@ -360,21 +362,22 @@ func (h *Host) flushedDurable(region *vmmemory.MemoryRegion, done func(error)) {
 	state := &entry.journal
 	waits := !h.mayJournal(vm, j, state)
 	var pages []uint64
+	var pauses uint64
 	if !waits {
-		pages = state.pending(region)
+		pages, pauses = state.pending(region)
 	}
 	go func() {
 		var err error
 		if waits {
 			if err = h.journaled(h.ctx, vmID, vm, j, entry); err == nil {
-				pages = state.pending(region)
+				pages, pauses = state.pending(region)
 			}
 		}
 		if errors.Is(err, errLeft) {
 			return
 		}
 		if err == nil {
-			err = h.journalFlush(h.ctx, j, entry, vmID, vm.Epoch(), volume, region, pages)
+			err = h.journalFlush(h.ctx, j, entry, vmID, vm.Epoch(), volume, region, pages, pauses)
 		}
 		h.journals.flushes.ended(err)
 		h.journals.flushTime.Observe(h.clock.Since(began))
@@ -388,10 +391,16 @@ func (h *Host) flushedDurable(region *vmmemory.MemoryRegion, done func(error)) {
 }
 
 // journalFlush commits a capture of pages of region to j, and returns once
-// the batch that holds it has synced, or with why it did not.
+// the batch that holds it has synced, or with why it did not. pauses is how
+// many checkpoints had paused the VM when the flush chose its pages: a pause
+// since took the unjournaled ones among them to its seal's list, where the
+// capture finds them.
 func (h *Host) journalFlush(ctx context.Context, j *journal.Journal, entry *registration, vmID string, epoch uint64,
-	volume string, region *vmmemory.MemoryRegion, pages []uint64) error {
+	volume string, region *vmmemory.MemoryRegion, pages []uint64, pauses uint64) error {
 	state := &entry.journal
+	if err := sim.BuggifyDelay(ctx, BuggifyJournalCaptureSlow, 0.2, 20*time.Millisecond); err != nil {
+		return err
+	}
 	if err := h.underHalfRing(ctx, j, vmID, entry); err != nil {
 		return err
 	}
@@ -405,6 +414,9 @@ func (h *Host) journalFlush(ctx context.Context, j *journal.Journal, entry *regi
 	capture := func(ctx context.Context) ([]journal.Entry, error) {
 		state.mu.Lock()
 		defer state.mu.Unlock()
+		if state.pauses != pauses {
+			sim.Probe(ctx, ProbeJournalCaptureAfterPause)
+		}
 		state.captures++
 		began := h.clock.Now()
 		c, err := region.Capture(ctx, pages)
@@ -527,6 +539,7 @@ func (c *cover) paused(ctx context.Context) {
 	s := c.state
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.pauses++
 	c.token = s.captures
 	c.earlier = s.postCopy && !sim.Bug(ctx, "journal-drop-source-early")
 	if sim.Bug(ctx, "journal-covered-after-seal") {
@@ -768,7 +781,14 @@ const (
 	// ProbeJournalReadGaveUpVM is a read of this host's journal by a reader
 	// at a newer epoch of a VM this host runs, which gave the VM up.
 	ProbeJournalReadGaveUpVM = "host/journal-read-gave-up-vm"
+	// ProbeJournalCaptureAfterPause is a flush whose capture ran after a
+	// checkpoint paused the VM, though it chose its pages before.
+	ProbeJournalCaptureAfterPause = "host/journal-capture-after-pause"
 )
+
+// BuggifyJournalCaptureSlow holds a flush for up to 20 ms after it chose its
+// pages and before its capture, so a checkpoint's pause may come between.
+const BuggifyJournalCaptureSlow = "host/journal-capture-slow"
 
 // journalActivity is what durable flush has done on this host.
 func (h *Host) journalActivity() JournalActivity {

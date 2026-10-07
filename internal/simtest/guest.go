@@ -81,8 +81,12 @@ type guest struct {
 	// stopped reports vCPUs that are not running. A guest stores nothing while
 	// it is stopped, which is what makes a capture or an abandoned migration
 	// that never resumed it visible: the next store fails rather than quietly
-	// succeeding against pages nothing is driving.
+	// succeeding against pages nothing is driving. sealing is closed when the
+	// pause of a checkpoint of the disks ends, and nil while none stands: a
+	// host's loop takes one whenever it has to, and a store meanwhile waits
+	// for the vCPUs to run again, as a guest's does.
 	stopped bool
+	sealing chan struct{}
 	closed  bool
 	// flushes is what durable flush promises this VM, which every store is
 	// recorded into: nil in a world without it (journals.go).
@@ -243,15 +247,14 @@ func (g *guest) setRefuseStop(err error) {
 	g.refuseStop = err
 }
 
-// Resume restarts the vCPUs. This guest only stores when the driver asks it to,
-// so what a resume means here is that stores are accepted again — which is
-// exactly what an abandoned capture or migration owes the guest it stopped, and
-// exactly what a run that never checked would not notice was missing.
 // SealDisks is a disk checkpoint's pause: the guest stops storing and the
 // memory regions of its disks seal, while its RAM and its state are left alone.
 func (g *guest) SealDisks(ctx context.Context) (map[string]volume.DirtySource, error) {
 	g.mu.Lock()
 	g.stopped = true
+	if g.sealing == nil {
+		g.sealing = make(chan struct{})
+	}
 	g.mu.Unlock()
 	sources := map[string]volume.DirtySource{}
 	for _, name := range g.names {
@@ -266,11 +269,40 @@ func (g *guest) SealDisks(ctx context.Context) (map[string]volume.DirtySource, e
 	return sources, nil
 }
 
+// Resume restarts the vCPUs. This guest only stores when the driver asks it to,
+// so what a resume means here is that stores are accepted again — which is
+// exactly what an abandoned capture or migration owes the guest it stopped, and
+// exactly what a run that never checked would not notice was missing.
 func (g *guest) Resume(context.Context) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.stopped = false
+	if g.sealing != nil {
+		close(g.sealing)
+		g.sealing = nil
+	}
 	return nil
+}
+
+// runs returns once the vCPUs run, and fails while they are stopped by
+// anything but a checkpoint of the disks, whose pause it waits out.
+func (g *guest) runs(ctx context.Context) error {
+	for {
+		g.mu.Lock()
+		stopped, sealing := g.stopped, g.sealing
+		g.mu.Unlock()
+		switch {
+		case !stopped:
+			return nil
+		case sealing == nil:
+			return fmt.Errorf("%s: the guest's vCPUs are stopped", g.instance)
+		}
+		select {
+		case <-sealing:
+		case <-ctx.Done():
+			return context.Cause(ctx)
+		}
+	}
 }
 
 // Release unseals every memory region and resumes a still-paused process, which is
@@ -347,11 +379,8 @@ func (g *guest) storeValue(name string, page uint64, value byte) error {
 }
 
 func (g *guest) storeValueIn(ctx context.Context, name string, page uint64, value byte) error {
-	g.mu.Lock()
-	stopped := g.stopped
-	g.mu.Unlock()
-	if stopped {
-		return fmt.Errorf("%s: the guest's vCPUs are stopped, so it stores nothing", g.instance)
+	if err := g.runs(ctx); err != nil {
+		return fmt.Errorf("%w, so it stores nothing", err)
 	}
 	mp := g.mappings[name]
 	for range 8 {
@@ -373,11 +402,8 @@ func (g *guest) storeValueIn(ctx context.Context, name string, page uint64, valu
 // copy, or the page it was copied from once the settle gives it back — must
 // still be the bytes the guest last wrote.
 func (g *guest) takeWritable(ctx context.Context, name string, page uint64) error {
-	g.mu.Lock()
-	stopped := g.stopped
-	g.mu.Unlock()
-	if stopped {
-		return fmt.Errorf("%s: the guest's vCPUs are stopped, so it faults on nothing", g.instance)
+	if err := g.runs(ctx); err != nil {
+		return fmt.Errorf("%w, so it faults on nothing", err)
 	}
 	if err := g.memoryRegions[name].Fault(ctx, page, true); err != nil {
 		return fmt.Errorf("%s write fault on %s page %d: %w", g.instance, name, page, err)

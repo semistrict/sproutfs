@@ -102,9 +102,12 @@ type Config struct {
 	// when it has to, so a world with it needs CheckpointInterval. A recovery
 	// is checked against the flushes the guest saw answered rather than
 	// against one whole checkpoint. JournalBytes is each journal disk's size;
-	// zero is a size of the world's own.
-	Journals     bool
-	JournalBytes int64
+	// zero is a size of the world's own. JournalExpiry is how long the
+	// controller keeps a journal disk free and empty before it deletes it, on
+	// the controller's clock, which Advance moves; zero is a deployment's hour.
+	Journals      bool
+	JournalBytes  int64
+	JournalExpiry time.Duration
 	// StoreBounds is what every host's requests to the store and to the hot
 	// tier wait within, as a deployment's commands open them; zero is the
 	// defaults. The bounds run on the wall clock, which inside the bubble is
@@ -209,12 +212,17 @@ type World struct {
 	// givenUpHosts is each host the controller takes for gone while it
 	// still runs, by index: see GiveUpOn.
 	givenUpHosts map[int]bool
+	// controlClock is what the controller times how long a journal disk has
+	// been free by, which Advance moves with the hosts' clocks.
+	controlClock *sim.Clock
 	// hot is the hot tier's bucket every host reads through, nil in a world
 	// without one.
 	hot *sim.ObjectStore
 	// flushes is, by VM, what durable flush promises its guest, in a world
-	// with it on.
-	flushes map[string]*flushes
+	// with it on, and journalPending counts the opens that waited for a
+	// journal disk to be served.
+	flushes        map[string]*flushes
+	journalPending int
 	// mu guards what a kill and the operation it interrupts both touch: which
 	// host runs which VM, the guest running it, and the checkpoints it may have
 	// come back at. Everything else here is single-threaded — the driver runs
