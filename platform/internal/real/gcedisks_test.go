@@ -13,6 +13,7 @@ import (
 	"sync"
 	"testing"
 
+	"cloud.google.com/go/compute/metadata"
 	"github.com/semistrict/sproutfs/platform"
 	compute "google.golang.org/api/compute/v1"
 )
@@ -346,5 +347,48 @@ func TestAGCEVolumeIsAHandleOrANameInTheConfiguredZone(t *testing.T) {
 	}
 	if got := GCEDeviceName("projects/p/zones/z/disks/shard-1"); got != "shard-1" {
 		t.Fatalf("the device name of a handle is %q, want shard-1", got)
+	}
+}
+
+// A controller on an instance names the disks it creates and lists by their
+// names alone, in the instance's own project and zone, which it learns from
+// the metadata server. A project or zone configured stays as configured.
+func TestGCEDisksTakeTheInstancesProjectAndZoneFromTheMetadataServer(t *testing.T) {
+	var asked []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked = append(asked, r.URL.Path)
+		if r.Header.Get("Metadata-Flavor") != "Google" {
+			http.Error(w, "no Metadata-Flavor", http.StatusForbidden)
+			return
+		}
+		w.Header().Set("Metadata-Flavor", "Google")
+		switch r.URL.Path {
+		case "/computeMetadata/v1/project/project-id":
+			fmt.Fprint(w, "echo-project")
+		case "/computeMetadata/v1/instance/zone":
+			fmt.Fprint(w, "projects/1009/zones/us-east4-a")
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("GCE_METADATA_HOST", strings.TrimPrefix(server.URL, "http://"))
+	client := metadata.NewClient(nil)
+	got := locateGCEDisks(t.Context(), GCEDisksConfig{}, client)
+	if want := (GCEDisksConfig{Project: "echo-project", Zone: "us-east4-a"}); got != want {
+		t.Fatalf("an empty configuration became %+v, want %+v", got, want)
+	}
+	asked = nil
+	got = locateGCEDisks(t.Context(), GCEDisksConfig{Project: "mine"}, client)
+	if want := (GCEDisksConfig{Project: "mine", Zone: "us-east4-a"}); got != want {
+		t.Fatalf("a configuration with a project became %+v, want %+v", got, want)
+	}
+	if want := []string{"/computeMetadata/v1/instance/zone"}; !slices.Equal(asked, want) {
+		t.Fatalf("the adapter asked the metadata server for %q, want %q", asked, want)
+	}
+	asked = nil
+	configured := GCEDisksConfig{Project: "mine", Zone: "europe-west1-b"}
+	if got := locateGCEDisks(t.Context(), configured, client); got != configured || len(asked) != 0 {
+		t.Fatalf("a configured project and zone became %+v after asking %q, want them kept unasked", got, asked)
 	}
 }

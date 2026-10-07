@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"path"
 	"slices"
 	"strings"
 	"time"
 
+	"cloud.google.com/go/compute/metadata"
 	"github.com/semistrict/sproutfs/platform"
 	compute "google.golang.org/api/compute/v1"
 	"google.golang.org/api/googleapi"
@@ -47,12 +49,15 @@ type GCEDisksConfig struct {
 }
 
 // NewGCEDisks reaches Compute Engine with the ambient Google credentials, or
-// with none where config names an endpoint.
+// with none where config names an endpoint. Without an endpoint, a project or
+// zone config leaves empty is the instance's own, from the metadata server.
 func NewGCEDisks(ctx context.Context, config GCEDisksConfig) (*GCEDisks, error) {
 	options := []option.ClientOption{}
 	if config.Endpoint != "" {
 		options = append(options, option.WithEndpoint(config.Endpoint), option.WithoutAuthentication(),
 			option.WithHTTPClient(http.DefaultClient))
+	} else {
+		config = locateGCEDisks(ctx, config, metadata.NewClient(nil))
 	}
 	service, err := compute.NewService(ctx, options...)
 	if err != nil {
@@ -62,6 +67,42 @@ func NewGCEDisks(ctx context.Context, config GCEDisksConfig) (*GCEDisks, error) 
 		config.DiskType, config.IOPS, config.ThroughputMBps = "hyperdisk-balanced", 6000, 400
 	}
 	return &GCEDisks{service: service, config: config, operationLimit: 10 * time.Minute}, nil
+}
+
+// gceMetadataLimit bounds the metadata server's answers. Off Compute Engine
+// there is no server, and the lookup gives up rather than hold up a start.
+const gceMetadataLimit = 5 * time.Second
+
+// locateGCEDisks fills in the project and zone config leaves empty with the
+// instance's own, as the metadata server gives them. A controller names the
+// disks it creates and lists by their names alone, which mean nothing without
+// them. A server that does not answer leaves them empty, and a call that
+// needs them then says so.
+func locateGCEDisks(ctx context.Context, config GCEDisksConfig, server *metadata.Client) GCEDisksConfig {
+	if config.Project != "" && config.Zone != "" {
+		return config
+	}
+	ctx, cancel := context.WithTimeout(ctx, gceMetadataLimit)
+	defer cancel()
+	if config.Project == "" {
+		project, err := server.GetWithContext(ctx, "project/project-id")
+		if err != nil {
+			slog.WarnContext(ctx, "compute engine: the metadata server did not say the project", "error", err)
+		}
+		config.Project = strings.TrimSpace(project)
+	}
+	if config.Zone == "" {
+		// projects/<number>/zones/<zone>
+		zone, err := server.GetWithContext(ctx, "instance/zone")
+		if err != nil {
+			slog.WarnContext(ctx, "compute engine: the metadata server did not say the zone", "error", err)
+		}
+		config.Zone = path.Base(strings.TrimSpace(zone))
+		if config.Zone == "." {
+			config.Zone = ""
+		}
+	}
+	return config
 }
 
 // gceVolume is a disk as the API names it.
