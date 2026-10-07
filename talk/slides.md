@@ -172,6 +172,44 @@ An fsync is a guest flush that the device holds until the host answers. The host
 -->
 
 ---
+
+# Durable fsync — optional
+
+<div class="text-lg mt-2 opacity-80">Off by default: a flush is answered by the flush bound, as on the slide before.</div>
+
+<v-clicks>
+
+<div class="text-lg mt-4">
+
+- on: an fsync returns when its bytes are on **a network disk of the host's own**, a journal
+- the pager write-protects pages at each flush; a flush writes only the **changed 4 KiB blocks**, found by SHA-256 digests
+- one write and sync per batch of flushes; **a checkpoint trims** the journal
+- host lost: its journal disk moves to another host (about 15 s) and the VM's entries are **replayed before it boots**
+- a flush that cannot be journaled **fails** with an I/O error
+- survives the loss of a host, not of a zone
+- **status:** designed; the TLA+ spec, the journal format and the control record that names journals are built
+
+</div>
+
+</v-clicks>
+
+<!--
+Durable fsync is an optional mode, off by default. With it off, nothing changes: a flush is answered at once unless the VM holds a disk write older than the flush bound.
+
+With it on, a flush returns only when the bytes it covers are on a network disk the cloud replicates. Each host has one such disk, the journal. The orchestrator creates a journal disk when a host joins and deletes it once it has been free and empty for an hour.
+
+Guest stores to a disk are plain memory stores, so nothing logs them. At each flush the pager write-protects the pages the guest wrote since the last one, hashes their 4 KiB blocks with SHA-256, and writes the blocks whose digest changed. Flushes that arrive together share one write and one sync. Each checkpoint records how far into the journal it covers, in the control record, and the journal is trimmed up to there.
+
+After a host loss its journal disk is attached to another host, which takes about 15 s from the measured shard moves. The VM's entries after the checkpoint are written into its disks before it boots. The holder of the disk fences the old writer before it answers.
+
+A flush that cannot be journaled fails, so the guest sees an I/O error; ext4 then remounts read-only. There is no fallback to a checkpoint. A full journal makes flushes wait instead.
+
+The estimate is 0.6 to 1.2 ms at the median for the write and sync on Hyperdisk Balanced, and about 3 to 4 ms for a typical flush with hashing. It is not measured yet.
+
+The disks are zonal, so a flushed write survives the loss of a host, not of a zone. The spec, the journal format and control-record format 6 are built. The pager's capture, the host's flush path, replay and the GCE measurement are next.
+-->
+
+---
 clicks: 7
 ---
 
@@ -1326,6 +1364,7 @@ This is a bulk sequential read, and both paths were limited by the reader's CPU 
 - **a local fork's hold is not visible** to the orchestrator; only the deadline ends it
 - **recovery after a real host loss** — tested in simulation, not yet on a cluster
 - **disk checkpoints and the flush bound** — not yet tested on GCE
+- **durable fsync** — optional, off by default; three of ten steps built, not measured
 - **the cluster cache is off in the deployment** — its share of windows is 0 until the rollout raises it
 - **shards on network disks** — built and measured on GCE; the manifests are not yet run on a cluster
 - **serving copies through memory** — not yet `sendfile`
@@ -1347,6 +1386,8 @@ A child forked onto its parent's own host holds the fork point without the orche
 Recovery after a real host loss is tested in simulation and with fakes, not yet on a cluster. The one soak test's kill hit a host that was running nothing. The next run should use a seed whose kill hits a loaded host.
 
 Disk-only checkpoints, cold boot from a checkpoint without VMM state, and blocking flushes are tested in the simulation, the host test suite and Lima. They have not yet been tested together on GCE.
+
+Durable fsync is an optional mode, off by default. Its spec, its journal format and the control record that names journals are built; the pager's capture, the host's flush path, replay and the GCE measurement are not.
 
 The cluster cache is built and measured, but the deployment turns it on for none of its windows yet. A setting raises the share of windows gradually, as mcrouter's shadowing does.
 
