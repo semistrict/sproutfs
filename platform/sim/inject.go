@@ -47,21 +47,24 @@ const buggifyActivation = 0.25
 // Sites are off unless a campaign turns the runtime's switch on, so a recording
 // or replay test sees the same bytes it always did. id must be stable and must
 // name the fault rather than the caller's position, since the activation draw
-// is keyed on it: "checkpoint/publish/give-up", not a line number. A site
-// reached concurrently draws its per-call firings in arrival order, so a site
-// inside concurrent work belongs on an id that distinguishes the callers.
+// is keyed on it: "checkpoint/publish/give-up", not a line number. In a
+// controlled run each task (WithTask) numbers its own calls of a site, so a
+// task's firings do not depend on how other tasks' calls interleaved with it.
+// Outside one, a site reached concurrently draws its firings in arrival order,
+// so a site inside concurrent work belongs on an id that distinguishes the
+// callers.
 func Buggify(ctx context.Context, id string, p float64) bool {
 	r := RuntimeFrom(ctx)
 	if r == nil || !r.buggify.Load() {
 		return false
 	}
-	return r.buggifySite(id, p)
+	return r.buggifySite(r.drawingTask(ctx), id, p)
 }
 
 // buggifyHere is Buggify for a site inside a simulated dependency, which holds
 // its runtime itself rather than finding it in a context.
 func (r *Runtime) buggifyHere(id string, p float64) bool {
-	return r.buggify.Load() && r.buggifySite(id, p)
+	return r.buggify.Load() && r.buggifySite("", id, p)
 }
 
 // BuggifyDelay waits a seeded duration of up to maximum when the site fires,
@@ -72,7 +75,7 @@ func BuggifyDelay(ctx context.Context, id string, p float64, maximum time.Durati
 		return nil
 	}
 	r := RuntimeFrom(ctx)
-	delay := r.Random("buggify-delay").Duration(id+"/"+r.occurrenceOf("delay/"+id), maximum)
+	delay := r.Random("buggify-delay").Duration(id+"/"+r.occurrenceOf(r.drawingTask(ctx), "delay/"+id), maximum)
 	r.trace.record(Event{Kind: "buggify", Resource: id, Operation: "delay", Outcome: delay.String()})
 	return r.sleep(ctx, delay)
 }
@@ -162,9 +165,9 @@ func (r *Runtime) FiredSites() map[string]uint64 {
 	return maps.Clone(r.fired)
 }
 
-// buggifySite resolves one call of an enabled site: activate the site the first
-// time it is reached, then draw this call's firing.
-func (r *Runtime) buggifySite(id string, p float64) bool {
+// buggifySite resolves one call of an enabled site by task: activate the site
+// the first time it is reached, then draw this call's firing.
+func (r *Runtime) buggifySite(task, id string, p float64) bool {
 	r.mu.Lock()
 	if r.buggified == nil {
 		r.buggified = make(map[string]bool)
@@ -181,7 +184,7 @@ func (r *Runtime) buggifySite(id string, p float64) bool {
 	if !activated {
 		return false
 	}
-	fires := keyedChance(r.seed, "buggify/"+id+"/fire/"+r.occurrenceOf(id), p)
+	fires := keyedChance(r.seed, "buggify/"+id+"/fire/"+r.occurrenceOf(task, id), p)
 	if fires {
 		r.mu.Lock()
 		if r.fired == nil {
@@ -194,17 +197,38 @@ func (r *Runtime) buggifySite(id string, p float64) bool {
 	return fires
 }
 
-// occurrenceOf numbers the calls of one site so repeated calls draw differently
-// without a shared PRNG stream: the count is per id, so a choice added at one
-// site cannot perturb another's draws.
-func (r *Runtime) occurrenceOf(id string) string {
+// occurrenceOf numbers task's calls of one site so repeated calls draw
+// differently without a shared PRNG stream: the count is per id, so a choice
+// added at one site cannot perturb another's draws, and per task, so one task's
+// draws do not depend on when another's came. task is empty for the calls no
+// task is named for (drawingTask), which share one count.
+func (r *Runtime) occurrenceOf(task, id string) string {
+	key := id
+	if task != "" {
+		key = task + "/" + id
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.occurrences == nil {
 		r.occurrences = make(map[string]uint64)
 	}
-	r.occurrences[id]++
-	return strconv.FormatUint(r.occurrences[id], 10)
+	r.occurrences[key]++
+	occurrence := strconv.FormatUint(r.occurrences[key], 10)
+	if task != "" {
+		return task + "/" + occurrence
+	}
+	return occurrence
+}
+
+// drawingTask is the task whose own count a draw under ctx takes: the task
+// WithTask named, in a controlled run, where the scheduler gives each task its
+// turns, and none outside one, where tasks run as the Go scheduler runs them
+// and the identity has no effect.
+func (r *Runtime) drawingTask(ctx context.Context) string {
+	if r.wait == nil || Bug(ctx, "sim-number-draws-across-tasks") {
+		return ""
+	}
+	return taskName(ctx)
 }
 
 func onOff(value bool) string {

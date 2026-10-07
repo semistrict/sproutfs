@@ -1298,5 +1298,11 @@
     "package": "vmmemory",
     "run": "^(TestAStoreIntoAPageAForkPointNamesIsTheChildsOwn|TestAForkPointsChildrenReadWhatItLentWhileItsSealEnds)$",
     "purpose": "Copy a page a store read into the region's own file as though it were a root's. The copy's supply loses and the region maps a punched slot."
+  },
+  {
+    "id": "sim-number-draws-across-tasks",
+    "package": "platform/sim",
+    "run": "^TestATasksBuggifyDrawsDoNotDependOnAnotherTasks$",
+    "purpose": "Number a Buggify site's calls across every task in arrival order even in a controlled run, so two tasks that run at one instant shift each other's firings and a seed no longer replays."
   }
 ]

@@ -374,7 +374,7 @@ func (n *NetworkDisks) Crash(ctx context.Context, machine string) error {
 func (n *NetworkDisks) wait(ctx context.Context, operation, volume string, latency time.Duration, slow string) error {
 	if n.runtime.buggifyHere(slow, 0.1) {
 		r := n.runtime
-		extra := r.Random("sim/network-disk").Duration(slow+"/"+r.occurrenceOf(slow), 30*time.Second)
+		extra := r.Random("sim/network-disk").Duration(slow+"/"+r.occurrenceOf("", slow), 30*time.Second)
 		n.trace(operation, volume, "slow "+extra.String())
 		latency += extra
 	}

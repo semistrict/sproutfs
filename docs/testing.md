@@ -1122,7 +1122,12 @@ a runtime, as in every deployment, each returns false.
 activated once per run with probability 0.25, by a draw that depends only on
 the seed and the site's id. An activated site then fires with probability `p`
 on each call. So one seed explores a few faults deeply, and adding a site does
-not change which sites another seed activates. `sim.BuggifyDelay` makes the
+not change which sites another seed activates. A call's draw is keyed by its
+number among the site's calls. In a controlled run each task (`sim.WithTask`)
+numbers its own, so a task's firings do not depend on how other tasks' calls
+fell between its own, and a wake-up the scheduler missed cannot shift what a
+seed chose (`TestATasksBuggifyDrawsDoNotDependOnAnotherTasks`). Outside one, the
+calls are numbered in arrival order. `sim.BuggifyDelay` makes the
 same decision and then waits for a seeded time. Every site is off unless a
 campaign calls `Runtime.SetBuggify(true)` or passes `Config.Buggify`, which
 keeps the recording and replay comparisons byte-identical. The sites and the

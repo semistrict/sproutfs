@@ -203,3 +203,52 @@ func TestBugGuardsAreTheOnesTheEnvironmentNames(t *testing.T) {
 		t.Fatal("a guard the environment did not name answered yes")
 	}
 }
+
+// In a controlled run each task numbers its own calls of a site, so a task's
+// firings are the same whichever way other tasks' calls fell between its own:
+// a wake-up the scheduler missed, two tasks running at one instant, changes
+// nothing a seed chose. Outside one the identity has no effect.
+func TestATasksBuggifyDrawsDoNotDependOnAnotherTasks(t *testing.T) {
+	const site, calls = "vmmemory/evict-past-a-free-slot", 32
+	draws := func(wait bool, interleaved bool) map[string][]bool {
+		config := sim.Config{Seed: 1, Buggify: true}
+		if wait {
+			config.Wait = func(context.Context, string, time.Duration, time.Duration) error { return nil }
+		}
+		ctx := sim.WithRuntime(t.Context(), sim.New(config))
+		tasks := map[string]context.Context{"a": sim.WithTask(ctx, "a"), "b": sim.WithTask(ctx, "b")}
+		got := map[string][]bool{}
+		draw := func(name string) { got[name] = append(got[name], sim.Buggify(tasks[name], site, 0.5)) }
+		for i := range 2 * calls {
+			switch {
+			case interleaved:
+				draw([]string{"b", "a"}[i%2])
+			case i < calls:
+				draw("a")
+			default:
+				draw("b")
+			}
+		}
+		return got
+	}
+	apart, interleaved := draws(true, false), draws(true, true)
+	for _, name := range []string{"a", "b"} {
+		if !slices.Equal(apart[name], interleaved[name]) {
+			t.Fatalf("task %s drew %v when the tasks ran apart and %v when they interleaved", name, apart[name],
+				interleaved[name])
+		}
+		if !slices.Contains(apart[name], true) || !slices.Contains(apart[name], false) {
+			t.Fatalf("task %s drew %v, want both firings and misses at p=0.5", name, apart[name])
+		}
+	}
+	if slices.Equal(apart["a"], apart["b"]) {
+		t.Fatalf("both tasks drew %v: a task's draws must be its own, not a copy of another's", apart["a"])
+	}
+	// Without a scheduler the tasks share one count, in arrival order.
+	unscheduled := draws(false, false)
+	shared := draws(false, true)
+	if slices.Equal(unscheduled["a"], shared["a"]) {
+		t.Fatalf("without a scheduler task a drew %v both ways, want its draws to follow arrival order",
+			unscheduled["a"])
+	}
+}

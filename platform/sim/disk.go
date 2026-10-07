@@ -1167,7 +1167,7 @@ func (f *file) slowRead(ctx context.Context, id uint64) error {
 
 // chaosLocked reports whether one read chaos site fires for this read.
 func (f *file) chaosLocked(site string, p float64) bool {
-	return f.disk.config.ReadChaos && f.disk.runtime.buggify.Load() && f.disk.runtime.buggifySite(site, p)
+	return f.disk.config.ReadChaos && f.disk.runtime.buggifyHere(site, p)
 }
 
 // chaosOffsetLocked is where a read is served from: where it asked, or for a
