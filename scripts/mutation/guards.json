@@ -1128,7 +1128,7 @@
   {
     "id": "pager-filter-a-prefetch-unlocked",
     "package": "vmmemory",
-    "run": "^TestTwoForksFaultingOneWindowAtOncePrefetchItOnce$",
+    "run": "^(TestTwoForksFaultingOneWindowAtOncePrefetchItOnce|TestPrefetchSurvivesItsFaultsAndReachesItsProbes)$",
     "purpose": "Look for the reads under way before taking the host's lock to send a prefetch's requests, so another fork's prefetch of the same root sent in between is unseen and the requests meet: the pager panics."
   },
   {

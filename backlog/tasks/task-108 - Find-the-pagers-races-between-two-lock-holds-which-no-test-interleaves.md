@@ -1,9 +1,10 @@
 ---
 id: TASK-108
 title: 'Find the pager''s races between two lock holds, which no test interleaves'
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-10-07 19:19'
+updated_date: '2026-10-07 19:34'
 labels:
   - vmmemory
   - testing

@@ -384,6 +384,20 @@ func (p *plan) splitPrefetch(ctx context.Context, index uint64, into []*arenaFil
 	if prefetchSendSeam != nil {
 		prefetchSendSeam(p.start)
 	}
+	// In a controlled run another task may go on here, between the plan and
+	// the send: a fault of another region of the same root, say.
+	if err := sim.Admit(ctx, "vmmemory/prefetch-send"); err != nil {
+		for _, page := range pages {
+			back = append(back, page.at)
+		}
+		h.mu.Lock()
+		for _, at := range back {
+			h.putFree(at)
+		}
+		h.signal()
+		h.mu.Unlock()
+		return nil
+	}
 	h.mu.Lock()
 	defer func() {
 		for _, at := range back {
