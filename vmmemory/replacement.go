@@ -47,7 +47,9 @@ func (p *replacement) done() {
 	h.signal()
 	h.mu.Unlock()
 	// A page that left its object while it was replaced goes back now that
-	// nothing reads it.
+	// nothing reads it. It is given back with h.mu not held, but the mark
+	// was cleared under it, so no other caller gives it back, and a page in
+	// no object is one nothing finds to bind meanwhile.
 	for _, page := range dropped {
 		p.region.host.releaseFrame(page)
 	}

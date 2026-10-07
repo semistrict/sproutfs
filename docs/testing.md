@@ -1522,6 +1522,25 @@ across the host and one seed in ten missed the duplicate probe on some runs.
 `TestAPrefetchedPageAnotherLoadMadeResidentFirstIsDropped` reaches that probe
 on its own.
 
+**The pager's lock gaps.** The campaign lets a task go on only where it passes
+`sim.Admit`, so a race between two holds of a lock is found only if an
+admission point sits between them. TASK-105, a fault's READ landing between a
+prefetch's check of the reads under way and its send, was missed for want of
+one (`vmmemory/prefetch-send`). Since TASK-108 every place the pager lets a
+lock go and takes it again either says in a comment why nothing read under the
+first hold is relied on after it, or has a seam test that forces the bad order
+and a guard (`vmmemory/lockgap_*_test.go`). The gaps on fault, store, prefetch,
+eviction and give-back paths admit there: `fault-lookup`, `reserve-runs`,
+`run-read`, `supplied`, `populate-take`, `allocate-evict`, `reclaim-step`,
+`evict-remove`, `prefetch-land`, `prefetch-landing`, `dirty-wait`,
+`give-back-spilled`, `give-back-volume`, `give-back-victim`, `give-fork`,
+`fork-file`, `fork-copy` and `move`, all under `vmmemory/`. A path that must
+finish once begun admits without its cancellation (`admitGoingOn`:
+`give-back-share`, `unindex`, `rebind`). The campaign neither checkpoints nor
+forks, never fills the dirty budget, and captures only from its guest's own
+task, so it does not reach the fork, move, unindex, dirty-wait and refault
+gaps; their seam tests do.
+
 **The disk's stripes** mark five: a write that kept several indices of one
 envelope, a read that rebuilt an envelope from a parity stripe, a read that
 found fewer than k stripes, a read that found the page only under another code,

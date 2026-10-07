@@ -195,13 +195,13 @@ func (r *MemoryRegion) giveBackCopy(ctx context.Context, b *binding, origin, pag
 		r.requeueCold(b)
 		return false, r.liftProtection(ctx, index)
 	}
-	return true, r.shareOrigin(b, page, origin)
+	return true, r.shareOrigin(ctx, b, page, origin)
 }
 
 // shareOrigin makes the origin b's page again, now that the guest maps it:
 // b is clean, and the copy and the reservation it was admitted under go back.
 // Caller holds the page's window, the region shared and both pages.
-func (r *MemoryRegion) shareOrigin(b *binding, page, origin *zirconvm.VmPage) error {
+func (r *MemoryRegion) shareOrigin(ctx context.Context, b *binding, page, origin *zirconvm.VmPage) error {
 	h := r.host
 	ps := h.pageSize
 	// The pager hands a guest back an older page on purpose here, as the
@@ -213,6 +213,12 @@ func (r *MemoryRegion) shareOrigin(b *binding, page, origin *zirconvm.VmPage) er
 	r.host.unaliasLocked(b)
 	r.host.aliasLocked(b, origin)
 	h.mu.Unlock()
+	// What is held keeps out all that could change b or the copy before the
+	// copy goes back: a fault or a prefetch of the page needs the window, a
+	// seal or a detach the region, and an eviction, a move or another store
+	// either page. The copy is the region's own, which nothing else maps, so
+	// nothing can alias it again before releaseFrame looks.
+	admitGoingOn(ctx, "vmmemory/give-back-share")
 	if spill := r.endDirty(b); !spill.none() {
 		h.releaseSpill(spill)
 	}
@@ -252,9 +258,19 @@ func (r *MemoryRegion) giveBackSpilled(ctx context.Context, b *binding, origin *
 	if found := h.probe.resharedSpilled(ctx, h, b, buffers.second, frameOf(origin)); found != "" {
 		panic(found)
 	}
+	// What was compared stands until b is the origin's: b names no page
+	// (giveBack looked under the window), and only a fault of the page binds
+	// one, which the window keeps out; its spill goes only with a seal, a
+	// retire or a detach, which the region keeps out; and the origin's bytes
+	// and slot only with an eviction or a move of it, which its lock keeps
+	// out.
+	if err := sim.Admit(ctx, "vmmemory/give-back-spilled"); err != nil {
+		return false, err
+	}
 	h.mu.Lock()
 	r.host.aliasLocked(b, origin)
 	h.mu.Unlock()
+	// The same locks keep b's dirty state as it was until endDirty ends it.
 	if spill := r.endDirty(b); !spill.none() {
 		h.releaseSpill(spill)
 	}
@@ -290,6 +306,13 @@ func (r *MemoryRegion) giveBackToVolume(ctx context.Context, b *binding, buffers
 		}
 		return false, err
 	}
+	// The copy's bytes cannot change from the comparison to its drop: the
+	// guest maps it no more, and a fault that would map it again waits for
+	// the window. An eviction may spill it meanwhile, which moves the same
+	// bytes, and lockedPage and endDirty below find whichever holds them.
+	if err := sim.Admit(ctx, "vmmemory/give-back-volume"); err != nil {
+		return false, err
+	}
 	page, err := r.host.lockedPage(ctx, b)
 	if err != nil {
 		return false, err
@@ -298,6 +321,8 @@ func (r *MemoryRegion) giveBackToVolume(ctx context.Context, b *binding, buffers
 		h.mu.Lock()
 		r.host.unaliasLocked(b)
 		h.mu.Unlock()
+		// The copy's lock is held until it has gone back, and it is the
+		// region's own, which nothing else maps.
 		r.layer.RemovePage(b.index*ps, page)
 		r.host.releaseFrame(page)
 		r.host.unlockPage(page)
@@ -331,7 +356,19 @@ func (h *Host) giveBackVictim(ctx context.Context, page *zirconvm.VmPage) (bool,
 		return false, nil
 	}
 	r := b.region
-	if !r.isCold(b) || h.clock.Since(r.coldSince(b)) < coldCopyAge || !r.live.TryRLock() {
+	if !r.isCold(b) || h.clock.Since(r.coldSince(b)) < coldCopyAge {
+		return false, nil
+	}
+	// Until the region is held, a seal may join a checkpoint's copy to the
+	// page and take b's dirty state, or a fault may bind b another page, so
+	// what this looked at is looked at again once each lock is taken: b being
+	// cold under the region, b's page under h.mu, and the origin under its
+	// lock (comparable). The caller holds the page's lock, so nothing but a
+	// seal adds an alias to it, and a seal leaves b not cold.
+	if err := sim.Admit(ctx, "vmmemory/give-back-victim"); err != nil {
+		return false, err
+	}
+	if !r.live.TryRLock() {
 		return false, nil
 	}
 	defer r.live.RUnlock()
