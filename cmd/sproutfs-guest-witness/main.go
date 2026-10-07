@@ -43,6 +43,10 @@
 //	witness kvm controls
 //	    say whether this guest is offered the three VMX controls that make the
 //	    host's KVM write the guest's memory behind the host page tables.
+//	witness flush --dir /var/flush --threads 8 --seconds 10s [--no-sync]
+//	    measure what a flush costs: each thread writes 4 KiB into a file of
+//	    its own and flushes it, and the command prints the writes, their rate
+//	    and their latency as JSON. See flush.go.
 //
 // The pattern is a pure function of the seed, the step and the page, so the
 // expectation lives in the script that drives the soak and not in the guest:
@@ -82,6 +86,7 @@ const usage = `sproutfs-guest-witness says whether a guest's memory and disk are
   witness kvm loop [--file PATH] [--log PATH]
   witness kvm count [--file PATH]
   witness kvm controls
+  witness flush --dir DIR [--threads 1] [--block 4096] [--file 4M] [--seconds 10s] [--no-sync]
   witness version
 
 The pattern is a pure function of (seed, step, page), so what a guest must hold
@@ -155,6 +160,10 @@ func run(args []string) error {
 	// l2.go.
 	if command == "kvm" {
 		return kvm(rest)
+	}
+	// So is the flush measurement; see flush.go.
+	if command == "flush" {
+		return flush(rest)
 	}
 	parsed, err := parse(rest)
 	if err != nil {
