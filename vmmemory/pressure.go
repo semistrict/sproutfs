@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+
+	"github.com/semistrict/sproutfs/platform/sim"
 )
 
 // highWater is the dirty occupancy at which a store asks for a checkpoint
@@ -69,6 +71,15 @@ func (h *Host) takeSpill(ctx context.Context, r *MemoryRegion) (reservation, err
 			}
 		}
 		h.mu.Unlock()
+		// What this attempt found may be out of date from here: a checkpoint
+		// may land, or another store take what one gave back. The store waits
+		// on the signal it took before it looked, so whatever came back since
+		// wakes it at once, and it stops nobody for a budget that has room
+		// again (below). The hold after only counts. In a controlled run
+		// another store or a checkpoint may go on here.
+		if err := sim.Admit(ctx, "vmmemory/dirty-wait"); err != nil {
+			return noReservation, err
+		}
 		if !over && !h.relief() {
 			// Nothing will relieve the budget as it stands now, but a checkpoint
 			// that ended after the take above gave its reservations back before
@@ -131,6 +142,12 @@ func (h *Host) relief() bool {
 	stopping := slices.ContainsFunc(attached, func(r *MemoryRegion) bool { return r.stopping })
 	request := h.pressure.Checkpoint
 	h.mu.Unlock()
+	// What was read under that hold is acted on without it, since the
+	// callback must not run under h.mu. It may be out of date: a region
+	// attached since is not asked about, one detached since declines, and
+	// one sealed since answers as relieving below. The answer is a hint the
+	// store acts on only after looking at the host's signal (takeSpill),
+	// and the hold at the end only counts.
 	if stopping {
 		return true
 	}
@@ -240,6 +257,11 @@ func (h *Host) stop(r *MemoryRegion, cause error) bool {
 	if stopping {
 		return true
 	}
+	// Two stores may both find r not stopping here and both ask: the owner
+	// stops a VM once and says yes to both, and stopping is looked at again
+	// under the hold below, so it is set and counted once. An owner that
+	// cleared its callbacks after the look is still asked, and declines for
+	// a VM it no longer runs.
 	if stop == nil || !stop(r, cause) {
 		return false
 	}

@@ -377,7 +377,10 @@ There are four kinds of file:
   receive the file read-only, as file 3 or up, just before they first map from
   it. The parent keeps its page. When the seal ends, the children's mappings of
   the copies are revoked, each child is sent DROP_FILE, and the file goes back
-  to the arena.
+  to the arena. A copy joins its point's copies before it takes the lent
+  page's place, and only while the point still lends: one whose seal ended
+  meanwhile goes back, and the child reads its own volume. No fork file is made
+  for a point whose seal has ended.
 
 Each file is a memfd of the pager's kind, with mode 0600. A read-only file is
 sent as a new open of the memfd with `O_RDONLY`, so the kernel refuses a VMM a
@@ -424,7 +427,10 @@ a GCE run of first inheritance at 2 MiB recorded 403 copies for 428 moves
 holds the page's lock, which every path of the owner that maps or resolves that
 page also holds, and the owner maps the page read-only, so no store is in flight
 into it. Where the owner's client refuses the MAP for want of mapping budget,
-the move revokes the mapping instead.
+the move revokes the mapping instead. A page that leaves its root while its owner
+still maps it goes back into the owner's layer, and keeps the owner's detach
+out from the look at its mapping until it is there. A page whose owner is
+detaching is taken from its regions and freed instead.
 
 A move that finds no free slot of the shared file does not wait: the page stops
 being named by its identity, and the region that wanted it reads its volume.
@@ -536,6 +542,8 @@ from costing a fault:
   cluster for one asks no second request after the delay, never reads the store
   as a hedge, and is left out of the delay estimate.
 - A detach cancels its memory region's prefetches and waits for them to end.
+- A fault that waits on a prefetch whose supply already answered the page's
+  request waits on nothing: its own request is answered at once.
 
 A post-copy stream's faults read their whole run at once (`vmmemory.WithStream`).
 
@@ -1328,6 +1336,22 @@ chance of that by luck is about 1 in 70,000. The panic is rarer than the grant
 (about 1 lane in 50 there, 1 in 8 on an eight-core machine), and 0 of 150 lanes
 panicked after.
 
+### A run read decides again after its reclaim
+
+A run read can give the region up in its reclaim, between locating its window
+and taking the window's pages. A checkpoint that publishes and retires there
+names a page the guest stored into anew, so the window's old name for it is its
+parent's. The plan records which pages the region held nothing at when it
+located the window (`plan.free`), and takes only those by their located names.
+`TestARunReadTakesNoPageByANameAPublicationReplaced` runs the checkpoint inside
+the reclaim; before the fix the guest read its parent's byte after its own
+store.
+
+A plan that holds a page of the region's own layer reads nothing more: it would
+give the region up for the read with that page's lock held, and a retire that
+holds the region waits for the lock. The rest of its run is left to its own
+faults (`TestARunReadHoldingItsRegionsOwnPageLetsARetireRun`).
+
 ## Ownership
 
 The Go pager owns:
@@ -1841,6 +1865,11 @@ pager and the checkpoint cache take them before they wait. A memory region that
 finds no free extent gives up the idle pages of an extent whose memory region has
 gone. `DropIdle` gives up all idle pages at once. `Stats.IdlePages` is the number
 of idle pages, and `Stats.IdleDrops` the number given up.
+
+An idle page chosen under the host's lock is looked at again under its own
+lock before it is given up (`evictIfIdle`): a settle may hand it back to a
+region in between, and an eviction's look ages a mapped page as readily as an
+idle one.
 
 ## Eviction ordering
 
