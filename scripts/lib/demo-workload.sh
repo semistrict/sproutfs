@@ -255,15 +255,21 @@ phase_start boot
 phase_end
 
 # --- fork the base ----------------------------------------------------------
-step "fork $base $forks_base times"
-table=$(ctl fork "$base" --count "$forks_base")
-printf '%s\n' "$table"
-mapfile -t workers < <(printf '%s\n' "$table" | awk 'NR > 1 { print $1 }')
-((${#workers[@]} == forks_base)) || fail "asked for $forks_base forks and got ${#workers[@]}"
-for vm in "${workers[@]}"; do
-    agent_ready "$vm" || fail "the agent in the fork $vm never answered"
-done
-root_each "${workers[@]}"
+# FORKS_BASE=0 forks nothing and runs every phase in the base VM, which is what
+# a host whose RAM arena holds one workload guest and no fork of it can run.
+if ((forks_base == 0)); then
+    workers=("$base")
+else
+    step "fork $base $forks_base times"
+    table=$(ctl fork "$base" --count "$forks_base")
+    printf '%s\n' "$table"
+    mapfile -t workers < <(printf '%s\n' "$table" | awk 'NR > 1 { print $1 }')
+    ((${#workers[@]} == forks_base)) || fail "asked for $forks_base forks and got ${#workers[@]}"
+    for vm in "${workers[@]}"; do
+        agent_ready "$vm" || fail "the agent in the fork $vm never answered"
+    done
+    root_each "${workers[@]}"
+fi
 
 # Every fork lands on its parent's host, and every fork of a fork lands on that
 # one's, so left alone the whole run piles onto the host the base was created
