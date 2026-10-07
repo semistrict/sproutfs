@@ -465,11 +465,15 @@ the point retires. The pager enters these pages in the sharing index, so a child
 on the parent's host maps them like any inherited page, in the eager restore
 population before its vCPUs run. They stay the parent's private dirty state:
 nothing is copied or made durable, the parent still copies on write and owns
-their reservations, and the name lasts as long as the seal. A published
-checkpoint replaces the name with the identity the volume then reports. A
-retired fork point hands the page back to the guest as dirty state it may store
-into in place, so the retire takes the page from any memory region still sharing
-it.
+their reservations, and the name lasts no longer than the page is the seal's.
+A published checkpoint replaces the name with the identity the volume then
+reports. A retired fork point hands the page back to the guest as dirty state it
+may store into in place, so the retire takes the page from any memory region
+still sharing it. A retire, an unseal and a detach take each page's name away
+under that page's lock as the page leaves (`unlend`), so no child maps a page
+past its checkpoint or reads the parent's later stores. At the seal's end the
+point's root becomes an ordinary root of its name: pages a child read under the
+name and still maps stay in it. A share after the seal's end lends nothing.
 
 A resident page is one store page, and one identity covers it whole. A page with
 no published bytes, such as a migration destination's copy of the source's
