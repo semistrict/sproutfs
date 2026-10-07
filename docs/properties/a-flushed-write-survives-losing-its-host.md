@@ -16,5 +16,13 @@ every answered entry through injected write, sync and power faults.
 host, which reads the first host's journal, fences it, and finds the flushed
 byte. `MCCapture` and `MCTakeover` in `spec/journal` check `NoLostFlush` under
 seals, failed batches, migrations, recoveries and fenced hosts that keep
-running. No simulation test yet kills a host right after a flush and recovers
-its VM through the orchestrator, and no GCE run has measured it.
+running. The simulation kills a host right after a flush, between the sync
+and the answer, during a seal's upload, during a post-copy and during a
+scale-down, and the recovered VM holds every flushed block
+(`internal/simtest/journals_test.go`); `TestJournalsSurviveTheirFaultsAndReachTheirProbes`
+runs the same check through every fault site. On GCE a VM whose node was
+powered off after a flush ran again on another node, 86.5 s later, with the
+flushed block intact (docs/measurements/gce-fsync-journal-2026-10-07.md). Two
+faults the shards model found are still open: a disk marked empty can be
+deleted with an entry written after the mark, and a controller can add back a
+disk another deleted.

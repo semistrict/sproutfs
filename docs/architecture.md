@@ -305,9 +305,10 @@ integration is qualified on Linux aarch64 with real KVM in the
 [documented test environment](vm-memory.md#qualification), and the pager's
 2 MiB HugeTLB mode on x86_64. Other environments, and production workload and
 scale, are not qualified. The recorded workload run is partial. No production
-deployment is recorded. Durable flush is implemented and covered by package
-tests and TLA+ models, but no simulation campaign kills a host after a flush
-yet, and it has not been measured on GCE. Not implemented:
+deployment is recorded. Durable flush is implemented, covered by package
+tests, TLA+ models and a simulation campaign that kills hosts after flushes,
+and measured on GCE (docs/measurements/gce-fsync-journal-2026-10-07.md). Not
+implemented:
 
 - collection, which releases pins and sweeps what deleted VMs left pinned;
 - compatibility and migration paths for legacy data.

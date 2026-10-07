@@ -78,7 +78,7 @@ func TestEachHostServesTheJournalDiskMadeForItsMachine(t *testing.T) {
 			}
 			// A shard pass here opens every cache disk assigned to this host,
 			// and a journal disk must not be one.
-			h.host.SettleShards(c.ctx)
+			h.host.SettleDisks(c.ctx)
 			self, _ = h.host.Member()
 			opened := 0
 			for _, held := range self.Disks {
