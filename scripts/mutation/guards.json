@@ -1328,5 +1328,11 @@
     "package": "vmmemory",
     "run": "^TestAStoreThatLosesItsReadTenTimesRunningStillStores$",
     "purpose": "Count a store's lost read of the page it copies as one of a fault's eight decisions whether it needs a page of its own, so a store that loses it eight times running to other forks reading the same page ends its guest's session with ErrContended."
+  },
+  {
+    "id": "pager-look-at-a-sent-prefetch-request-unlocked",
+    "package": "vmmemory",
+    "run": "^TestAPrefetchWhoseRequestASupplyCompletesAtOnceReadsItsRun$",
+    "purpose": "Look at a prefetch's request after the source let it go, so a supply of its pages by another region's fault that completes it in between makes the prefetch panic that it met another read, or fail the provider's assertion."
   }
 ]

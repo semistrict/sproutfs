@@ -447,7 +447,7 @@ func (p *plan) splitPrefetch(ctx context.Context, index uint64, into []*arenaFil
 		prefetchCheckedSeam(p.start)
 	}
 	pf := &prefetch{region: r, start: p.start, end: p.end, pages: kept, reading: true, holding: true}
-	pf.sendLocked()
+	pf.sendLocked(ctx)
 	pf.ctx = sim.WithTask(context.WithoutCancel(ctx), fmt.Sprintf("prefetch-%d", p.start))
 	pf.ctx, pf.cancel = context.WithCancelCause(checkpoint.WithPrefetch(pf.ctx))
 	r.host.prefetches[pf] = struct{}{}
@@ -460,7 +460,13 @@ func (p *plan) splitPrefetch(ctx context.Context, index uint64, into []*arenaFil
 
 // sendLocked sends the prefetch's READ requests, one to the root of each run
 // of its pages in one root. Caller holds h.mu.
-func (pf *prefetch) sendLocked() {
+//
+// Every READ of a root is sent under h.mu, so each of these meets no other
+// read. What the source did with it is read as it is sent: a fault of another
+// region of the root may supply the same pages under the root's lock alone,
+// and complete the request the moment the source lets it go. A request
+// completed early is harmless; it is answered again when the prefetch ends.
+func (pf *prefetch) sendLocked(ctx context.Context) {
 	h := pf.region.host
 	ps := h.pageSize
 	for at := 0; at < len(pf.pages); {
@@ -473,13 +479,35 @@ func (pf *prefetch) sendLocked() {
 		}
 		root := h.rootLocked(key)
 		request := h.newRequest()
-		_ = root.reads.source.GetPages(first.key.id.Page*ps, uint64(run)*ps, request)
-		if !root.reads.proxy.Holds(request) || zirconvm.RequestLen(request) != uint64(run)*ps {
+		var sent bool
+		var sentLen uint64
+		if sim.Bug(ctx, "pager-look-at-a-sent-prefetch-request-unlocked") {
+			_ = root.reads.source.GetPages(first.key.id.Page*ps, uint64(run)*ps, request)
+			pf.sent(root, first.key.id.Page*ps, uint64(run)*ps)
+			sent, sentLen = root.reads.proxy.Holds(request), zirconvm.RequestLen(request)
+		} else {
+			sent, sentLen, _ = root.reads.source.SendPages(first.key.id.Page*ps, uint64(run)*ps, request)
+			pf.sent(root, first.key.id.Page*ps, uint64(run)*ps)
+		}
+		if !sent || sentLen != uint64(run)*ps {
 			panic("vmmemory: a prefetch's request met another")
 		}
 		pf.requests = append(pf.requests, prefetchRequest{root: root, request: request,
 			offset: first.key.id.Page * ps, length: uint64(run) * ps})
 		at += run
+	}
+}
+
+// prefetchSentSeam runs in sendLocked once a request is sent, with h.mu held,
+// and is handed what a supply of its pages by another region does: answer it
+// under the root's lock alone. Production leaves it nil.
+var prefetchSentSeam func(supply func())
+
+// sent runs prefetchSentSeam for the request of [offset, offset+length) of
+// root.
+func (pf *prefetch) sent(root *identityRoot, offset, length uint64) {
+	if prefetchSentSeam != nil {
+		prefetchSentSeam(func() { root.reads.source.OnPagesSupplied(offset, length) })
 	}
 }
 

@@ -74,12 +74,12 @@ type sentRead struct {
 func (r *MemoryRegion) sendRead(first, count uint64) sentRead {
 	h := r.host
 	read := sentRead{request: h.newRequest(), offset: first * h.pageSize, length: count * h.pageSize}
-	if err := r.reads.source.GetPages(read.offset, read.length, read.request); err != zirconvm.ErrShouldWait {
+	sent, sentLen, err := r.reads.source.SendPages(read.offset, read.length, read.request)
+	if err != zirconvm.ErrShouldWait {
 		panic("vmmemory: a fault's read request was refused: " + err.Error())
 	}
-	// RequestLen holds the request to having been sent, and the length says
-	// nothing cut it short.
-	if zirconvm.RequestLen(read.request) != read.length {
+	// The request was sent, and the length says nothing cut it short.
+	if !sent || sentLen != read.length {
 		panic("vmmemory: a fault's read request met another read of its memory region's pages")
 	}
 	return read

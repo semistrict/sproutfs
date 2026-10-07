@@ -590,7 +590,10 @@ There are two kinds of source:
   root's source, under the host's lock: a fault's lookup goes down into a root
   only while the root, under its own lock, still holds the page (`Holds`), and
   otherwise asks the region's own source. A prefetch's look at the reads under
-  way and its send are one hold, so no request meets another.
+  way and its send are one hold, so no request meets another. What the source
+  did with a request is read as it is sent, under the source's lock
+  (`PageSource.SendPages`): another region's fault supplies pages under the
+  root's lock alone, and may complete the request the moment that lock goes.
 - **A memory region's own.** A fault's own reads go there: the faulting page's
   read, a page read alone, a run, and a store's read of the page it copies. Only
   the faults of one window read its pages, one at a time, so these requests

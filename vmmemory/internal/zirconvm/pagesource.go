@@ -177,6 +177,29 @@ func (s *PageSource) GetPages(offset, length uint64, request *PageRequest) error
 	return s.populateRequest(request, offset, length, ReadRequest)
 }
 
+// SendPages is GetPages reporting, as the source's lock held them, whether
+// the request went to the provider and how much of the range it asks for.
+//
+// Departure: Zircon's caller waits on its request and never looks at it. Here
+// the caller answers a request it sent itself, and asks what it sent. It cannot
+// ask after: once the lock goes, a supply of the range may complete the
+// request, and its state is no longer the caller's to read.
+func (s *PageSource) SendPages(offset, length uint64, request *PageRequest) (sent bool, sentLen uint64, err error) {
+	assert(request != nil, "there is a request")
+	assert(length > 0, "the range is not empty")
+	if !s.SupportsPageRequestType(ReadRequest) {
+		return false, 0, ErrNotSupported
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.detached {
+		return false, 0, ErrBadState
+	}
+	assert(!request.isInitialized(), "the request is not in use")
+	err = s.populateRequestLocked(request, offset, length, ReadRequest)
+	return request.providerOwned, request.len, err
+}
+
 // RequestDirtyTransition asks for [offset, offset+len) to be made dirty and
 // returns ErrShouldWait with request to wait on.
 func (s *PageSource) RequestDirtyTransition(request *PageRequest, offset, length uint64) error {
