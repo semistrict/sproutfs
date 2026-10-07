@@ -252,7 +252,7 @@ epoch.
 A volume write applies to an in-memory overlay and returns without contacting
 object storage. Creation, opening, checkpoint publication and selection,
 deletion, and cold page reads pay object-storage latency. Nothing on the
-guest's write path does. A guest flush is durable only within the flush bound
+guest's write path does. A guest flush is durable within the flush bound plus one interval
 ([architecture](architecture.md#loss-model)). Checkpoints
 run on the interval and on request. The only thing a volume can verify
 synchronously is that this handle still owns its VM. Checkpoints need not be
