@@ -354,6 +354,48 @@ func TestAReadFencesTheVMAndWaitsForTheBatchInFlight(t *testing.T) {
 	})
 }
 
+// Oldest names the VMs holding a live entry within some bytes of the tail,
+// the oldest first. Trimming a VM whose entries come after another's frees no
+// room: the tail stays at the other's, which Oldest still names.
+func TestOldestNamesTheVMsHoldingTheTail(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		runtime := sim.New(sim.Config{})
+		ctx := sim.WithRuntime(t.Context(), runtime)
+		const ring = 64 << 10
+		_, handle := device(t, ctx, runtime, ring, sim.DiskConfig{})
+		j := open(t, ctx, handle(), Lease{Assigned: 1, Member: memberA})
+		var positions []uint64
+		for i, vm := range []string{"vm-b", "vm-a", "vm-a", "vm-c"} {
+			positions = append(positions,
+				mustCommit(t, ctx, j, entryOf(vm, 1, byte(i+1), uint64(2*i), uint64(2*i+1)))...)
+		}
+		for _, check := range []struct {
+			bytes int64
+			want  []string
+		}{
+			{1, []string{"vm-b"}},
+			{int64(positions[2]-positions[0]) + 1, []string{"vm-b", "vm-a"}},
+			{ring, []string{"vm-b", "vm-a", "vm-c"}},
+		} {
+			if got := j.Oldest(check.bytes); !slices.Equal(got, check.want) {
+				t.Fatalf("the VMs within %d bytes of the tail are %v, want %v", check.bytes, got, check.want)
+			}
+		}
+		used := j.Usage().Used
+		j.Trim("vm-a", nil)
+		if got := j.Usage().Used; got != used {
+			t.Fatalf("trimming the entries after the tail left %d bytes used, want the %d before", got, used)
+		}
+		if got, want := j.Oldest(ring), []string{"vm-b", "vm-c"}; !slices.Equal(got, want) {
+			t.Fatalf("after vm-a's trim the VMs on the ring are %v, want %v", got, want)
+		}
+		j.Trim("vm-b", nil)
+		if got, want := j.Oldest(1), []string{"vm-c"}; !slices.Equal(got, want) {
+			t.Fatalf("after vm-b's trim the VM at the tail is %v, want %v", got, want)
+		}
+	})
+}
+
 // Trimming by covered positions frees the ring. A commit the ring has no room
 // for waits, and goes on once a trim has moved the tail and the tail hint has
 // reached the header. An entry that would cross the ring's end goes after a

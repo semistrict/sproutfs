@@ -599,7 +599,7 @@ func (h *Host) trimJournal(ctx context.Context, j *journal.Journal) {
 
 // A full ring is back-pressure, never a failure. Past three quarters of it the
 // host asks for checkpoints out of the interval's turn, of the VMs holding
-// the most first, since a selection trims what it covers. No VM may hold more
+// the oldest entries, since a selection trims what it covers. No VM may hold more
 // than half the ring: a flush of one past that waits for the VM's own
 // checkpoint. A ring with no room left holds every commit until trimming
 // frees some, which the journal does itself.
@@ -640,11 +640,13 @@ func (h *Host) underHalfRing(ctx context.Context, j *journal.Journal, vmID strin
 	}
 }
 
-// relieveRing asks for checkpoints of the VMs holding the most of j once it
-// is three quarters full with room more, until what they hold would bring it
-// under half; and once a commit of room has no room on it, until what they
-// hold would make that room. A commit needs room for the pad before its
-// entries too, so the half the first leaves may not be enough.
+// relieveRing asks for checkpoints out of turn once j is three quarters full
+// with room more, until it would be under half, and once a commit of room has
+// no room on it, until it would have: a commit needs room for the pad before
+// its entries too, so the half the first leaves may not be enough. Only the
+// tail moving frees room, so it asks every VM it runs that holds an entry
+// within what is needed of the tail, the oldest first. A VM that runs
+// elsewhere is trimmed once its record names this journal no more.
 func (h *Host) relieveRing(j *journal.Journal, room int64) {
 	usage := j.Usage()
 	need := j.Shortfall(room)
@@ -658,22 +660,12 @@ func (h *Host) relieveRing(j *journal.Journal, room int64) {
 	if need <= 0 {
 		return
 	}
-	byVM := make(map[string]int64)
-	for _, held := range j.Held() {
-		byVM[held.VM] += held.Bytes
-	}
-	vms := slices.Sorted(maps.Keys(byVM))
-	slices.SortStableFunc(vms, func(a, b string) int { return int(byVM[b] - byVM[a]) })
-	for _, vmID := range vms {
-		if need <= 0 {
-			return
-		}
+	for _, vmID := range j.Oldest(need) {
 		h.machines.mu.Lock()
 		entry := h.machines.running[vmID]
 		h.machines.mu.Unlock()
 		if entry != nil {
 			h.askCheckpoint(entry)
-			need -= byVM[vmID]
 		}
 	}
 }

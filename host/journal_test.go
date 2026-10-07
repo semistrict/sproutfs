@@ -38,6 +38,8 @@ type journalHostOf struct {
 	// source is the journal a migration's source named, for a VM that
 	// arrived here.
 	source control.Journal
+	// pagers is the first host's, which another VM there maps through.
+	pagers *hostPagers
 }
 
 func journalHost(t *testing.T) *journalHostOf { return journalHostRing(t, journalRing) }
@@ -146,7 +148,8 @@ func journalHostsOf(t *testing.T, ring int64, count int, arrived bool) *journalH
 	if err := h.hosts[0].AddMachineWith("vm-1", guest, host.MachineTerms{PostCopy: arrived}); err != nil {
 		t.Fatal(err)
 	}
-	return &journalHostOf{h: h, clock: clock, vm: vm, guest: guest, j: j, disk: disk, source: source}
+	return &journalHostOf{h: h, clock: clock, vm: vm, guest: guest, j: j, disk: disk, source: source,
+		pagers: pagers}
 }
 
 // checkpoint takes and selects a checkpoint of vm-1 with its VMM state,
@@ -161,6 +164,32 @@ func (s *journalHostOf) checkpoint(t *testing.T) {
 	if err := ckpt.Wait(t.Context()); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// another runs a second VM, vm-2, on the first host beside vm-1, and takes a
+// checkpoint of it, which names the journal.
+func (s *journalHostOf) another(t *testing.T) (*volume.VM, *machine) {
+	t.Helper()
+	vm, err := s.h.hosts[0].Volumes().Create(t.Context(), "vm-2", mixedVolumes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	guest, err := newMachine(t, s.pagers, vm, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.h.hosts[0].AddMachine("vm-2", guest); err != nil {
+		t.Fatal(err)
+	}
+	ckpt, err := host.Capture(sim.WithRuntime(t.Context(), s.h.runtime), vm, guest, s.clock,
+		volume.Terms{Cover: s.h.hosts[0].JournalCover("vm-2")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ckpt.Wait(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	return vm, guest
 }
 
 // held is what the journal holds of vm-1: its live entries' count and the
@@ -346,6 +375,45 @@ func TestAFlushTheRingHasNoRoomForAsksForTheCheckpointThatFreesIt(t *testing.T) 
 	}
 	if got := s.h.runtime.Probes()[host.ProbeJournalNoRoom]; got == 0 {
 		t.Fatal("the flush the ring had no room for never asked for room")
+	}
+}
+
+// Only the tail moving frees room on the ring. A VM whose entry is the oldest
+// is asked for its checkpoint when a commit needs room, though another holds
+// more: trimming the other's newer entries would free nothing.
+func TestAFlushTheRingHasNoRoomForAsksTheVMHoldingTheOldestEntry(t *testing.T) {
+	blocks := func(bytes int64) int64 {
+		return (bytes + journal.BlockBytes - 1) / journal.BlockBytes * journal.BlockBytes
+	}
+	page := host.RoomFor("vm-1", "disk", int(checkpoint.PageSize2MiB/journal.BlockBytes))
+	// Three pages' entries, and the ring has no room for a fourth's beside
+	// them; vm-1's two are under half of it.
+	ring := blocks(9 * blocks(page) / 2)
+	s := journalHostRing(t, ring)
+	vm2, guest2 := s.another(t)
+	guest2.store("disk", 0, 9)
+	if err := <-flush(guest2); err != nil {
+		t.Fatal(err)
+	}
+	for page, value := range []byte{1, 2} {
+		s.guest.store("disk", uint64(page), value)
+		if err := <-flush(s.guest); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if short := s.j.Shortfall(page); short == 0 {
+		t.Fatalf("a page fits on a ring of %d holding %d bytes", ring, s.j.Usage().Used)
+	}
+	if held := s.held(); held.Bytes*2 > ring {
+		t.Fatalf("vm-1 holds %d bytes of a ring of %d, more than half", held.Bytes, ring)
+	}
+	before := vm2.Status().Checkpoint
+	s.guest.store("disk", 2, 3)
+	if err := <-flush(s.guest); err != nil {
+		t.Fatalf("the flush the ring had no room for: %v", err)
+	}
+	if after := vm2.Status().Checkpoint; after == before {
+		t.Fatal("the flush the ring had no room for was answered with no checkpoint of the VM holding the oldest entry")
 	}
 }
 

@@ -514,6 +514,25 @@ func (j *Journal) Usage() Usage {
 	return Usage{Ring: j.ringLength, Used: int64(j.next - j.tail), Next: int64(j.next)}
 }
 
+// Oldest is the VMs holding a live entry within bytes of the tail, the one
+// holding the oldest first. Only the tail moving frees room on the ring, so
+// freeing that much takes every one of those entries trimmed.
+func (j *Journal) Oldest(bytes int64) []string {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	end := j.tail + uint64(max(bytes, 0))
+	var vms []string
+	for _, e := range j.live {
+		if e.position >= end {
+			break
+		}
+		if !e.dead && !slices.Contains(vms, e.vm) {
+			vms = append(vms, e.vm)
+		}
+	}
+	return vms
+}
+
 // Shortfall is how many bytes of live entries trimming has to free before a
 // commit of room fits on the ring by itself: zero once it fits. A commit needs
 // room for its entries and for the pad that keeps them from wrapping, which
