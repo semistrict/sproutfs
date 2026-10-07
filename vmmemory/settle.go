@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/vmmemory/internal/zirconvm"
 )
 
@@ -101,6 +102,17 @@ func (c *MemoryRegionCheckpoint) Settle(ctx context.Context) (int, error) {
 		h.stats.UnmeasuredPages += unmeasured.Load()
 		h.mu.Unlock()
 	}
+	// What the comparison decided is acted on under later holds, with the
+	// region held exclusively. Meanwhile an origin may be evicted or stop
+	// being its identity's page, a copy may be spilled, and the guest may copy
+	// away from the checkpoint's copy; reshareBatch looks at each of those
+	// again under the hold it acts in. The bytes compared cannot change: a
+	// root's page is immutable, and a checkpoint's copy is write-protected
+	// from its seal to its end. In a controlled run another task may go on
+	// here, between the comparison and its application.
+	if err := sim.Admit(ctx, "vmmemory/settle-reshare"); err != nil {
+		return 0, err
+	}
 	if err := r.reshare(ctx, c, copies, equal, dropped); err != nil {
 		failures = append(failures, err)
 	}
@@ -112,6 +124,7 @@ func (c *MemoryRegionCheckpoint) Settle(ctx context.Context) (int, error) {
 	}
 	if unchanged > 0 {
 		c.forgetCopies(dropped)
+		// The stats and the signal share nothing with the hold before reshare.
 		h.mu.Lock()
 		h.stats.UnchangedPages += uint64(unchanged)
 		h.signal()
@@ -332,6 +345,10 @@ func (r *MemoryRegion) dropCopy(ctx context.Context, held *binding, page, origin
 	if r.layer.RemovePage(held.index*ps, page) {
 		r.host.releaseFrame(page)
 	}
+	// Nothing changed held while bindingsMu was given up: what changes a
+	// checkpoint's copy is a fault, a seal, a capture or a retire, which the
+	// exclusive region keeps out, or an eviction of its page, which the page's
+	// lock keeps out. The publication reads the copies only after the settle.
 	r.bindingsMu.Lock()
 	spill := held.spill
 	held.spill, held.dirty, held.origin = noReservation, false, nil
