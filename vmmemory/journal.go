@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"fmt"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -397,7 +398,11 @@ func (r *MemoryRegion) readCaptured(ctx context.Context, pages []uint64) ([]page
 				if i >= len(pages) {
 					return
 				}
-				reads[i], failures[i] = r.readForCapture(ctx, pages[i])
+				// The workers go on beside each other, so each page's read is
+				// a task of its own: what a controlled run admits it as is the
+				// page's, never the order the workers reach it in.
+				read := sim.WithTask(ctx, fmt.Sprintf("capture-read-%d", pages[i]))
+				reads[i], failures[i] = r.readForCapture(read, pages[i])
 			}
 		})
 	}

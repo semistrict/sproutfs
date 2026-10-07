@@ -544,11 +544,36 @@ func (r *MemoryRegion) installedUnpublished(offset uint64, installed []bool) {
 // uploading, so the guest keeps faulting and storing for the whole of that
 // upload.
 func (r *MemoryRegion) lockPageAccess(ctx context.Context, index uint64, write bool) error {
-	if err := r.mu.RLock(ctx); err != nil {
+	if err := lockAdmitted(ctx, "vmmemory/region", r.mu.TryRLock, r.mu.RLock, r.mu.RUnlock); err != nil {
 		return err
 	}
 	if err := r.ready(); err != nil {
 		r.mu.RUnlock()
+		return err
+	}
+	return nil
+}
+
+// lockAdmitted takes a lock, at once where try takes it and otherwise by
+// lock, which waits. A caller that waited was woken by whoever gave the lock
+// up, outside any turn of a controlled run, and that one goes on beside it:
+// the caller then goes on only when the run chooses, as resource, so the two
+// never race for what comes next (a free slot, a page's lock, a
+// fault-injection site's next draw) in an order no seed decides. Where the
+// run cancels it instead, the lock is given back.
+func lockAdmitted(ctx context.Context, resource string, try func() bool, lock func(context.Context) error,
+	unlock func()) error {
+	if err := context.Cause(ctx); err != nil {
+		return err
+	}
+	if try() {
+		return nil
+	}
+	if err := lock(ctx); err != nil {
+		return err
+	}
+	if err := sim.Admit(ctx, resource); err != nil {
+		unlock()
 		return err
 	}
 	return nil
@@ -576,7 +601,7 @@ var errMemoryRegionDropped = errors.New("managed-memory fault gave the memory re
 func (r *MemoryRegion) withoutMemoryRegion(ctx context.Context, read func() error) error {
 	r.mu.RUnlock()
 	err := read()
-	if lockErr := r.mu.RLock(ctx); lockErr != nil {
+	if lockErr := lockAdmitted(ctx, "vmmemory/region", r.mu.TryRLock, r.mu.RLock, r.mu.RUnlock); lockErr != nil {
 		return errors.Join(err, lockErr, errMemoryRegionDropped)
 	}
 	if err != nil {
