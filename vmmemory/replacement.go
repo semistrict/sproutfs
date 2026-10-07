@@ -25,7 +25,8 @@ func (p *replacement) holdLocked(b *binding, page *zirconvm.VmPage) {
 	p.guests = append(p.guests, b)
 }
 
-// keep holds a page the store made, locked, until its command lands.
+// keep holds a page locked until the store's command lands: one the store
+// made, and one the guest maps that the command replaces.
 func (p *replacement) keep(page *zirconvm.VmPage) { p.made = append(p.made, page) }
 
 // done gives up every page held, now that the guest maps none of them: a

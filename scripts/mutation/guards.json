@@ -1334,5 +1334,11 @@
     "package": "vmmemory",
     "run": "^TestAPrefetchWhoseRequestASupplyCompletesAtOnceReadsItsRun$",
     "purpose": "Look at a prefetch's request after the source let it go, so a supply of its pages by another region's fault that completes it in between makes the prefetch panic that it met another read, or fail the provider's assertion."
+  },
+  {
+    "id": "pager-let-a-replaced-page-go-before-its-command",
+    "package": "vmmemory",
+    "run": "^TestTheEndOfASealLeavesACopyAChildsStoreStillReplaces$",
+    "purpose": "Let go of the page a store's copy replaces before the store's command lands, so the end of a fork point's seal drops the copy the guest still maps, which has no alias left to revoke: its slot is given back and its file dropped under the guest's mapping."
   }
 ]

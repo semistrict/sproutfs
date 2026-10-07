@@ -523,13 +523,22 @@ func (r *MemoryRegion) takePrivate(ctx context.Context, index uint64, frame *zir
 	//
 	// The page the guest maps is held across the change, so no eviction
 	// revokes the guest's mapping of it after the store's command put the copy
-	// there.
+	// there. A page the guest maps stays held until that command lands
+	// (replacement.unlock): its alias goes below, before the command, and
+	// whatever takes the page away meanwhile, such as the end of a fork
+	// point's seal dropping the copy it lent, would find no alias to revoke
+	// and give back a slot, or drop a file, the guest still maps.
 	old, err := r.host.lockedPage(ctx, b)
 	if err != nil {
 		return err
 	}
+	kept := false
 	if old != nil {
-		defer r.host.unlockPage(old)
+		defer func() {
+			if !kept {
+				r.host.unlockPage(old)
+			}
+		}()
 	}
 	err = r.layer.SplitAwaitingClean(index*ps, frame)
 	if errors.Is(err, zirconvm.ErrBadState) {
@@ -562,6 +571,10 @@ func (r *MemoryRegion) takePrivate(ctx context.Context, index uint64, frame *zir
 		r.bindingsMu.Unlock()
 		if mapped {
 			replaced.holdLocked(b, old)
+			if !sim.Bug(ctx, "pager-let-a-replaced-page-go-before-its-command") {
+				replaced.keep(old)
+				kept = true
+			}
 		}
 		r.host.unaliasLocked(b)
 	}

@@ -786,6 +786,12 @@ touched) has nothing to copy. One mapping command replaces the zero mapping or
 the trap with a private page from a free slot, which reads as zeros because it
 was punched; the volume is not read.
 
+The page a store's copy replaces stays locked until the store's command lands.
+Its alias goes before the command, so anything that took the page meanwhile,
+such as the end of a fork point's seal dropping the copy it lent, would find
+nothing to revoke and give back a slot, or drop a file, the guest still maps
+(`TestTheEndOfASealLeavesACopyAChildsStoreStillReplaces`).
+
 **A store replaces a mapping; it never revokes one.** The protocol's MAP replaces
 the mappings its pages had: the client builds the new mapping, registers it
 and `mremap`s it over the guest's addresses in one command. A revocation is used
