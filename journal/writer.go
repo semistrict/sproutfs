@@ -17,10 +17,27 @@ import (
 // commit asked for, as EntryBytes counts them.
 type Capture func(ctx context.Context) ([]Entry, error)
 
+// Hooks are what a commit's caller learns on the writer, in batch order and
+// before the writer forms its next batch, which no answer can promise: an
+// answer reaches its caller whenever that caller runs.
+type Hooks struct {
+	// Placed runs once the commit's entries have positions, before they are
+	// written: the start of each, none where the capture failed or a read had
+	// fenced the commit's VM.
+	Placed func(positions []uint64)
+	// Failed runs when a commit whose capture made entries does not land:
+	// its batch's write or sync failed, or a read had fenced its VM. Its
+	// entries may be on the disk all the same, so whatever the capture took
+	// has to be taken again by the next.
+	Failed func()
+}
+
 // commit is one call of Commit, waiting for its batch.
 type commit struct {
 	room      int64
 	capture   Capture
+	hooks     Hooks
+	captured  bool
 	done      chan struct{}
 	positions []uint64
 	err       error
@@ -41,10 +58,16 @@ func reserve(room, largest int64) int64 { return room + largest + BlockBytes + 2
 // too. A read may still find the entries of a commit that failed, as a power
 // loss may keep stores no flush covered.
 func (j *Journal) Commit(ctx context.Context, room int64, capture Capture) ([]uint64, error) {
+	return j.CommitHooked(ctx, room, capture, Hooks{})
+}
+
+// CommitHooked is Commit with hooks the writer runs as the commit is placed
+// and if it fails.
+func (j *Journal) CommitHooked(ctx context.Context, room int64, capture Capture, hooks Hooks) ([]uint64, error) {
 	if room < 0 || reserve(room, room) > j.ringLength {
 		return nil, fmt.Errorf("%w: a commit of %d bytes, on a ring of %d", ErrTooLarge, room, j.ringLength)
 	}
-	c := &commit{room: room, capture: capture, done: make(chan struct{})}
+	c := &commit{room: room, capture: capture, hooks: hooks, done: make(chan struct{})}
 	j.mu.Lock()
 	if err := j.refusal(); err != nil {
 		j.mu.Unlock()
@@ -169,6 +192,7 @@ func (j *Journal) commitBatch(batch []*commit) {
 	captured := make([][]Entry, len(batch))
 	for i, c := range batch {
 		captured[i], c.err = capture(j.ctx, c)
+		c.captured = c.err == nil
 	}
 	j.mu.Lock()
 	p := j.place(batch, captured)
@@ -177,6 +201,15 @@ func (j *Journal) commitBatch(batch []*commit) {
 		j.next = p.end
 	}
 	j.mu.Unlock()
+	for i, c := range batch {
+		if c.hooks.Placed != nil {
+			c.hooks.Placed(p.positions[i])
+		}
+		if c.captured && c.err != nil && c.hooks.Failed != nil {
+			// A read fenced its VM: it is refused whole.
+			c.hooks.Failed()
+		}
+	}
 	if p.image == nil {
 		j.complete(batch, p, nil)
 		return
@@ -339,17 +372,24 @@ func (j *Journal) complete(batch []*commit, p placement, err error) {
 		slog.WarnContext(j.ctx, "journal: a batch failed", "identity", j.identity.String(), "start", p.start,
 			"bytes", len(p.image), "err", err)
 	}
+	var failed []*commit
 	for i, c := range batch {
 		switch {
 		case c.err != nil:
 		case err != nil:
 			c.err = err
+			failed = append(failed, c)
 		default:
 			c.positions = p.positions[i]
 		}
 	}
 	j.notify()
 	j.mu.Unlock()
+	for _, c := range failed {
+		if c.hooks.Failed != nil {
+			c.hooks.Failed()
+		}
+	}
 	for _, c := range batch {
 		close(c.done)
 	}

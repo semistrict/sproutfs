@@ -583,6 +583,78 @@ sproutfs_received_pause_seconds_count{kind="fork"} 35696155
 sproutfs_vms_given_up_total{reason="vmm_ended"} 15261443
 sproutfs_vms_given_up_total{reason="fenced"} 15152780
 sproutfs_vms_given_up_total{reason="stopped_for_a_bound"} 17044123
+# HELP sproutfs_durable_flush One where a disk's flush is answered from the host's journal, zero where the flush bound answers it.
+# TYPE sproutfs_durable_flush gauge
+sproutfs_durable_flush 0
+# HELP sproutfs_journal_served One while a journal disk is served on this host.
+# TYPE sproutfs_journal_served gauge
+sproutfs_journal_served 1
+# HELP sproutfs_journal_flushes_total Flushes the journal answered, by outcome: a failed one is an I/O error in the guest.
+# TYPE sproutfs_journal_flushes_total counter
+sproutfs_journal_flushes_total{outcome="succeeded"} 38530179
+sproutfs_journal_flushes_total{outcome="failed"} 49574284
+# HELP sproutfs_journal_flush_seconds How long each durable flush took, from its arrival to its answer.
+# TYPE sproutfs_journal_flush_seconds histogram
+sproutfs_journal_flush_seconds_bucket{le="1e-06"} 27597771
+sproutfs_journal_flush_seconds_bucket{le="2e-06"} 74239671
+sproutfs_journal_flush_seconds_bucket{le="4e-06"} 74239671
+sproutfs_journal_flush_seconds_bucket{le="8e-06"} 74239671
+sproutfs_journal_flush_seconds_bucket{le="1.6e-05"} 74239671
+sproutfs_journal_flush_seconds_bucket{le="3.2e-05"} 74239671
+sproutfs_journal_flush_seconds_bucket{le="6.4e-05"} 74239671
+sproutfs_journal_flush_seconds_bucket{le="0.000128"} 74239671
+sproutfs_journal_flush_seconds_bucket{le="0.000256"} 74239671
+sproutfs_journal_flush_seconds_bucket{le="0.000512"} 74239671
+sproutfs_journal_flush_seconds_bucket{le="0.001024"} 74239671
+sproutfs_journal_flush_seconds_bucket{le="0.002048"} 74239671
+sproutfs_journal_flush_seconds_bucket{le="0.004096"} 74239671
+sproutfs_journal_flush_seconds_bucket{le="0.008192"} 74239671
+sproutfs_journal_flush_seconds_bucket{le="0.016384"} 74239671
+sproutfs_journal_flush_seconds_bucket{le="0.032768"} 74239671
+sproutfs_journal_flush_seconds_bucket{le="0.065536"} 74239671
+sproutfs_journal_flush_seconds_bucket{le="0.131072"} 74239671
+sproutfs_journal_flush_seconds_bucket{le="0.262144"} 74239671
+sproutfs_journal_flush_seconds_bucket{le="0.524288"} 74239671
+sproutfs_journal_flush_seconds_bucket{le="1.048576"} 74239671
+sproutfs_journal_flush_seconds_bucket{le="2.097152"} 74239671
+sproutfs_journal_flush_seconds_bucket{le="4.194304"} 74239671
+sproutfs_journal_flush_seconds_bucket{le="+Inf"} 62618395
+sproutfs_journal_flush_seconds_sum 0.010553648
+sproutfs_journal_flush_seconds_count 62618395
+# HELP sproutfs_journal_capture_seconds How long each capture of a disk's changed blocks took: protecting, reading and hashing its pages.
+# TYPE sproutfs_journal_capture_seconds histogram
+sproutfs_journal_capture_seconds_bucket{le="1e-06"} 48665459
+sproutfs_journal_capture_seconds_bucket{le="2e-06"} 57266207
+sproutfs_journal_capture_seconds_bucket{le="4e-06"} 57266207
+sproutfs_journal_capture_seconds_bucket{le="8e-06"} 57266207
+sproutfs_journal_capture_seconds_bucket{le="1.6e-05"} 57266207
+sproutfs_journal_capture_seconds_bucket{le="3.2e-05"} 57266207
+sproutfs_journal_capture_seconds_bucket{le="6.4e-05"} 57266207
+sproutfs_journal_capture_seconds_bucket{le="0.000128"} 57266207
+sproutfs_journal_capture_seconds_bucket{le="0.000256"} 57266207
+sproutfs_journal_capture_seconds_bucket{le="0.000512"} 57266207
+sproutfs_journal_capture_seconds_bucket{le="0.001024"} 57266207
+sproutfs_journal_capture_seconds_bucket{le="0.002048"} 57266207
+sproutfs_journal_capture_seconds_bucket{le="0.004096"} 57266207
+sproutfs_journal_capture_seconds_bucket{le="0.008192"} 57266207
+sproutfs_journal_capture_seconds_bucket{le="0.016384"} 57266207
+sproutfs_journal_capture_seconds_bucket{le="0.032768"} 57266207
+sproutfs_journal_capture_seconds_bucket{le="0.065536"} 57266207
+sproutfs_journal_capture_seconds_bucket{le="0.131072"} 57266207
+sproutfs_journal_capture_seconds_bucket{le="0.262144"} 57266207
+sproutfs_journal_capture_seconds_bucket{le="0.524288"} 57266207
+sproutfs_journal_capture_seconds_bucket{le="1.048576"} 57266207
+sproutfs_journal_capture_seconds_bucket{le="2.097152"} 57266207
+sproutfs_journal_capture_seconds_bucket{le="4.194304"} 57266207
+sproutfs_journal_capture_seconds_bucket{le="+Inf"} 577171
+sproutfs_journal_capture_seconds_sum 0.023621312
+sproutfs_journal_capture_seconds_count 577171
+# HELP sproutfs_journal_ring_bytes The journal disk's ring.
+# TYPE sproutfs_journal_ring_bytes gauge
+sproutfs_journal_ring_bytes 37644907
+# HELP sproutfs_journal_live_bytes What trimming has not freed of the journal's ring.
+# TYPE sproutfs_journal_live_bytes gauge
+sproutfs_journal_live_bytes 1580208
 # HELP sproutfs_template_imports_total Templates this host imported, by outcome.
 # TYPE sproutfs_template_imports_total counter
 sproutfs_template_imports_total{outcome="succeeded"} 20935472

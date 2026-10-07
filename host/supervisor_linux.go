@@ -424,8 +424,9 @@ func (s *supervisor) Status(ctx context.Context) (hostapi.Status, error) {
 		Resources: hostapi.Resources{MemoryLimit: resources.Limit, MemoryUsed: resources.Used,
 			CacheLimit: status.CacheLimit, CacheUsed: status.Cache.ResidentBytes,
 			CacheDiskLimit: status.Cache.Disk.LimitBytes, CacheDiskUsed: status.Cache.Disk.UsedBytes},
-		Store: apiStore(s.objects, s.config.ObjectStore.Recoveries()),
-		Disk:  diskReport(s.disk.Status()),
+		Store:   apiStore(s.objects, s.config.ObjectStore.Recoveries()),
+		Disk:    diskReport(s.disk.Status()),
+		Journal: apiJournal(activity.Journal),
 	}
 	report.Member, report.Membership = memberReport(status.Member, status.Membership)
 	tables := status.Cache.Tables

@@ -231,3 +231,45 @@ message Probed {
   CacheStatus status = 1;
   bytes cache = 2;
 }
+
+// JournalStatus is how a host answered a read of a journal disk.
+enum JournalStatus {
+  JOURNAL_STATUS_UNSPECIFIED = 0;
+  JOURNAL_STATUS_OK = 1;
+  // JOURNAL_STATUS_NOT_HERE: the host holds no journal disk of that identity.
+  JOURNAL_STATUS_NOT_HERE = 2;
+  // JOURNAL_STATUS_GENERATION: the disk was formatted again, and the entries
+  // asked for are gone.
+  JOURNAL_STATUS_GENERATION = 3;
+}
+
+// JournalRead asks the holder of a journal disk for one VM's entries of one
+// epoch after a position: JOURNAL_READ (plans/fsync-journal-2026-10-06.md).
+// The holder first fences the VM at reader, so no entry of an older epoch is
+// placed from then on, and gives the VM up if it runs it.
+message JournalRead {
+  bytes disk = 1;
+  string vm = 2;
+  uint64 epoch = 3;
+  uint64 after = 4;
+  uint64 generation = 5;
+  uint64 reader = 6;
+  uint64 max_bytes = 7;
+}
+
+// JournalEntries answers JournalRead with entries in position order, their
+// blocks in the payload in that order. more says the reader asks again after
+// the last entry's position.
+message JournalEntries {
+  JournalStatus status = 1;
+  repeated JournalEntry entries = 2;
+  bool more = 3;
+}
+
+// JournalEntry is one entry of JournalEntries: its position, the volume its
+// blocks are of, and their numbers.
+message JournalEntry {
+  uint64 position = 1;
+  string volume = 2;
+  repeated uint64 blocks = 3;
+}

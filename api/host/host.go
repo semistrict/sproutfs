@@ -657,6 +657,25 @@ type Status struct {
 	// is the deployment's bucket's. It is absent on a host that has no hot
 	// tier.
 	HotTierStore *Store `json:"hot_tier_store,omitempty"`
+	// Journal is what durable flush did on this host.
+	Journal Journal `json:"journal"`
+}
+
+// Journal is what durable flush did on one host
+// (plans/fsync-journal-2026-10-06.md). DurableFlush is whether the mode is
+// on, and Served whether a journal disk is served here now. Flushes counts the
+// flushes the mode answered, by outcome: a failed one is an I/O error in the
+// guest. Flush is what each took from its arrival to its answer, and Capture
+// what its capture of the disk's changed blocks took. RingBytes is the
+// journal's ring, and LiveBytes what trimming has not freed of it.
+type Journal struct {
+	DurableFlush bool     `json:"durable_flush"`
+	Served       bool     `json:"served"`
+	Flushes      Outcomes `json:"flushes"`
+	Flush        Latency  `json:"flush"`
+	Capture      Latency  `json:"capture"`
+	RingBytes    int64    `json:"ring_bytes"`
+	LiveBytes    int64    `json:"live_bytes"`
 }
 
 // HotTier is what one host's reads of checkpoint objects through the hot

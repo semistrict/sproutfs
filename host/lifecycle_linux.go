@@ -281,7 +281,7 @@ func (s *supervisor) Capture(ctx context.Context, id string, request hostapi.Cap
 		return hostapi.CaptureResult{VM: request.Into, Checkpoint: root.Sequence, Publish: s.since(began)}, nil
 	}
 	paused := s.clock.Now()
-	ckpt, err := Capture(ctx, m.vm, m.process, s.clock, volume.Terms{Keep: request.Keep})
+	ckpt, err := Capture(ctx, m.vm, m.process, s.clock, volume.Terms{Keep: request.Keep, Cover: s.host.JournalCover(id)})
 	if err != nil {
 		return hostapi.CaptureResult{}, fmt.Errorf("capturing %s: %w", id, err)
 	}

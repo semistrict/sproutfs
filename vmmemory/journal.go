@@ -85,6 +85,10 @@ func (r *MemoryRegion) dropDigestsLocked(page uint64) {
 // blocksPerPage is how many blocks one page of this region holds.
 func (r *MemoryRegion) blocksPerPage() int { return int(r.host.pageSize / BlockBytes) }
 
+// BlocksPerPage is how many blocks one page of this region holds, which bounds
+// what a capture of a number of its pages takes.
+func (r *MemoryRegion) BlocksPerPage() int { return r.blocksPerPage() }
+
 // noteStoredLocked records that the guest may store into b's page without a
 // fault from here: a capture's protection, if it had one, is gone, and the
 // page is unjournaled. Caller holds r.bindingsMu.
@@ -515,6 +519,10 @@ func (r *MemoryRegion) captured(c *MemoryRegionCheckpoint, pages []uint64, reads
 	}
 	return result
 }
+
+// Pages is every page the capture took, in ascending order, whether it found
+// a block of it changed or not.
+func (c *Captured) Pages() []uint64 { return c.pages }
 
 // Fail gives the capture's pages back as unjournaled, with no digests: the
 // journal write or sync that was to hold its blocks failed, so its entry may

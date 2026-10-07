@@ -514,3 +514,45 @@ func TestACommitTooLargeOrWhoseCaptureFailsIsRefused(t *testing.T) {
 		}
 	})
 }
+
+// A commit's hooks run on the writer, before it forms its next batch: Placed
+// with the positions its answer will carry, and Failed once its batch's write
+// fails, before the capture of the commit after it runs.
+func TestACommitsHooksRunBeforeTheNextBatch(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		runtime := sim.New(sim.Config{})
+		ctx := sim.WithRuntime(t.Context(), runtime)
+		disk, handle := device(t, ctx, runtime, testRing, sim.DiskConfig{})
+		j := open(t, ctx, handle(), Lease{Assigned: 1, Member: memberA})
+		var events []string
+		hooked := func(e Entry, name string) ([]uint64, error) {
+			return j.CommitHooked(ctx, e.size(), func(context.Context) ([]Entry, error) {
+				events = append(events, "capture "+name)
+				return []Entry{e}, nil
+			}, Hooks{
+				Placed: func(positions []uint64) { events = append(events, fmt.Sprintf("placed %s %v", name, positions)) },
+				Failed: func() { events = append(events, "failed "+name) },
+			})
+		}
+		first := uint64(testRing)
+		got, err := hooked(entryOf("vm-a", 1, 0x10, 0), "a")
+		if err != nil || !slices.Equal(got, []uint64{first}) {
+			t.Fatalf("the first commit: %v, %v, want [%d]", got, err, first)
+		}
+		disk.FailNext(sim.DiskSync, 1)
+		if _, err := hooked(entryOf("vm-a", 1, 0x20, 1), "b"); !errors.Is(err, platform.ErrInjectedFault) {
+			t.Fatalf("a commit whose sync failed: %v, want ErrInjectedFault", err)
+		}
+		if _, err := hooked(entryOf("vm-a", 1, 0x30, 2), "c"); err != nil {
+			t.Fatal(err)
+		}
+		want := []string{
+			"capture a", fmt.Sprintf("placed a [%d]", first),
+			"capture b", fmt.Sprintf("placed b [%d]", first+8<<10), "failed b",
+			"capture c", fmt.Sprintf("placed c [%d]", first+16<<10),
+		}
+		if !slices.Equal(events, want) {
+			t.Fatalf("the hooks ran as %q, want %q", events, want)
+		}
+	})
+}

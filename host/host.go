@@ -123,6 +123,9 @@ type Config struct {
 	// refuses to start. It needs a Migration.Address, which its peers reach
 	// the shards at.
 	Shards ShardsConfig
+	// Journal turns durable flush on (journal.go). Off, a guest's flush is
+	// answered by the flush bound.
+	Journal JournalConfig
 	// MembershipInterval is how often this host reads the membership when
 	// nothing else has made it read: a request from a peer that names a newer
 	// generation does at once. Zero is membership.DefaultInterval, and a
@@ -250,6 +253,7 @@ type Host struct {
 	// minimumInterval is the shortest interval a VM may ask for.
 	minimumInterval time.Duration
 	machines        machines
+	journals        journals
 	// activity is what this host has done since it started; see Activity.
 	activity  activity
 	closeOnce sync.Once
@@ -400,6 +404,7 @@ func StartHost(ctx context.Context, config Config) (*Host, error) {
 		clock:       platform.ClockOr(config.Clock), entropy: platform.EntropyOr(config.Entropy),
 		cacheBytes: config.CacheBytes, checkpointInterval: interval, epochInterval: epochs,
 		lossWindow: window, flushBound: flushBoundOf(config.FlushBound, interval),
+		journals:             journals{on: config.Journal.DurableFlush},
 		flushBoundConfigured: config.FlushBound, minimumInterval: minimumIntervalOf(config.MinimumCheckpointInterval),
 		done: make(chan struct{}),
 		machines: machines{running: make(map[string]*registration), migrated: make(map[string]*migratedHold),
@@ -531,7 +536,7 @@ func StartHost(ctx context.Context, config Config) (*Host, error) {
 		}
 		h.pages, err = peer.NewServer(hostCtx, peer.ServerConfig{Network: config.Network,
 			Address: config.Migration.Address, PageSize: config.Migration.PageSize, Cache: cache,
-			Membership: h.view, Member: h.self.ID,
+			Journals: h, Membership: h.view, Member: h.self.ID,
 			StripeBytesPerSecond: config.Migration.ServeStripeBytesPerSecond})
 		if err != nil {
 			return nil, fmt.Errorf("migration address %q: %w", config.Migration.Address, err)
@@ -562,6 +567,9 @@ func StartHost(ctx context.Context, config Config) (*Host, error) {
 	}()
 	if h.epochInterval > 0 {
 		go h.watching(hostCtx)
+	}
+	if h.journals.on {
+		go h.trimming(hostCtx, DefaultJournalTrimInterval)
 	}
 	return h, nil
 }

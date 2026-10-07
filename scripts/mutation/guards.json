@@ -168,6 +168,36 @@
     "purpose": "Keep the digests of a capture whose journal write failed, so the next capture leaves out the blocks the failed entry held."
   },
   {
+    "id": "journal-failed-write-answers",
+    "package": "host",
+    "run": "^TestAFlushWhoseJournalSyncFailsFailsAndIsTakenAgain$",
+    "purpose": "Answer a durable flush whose journal sync failed as a success, so the guest believes blocks durable that may not be on the disk."
+  },
+  {
+    "id": "journal-failed-write-keeps-pages",
+    "package": "host",
+    "run": "^TestAFlushWhoseJournalSyncFailsFailsAndIsTakenAgain$",
+    "purpose": "Leave the pages of a capture whose journal write failed captured, so the next flush does not take them again."
+  },
+  {
+    "id": "journal-covered-after-seal",
+    "package": "host",
+    "run": "^TestTheCoveredPositionIsTheLastCaptureBeforeThePause$",
+    "purpose": "Read a checkpoint's covered position at its selection rather than its pause, so it covers captures made after the guest ran again and a replay never applies them."
+  },
+  {
+    "id": "journal-ignore-half-ring",
+    "package": "host",
+    "run": "^TestAFlushOfAVMHoldingHalfTheRingWaitsForItsCheckpoint$",
+    "purpose": "Let a VM holding more than half the journal's ring commit more without waiting for its own checkpoint."
+  },
+  {
+    "id": "journal-read-keeps-vm",
+    "package": "host",
+    "run": "^TestAJournalReadFencesAndGivesUpTheVM$",
+    "purpose": "Keep running a VM whose journal a reader at a newer epoch has read, so two instances of the guest run."
+  },
+  {
     "id": "pager-count-detached-before-its-pages-go",
     "package": "vmmemory",
     "run": "^TestAPagerDoesNotCloseUnderADetachStillGivingItsPagesBack$",

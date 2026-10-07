@@ -294,6 +294,7 @@ func MetricFamilies(status Status) []MetricFamily {
 		sample(float(status.Lifecycle.Deaths), Label{"reason", "vmm_ended"}),
 		sample(float(status.Lifecycle.Fenced), Label{"reason", "fenced"}),
 		sample(float(status.Lifecycle.Stopped), Label{"reason", "stopped_for_a_bound"}))
+	e.journal(status.Journal)
 
 	// Template imports: the imports this host wrote, what each took, and every
 	// byte of guest image it read, which is what a host start costs.
@@ -465,6 +466,25 @@ func lossWindow(vms []VM) (widest time.Duration, waiting int) {
 		}
 	}
 	return widest, waiting
+}
+
+// journal adds what durable flush did: whether it is on and served, its
+// flushes by outcome, what they and their captures took, and the ring.
+func (e *exposition) journal(j Journal) {
+	e.one("sproutfs_durable_flush", Gauge,
+		"One where a disk's flush is answered from the host's journal, zero where the flush bound answers it.",
+		flag(j.DurableFlush))
+	e.one("sproutfs_journal_served", Gauge, "One while a journal disk is served on this host.", flag(j.Served))
+	e.outcomes("sproutfs_journal_flushes_total",
+		"Flushes the journal answered, by outcome: a failed one is an I/O error in the guest.", j.Flushes)
+	e.family("sproutfs_journal_flush_seconds", Histogram,
+		"How long each durable flush took, from its arrival to its answer.", latencySample(j.Flush))
+	e.family("sproutfs_journal_capture_seconds", Histogram,
+		"How long each capture of a disk's changed blocks took: protecting, reading and hashing its pages.",
+		latencySample(j.Capture))
+	e.one("sproutfs_journal_ring_bytes", Gauge, "The journal disk's ring.", float(j.RingBytes))
+	e.one("sproutfs_journal_live_bytes", Gauge, "What trimming has not freed of the journal's ring.",
+		float(j.LiveBytes))
 }
 
 // diskBindings are the goals a disk limiter can report as binding, each a

@@ -111,6 +111,8 @@ type registration struct {
 	pulled  *checkpoint.Pull
 	refused error
 	fetched chan struct{}
+	// journal is the VM's durable flush state on this host (journal.go).
+	journal vmJournal
 }
 
 // machines is what this host runs: the VMM process of every VM its manager

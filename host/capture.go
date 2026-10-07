@@ -113,6 +113,11 @@ func capture(ctx context.Context, vm *volume.VM, machine Machine, clock platform
 		if err != nil {
 			return nil, nil, err
 		}
+		if marker, ok := terms.Cover.(pauseMarker); ok {
+			// The disks are sealed and the guest has not run since: what the
+			// journal covers is fixed here.
+			marker.paused(ctx)
+		}
 		// The guest runs again from here: the checkpoint reads the pages it
 		// sealed while the guest stores into copies of them.
 		if err := machine.Resume(ctx); err != nil {

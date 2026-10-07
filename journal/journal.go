@@ -461,6 +461,9 @@ func (j *Journal) refusal() error {
 // Generation is the journal's generation, drawn when its disk was formatted.
 func (j *Journal) Generation() uint64 { return j.generation }
 
+// Identity is the journal disk's identity, from its header.
+func (j *Journal) Identity() rank.Identity { return j.identity }
+
 // Formatted reports whether Open formatted the disk.
 func (j *Journal) Formatted() bool { return j.formatted }
 

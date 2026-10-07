@@ -51,6 +51,9 @@ type ServerConfig struct {
 	// Cache is this host's disk cache, which answers the cache's requests. Nil
 	// is a host that keeps none: every cache request is answered not me.
 	Cache Cache
+	// Journals answers JOURNAL_READ from the journal disks this host holds.
+	// Nil holds none.
+	Journals Journals
 	// Membership is this host's copy of the membership, and Member its
 	// identity in it. A cache request is answered only under the generation
 	// it names, which a host behind reads first, and only for the disk this

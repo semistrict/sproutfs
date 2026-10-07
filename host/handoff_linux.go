@@ -62,6 +62,14 @@ func apiCheckpoints(c CheckpointActivity) hostapi.Checkpoints {
 		UploadedBytes: c.UploadedBytes, Pause: hostapi.LatencyOf(c.Pause), Upload: hostapi.LatencyOf(c.Upload)}
 }
 
+// apiJournal is the wire form of what durable flush did.
+func apiJournal(j JournalActivity) hostapi.Journal {
+	return hostapi.Journal{DurableFlush: j.DurableFlush, Served: j.Served,
+		Flushes: hostapi.Outcomes{Succeeded: j.Flushes.Succeeded, Failed: j.Flushes.Failed},
+		Flush:   hostapi.LatencyOf(j.Flush), Capture: hostapi.LatencyOf(j.Capture),
+		RingBytes: j.RingBytes, LiveBytes: j.LiveBytes}
+}
+
 // apiLifecycle is the wire form of what this host did with its VMs.
 func apiLifecycle(a Activity) hostapi.Lifecycle {
 	outcomes := func(o Outcomes) hostapi.Outcomes {

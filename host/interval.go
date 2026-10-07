@@ -52,7 +52,7 @@ func (h *Host) checkpointing(ctx context.Context, vmID string, entry *registrati
 		// two serialize rather than checkpointing the same guest twice.
 		began := h.clock.Now()
 		checkpoint, err := CaptureDisks(ctx, vm, entry.runtime, h.clock,
-			volume.Terms{Retry: h.retryPastWindow(ctx, vmID, entry)})
+			volume.Terms{Retry: h.retryPastWindow(ctx, vmID, entry), Cover: h.coverOf(vmID, entry)})
 		captured := h.clock.Now()
 		if ctx.Err() == nil || err == nil {
 			h.activity.checkpoints.captured(captured.Sub(began), err, errors.Is(err, volume.ErrNeedsRecovery))

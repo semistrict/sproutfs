@@ -184,6 +184,57 @@ func (x CacheStatus) Number() protoreflect.EnumNumber {
 	return protoreflect.EnumNumber(x)
 }
 
+// JournalStatus is how a host answered a read of a journal disk.
+type JournalStatus int32
+
+const (
+	JournalStatus_JOURNAL_STATUS_UNSPECIFIED JournalStatus = 0
+	JournalStatus_JOURNAL_STATUS_OK          JournalStatus = 1
+	// JOURNAL_STATUS_NOT_HERE: the host holds no journal disk of that identity.
+	JournalStatus_JOURNAL_STATUS_NOT_HERE JournalStatus = 2
+	// JOURNAL_STATUS_GENERATION: the disk was formatted again, and the entries
+	// asked for are gone.
+	JournalStatus_JOURNAL_STATUS_GENERATION JournalStatus = 3
+)
+
+// Enum value maps for JournalStatus.
+var (
+	JournalStatus_name = map[int32]string{
+		0: "JOURNAL_STATUS_UNSPECIFIED",
+		1: "JOURNAL_STATUS_OK",
+		2: "JOURNAL_STATUS_NOT_HERE",
+		3: "JOURNAL_STATUS_GENERATION",
+	}
+	JournalStatus_value = map[string]int32{
+		"JOURNAL_STATUS_UNSPECIFIED": 0,
+		"JOURNAL_STATUS_OK":          1,
+		"JOURNAL_STATUS_NOT_HERE":    2,
+		"JOURNAL_STATUS_GENERATION":  3,
+	}
+)
+
+func (x JournalStatus) Enum() *JournalStatus {
+	p := new(JournalStatus)
+	*p = x
+	return p
+}
+
+func (x JournalStatus) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (JournalStatus) Descriptor() protoreflect.EnumDescriptor {
+	return file_sproutfs_peer_v1_peer_proto_enumTypes[3].Descriptor()
+}
+
+func (JournalStatus) Type() protoreflect.EnumType {
+	return &file_sproutfs_peer_v1_peer_proto_enumTypes[3]
+}
+
+func (x JournalStatus) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
 // Hello is the first frame a dialer sends on a connection of protocol 2 or
 // later, encoded at wire version 2 whatever range it states, so a server of
 // any later release reads it. A connection whose first frame is not a hello
@@ -3013,6 +3064,521 @@ func (b0 Probed_builder) Build() *Probed {
 	return m0
 }
 
+// JournalRead asks the holder of a journal disk for one VM's entries of one
+// epoch after a position: JOURNAL_READ (plans/fsync-journal-2026-10-06.md).
+// The holder first fences the VM at reader, so no entry of an older epoch is
+// placed from then on, and gives the VM up if it runs it.
+type JournalRead struct {
+	state                  protoimpl.MessageState `protogen:"opaque.v1"`
+	xxx_hidden_Disk        []byte                 `protobuf:"bytes,1,opt,name=disk"`
+	xxx_hidden_Vm          *string                `protobuf:"bytes,2,opt,name=vm"`
+	xxx_hidden_Epoch       uint64                 `protobuf:"varint,3,opt,name=epoch"`
+	xxx_hidden_After       uint64                 `protobuf:"varint,4,opt,name=after"`
+	xxx_hidden_Generation  uint64                 `protobuf:"varint,5,opt,name=generation"`
+	xxx_hidden_Reader      uint64                 `protobuf:"varint,6,opt,name=reader"`
+	xxx_hidden_MaxBytes    uint64                 `protobuf:"varint,7,opt,name=max_bytes,json=maxBytes"`
+	XXX_raceDetectHookData protoimpl.RaceDetectHookData
+	XXX_presence           [1]uint32
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
+}
+
+func (x *JournalRead) Reset() {
+	*x = JournalRead{}
+	mi := &file_sproutfs_peer_v1_peer_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *JournalRead) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*JournalRead) ProtoMessage() {}
+
+func (x *JournalRead) ProtoReflect() protoreflect.Message {
+	mi := &file_sproutfs_peer_v1_peer_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+func (x *JournalRead) GetDisk() []byte {
+	if x != nil {
+		return x.xxx_hidden_Disk
+	}
+	return nil
+}
+
+func (x *JournalRead) GetVm() string {
+	if x != nil {
+		if x.xxx_hidden_Vm != nil {
+			return *x.xxx_hidden_Vm
+		}
+		return ""
+	}
+	return ""
+}
+
+func (x *JournalRead) GetEpoch() uint64 {
+	if x != nil {
+		return x.xxx_hidden_Epoch
+	}
+	return 0
+}
+
+func (x *JournalRead) GetAfter() uint64 {
+	if x != nil {
+		return x.xxx_hidden_After
+	}
+	return 0
+}
+
+func (x *JournalRead) GetGeneration() uint64 {
+	if x != nil {
+		return x.xxx_hidden_Generation
+	}
+	return 0
+}
+
+func (x *JournalRead) GetReader() uint64 {
+	if x != nil {
+		return x.xxx_hidden_Reader
+	}
+	return 0
+}
+
+func (x *JournalRead) GetMaxBytes() uint64 {
+	if x != nil {
+		return x.xxx_hidden_MaxBytes
+	}
+	return 0
+}
+
+func (x *JournalRead) SetDisk(v []byte) {
+	if v == nil {
+		v = []byte{}
+	}
+	x.xxx_hidden_Disk = v
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 0, 7)
+}
+
+func (x *JournalRead) SetVm(v string) {
+	x.xxx_hidden_Vm = &v
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 1, 7)
+}
+
+func (x *JournalRead) SetEpoch(v uint64) {
+	x.xxx_hidden_Epoch = v
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 2, 7)
+}
+
+func (x *JournalRead) SetAfter(v uint64) {
+	x.xxx_hidden_After = v
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 3, 7)
+}
+
+func (x *JournalRead) SetGeneration(v uint64) {
+	x.xxx_hidden_Generation = v
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 4, 7)
+}
+
+func (x *JournalRead) SetReader(v uint64) {
+	x.xxx_hidden_Reader = v
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 5, 7)
+}
+
+func (x *JournalRead) SetMaxBytes(v uint64) {
+	x.xxx_hidden_MaxBytes = v
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 6, 7)
+}
+
+func (x *JournalRead) HasDisk() bool {
+	if x == nil {
+		return false
+	}
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 0)
+}
+
+func (x *JournalRead) HasVm() bool {
+	if x == nil {
+		return false
+	}
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 1)
+}
+
+func (x *JournalRead) HasEpoch() bool {
+	if x == nil {
+		return false
+	}
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 2)
+}
+
+func (x *JournalRead) HasAfter() bool {
+	if x == nil {
+		return false
+	}
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 3)
+}
+
+func (x *JournalRead) HasGeneration() bool {
+	if x == nil {
+		return false
+	}
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 4)
+}
+
+func (x *JournalRead) HasReader() bool {
+	if x == nil {
+		return false
+	}
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 5)
+}
+
+func (x *JournalRead) HasMaxBytes() bool {
+	if x == nil {
+		return false
+	}
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 6)
+}
+
+func (x *JournalRead) ClearDisk() {
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 0)
+	x.xxx_hidden_Disk = nil
+}
+
+func (x *JournalRead) ClearVm() {
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 1)
+	x.xxx_hidden_Vm = nil
+}
+
+func (x *JournalRead) ClearEpoch() {
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 2)
+	x.xxx_hidden_Epoch = 0
+}
+
+func (x *JournalRead) ClearAfter() {
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 3)
+	x.xxx_hidden_After = 0
+}
+
+func (x *JournalRead) ClearGeneration() {
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 4)
+	x.xxx_hidden_Generation = 0
+}
+
+func (x *JournalRead) ClearReader() {
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 5)
+	x.xxx_hidden_Reader = 0
+}
+
+func (x *JournalRead) ClearMaxBytes() {
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 6)
+	x.xxx_hidden_MaxBytes = 0
+}
+
+type JournalRead_builder struct {
+	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
+
+	Disk       []byte
+	Vm         *string
+	Epoch      *uint64
+	After      *uint64
+	Generation *uint64
+	Reader     *uint64
+	MaxBytes   *uint64
+}
+
+func (b0 JournalRead_builder) Build() *JournalRead {
+	m0 := &JournalRead{}
+	b, x := &b0, m0
+	_, _ = b, x
+	if b.Disk != nil {
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 0, 7)
+		x.xxx_hidden_Disk = b.Disk
+	}
+	if b.Vm != nil {
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 1, 7)
+		x.xxx_hidden_Vm = b.Vm
+	}
+	if b.Epoch != nil {
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 2, 7)
+		x.xxx_hidden_Epoch = *b.Epoch
+	}
+	if b.After != nil {
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 3, 7)
+		x.xxx_hidden_After = *b.After
+	}
+	if b.Generation != nil {
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 4, 7)
+		x.xxx_hidden_Generation = *b.Generation
+	}
+	if b.Reader != nil {
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 5, 7)
+		x.xxx_hidden_Reader = *b.Reader
+	}
+	if b.MaxBytes != nil {
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 6, 7)
+		x.xxx_hidden_MaxBytes = *b.MaxBytes
+	}
+	return m0
+}
+
+// JournalEntries answers JournalRead with entries in position order, their
+// blocks in the payload in that order. more says the reader asks again after
+// the last entry's position.
+type JournalEntries struct {
+	state                  protoimpl.MessageState `protogen:"opaque.v1"`
+	xxx_hidden_Status      JournalStatus          `protobuf:"varint,1,opt,name=status,enum=sproutfs.peer.v1.JournalStatus"`
+	xxx_hidden_Entries     *[]*JournalEntry       `protobuf:"bytes,2,rep,name=entries"`
+	xxx_hidden_More        bool                   `protobuf:"varint,3,opt,name=more"`
+	XXX_raceDetectHookData protoimpl.RaceDetectHookData
+	XXX_presence           [1]uint32
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
+}
+
+func (x *JournalEntries) Reset() {
+	*x = JournalEntries{}
+	mi := &file_sproutfs_peer_v1_peer_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *JournalEntries) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*JournalEntries) ProtoMessage() {}
+
+func (x *JournalEntries) ProtoReflect() protoreflect.Message {
+	mi := &file_sproutfs_peer_v1_peer_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+func (x *JournalEntries) GetStatus() JournalStatus {
+	if x != nil {
+		if protoimpl.X.Present(&(x.XXX_presence[0]), 0) {
+			return x.xxx_hidden_Status
+		}
+	}
+	return JournalStatus_JOURNAL_STATUS_UNSPECIFIED
+}
+
+func (x *JournalEntries) GetEntries() []*JournalEntry {
+	if x != nil {
+		if x.xxx_hidden_Entries != nil {
+			return *x.xxx_hidden_Entries
+		}
+	}
+	return nil
+}
+
+func (x *JournalEntries) GetMore() bool {
+	if x != nil {
+		return x.xxx_hidden_More
+	}
+	return false
+}
+
+func (x *JournalEntries) SetStatus(v JournalStatus) {
+	x.xxx_hidden_Status = v
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 0, 3)
+}
+
+func (x *JournalEntries) SetEntries(v []*JournalEntry) {
+	x.xxx_hidden_Entries = &v
+}
+
+func (x *JournalEntries) SetMore(v bool) {
+	x.xxx_hidden_More = v
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 2, 3)
+}
+
+func (x *JournalEntries) HasStatus() bool {
+	if x == nil {
+		return false
+	}
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 0)
+}
+
+func (x *JournalEntries) HasMore() bool {
+	if x == nil {
+		return false
+	}
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 2)
+}
+
+func (x *JournalEntries) ClearStatus() {
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 0)
+	x.xxx_hidden_Status = JournalStatus_JOURNAL_STATUS_UNSPECIFIED
+}
+
+func (x *JournalEntries) ClearMore() {
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 2)
+	x.xxx_hidden_More = false
+}
+
+type JournalEntries_builder struct {
+	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
+
+	Status  *JournalStatus
+	Entries []*JournalEntry
+	More    *bool
+}
+
+func (b0 JournalEntries_builder) Build() *JournalEntries {
+	m0 := &JournalEntries{}
+	b, x := &b0, m0
+	_, _ = b, x
+	if b.Status != nil {
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 0, 3)
+		x.xxx_hidden_Status = *b.Status
+	}
+	x.xxx_hidden_Entries = &b.Entries
+	if b.More != nil {
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 2, 3)
+		x.xxx_hidden_More = *b.More
+	}
+	return m0
+}
+
+// JournalEntry is one entry of JournalEntries: its position, the volume its
+// blocks are of, and their numbers.
+type JournalEntry struct {
+	state                  protoimpl.MessageState `protogen:"opaque.v1"`
+	xxx_hidden_Position    uint64                 `protobuf:"varint,1,opt,name=position"`
+	xxx_hidden_Volume      *string                `protobuf:"bytes,2,opt,name=volume"`
+	xxx_hidden_Blocks      []uint64               `protobuf:"varint,3,rep,packed,name=blocks"`
+	XXX_raceDetectHookData protoimpl.RaceDetectHookData
+	XXX_presence           [1]uint32
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
+}
+
+func (x *JournalEntry) Reset() {
+	*x = JournalEntry{}
+	mi := &file_sproutfs_peer_v1_peer_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *JournalEntry) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*JournalEntry) ProtoMessage() {}
+
+func (x *JournalEntry) ProtoReflect() protoreflect.Message {
+	mi := &file_sproutfs_peer_v1_peer_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+func (x *JournalEntry) GetPosition() uint64 {
+	if x != nil {
+		return x.xxx_hidden_Position
+	}
+	return 0
+}
+
+func (x *JournalEntry) GetVolume() string {
+	if x != nil {
+		if x.xxx_hidden_Volume != nil {
+			return *x.xxx_hidden_Volume
+		}
+		return ""
+	}
+	return ""
+}
+
+func (x *JournalEntry) GetBlocks() []uint64 {
+	if x != nil {
+		return x.xxx_hidden_Blocks
+	}
+	return nil
+}
+
+func (x *JournalEntry) SetPosition(v uint64) {
+	x.xxx_hidden_Position = v
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 0, 3)
+}
+
+func (x *JournalEntry) SetVolume(v string) {
+	x.xxx_hidden_Volume = &v
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 1, 3)
+}
+
+func (x *JournalEntry) SetBlocks(v []uint64) {
+	x.xxx_hidden_Blocks = v
+}
+
+func (x *JournalEntry) HasPosition() bool {
+	if x == nil {
+		return false
+	}
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 0)
+}
+
+func (x *JournalEntry) HasVolume() bool {
+	if x == nil {
+		return false
+	}
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 1)
+}
+
+func (x *JournalEntry) ClearPosition() {
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 0)
+	x.xxx_hidden_Position = 0
+}
+
+func (x *JournalEntry) ClearVolume() {
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 1)
+	x.xxx_hidden_Volume = nil
+}
+
+type JournalEntry_builder struct {
+	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
+
+	Position *uint64
+	Volume   *string
+	Blocks   []uint64
+}
+
+func (b0 JournalEntry_builder) Build() *JournalEntry {
+	m0 := &JournalEntry{}
+	b, x := &b0, m0
+	_, _ = b, x
+	if b.Position != nil {
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 0, 3)
+		x.xxx_hidden_Position = *b.Position
+	}
+	if b.Volume != nil {
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 1, 3)
+		x.xxx_hidden_Volume = b.Volume
+	}
+	x.xxx_hidden_Blocks = b.Blocks
+	return m0
+}
+
 var File_sproutfs_peer_v1_peer_proto protoreflect.FileDescriptor
 
 const file_sproutfs_peer_v1_peer_proto_rawDesc = "" +
@@ -3127,7 +3693,25 @@ const file_sproutfs_peer_v1_peer_proto_rawDesc = "" +
 	"\x05cache\x18\x01 \x01(\fR\x05cache\"U\n" +
 	"\x06Probed\x125\n" +
 	"\x06status\x18\x01 \x01(\x0e2\x1d.sproutfs.peer.v1.CacheStatusR\x06status\x12\x14\n" +
-	"\x05cache\x18\x02 \x01(\fR\x05cache*H\n" +
+	"\x05cache\x18\x02 \x01(\fR\x05cache\"\xb2\x01\n" +
+	"\vJournalRead\x12\x12\n" +
+	"\x04disk\x18\x01 \x01(\fR\x04disk\x12\x0e\n" +
+	"\x02vm\x18\x02 \x01(\tR\x02vm\x12\x14\n" +
+	"\x05epoch\x18\x03 \x01(\x04R\x05epoch\x12\x14\n" +
+	"\x05after\x18\x04 \x01(\x04R\x05after\x12\x1e\n" +
+	"\n" +
+	"generation\x18\x05 \x01(\x04R\n" +
+	"generation\x12\x16\n" +
+	"\x06reader\x18\x06 \x01(\x04R\x06reader\x12\x1b\n" +
+	"\tmax_bytes\x18\a \x01(\x04R\bmaxBytes\"\x97\x01\n" +
+	"\x0eJournalEntries\x127\n" +
+	"\x06status\x18\x01 \x01(\x0e2\x1f.sproutfs.peer.v1.JournalStatusR\x06status\x128\n" +
+	"\aentries\x18\x02 \x03(\v2\x1e.sproutfs.peer.v1.JournalEntryR\aentries\x12\x12\n" +
+	"\x04more\x18\x03 \x01(\bR\x04more\"Z\n" +
+	"\fJournalEntry\x12\x1a\n" +
+	"\bposition\x18\x01 \x01(\x04R\bposition\x12\x16\n" +
+	"\x06volume\x18\x02 \x01(\tR\x06volume\x12\x16\n" +
+	"\x06blocks\x18\x03 \x03(\x04R\x06blocks*H\n" +
 	"\x06Status\x12\x16\n" +
 	"\x12STATUS_UNSPECIFIED\x10\x00\x12\r\n" +
 	"\tSTATUS_OK\x10\x01\x12\x17\n" +
@@ -3143,52 +3727,63 @@ const file_sproutfs_peer_v1_peer_proto_rawDesc = "" +
 	"\x0fCACHE_STATUS_OK\x10\x01\x12\x17\n" +
 	"\x13CACHE_STATUS_NOT_ME\x10\x02\x12\x18\n" +
 	"\x14CACHE_STATUS_DROPPED\x10\x03\x12\x16\n" +
-	"\x12CACHE_STATUS_STALE\x10\x04BJZHgithub.com/semistrict/sproutfs/peer/internal/gen/sproutfs/peer/v1;peerv1b\beditionsp\xe9\a"
+	"\x12CACHE_STATUS_STALE\x10\x04*\x82\x01\n" +
+	"\rJournalStatus\x12\x1e\n" +
+	"\x1aJOURNAL_STATUS_UNSPECIFIED\x10\x00\x12\x15\n" +
+	"\x11JOURNAL_STATUS_OK\x10\x01\x12\x1b\n" +
+	"\x17JOURNAL_STATUS_NOT_HERE\x10\x02\x12\x1d\n" +
+	"\x19JOURNAL_STATUS_GENERATION\x10\x03BJZHgithub.com/semistrict/sproutfs/peer/internal/gen/sproutfs/peer/v1;peerv1b\beditionsp\xe9\a"
 
-var file_sproutfs_peer_v1_peer_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_sproutfs_peer_v1_peer_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
+var file_sproutfs_peer_v1_peer_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
+var file_sproutfs_peer_v1_peer_proto_msgTypes = make([]protoimpl.MessageInfo, 20)
 var file_sproutfs_peer_v1_peer_proto_goTypes = []any{
-	(Status)(0),         // 0: sproutfs.peer.v1.Status
-	(Class)(0),          // 1: sproutfs.peer.v1.Class
-	(CacheStatus)(0),    // 2: sproutfs.peer.v1.CacheStatus
-	(*Hello)(nil),       // 3: sproutfs.peer.v1.Hello
-	(*HelloReply)(nil),  // 4: sproutfs.peer.v1.HelloReply
-	(*Busy)(nil),        // 5: sproutfs.peer.v1.Busy
-	(*Ping)(nil),        // 6: sproutfs.peer.v1.Ping
-	(*Pong)(nil),        // 7: sproutfs.peer.v1.Pong
-	(*Window)(nil),      // 8: sproutfs.peer.v1.Window
-	(*StripeItem)(nil),  // 9: sproutfs.peer.v1.StripeItem
-	(*ReadStripes)(nil), // 10: sproutfs.peer.v1.ReadStripes
-	(*Stripes)(nil),     // 11: sproutfs.peer.v1.Stripes
-	(*Keep)(nil),        // 12: sproutfs.peer.v1.Keep
-	(*Kept)(nil),        // 13: sproutfs.peer.v1.Kept
-	(*Drop)(nil),        // 14: sproutfs.peer.v1.Drop
-	(*Dropped)(nil),     // 15: sproutfs.peer.v1.Dropped
-	(*Presence)(nil),    // 16: sproutfs.peer.v1.Presence
-	(*Present)(nil),     // 17: sproutfs.peer.v1.Present
-	(*Probe)(nil),       // 18: sproutfs.peer.v1.Probe
-	(*Probed)(nil),      // 19: sproutfs.peer.v1.Probed
+	(Status)(0),            // 0: sproutfs.peer.v1.Status
+	(Class)(0),             // 1: sproutfs.peer.v1.Class
+	(CacheStatus)(0),       // 2: sproutfs.peer.v1.CacheStatus
+	(JournalStatus)(0),     // 3: sproutfs.peer.v1.JournalStatus
+	(*Hello)(nil),          // 4: sproutfs.peer.v1.Hello
+	(*HelloReply)(nil),     // 5: sproutfs.peer.v1.HelloReply
+	(*Busy)(nil),           // 6: sproutfs.peer.v1.Busy
+	(*Ping)(nil),           // 7: sproutfs.peer.v1.Ping
+	(*Pong)(nil),           // 8: sproutfs.peer.v1.Pong
+	(*Window)(nil),         // 9: sproutfs.peer.v1.Window
+	(*StripeItem)(nil),     // 10: sproutfs.peer.v1.StripeItem
+	(*ReadStripes)(nil),    // 11: sproutfs.peer.v1.ReadStripes
+	(*Stripes)(nil),        // 12: sproutfs.peer.v1.Stripes
+	(*Keep)(nil),           // 13: sproutfs.peer.v1.Keep
+	(*Kept)(nil),           // 14: sproutfs.peer.v1.Kept
+	(*Drop)(nil),           // 15: sproutfs.peer.v1.Drop
+	(*Dropped)(nil),        // 16: sproutfs.peer.v1.Dropped
+	(*Presence)(nil),       // 17: sproutfs.peer.v1.Presence
+	(*Present)(nil),        // 18: sproutfs.peer.v1.Present
+	(*Probe)(nil),          // 19: sproutfs.peer.v1.Probe
+	(*Probed)(nil),         // 20: sproutfs.peer.v1.Probed
+	(*JournalRead)(nil),    // 21: sproutfs.peer.v1.JournalRead
+	(*JournalEntries)(nil), // 22: sproutfs.peer.v1.JournalEntries
+	(*JournalEntry)(nil),   // 23: sproutfs.peer.v1.JournalEntry
 }
 var file_sproutfs_peer_v1_peer_proto_depIdxs = []int32{
 	1,  // 0: sproutfs.peer.v1.Hello.class:type_name -> sproutfs.peer.v1.Class
 	0,  // 1: sproutfs.peer.v1.HelloReply.status:type_name -> sproutfs.peer.v1.Status
 	1,  // 2: sproutfs.peer.v1.Busy.class:type_name -> sproutfs.peer.v1.Class
-	8,  // 3: sproutfs.peer.v1.ReadStripes.window:type_name -> sproutfs.peer.v1.Window
+	9,  // 3: sproutfs.peer.v1.ReadStripes.window:type_name -> sproutfs.peer.v1.Window
 	2,  // 4: sproutfs.peer.v1.Stripes.status:type_name -> sproutfs.peer.v1.CacheStatus
-	9,  // 5: sproutfs.peer.v1.Stripes.items:type_name -> sproutfs.peer.v1.StripeItem
-	8,  // 6: sproutfs.peer.v1.Keep.window:type_name -> sproutfs.peer.v1.Window
-	9,  // 7: sproutfs.peer.v1.Keep.items:type_name -> sproutfs.peer.v1.StripeItem
+	10, // 5: sproutfs.peer.v1.Stripes.items:type_name -> sproutfs.peer.v1.StripeItem
+	9,  // 6: sproutfs.peer.v1.Keep.window:type_name -> sproutfs.peer.v1.Window
+	10, // 7: sproutfs.peer.v1.Keep.items:type_name -> sproutfs.peer.v1.StripeItem
 	2,  // 8: sproutfs.peer.v1.Kept.status:type_name -> sproutfs.peer.v1.CacheStatus
-	8,  // 9: sproutfs.peer.v1.Drop.window:type_name -> sproutfs.peer.v1.Window
+	9,  // 9: sproutfs.peer.v1.Drop.window:type_name -> sproutfs.peer.v1.Window
 	2,  // 10: sproutfs.peer.v1.Dropped.status:type_name -> sproutfs.peer.v1.CacheStatus
-	8,  // 11: sproutfs.peer.v1.Presence.windows:type_name -> sproutfs.peer.v1.Window
+	9,  // 11: sproutfs.peer.v1.Presence.windows:type_name -> sproutfs.peer.v1.Window
 	2,  // 12: sproutfs.peer.v1.Present.status:type_name -> sproutfs.peer.v1.CacheStatus
 	2,  // 13: sproutfs.peer.v1.Probed.status:type_name -> sproutfs.peer.v1.CacheStatus
-	14, // [14:14] is the sub-list for method output_type
-	14, // [14:14] is the sub-list for method input_type
-	14, // [14:14] is the sub-list for extension type_name
-	14, // [14:14] is the sub-list for extension extendee
-	0,  // [0:14] is the sub-list for field type_name
+	3,  // 14: sproutfs.peer.v1.JournalEntries.status:type_name -> sproutfs.peer.v1.JournalStatus
+	23, // 15: sproutfs.peer.v1.JournalEntries.entries:type_name -> sproutfs.peer.v1.JournalEntry
+	16, // [16:16] is the sub-list for method output_type
+	16, // [16:16] is the sub-list for method input_type
+	16, // [16:16] is the sub-list for extension type_name
+	16, // [16:16] is the sub-list for extension extendee
+	0,  // [0:16] is the sub-list for field type_name
 }
 
 func init() { file_sproutfs_peer_v1_peer_proto_init() }
@@ -3201,8 +3796,8 @@ func file_sproutfs_peer_v1_peer_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_sproutfs_peer_v1_peer_proto_rawDesc), len(file_sproutfs_peer_v1_peer_proto_rawDesc)),
-			NumEnums:      3,
-			NumMessages:   17,
+			NumEnums:      4,
+			NumMessages:   20,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

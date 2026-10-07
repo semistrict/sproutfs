@@ -316,6 +316,12 @@ func (s *Server) answer(session *session, incoming wire.Incoming, payload *paylo
 			return reply, err
 		}
 	}
+	if journalRead := new(peerv1.JournalRead); incoming.Message.MessageIs(journalRead) {
+		if err := incoming.UnmarshalTo(journalRead); err != nil {
+			return answer{}, err
+		}
+		return s.answerJournalRead(session, journalRead), nil
+	}
 	pageRequest, residentRequest, claimRequest := new(migratev1.PageRequest), new(migratev1.ResidentRequest),
 		new(migratev1.ClaimRequest)
 	switch {

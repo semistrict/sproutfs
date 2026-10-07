@@ -73,6 +73,19 @@ type Activity struct {
 	Imports    Outcomes
 	ImportTime latency.Snapshot
 	ImageBytes uint64
+	// Journal is what durable flush did.
+	Journal JournalActivity
+}
+
+// JournalActivity is what durable flush did on this host: whether the mode
+// is on and a journal disk is served, the flushes it answered by outcome,
+// what each took from its arrival to its answer and what its capture took,
+// and how much of the journal's ring its live entries hold.
+type JournalActivity struct {
+	DurableFlush, Served bool
+	Flushes              Outcomes
+	Flush, Capture       latency.Snapshot
+	RingBytes, LiveBytes int64
 }
 
 // CheckpointActivity is what the interval checkpoints did: every attempt, and
@@ -100,6 +113,7 @@ func (h *Host) Activity() Activity {
 		MigrationPause: a.migrationPause.Snapshot(), ForkPause: a.forkPause.Snapshot(),
 		Deaths: a.deaths.Load(), Fenced: a.fenced.Load(), Stopped: a.stopped.Load(),
 		Imports: a.imports.snapshot(), ImportTime: a.importTime.Snapshot(), ImageBytes: a.imageBytes.Load(),
+		Journal: h.journalActivity(),
 	}
 }
 

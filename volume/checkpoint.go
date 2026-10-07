@@ -69,6 +69,8 @@ type Checkpoint struct {
 	retry     Retry
 	protected []uint64
 	keep      bool
+	// cover names the journals the selection writes, nil for none.
+	cover JournalCover
 
 	// meter counts the object-store calls this checkpoint's publication makes,
 	// which is what one checkpoint cost in traffic. It is attributed by context,

@@ -533,7 +533,7 @@ func (h *Host) rooted(ctx context.Context, vm *volume.VM, runtime Machine) error
 		// another route.
 		return nil
 	}
-	ckpt, err := Capture(ctx, vm, runtime, h.clock, volume.Terms{})
+	ckpt, err := Capture(ctx, vm, runtime, h.clock, volume.Terms{Cover: h.JournalCover(vm.ID())})
 	if err != nil {
 		return err
 	}

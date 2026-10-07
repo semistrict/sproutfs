@@ -79,6 +79,10 @@ func (h *Host) flushed(memoryRegion *vmmemory.MemoryRegion, done func(error)) {
 		done(nil)
 		return
 	}
+	if h.journals.on {
+		h.flushedDurable(memoryRegion, done)
+		return
+	}
 	_, entry := h.machineFor(memoryRegion)
 	if entry == nil || entry.now == nil || entry.cadence.flushBound <= 0 {
 		done(nil)

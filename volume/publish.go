@@ -266,10 +266,27 @@ func (vm *VM) SnapshotDisks(ctx context.Context, prepare PrepareFunc, terms Term
 // selects it (control.Handle.SelectKept). Reclamation then spares it and
 // everything its index names, and a new VM can be created from it after this
 // one has moved past it. Retry decides what a failed publication does; nil
-// gives its pages back at once.
+// gives its pages back at once. Cover names the journals the selection
+// writes; nil writes none, which is right for a checkpoint that holds every
+// store the guest made, as a stop's does.
 type Terms struct {
 	Keep  bool
 	Retry Retry
+	Cover JournalCover
+}
+
+// JournalCover is what a checkpoint of a VM whose flushes a host journals
+// names in its control record: the journals that may hold flushed writes
+// newer than it, each with the position it covers
+// (plans/fsync-journal-2026-10-06.md). The host marks what the checkpoint's
+// pause covered; the publication asks for the list when it selects the
+// checkpoint, and tells the cover once the record names it.
+type JournalCover interface {
+	// Journals is the list the selection writes. It may wait for the
+	// journal to place what the pause covered.
+	Journals(ctx context.Context) ([]control.Journal, error)
+	// Selected reports that the record names journals from here on.
+	Selected(journals []control.Journal)
 }
 
 // Retry decides whether a checkpoint whose publication failed keeps its pages
@@ -330,6 +347,7 @@ func (vm *VM) snapshot(ctx context.Context, prepare PrepareFunc, dropState bool,
 		return nil, err
 	}
 	ckpt.unchanged, ckpt.dropState, ckpt.retry, ckpt.keep = unchanged, dropState, terms.Retry, terms.Keep
+	ckpt.cover = terms.Cover
 	go func() {
 		if err := vm.complete(vm.ctx, ckpt); err != nil {
 			report(vm.ctx, "volume: snapshot publication failed", vm.id, err)
@@ -612,16 +630,29 @@ func (vm *VM) publish(ctx context.Context, ckpt *Checkpoint) (*checkpoint.Index,
 
 // selecting selects a published checkpoint in the control record, and keeps it
 // in the same write when its capture asked for that, so no sweep can see it
-// selected and replaced without seeing it kept.
-//
-// The selection names no journal, because no journal holds this VM's flushed
-// writes yet. So every selection writes an empty list: the interval's, a
-// stop's and a close's.
+// selected and replaced without seeing it kept. It writes the journals the
+// checkpoint's cover names, and none where it has no cover: a stop's and a
+// close's checkpoint hold every store, and no host journals the flushes of a
+// VM whose captures name none.
 func (vm *VM) selecting(ctx context.Context, ckpt *Checkpoint, index *checkpoint.Index) (control.Record, error) {
-	if ckpt.keep {
-		return vm.control.SelectKept(ctx, ckpt.ref.Sequence, index.HasState(), nil)
+	var journals []control.Journal
+	if ckpt.cover != nil {
+		var err error
+		if journals, err = ckpt.cover.Journals(ctx); err != nil {
+			return control.Record{}, err
+		}
 	}
-	return vm.control.Select(ctx, ckpt.ref.Sequence, nil)
+	var record control.Record
+	var err error
+	if ckpt.keep {
+		record, err = vm.control.SelectKept(ctx, ckpt.ref.Sequence, index.HasState(), journals)
+	} else {
+		record, err = vm.control.Select(ctx, ckpt.ref.Sequence, journals)
+	}
+	if err == nil && ckpt.cover != nil {
+		ckpt.cover.Selected(journals)
+	}
+	return record, err
 }
 
 // publishedPages reports every page one volume of a checkpoint publishes: what
