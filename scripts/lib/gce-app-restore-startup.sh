@@ -8,6 +8,8 @@
 # The node's role, the cluster's token, the server's name and the pool's size
 # are instance metadata the bench script sets: sproutfs-k3s-role (server or
 # agent), sproutfs-k3s-token, sproutfs-k3s-server and sproutfs-hugepages.
+# sproutfs-kubelet-disk, boot, leaves the kubelet on the boot disk of a node
+# with no local SSD; without it the kubelet is on the local SSD.
 set -euo pipefail
 
 state=/var/lib/sproutfs-bench
@@ -61,7 +63,9 @@ systemctl enable --now sproutfs-bench-expire.timer
 # host's one disk limiter measures one filesystem, and the cache is what a
 # host's disk is for.
 ssd=/dev/disk/by-id/google-local-nvme-ssd-0
-if ! mountpoint -q /var/lib/kubelet; then
+if [[ $(metadata sproutfs-kubelet-disk 2> /dev/null || true) == boot ]]; then
+    log 'the kubelet directory stays on the boot disk'
+elif ! mountpoint -q /var/lib/kubelet; then
     [[ -b $ssd ]] || { log "FATAL: no local SSD at $ssd"; exit 1; }
     blkid "$ssd" > /dev/null 2>&1 || mkfs.ext4 -q -F "$ssd"
     install -d -m 0755 /var/lib/kubelet

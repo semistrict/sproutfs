@@ -8,7 +8,8 @@ scripts/bench-app-restore-gce.sh's nodes:
 - one host pod on each node, on the node's own network, so a host's peers are
   reached over the VPC as a deployment's hosts are and not through the
   overlay's tunnel;
-- a RAM arena that holds the whole guest, out of the node's HugeTLB pool;
+- a RAM arena that holds the whole guest, out of the node's HugeTLB pool, and
+  the pod's memory, which a smaller node sets lower;
 - the page cache's file beside the scratch on the node's local SSD;
 - one template alone, at the guest's size: valkey, or what --template names;
 - the cluster cache's share, and the code the orchestrator writes in the
@@ -50,10 +51,10 @@ def host(deployment, args):
     container = next(c for c in pod['containers'] if c['name'] == 'host')
     arena = args.arena_gib * GIB
     env_list(container, {
-        # Nine tenths of the arena are RAM's, so the guest's whole RAM is
-        # resident and a restore's faults are what the walk measures.
+        # Nine tenths of the arena are RAM's by default, so the guest's whole
+        # RAM is resident and a restore's faults are what the walk measures.
         'SPROUTFS_ARENA_BYTES': arena,
-        'SPROUTFS_RAM_SHARE_PERCENT': 90,
+        'SPROUTFS_RAM_SHARE_PERCENT': args.ram_share,
         'SPROUTFS_MEMORY_BYTES': arena + 2 * GIB,
         # No ephemeral disks, and the pagers' own default budgets, which follow
         # the arena and the spill file.
@@ -64,12 +65,12 @@ def host(deployment, args):
         'SPROUTFS_VM_VCPUS': 2,
         'SPROUTFS_CACHE_CLUSTER_PERCENT': args.share,
         # The local SSD is 375 GB; the cache may hold most of it.
-        'SPROUTFS_DISK_USED_BYTES': 200 * GIB,
-        'GOMEMLIMIT': '7GiB',
+        'SPROUTFS_DISK_USED_BYTES': args.disk_used_gib * GIB,
+        'GOMEMLIMIT': f'{args.memory_gib - 3}GiB',
     })
     container['resources'] = {
-        'requests': {'cpu': '3', 'memory': '10Gi', 'hugepages-2Mi': f'{args.arena_gib}Gi'},
-        'limits': {'cpu': '4', 'memory': '10Gi', 'hugepages-2Mi': f'{args.arena_gib}Gi'},
+        'requests': {'cpu': '3', 'memory': f'{args.memory_gib}Gi', 'hugepages-2Mi': f'{args.arena_gib}Gi'},
+        'limits': {'cpu': '4', 'memory': f'{args.memory_gib}Gi', 'hugepages-2Mi': f'{args.arena_gib}Gi'},
     }
     for volume in pod['volumes']:
         if volume['name'] == 'cache':
@@ -77,8 +78,11 @@ def host(deployment, args):
 
 
 def orchestrator(deployment, args):
-    container = deployment['spec']['template']['spec']['containers'][0]
-    env_list(container, {'SPROUTFS_CACHE_CODE': args.code})
+    pod = deployment['spec']['template']['spec']
+    env_list(pod['containers'][0], {'SPROUTFS_CACHE_CODE': args.code})
+    if args.orchestrator_node:
+        # A bench that loses a node on purpose keeps the orchestrator off it.
+        pod['nodeSelector'] = {'kubernetes.io/hostname': args.orchestrator_node}
 
 
 def orchestrator_policy(policy, args):
@@ -120,6 +124,10 @@ def main():
     parser.add_argument('--template', default='valkey=/usr/share/sproutfs/guest/valkey.ext4',
                         help='the template, as name=path of its image in the pod')
     parser.add_argument('--arena-gib', type=int, default=10)
+    parser.add_argument('--ram-share', type=int, default=90, help="the RAM arena's percent of the arena")
+    parser.add_argument('--memory-gib', type=int, default=10, help="the pod's memory; Go's limit is 3 GiB less")
+    parser.add_argument('--disk-used-gib', type=int, default=200, help='the most the host keeps on its disk')
+    parser.add_argument('--orchestrator-node', default='', help='the node the orchestrator runs on, any by default')
     parser.add_argument('--code', required=True)
     parser.add_argument('--node-cidr', required=True)
     parser.add_argument('--pod-cidr', default='10.42.0.0/16')
