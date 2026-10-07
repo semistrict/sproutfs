@@ -3,8 +3,10 @@ package vmmemory
 import (
 	"context"
 	"errors"
+	"slices"
 	"time"
 
+	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/vmmemory/internal/zirconvm"
 )
 
@@ -57,7 +59,13 @@ func (r *MemoryRegion) needsPrivatePage(index uint64) bool {
 // holds nothing of it at all, no mapping included, so that its bytes are
 // whatever the volume holds. Either way it owns no memory, no private state
 // and no checkpoint, and nothing needs fencing before a private page takes its
-// place. Caller holds the page's fault stripe.
+// place. Caller holds the page's fault stripe and the region shared.
+//
+// The three looks are three holds, and none goes stale between them. The
+// stripe keeps out every path that binds the page or makes it private: a
+// fault, a prefetch's mapping, a give-back and a rule. A seal, a retire and a
+// capture need the region exclusively. An eviction only takes a page away,
+// and a page with none that is dirty or the checkpoint's is not fresh.
 func (r *MemoryRegion) fresh(index uint64) (zero, untouched bool) {
 	r.bindingsMu.Lock()
 	b, zeroRun := r.lookupLocked(index)
@@ -164,6 +172,11 @@ func (r *MemoryRegion) storeZeros(ctx context.Context, index, first, last uint64
 		}
 	}()
 	first, last = around(index, first, last, 1+len(extras))
+	// allocateRun may give the region up, where index takes the one slot that
+	// may evict (reclaimPrivate). The run is still fresh after: a seal, a
+	// retire, an unseal and a capture change only pages that are dirty or the
+	// checkpoint's, and every path that makes a page of the window private or
+	// binds it holds the window's stripe, as this store does.
 	first, runs, err := r.allocateRun(ctx, index, first, last)
 	if err != nil {
 		return err
@@ -176,7 +189,9 @@ func (r *MemoryRegion) storeZeros(ctx context.Context, index, first, last uint64
 	if err != nil {
 		return err
 	}
-	// The run's pages are held from their making until their commands land.
+	// The run's pages are held from their making until their commands land,
+	// so no eviction takes one between the binding and the command. The
+	// signal's hold and the stats' below share nothing.
 	defer func() {
 		for _, run := range frames {
 			for _, frame := range run {
@@ -302,11 +317,21 @@ func (r *MemoryRegion) slotOf(index uint64) fileSlot {
 // isolated arena one of the page's two places in the region's own file, and
 // otherwise its offset in its range's extent, or an ordinary one beside its
 // neighbours where it has none, evicting where the arena is full.
+//
+// The caller's page is held by its stripe, so nothing but this reclaim takes
+// the page's own offset, and what the caller decided about the page is what a
+// seal, a retire or an abandon taken while the region is given up may change:
+// the caller decides that again once it is back (copyOnWrite, refault).
 func (r *MemoryRegion) reclaimPrivate(ctx context.Context, index uint64) (fileSlot, error) {
 	h := r.host
 	return r.reclaimWith(ctx, func() (fileSlot, error) {
 		if reclaimSeam != nil {
 			reclaimSeam(index)
+		}
+		// In a controlled run another task may go on here, with the region
+		// given up: a seal, a retire, a capture, or a fault of another window.
+		if err := sim.Admit(ctx, "vmmemory/reclaim-private"); err != nil {
+			return fileSlot{}, err
 		}
 		if err := context.Cause(ctx); err != nil {
 			return fileSlot{}, err
@@ -327,6 +352,11 @@ func (r *MemoryRegion) reclaimPrivate(ctx context.Context, index uint64) (fileSl
 		if at.slot >= 0 {
 			return at, nil
 		}
+		// noExtent and placeable are a look, which may be out of date once h.mu
+		// is given up: another region may take or give back an extent. Each
+		// step after looks again under the hold it acts in, and a look out of
+		// date costs a page an offset beside its neighbours rather than its
+		// own, never a slot.
 		if noExtent && r.host.reclaimExtent(f) {
 			// The file's extents were held by the idle pages of regions that
 			// have gone; one was given back for this range.
@@ -339,7 +369,16 @@ func (r *MemoryRegion) reclaimPrivate(ctx context.Context, index uint64) (fileSl
 		}
 		if placeable {
 			return h.allocate(ctx, r, f, func() int {
-				at, _ := h.place(r, index)
+				at, placeable := h.place(r, index)
+				if at.slot < 0 && !placeable && !sim.Bug(ctx, "pager-wait-for-an-offset-gone-elsewhere") {
+					// The offset stopped being this page's to have while it
+					// waited for room: another range took the last extent.
+					// What it waits for will not come, so it takes an
+					// ordinary slot, as it would have had it looked then.
+					if slot := h.firstFreeLocked(f); slot >= 0 && h.takeFree(fileSlot{f, slot}, 1) {
+						return slot
+					}
+				}
 				return at.slot
 			}, evictPastAFreeSlot(ctx))
 		}
@@ -473,6 +512,15 @@ func (r *MemoryRegion) takePrivate(ctx context.Context, index uint64, frame *zir
 	r.bindingsMu.Lock()
 	b := r.bindingLocked(index)
 	r.bindingsMu.Unlock()
+	// b is what the caller decided to copy away from, and nothing changes that
+	// while bindingsMu is given up here and below. The caller holds the
+	// page's stripe, which keeps out every other path that makes the page
+	// private or binds it: a fault, a prefetch's mapping, a give-back and a
+	// rule (takeOneShared takes the stripe of a page in another window). A
+	// seal, a retire and a capture need the region, which the caller holds
+	// shared. An eviction only takes b.page away, and lockedPage looks again
+	// for that.
+	//
 	// The page the guest maps is held across the change, so no eviction
 	// revokes the guest's mapping of it after the store's command put the copy
 	// there.
@@ -502,6 +550,9 @@ func (r *MemoryRegion) takePrivate(ctx context.Context, index uint64, frame *zir
 			return err
 		}
 	}
+	// b.page is still old here, and b.mapped what it was: the eviction that
+	// could change either takes old's lock, which this store holds, and the
+	// copy is held by the store and aliased by nothing yet.
 	h.mu.Lock()
 	if old := b.page; old != nil {
 		// The guest goes on reading the page it maps until the store's command
@@ -626,7 +677,11 @@ func (r *MemoryRegion) copyOnWrite(ctx context.Context, index uint64, spill *res
 	}
 	// The region is given up for the reclaim: a seal, a retire or an abandon
 	// taken meanwhile is what the page's being the checkpoint's or not was
-	// decided against, so it is decided again from the top.
+	// decided against, so it is decided again from the top. The checkpoint's
+	// copy is the one thing of b they change: a page that is not dirty is
+	// sealed by nothing and captured by nothing, and a retire or an abandon
+	// of a page held ends its holding. Nothing else changes b meanwhile: the
+	// page's stripe is held (takePrivate).
 	at, err := r.reclaimPrivate(ctx, index)
 	if err != nil {
 		return false, err
@@ -686,7 +741,7 @@ func (r *MemoryRegion) copyOnWrite(ctx context.Context, index uint64, spill *res
 		// range the guest is writing in is made whole, and the store is served
 		// again. The region closes gaps from now on.
 		r.pressed.Store(true)
-		merged, mergeErr := r.makeWhole(ctx, index)
+		merged, mergeErr := r.makeWhole(ctx, index, replaced)
 		if mergeErr != nil {
 			return false, mergeErr
 		}
@@ -713,6 +768,14 @@ func (h *Host) reclaimExtent(f *arenaFile) bool {
 		e := frame.file.leases[frame.slot].extent
 		return e != nil && e.file == f && h.extents[e.key] != e
 	}
+	// The look for a free extent and the drop are two holds, and either may
+	// be out of date by the other: another region may take or give back an
+	// extent, or map the idle page. takeIdleIf looks at its page again under
+	// its own hold and its page's lock, so it drops only a page still idle
+	// and orphaned; a drop no longer needed costs an idle page of a region
+	// that has gone, and a look that missed an extent coming free costs the
+	// caller a page beside its neighbours rather than at its own offset. The
+	// caller places under a hold of its own after.
 	for {
 		h.mu.Lock()
 		if !h.carving(f) || f.slots.FreeExtents() > 0 {
@@ -797,6 +860,16 @@ func (r *MemoryRegion) readIn(ctx context.Context, index uint64) (*zirconvm.VmPa
 	if waiter := plan.inFlight(ctx, index); waiter != nil {
 		return nil, true, r.awaitRead(ctx, waiter, index)
 	}
+	// The look for a read under way and the lookup are two holds, as a read
+	// fault's are (loadOnce). A prefetch of another region of the same root
+	// may send its read of the page between them. The lookup then finds the
+	// root holding nothing there and the store reads the page itself: a
+	// second read, whose supply keeps whichever page reached the root first.
+	// It costs a read and loses nothing. In a controlled run another task may
+	// go on here.
+	if err := sim.Admit(ctx, "vmmemory/store-read-in"); err != nil {
+		return nil, false, err
+	}
 	again, err := plan.takeFaulting(ctx, index)
 	if err != nil || again {
 		return nil, again, err
@@ -855,13 +928,13 @@ func (r *MemoryRegion) closeAround(ctx context.Context, index uint64, at fileSlo
 	if last-first == 1 {
 		return first, last, nil
 	}
-	if err := r.takeShared(ctx, first, index, last, replaced); err != nil {
+	first, last, err = r.takeShared(ctx, first, index, last, replaced)
+	if err != nil {
 		return 0, 0, err
 	}
 	if whole {
 		h.markWhole(r, index)
 	}
-	first, last = r.placedRun(index, first, last)
 	return first, last, nil
 }
 
@@ -913,24 +986,6 @@ func (r *MemoryRegion) placedPrivateAtLocked(e *extent, page uint64) bool {
 	return dirty && b.page != nil && frameOf(b.page).fileSlot == r.host.slotIn(e, page)
 }
 
-// placedRun reports the longest run of pages around index that one mapping
-// command covers, within [first, last): every page of it is the region's own
-// at a consecutive offset of one extent.
-func (r *MemoryRegion) placedRun(index, first, last uint64) (uint64, uint64) {
-	h := r.host
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	e := h.extents[extentKey{r, index / uint64(h.extentPages)}]
-	start, end := index, index+1
-	for start > first && r.placedPrivateAtLocked(e, start-1) {
-		start--
-	}
-	for end < last && r.placedPrivateAtLocked(e, end) {
-		end++
-	}
-	return start, end
-}
-
 // joinsRun reports a page one store's command may cover.
 func (r *MemoryRegion) joinsRun(page uint64) bool {
 	h := r.host
@@ -942,38 +997,65 @@ func (r *MemoryRegion) joinsRun(page uint64) bool {
 // takeShared makes the pages either side of the faulting one the region's own
 // dirty state, at the offset the placement rule gives each. It works outward
 // from the faulting page and stops on each side at the first page that cannot
-// join the store's run, so what it takes is exactly what the caller's one
-// mapping command covers. It never waits, never evicts and reads nothing this
+// join the store's run, and reports the run it took, [lo, hi), which holds
+// index: exactly what the caller's one mapping command covers. Every page of
+// it is held until that command lands, so the run is still what it was when
+// the command maps it. It never waits, never evicts and reads nothing this
 // host does not hold.
-func (r *MemoryRegion) takeShared(ctx context.Context, first, index, last uint64, replaced *replacement) error {
-	for page := index + 1; page < last; page++ {
-		joined, err := r.takeOneShared(ctx, page, replaced)
+func (r *MemoryRegion) takeShared(ctx context.Context, first, index, last uint64,
+	replaced *replacement) (lo, hi uint64, err error) {
+	hi = index + 1
+	for hi < last {
+		joined, err := r.takeOneShared(ctx, index, hi, replaced)
 		if err != nil {
-			return err
+			return 0, 0, err
 		}
 		if !joined {
 			break
 		}
+		hi++
 	}
-	for page := index; page > first; page-- {
-		joined, err := r.takeOneShared(ctx, page-1, replaced)
+	lo = index
+	for lo > first {
+		joined, err := r.takeOneShared(ctx, index, lo-1, replaced)
 		if err != nil {
-			return err
+			return 0, 0, err
 		}
 		if !joined {
 			break
 		}
+		lo--
 	}
-	return nil
+	return lo, hi, nil
 }
+
+// ruleSeam runs as a rule has decided to take one page into a store's run and
+// before it does. Production leaves it nil; a test puts another fault or an
+// eviction of that page there.
+var ruleSeam func(page uint64)
 
 // takeOneShared makes one page private for a rule, from bytes this host holds,
 // at the offset of its own, never waiting and never evicting. It reports
-// whether the page is one the store's run now covers.
-func (r *MemoryRegion) takeOneShared(ctx context.Context, page uint64, replaced *replacement) (bool, error) {
+// whether the page is one the store's run now covers. index is the store's
+// own page.
+//
+// A rule's page may be in another read-ahead window than the store's, whose
+// faults the store's stripe does not keep out: a read-ahead run shorter than
+// a range is one. So the page's stripe is taken too, or the run ends there. A
+// store of that page between the look below and the copy would make it
+// private beside this copy, and one of the two would be lost with its
+// reservation.
+func (r *MemoryRegion) takeOneShared(ctx context.Context, index, page uint64, replaced *replacement) (bool, error) {
 	h := r.host
+	if stripe := r.stripe(page); stripe != r.stripe(index) && !sim.Bug(ctx, "pager-rule-takes-a-page-of-another-window") {
+		if !stripe.TryLock() {
+			// A fault of that window is under way: the run ends here.
+			return false, nil
+		}
+		defer stripe.Unlock()
+	}
 	if r.writable(page) {
-		return r.joinsRun(page), nil
+		return r.joinRun(ctx, page, replaced), nil
 	}
 	r.bindingsMu.Lock()
 	b := r.bindingLocked(page)
@@ -1017,6 +1099,9 @@ func (r *MemoryRegion) takeOneShared(ctx context.Context, page uint64, replaced 
 		h.releaseSpill(spill)
 		return false, err
 	}
+	// The page's source may go from here, which the copy no longer needs, and
+	// nothing else can make the page private: its stripe is held. place takes
+	// the offset under the same hold it looks at it in.
 	h.mu.Lock()
 	at, _ := h.place(r, page)
 	h.mu.Unlock()
@@ -1025,6 +1110,15 @@ func (r *MemoryRegion) takeOneShared(ctx context.Context, page uint64, replaced 
 		// evicts for a page the guest did not write.
 		h.releaseSpill(spill)
 		return false, nil
+	}
+	if ruleSeam != nil {
+		ruleSeam(page)
+	}
+	// In a controlled run another task may go on here, between the rule's
+	// look at the page and its copy: a fault of the page's window, say.
+	if err := sim.Admit(ctx, "vmmemory/rule-copy"); err != nil {
+		h.releaseSpill(spill)
+		return false, h.abandonSlots(ctx, at, 1, err)
 	}
 	frame, err := r.host.newFrame(ctx, at, data, r.kind)
 	if err != nil {
@@ -1042,32 +1136,86 @@ func (r *MemoryRegion) takeOneShared(ctx context.Context, page uint64, replaced 
 		h.releaseSpill(spill)
 		return false, err
 	}
+	// The stats share nothing with the hold that placed the page.
 	h.mu.Lock()
 	h.stats.RuleCopies++
 	h.mu.Unlock()
 	return true, nil
 }
 
+// joinRun takes into a store's run a page the region stores into where it is
+// already, and holds it until the store's command lands: an eviction between
+// the look and the command would leave the command mapping a slot that went
+// back. A page something else holds, an eviction most likely, ends the run.
+// One the store holds already, which an earlier rule of the same store took,
+// is the run's. It never waits.
+func (r *MemoryRegion) joinRun(ctx context.Context, page uint64, replaced *replacement) bool {
+	if sim.Bug(ctx, "pager-rule-joins-a-page-it-does-not-hold") {
+		// The bug looks at the page and holds nothing.
+		joined := r.joinsRun(page)
+		if joined && ruleSeam != nil {
+			ruleSeam(page)
+		}
+		return joined
+	}
+	h := r.host
+	b := r.lookupBinding(page)
+	h.mu.Lock()
+	p := b.page
+	h.mu.Unlock()
+	if p == nil {
+		return false
+	}
+	if slices.Contains(replaced.made, p) {
+		return r.joinsRun(page)
+	}
+	if !frameOf(p).mu.TryLock() {
+		return false
+	}
+	h.mu.Lock()
+	same := b.page == p
+	h.mu.Unlock()
+	if !same || !r.joinsRun(page) {
+		h.unlockPage(p)
+		return false
+	}
+	if ruleSeam != nil {
+		ruleSeam(page)
+	}
+	replaced.keep(p)
+	return true
+}
+
 // makeWhole is the mapping budget's backstop, which a client's refusal of a
 // store's mapping command reaches: it copies every page of one range into the
 // holes of its extent and maps the range with one command, so the mappings the
 // range was costing that process go and the store is served again. It reports
-// whether it took anything.
-func (r *MemoryRegion) makeWhole(ctx context.Context, index uint64) (bool, error) {
+// whether it took anything. replaced is the store's, which holds the store's
+// own page and whatever its rules took.
+//
+// The range is one run only around a store's page at its own offset. A store
+// that copied away from a sealed page took another offset, because its own
+// holds the copy the checkpoint is publishing, and a run from the range's
+// first offset would map the guest's page onto that copy. The store holds its
+// page, so what the look finds stays true until the command lands.
+func (r *MemoryRegion) makeWhole(ctx context.Context, index uint64, replaced *replacement) (bool, error) {
 	h := r.host
 	span := uint64(h.extentPages)
-	h.mu.Lock()
-	placed := h.extents[extentKey{r, index / span}] != nil
-	h.mu.Unlock()
+	placed := r.joinsRun(index)
+	if sim.Bug(ctx, "pager-make-whole-around-a-page-elsewhere") {
+		// The bug asks only that the range has an extent.
+		h.mu.Lock()
+		placed = h.extents[extentKey{r, index / span}] != nil
+		h.mu.Unlock()
+	}
 	if !placed {
 		return false, nil
 	}
 	first := index - index%span
 	last := min(first+span, uint64(r.pageCount))
 	before := r.privatePages(first, last)
-	replaced := &replacement{region: r}
-	defer replaced.unlock()
-	if err := r.takeShared(ctx, first, index, last, replaced); err != nil {
+	lo, hi, err := r.takeShared(ctx, first, index, last, replaced)
+	if err != nil {
 		return false, errors.Join(err, replaced.revoke(ctx))
 	}
 	if r.privatePages(first, last) <= before {
@@ -1075,18 +1223,19 @@ func (r *MemoryRegion) makeWhole(ctx context.Context, index uint64) (bool, error
 		return false, nil
 	}
 	h.markWhole(r, index)
-	first, last = r.placedRun(index, first, last)
+	// Every page of [lo, hi) is held, so the extent and its offsets are the
+	// ones takeShared found.
 	h.mu.Lock()
-	at := h.placedSlot(r, first)
+	at := h.placedSlot(r, lo)
 	h.stats.MappingMerges++
 	h.mu.Unlock()
-	count := int(last - first)
-	r.setMapped(first, last, true)
-	if err := r.mapPages(ctx, r.runAt(first, at, count), true); err != nil {
+	count := int(hi - lo)
+	r.setMapped(lo, hi, true)
+	if err := r.mapPages(ctx, r.runAt(lo, at, count), true); err != nil {
 		if revoked := replaced.revoke(ctx); revoked != nil {
 			return false, errors.Join(r.fail(err), revoked)
 		}
-		return false, r.mappingFailed(err, func() { r.setMapped(first, last, false) })
+		return false, r.mappingFailed(err, func() { r.setMapped(lo, hi, false) })
 	}
 	replaced.done()
 	return true, nil
