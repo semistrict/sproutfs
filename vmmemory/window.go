@@ -381,9 +381,11 @@ func (p *plan) eligible(page uint64) bool { return p.region.eligible(page) }
 // take binds page to the page its root holds under key, where it holds one,
 // and reports it. It waits for the page's lock, which it takes with no
 // object lock held, and binds the page only where its root still holds it
-// then, under its root's lock, so no idle drop takes it between the two. A
-// population takes pages in one order of identities, so two that wait on each
-// other's pages cannot both be waiting.
+// once that lock is held: between the root's two looks the page may be given
+// up, and another put in its place, but no idle drop, eviction or move takes
+// a page whose lock is held, so after the second look it stays until the plan
+// is unlocked. A population takes pages in one order of identities, so two
+// that wait on each other's pages cannot both be waiting.
 func (p *plan) take(ctx context.Context, page uint64, key pageKey) (*zirconvm.VmPage, error) {
 	r := p.region
 	h := r.host
@@ -396,6 +398,11 @@ func (p *plan) take(ctx context.Context, page uint64, key pageKey) (*zirconvm.Vm
 		lock.Unlock()
 		if found == nil {
 			return nil, nil
+		}
+		// In a controlled run another task may go on here, with the root's
+		// lock and the page's both free: an idle drop of this page, say.
+		if err := sim.Admit(ctx, "vmmemory/populate-take"); err != nil {
+			return nil, err
 		}
 		if err := r.host.lockPage(ctx, found); err != nil {
 			return nil, err
@@ -442,6 +449,20 @@ type survey struct {
 // identity, unless its bytes go in the region's own file or a prefetch is
 // reading it already; where prefetched says the read is a prefetch's, a page
 // with no identity is left to its own fault.
+//
+// It looks at the region's bindings, each root and the reads under way under
+// holds of their own locks, one after another. The plan holds the window's
+// stripe and the region, so no page of the window the region held nothing at
+// becomes its between them: only a fault of the window, a populate or a
+// checkpoint would bind one. A page it held may go to an eviction, which
+// leaves it to its own fault. What other regions do meanwhile, a read that
+// supplies a page to its root, a prefetch that lands or starts, an idle
+// drop, only makes a look out of date: a page the root
+// held is taken only under its lock, and only where the plan can hold it; a
+// page a read brings in since is read twice, and the later supply keeps the
+// earlier page (supplyRun, landRun); a page whose read ended since is left to
+// its own fault; and a prefetch looks at the reads under way again under the
+// hold that sends its own (splitPrefetch).
 func (p *plan) survey(ctx context.Context, except uint64, prefetched bool) survey {
 	r := p.region
 	found := survey{into: make([]*arenaFile, p.end-p.start)}
@@ -551,6 +572,7 @@ func (p *plan) takeRootRun(ctx context.Context, first, last uint64, eligible []b
 	}
 	lock.Unlock()
 	if hits > 0 {
+		// A count, which decides nothing.
 		h.mu.Lock()
 		h.stats.IdentityHits += hits
 		h.mu.Unlock()
@@ -685,6 +707,13 @@ func (p *plan) reserveRunsIn(ctx context.Context, from uint64, file *arenaFile, 
 	if err := p.region.host.makeRoom(ctx, file, needed); err != nil {
 		return err
 	}
+	// The slots made free here are anyone's until they are taken, under
+	// holds of h.mu of their own: another allocation may take them first.
+	// Then fewer runs are reserved, and the pages left are their own faults'
+	// to read. In a controlled run another task may go on here.
+	if err := sim.Admit(ctx, "vmmemory/reserve-runs"); err != nil {
+		return err
+	}
 	spans := [][2]uint64{{p.start, p.end}}
 	h.mu.Lock()
 	if h.freeLocked(file) < needed {
@@ -715,7 +744,11 @@ func (p *plan) reserveRunsIn(ctx context.Context, from uint64, file *arenaFile, 
 }
 
 // reserveOwn takes places in the region's own file for the pages of the
-// window it reads there, without evicting.
+// window it reads there, without evicting. Whether a page may join is looked
+// at again for each page, and a place is taken only where it is free under
+// the same hold of h.mu. A page read here goes to the region's own layer by
+// what the backing holds when it is read, so a name located before the
+// region was given up decides nothing here.
 func (p *plan) reserveOwn() {
 	r := p.region
 	h := r.host
@@ -771,8 +804,23 @@ func (p *plan) loadReserved(ctx context.Context) error {
 	// The read answers the READ request the faulting page's lookup sent,
 	// where the run holds that page: its supply below resolves it, and a
 	// failed read fails it when the plan is unlocked.
+	//
+	// The region is given up across the read, so a seal, a retire, an unseal
+	// or a populate of it may run whole meanwhile. None changes what the plan
+	// acts on after: a reserved page is one the region held nothing at, which
+	// keeps its name while the plan holds the window's stripe; a page the plan
+	// took is bound and locked, so no eviction or idle drop takes it, and none
+	// is the region's own, which a retire would wait for; the supply binds
+	// each page to whatever its object holds then (supplyRun);
+	// install maps no page the region maps already, and decides whether the
+	// region's own page is writable once the region is held again.
 	var unpublished []bool
 	err := r.withoutMemoryRegion(ctx, func() error {
+		// In a controlled run another task may go on here, with the region
+		// given up.
+		if err := sim.Admit(ctx, "vmmemory/run-read"); err != nil {
+			return err
+		}
 		var err error
 		unpublished, err = r.readRun(ctx, first, wanted, data, &h.loadLatency)
 		return err
@@ -903,6 +951,14 @@ func (p *plan) supplyRun(ctx context.Context, page uint64, id pageKey, shared bo
 		// The faulting page's own read request is answered by its supply.
 		p.request.answer(nil)
 	}
+	// The supply gave the object's lock back, and the binding below takes it
+	// again. Between the two another region may look at the root, and finds
+	// a frame read here held, which it leaves to its own fault; a prefetch
+	// that lands the same pages finds them supplied, and drops its own; and
+	// no idle drop takes a frame whose lock the plan holds. In a controlled
+	// run another task may go on here. A cancelled one still binds what it
+	// supplied, so the plan gives every frame's lock back.
+	admitted := sim.Admit(ctx, "vmmemory/supplied")
 	// Each page is bound to what its object holds now, under the object's
 	// lock: the frame read here, or the page another read supplied first.
 	hits := uint64(0)
@@ -940,11 +996,12 @@ func (p *plan) supplyRun(ctx context.Context, page uint64, id pageKey, shared bo
 	}
 	lock.Unlock()
 	if hits > 0 {
+		// A count, which decides nothing.
 		h.mu.Lock()
 		h.stats.IdentityHits += hits
 		h.mu.Unlock()
 	}
-	return nil
+	return admitted
 }
 
 // install maps every planned page and resolves the faulting one. Consecutive
@@ -952,6 +1009,13 @@ func (p *plan) supplyRun(ctx context.Context, page uint64, id pageKey, shared bo
 // The commands are issued with no object lock held: a plan holds none, its
 // pages being bound to the region already. The region's own Dirty pages are
 // mapped writable, in runs of their own.
+//
+// Whether the region maps a page is looked up, recorded and commanded under
+// holds of bindingsMu of their own, one after another. The plan holds the
+// window's stripe and the region throughout, so no fault, populate or
+// checkpoint of the region maps or unmaps a page of the window between them,
+// and no eviction or idle drop takes a page the plan holds. h.mu is taken
+// only to count.
 func (p *plan) install(ctx context.Context) (bool, error) {
 	r := p.region
 	h := r.host

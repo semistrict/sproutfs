@@ -74,6 +74,12 @@ func (r *MemoryRegion) ReadResident(ctx context.Context, page uint64, dst []byte
 		return false, false, err
 	}
 	defer h.endIO()
+	// The binding is read under holds of bindingsMu and h.mu of their own,
+	// and the bytes with neither held. The stripe and the region are held
+	// throughout, so no fault, seal or retire changes the page's state or
+	// gives its reservation back meanwhile. An eviction may take the page
+	// before lockedPage looks, which then reports none and the spill is
+	// read; it takes no page lockedPage holds.
 	p, err := r.host.lockedPage(ctx, b)
 	if err != nil {
 		return false, false, err
