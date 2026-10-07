@@ -6,6 +6,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/vmmemory/internal/zirconvm"
 )
 
@@ -303,6 +304,14 @@ func (r *MemoryRegion) endDirty(b *binding) reservation {
 // leaveOutColdCopies leaves out of the set a seal took every cold copy that
 // still holds its origin's bytes, which stays the guest's, cold and writable.
 // Caller holds the region exclusively.
+//
+// The cold copies are listed under one hold of bindingsMu and compared, each
+// with its pages locked, after it. With the region held exclusively no fault,
+// store, give-back, capture or other seal runs meanwhile, so each copy stays
+// in the set, dirty and the region's own. An eviction still may: it spills a
+// copy, or takes its origin and makes it compared with its volume, or a move
+// gives it another origin. stillOrigins asks which under the pages' locks, and
+// uncoldLocked unpins whatever origin the copy names by then.
 func (r *MemoryRegion) leaveOutColdCopies(ctx context.Context, pending map[uint64]*binding) (int, error) {
 	h := r.host
 	r.bindingsMu.Lock()
@@ -319,6 +328,15 @@ func (r *MemoryRegion) leaveOutColdCopies(ctx context.Context, pending map[uint6
 	for _, b := range cold {
 		same, err := r.stillOrigins(ctx, b, &buffers)
 		if err != nil {
+			// The copies left out so far go back in the set, which then
+			// takes them as it takes every other dirty page: out of both
+			// the set and the region's dirty set, a later store into one
+			// would reach no checkpoint.
+			if !sim.Bug(ctx, "pager-seal-drops-the-cold-copies-before-a-failed-compare") {
+				for _, left := range unchanged {
+					pending[left.index] = left
+				}
+			}
 			return 0, err
 		}
 		if same {
@@ -333,6 +351,11 @@ func (r *MemoryRegion) leaveOutColdCopies(ctx context.Context, pending map[uint6
 	if len(unchanged) == 0 {
 		return 0, nil
 	}
+	// The copies left out are the region's dirty pages again under a hold of
+	// their own. Nothing but an eviction ran since they were compared, and an
+	// eviction leaves a page dirty and its own: noteSealableLocked reads
+	// whether each is mapped now, and unprotectMapped asks again under the
+	// region's protection, which every revocation holds.
 	r.bindingsMu.Lock()
 	if r.dirtySet == nil {
 		r.dirtySet = make(map[uint64]*binding)
