@@ -132,6 +132,10 @@ var (
 	// was lost, and the flushes it holds are replayed once it is served. It
 	// is an errRunning: the VM's flushed writes are between hosts, not lost.
 	errJournalPending = fmt.Errorf("%w: a journal it names is not served yet", errRunning)
+	// errServing refuses to open a VM whose pages no checkpoint has a host
+	// still serves: it handed the VM over and has not let them go. It is an
+	// errRunning: the VM is between hosts, not lost.
+	errServing = fmt.Errorf("%w: a host still serves the pages of it that no checkpoint has", errRunning)
 )
 
 // journalPatience bounds how long a recovery waits for the journal disks a
@@ -182,11 +186,13 @@ type orchestrator struct {
 	recentAt    time.Time
 	moves       uint64
 
-	// resuming is the migrations a survey took up again because nothing was
-	// driving them, each until it ends, and resumes is every one of them.
-	resumeMu sync.Mutex
-	resuming map[string]bool
-	resumes  sync.WaitGroup
+	// driving is the VMs whose handover this orchestrator is carrying, each
+	// until the carry and any recovery after it end: a migration it began, and
+	// one a survey took up again because nothing was driving it. resumes is
+	// every one of the latter.
+	driveMu sync.Mutex
+	driving map[string]bool
+	resumes sync.WaitGroup
 
 	// code is the deployment's code, as configured, and earlier the codes it
 	// replaced, newest first, which the orchestrator writes in the membership.
@@ -574,20 +580,12 @@ func runsAnswering(hosts []liveHost, id string) bool {
 // runs. A source that holds no handoff of the VM is not a migration's source —
 // a fork point it holds for a child, say — and resume leaves it to the release.
 func (o *orchestrator) resume(ctx context.Context, hosts []liveHost, source liveHost, id string) bool {
-	o.resumeMu.Lock()
-	if o.resuming[id] {
-		o.resumeMu.Unlock()
-		return true
-	}
-	if o.resuming == nil {
-		o.resuming = make(map[string]bool)
-	}
-	o.resuming[id] = true
-	o.resumeMu.Unlock()
-	done := func() {
-		o.resumeMu.Lock()
-		delete(o.resuming, id)
-		o.resumeMu.Unlock()
+	done, driven := o.drive(id)
+	if !driven {
+		if !sim.Bug(ctx, "orchestrator-take-up-a-driven-handover") {
+			return true
+		}
+		done = func() {}
 	}
 	handed, found, err := source.client.Handed(ctx, id)
 	if err != nil || !found {
@@ -623,6 +621,28 @@ func (o *orchestrator) resume(ctx context.Context, hosts []liveHost, source live
 		}
 	})
 	return true
+}
+
+// drive marks the handover of id as one this orchestrator carries, and reports
+// false where it already does. A survey takes up no handover that is marked:
+// between a carry that failed and the recovery after it, the table says the VM
+// is stopped and its source may still serve the pages, which is what a handover
+// nothing drives looks like. done unmarks it.
+func (o *orchestrator) drive(id string) (done func(), driven bool) {
+	o.driveMu.Lock()
+	defer o.driveMu.Unlock()
+	if o.driving[id] {
+		return nil, false
+	}
+	if o.driving == nil {
+		o.driving = make(map[string]bool)
+	}
+	o.driving[id] = true
+	return func() {
+		o.driveMu.Lock()
+		delete(o.driving, id)
+		o.driveMu.Unlock()
+	}, true
 }
 
 // forsaken reports a handover whose VM does not exist, which nothing will ever
@@ -1354,6 +1374,11 @@ func (o *orchestrator) Migrate(ctx context.Context, id, to string) (orch.Migrate
 	if err := admits(target, need); err != nil {
 		return orch.MigrateResult{}, err
 	}
+	done, driven := o.drive(id)
+	if !driven {
+		return orch.MigrateResult{}, fmt.Errorf("%w: a handover of %s is in flight", errRunning, id)
+	}
+	defer done()
 	o.note(ctx, vmRecord{ID: id, Host: source.report.Name, State: stateMigrating,
 		From: source.report.Name, To: target.report.Name})
 	handed, err := source.client.Migrate(ctx, id, host.MigrateRequest{Destination: target.report.Page})
@@ -1660,6 +1685,11 @@ const lostRecoveryPatience = 2 * time.Minute
 // guest up. Recovering then found no host with room and left the VM stopped
 // (TASK-45), so this waits for the receive to end, surveying on the watch
 // interval, for as long as lostRecoveryPatience.
+//
+// The source may still serve the pages too. A hold this orchestrator counts
+// over by its own clock is one the source ends by its own timer, which can
+// fire a moment later, and an open while it serves them is refused. So this
+// waits for the source to let them go as well.
 func (o *orchestrator) recoverLost(ctx context.Context, id, from string) error {
 	terms := recovery(false)
 	terms.handedOver = from
@@ -1671,7 +1701,9 @@ func (o *orchestrator) recoverLost(ctx context.Context, id, from string) error {
 		if err == nil {
 			break
 		}
-		if !errors.Is(err, errReceiving) && !errors.Is(err, errJournalPending) || time.Now().After(deadline) {
+		serving := errors.Is(err, errServing) && !sim.Bug(ctx, "orchestrator-recover-past-a-serving-source")
+		waiting := errors.Is(err, errReceiving) || serving || errors.Is(err, errJournalPending)
+		if !waiting || time.Now().After(deadline) {
 			return fmt.Errorf("recovering %s after losing the host holding its pages: %w", id, err)
 		}
 		if err := ctxsync.Sleep(ctx, o.watchInterval()); err != nil {
@@ -1879,7 +1911,7 @@ func (o *orchestrator) reopen(ctx context.Context, id string, terms reopening) (
 	// stops refusing on its own.
 	if holder := holding(hosts, id); holder != "" {
 		return orch.RecoverResult{}, fmt.Errorf(
-			"%w: %s still serves the pages of %s that no checkpoint has", errRunning, holder, id)
+			"%w: %s serves them for %s", errServing, holder, id)
 	}
 	// Nor is a VM a receive of which is still in flight: that receive may yet
 	// take it in, and until it ends, the guest RAM it committed still counts

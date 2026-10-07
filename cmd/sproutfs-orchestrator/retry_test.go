@@ -83,6 +83,24 @@ func TestADestinationThatKeepsFailingIsLeftForAnotherWithRoom(t *testing.T) {
 	}
 }
 
+// A source ends its hold by its own timer, which can fire a moment after the
+// orchestrator's clock says the hold is over. The recovery that follows waits
+// for the source to let the pages go, rather than give up on one that still
+// serves them and leave the VM stopped.
+func TestARecoveryPastTheHoldWaitsForTheSourceToLetThePagesGo(t *testing.T) {
+	d := newDeployment(t, map[string][]string{"host-0": {"vm-a"}, "host-1": {}})
+	d.hosts["host-0"].hold = 0.2
+	d.hosts["host-0"].letGoLate = 100 * time.Millisecond
+	d.hosts["host-1"].refusesEveryReceive = true
+	_, err := d.orchestrator.Migrate(simulated(t), "vm-a", "host-1")
+	if !errors.Is(err, errLostSource) || errors.Is(err, errRunning) {
+		t.Fatalf("a migration whose source let go late = %v, want errLostSource and the VM recovered", err)
+	}
+	if last := d.log[len(d.log)-1]; last != "host-0 open vm-a" {
+		t.Fatalf("the deployment ended with %q, want the VM recovered: %v", last, d.log)
+	}
+}
+
 // The source's hold is what a handoff is good for. Once it is over the source
 // has given the pages up, so the retries stop: the last look, at the end of the
 // hold, finds the pages gone, nothing is released, and the VM is recovered from
@@ -114,7 +132,7 @@ func TestRetriesStopWhenTheSourcesHoldIsOver(t *testing.T) {
 		t.Fatalf("the handoff was received %d times inside its hold, want it tried again: %v", receives, d.log)
 	}
 	if last := d.log[len(d.log)-1]; last != "host-0 open vm-a" {
-		t.Fatalf("the deployment ended with %q, want the VM recovered: %v", last, d.log)
+		t.Fatalf("the deployment ended with %q, want the VM recovered: %v\nthe migration said: %v", last, d.log, err)
 	}
 	row, _, err := d.orchestrator.table.VM(t.Context(), "vm-a")
 	if err != nil {

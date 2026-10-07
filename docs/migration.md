@@ -230,7 +230,11 @@ never evidence.
 The recovery that follows accepts the source's silence, because the source gave
 its volumes up before any destination was asked, and only an open by the
 orchestrator could run the VM there again. Any other host that does not answer
-still refuses the recovery.
+still refuses the recovery. A source whose deadline has passed may still report
+serving the pages for a moment, until its timer runs; the recovery waits for it
+to let them go, as it waits for the destination to end its receive. Until the
+recovery ends, the migration stays this orchestrator's: a survey that finds the
+VM stopped and its source serving does not take the handover up a second time.
 
 Nothing else the Kubernetes API reports is used. A `NotReady` node or a pod
 being deleted says nothing about whether the process serves pages, and a

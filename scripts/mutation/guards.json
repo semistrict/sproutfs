@@ -1304,5 +1304,17 @@
     "package": "platform/sim",
     "run": "^TestATasksBuggifyDrawsDoNotDependOnAnotherTasks$",
     "purpose": "Number a Buggify site's calls across every task in arrival order even in a controlled run, so two tasks that run at one instant shift each other's firings and a seed no longer replays."
+  },
+  {
+    "id": "orchestrator-recover-past-a-serving-source",
+    "package": "cmd/sproutfs-orchestrator",
+    "run": "^TestARecoveryPastTheHoldWaitsForTheSourceToLetThePagesGo$",
+    "purpose": "Give up the recovery after a lost source when the source still serves the pages, although its hold is over by the orchestrator's clock and its own timer lets them go a moment later: the VM is left stopped."
+  },
+  {
+    "id": "orchestrator-take-up-a-driven-handover",
+    "package": "cmd/sproutfs-orchestrator",
+    "run": "^TestARecoveryPastTheHoldWaitsForTheSourceToLetThePagesGo$",
+    "purpose": "Let a survey take up a handover this orchestrator is still carrying, between a failed carry and its recovery, so two recoveries of one VM race and one fails finding the other's open."
   }
 ]

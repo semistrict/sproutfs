@@ -176,6 +176,10 @@ type fakeHostClient struct {
 	receiveCommit  uint64
 	// hold is what this host's migrations report it holds a handover for.
 	hold host.Seconds
+	// letGoLate is how long after its hold this host lets a handover's pages
+	// go: a host's timer can fire a moment after the orchestrator's clock says
+	// the hold is over.
+	letGoLate time.Duration
 	// pulling is the VMs this host was asked to run marked to pull their whole
 	// memory, which it reports with each of them and carries in their handoffs.
 	pulling map[string]bool
@@ -483,7 +487,7 @@ func (f *fakeHostClient) Migrate(_ context.Context, id string, request host.Migr
 	if f.hold > 0 {
 		// A host gives the pages up on its own at the end of the hold it
 		// reports, whether or not anything can reach it.
-		time.AfterFunc(f.hold.Duration(), func() {
+		time.AfterFunc(f.hold.Duration()+f.letGoLate, func() {
 			f.mu.Lock()
 			defer f.mu.Unlock()
 			f.serving = slices.DeleteFunc(f.serving, func(value string) bool { return value == id })
