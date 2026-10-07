@@ -1,37 +1,48 @@
 # Architecture
 
-Sproutfs moves virtual machines between hosts and forks them. It does not copy
-their inherited disk and memory contents to do this. Disk and memory use the
-same storage abstraction: a [volume](volumes.md), which is a byte-addressed
-image with one writer.
+Sproutfs runs virtual machines whose disks and memory are stored in object
+storage. It can move a running VM to another host, and fork it, without
+copying the disk and memory the VM already has. Disks and RAM are both
+[volumes](volumes.md): fixed-size images with one writer.
 
-The design rests on three decisions.
+## What is durable
 
-1. A VM's durable state is one published checkpoint, which its control record
-   selects. Nothing is durable between checkpoints, so losing a host loses
-   every write since the last checkpoint of each of its VMs. The only state a
-   host keeps durable on its own schedule is a VM's disks: the interval
-   checkpoints the disks but not RAM. A VM whose checkpoint has no VMM state
-   restarts by booting over its disks.
-2. Every page has one name: the checkpoint that published it. A fork inherits
-   its parent's names. A named page is referenced and never copied, in the
-   store, in host memory and on the wire. Two VMs share a resident page because
-   they inherited the bytes of the same checkpoint. A page that no checkpoint
-   holds reads as zeroes. The exception is the name of a
-   [template](hosting.md), which is `template-<sha256 of the guest image file>`.
-   A template is an imported image, not a VM that lives on a host. An image's
-   identity is its bytes, so every host uses the same template name for the
-   same image, and the hosts import it once between them. The name identifies
-   only the template. The checkpoints under that identity belong to the
-   template, as any VM's checkpoints belong to that VM. Forks of the template
-   share pages by page identity. A template of no tenant is public: a VM of any
-   tenant is created from it and shares its pages, and nothing else crosses
-   between tenants.
-3. A checkpoint has two steps: a pause and an upload. The pause stops the
-   vCPUs, saves the VMM state, seals the dirty pages and resumes the vCPUs. Only
-   the pause is on any latency path. A fork and a migration take the pause and
-   publish nothing. The unpublished pages reach the other side through the
-   pager, on the same host or over the network.
+A VM is durable up to its last published checkpoint. Its control record says
+which checkpoint that is. Anything written after it is lost if the host dies.
+
+The host checkpoints a VM's disks on an interval. RAM is saved only when asked:
+a capture, a suspend, or a stop that keeps it. A VM whose checkpoint has no RAM
+boots from its disks.
+
+## How pages are shared
+
+A page is named by the checkpoint that published it. A fork starts with its
+parent's pages and their names. VMs that have a page with the same name share
+it: in the store, in a host's memory and on the network. A page that no
+checkpoint has written reads as zeros.
+
+A template's VM is named by its image instead:
+`template-<sha256 of the guest image file>`, so the hosts import each image
+once between them (see [hosting](hosting.md)). VMs of any tenant can be created
+from a public template and share its pages. Nothing else is shared between
+tenants.
+
+## What a checkpoint costs the guest
+
+A checkpoint pauses the guest briefly. The host stops the vCPUs, saves the VMM
+state if RAM is included, write-protects the dirty pages and resumes. That pause
+is the only time the guest waits.
+
+The upload runs after the guest resumes, but it still uses the host's CPU, disk
+and network, and slows the guest's page faults. On GCE, filling the cluster
+cache with no rate limit raised the slowest 1% of faults on the publishing host
+from 27 to 45 ms. The fill rate limit bounds this
+([measurements](measurements/gce-fill-defaults-2026-10-06.md)).
+
+A fork or a migration pauses the guest but does not wait for an upload. The new
+VM gets the pages that are not published yet from the old one, through the
+pager. They are published afterwards: by the parent for a fork, and by the
+destination's next checkpoint for a migration.
 
 ## Components
 
