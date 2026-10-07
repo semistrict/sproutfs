@@ -1268,5 +1268,11 @@
     "package": "vmmemory",
     "run": "^TestAPageACaptureTookStaysProtectedThroughAnAbandonedSeal$",
     "purpose": "Give a page back from an abandoned seal without the protection a capture gave it, so a read fault maps it writable while it is not unjournaled and the guest's next store reaches no flush."
+  },
+  {
+    "id": "pager-read-dirty-beside-a-detach",
+    "package": "vmmemory",
+    "run": "^TestADetachWaitsForAPublicationsReadOfASpilledPage$",
+    "purpose": "Read a spilled page of a checkpoint without holding the region live, so a detach between the look at its reservation and the read frees the reservation, and the read fails or reads another page's bytes."
   }
 ]
