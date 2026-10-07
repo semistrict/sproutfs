@@ -18,6 +18,11 @@ import (
 )
 
 func (s *supervisor) Create(ctx context.Context, request hostapi.CreateRequest) (hostapi.CreateResult, error) {
+	admitted, err := s.host.admitVM()
+	if err != nil {
+		return hostapi.CreateResult{}, err
+	}
+	defer admitted()
 	ctx, line := startTimeline(ctx, s.clock, request.ID, "create")
 	began := line.began
 	id := request.ID
@@ -149,6 +154,11 @@ func (s *supervisor) createPoint(ctx context.Context, request hostapi.CreateRequ
 }
 
 func (s *supervisor) Open(ctx context.Context, id string, request hostapi.OpenRequest) (hostapi.OpenResult, error) {
+	admitted, err := s.host.admitVM()
+	if err != nil {
+		return hostapi.OpenResult{}, err
+	}
+	defer admitted()
 	ctx, line := startTimeline(ctx, s.clock, id, "open")
 	began := line.began
 	if err := s.absent(id); err != nil {

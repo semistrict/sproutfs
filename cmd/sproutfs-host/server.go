@@ -336,7 +336,10 @@ func statusOf(err error) int {
 		errors.Is(err, vmmigrate.ErrOutstanding),
 		// A VM whose record names a journal whose disk was formatted again
 		// lost the flushes it held: only an operator's discard opens it.
-		errors.Is(err, volume.ErrJournalLost):
+		errors.Is(err, volume.ErrJournalLost),
+		// A draining host whose journal disk is released takes no VM;
+		// another host does.
+		errors.Is(err, host.ErrJournalReleased):
 		return http.StatusConflict
 	case errors.Is(err, vmmemory.ErrCapacity):
 		// The pager could not map this VM's memory regions. Another host can.

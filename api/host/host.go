@@ -938,6 +938,9 @@ type MemberDisk struct {
 	// marks a journal disk that holds no live entry.
 	Kind  string `json:"kind,omitempty"`
 	Empty bool   `json:"empty,omitempty"`
+	// Assigned is the generation of the assignment a journal disk is held
+	// under, which a report of Empty is about.
+	Assigned uint64 `json:"assigned,omitempty"`
 }
 
 // Membership is the generation of the membership a host holds and how it
@@ -969,7 +972,7 @@ func MemberOf(self membership.Host, held membership.Membership) Member {
 		Machine: self.Machine, Generation: held.Generation()}
 	for _, disk := range self.Disks {
 		reported := MemberDisk{Identity: disk.ID.String(), Volume: disk.Volume, Weight: disk.Weight,
-			Empty: disk.Empty}
+			Empty: disk.Empty, Assigned: disk.Assigned}
 		if disk.Kind == membership.Journal {
 			reported.Kind = disk.Kind.String()
 		}
@@ -1006,7 +1009,7 @@ func (m Member) Host() (membership.Host, error) {
 			return membership.Host{}, err
 		}
 		host.Disks = append(host.Disks, membership.Disk{ID: identity, Volume: disk.Volume, Weight: disk.Weight,
-			State: state, Kind: kind, Empty: disk.Empty})
+			State: state, Kind: kind, Empty: disk.Empty, Assigned: disk.Assigned})
 	}
 	return host, nil
 }

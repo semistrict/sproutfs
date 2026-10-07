@@ -81,7 +81,14 @@ func nextJournalStep(ctx context.Context, m Membership, hosts map[rank.Identity]
 	// entries again, written since it was marked, is unmarked.
 	for _, disk := range journals {
 		host := hosts[disk.Member]
-		held := slices.IndexFunc(host.Disks, func(held Disk) bool { return held.ID == disk.ID })
+		// A report is about the assignment its host holds the disk under,
+		// and only one of the disk's current assignment says anything of it:
+		// a host that read the disk for a lost host under an older one says
+		// nothing of it as the disk it is assigned to write now.
+		held := slices.IndexFunc(host.Disks, func(held Disk) bool {
+			return held.ID == disk.ID &&
+				(held.Assigned == disk.Assigned || sim.Bug(ctx, "membership-mark-any-assignment"))
+		})
 		if held < 0 || disk.State != Serving && disk.State != Releasing {
 			continue
 		}

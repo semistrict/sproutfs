@@ -1,10 +1,14 @@
 package host_test
 
 import (
+	"errors"
+	"slices"
 	"testing"
 	"testing/synctest"
 
+	"github.com/semistrict/sproutfs/host"
 	"github.com/semistrict/sproutfs/membership"
+	"github.com/semistrict/sproutfs/vmmigrate"
 )
 
 // newJournalCluster is hosts with durable flush on and no shards, and a
@@ -82,8 +86,15 @@ func TestEachHostServesTheJournalDiskMadeForItsMachine(t *testing.T) {
 			self, _ = h.host.Member()
 			opened := 0
 			for _, held := range self.Disks {
-				if held.ID == disk.ID {
-					opened++
+				if held.ID != disk.ID {
+					continue
+				}
+				opened++
+				// The disk it writes is never empty while it is not released:
+				// a VM may arrive and flush to it the moment after.
+				if held.Empty || held.Assigned != disk.Assigned {
+					t.Fatalf("%s reports its journal disk %+v, want not empty, under assignment %d", h.machine,
+						held, disk.Assigned)
 				}
 			}
 			if opened != 1 {
@@ -114,6 +125,43 @@ func TestEachHostServesTheJournalDiskMadeForItsMachine(t *testing.T) {
 		}
 		if len(listed) != 2 {
 			t.Fatalf("the cloud has %d journal disks, want the two reused", len(listed))
+		}
+	})
+}
+
+// A draining host whose own journal disk the membership releases takes no VM
+// more and no longer says durable flush is served, until it has closed the
+// disk: a disk reported empty may be deleted, so nothing may write it after.
+func TestAHostWhoseJournalDiskIsReleasedTakesNoVM(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		c := newJournalCluster(t)
+		one := c.start("machine-1")
+		m := c.settleJournals()
+		own := ownJournal(t, m, "machine-1")
+		one.leaving = true
+		releasing := 0
+		for range 40 {
+			c.pass()
+			one.host.SettleDisks(c.ctx)
+			held, _ := one.host.Membership().Disk(own.ID)
+			self, _ := one.host.Member()
+			open := slices.ContainsFunc(self.Disks, func(d membership.Disk) bool { return d.ID == own.ID })
+			if held.State != membership.Releasing || !open {
+				continue
+			}
+			releasing++
+			if _, err := one.host.Receive(c.ctx, vmmigrate.Handoff{VMID: "vm-1"}); !errors.Is(err, host.ErrJournalReleased) {
+				t.Fatalf("a receive on a host whose journal disk is released = %v, want ErrJournalReleased", err)
+			}
+			if one.host.Activity().Journal.Served {
+				t.Fatal("a host whose journal disk is released says durable flush is served")
+			}
+		}
+		if releasing == 0 {
+			t.Fatal("the host never held its journal disk open while the membership released it")
+		}
+		if disk, _ := c.settleJournals().Disk(own.ID); disk.State != membership.Released || !disk.Empty {
+			t.Fatalf("the drained host's journal disk is %+v, want released and empty", disk)
 		}
 	})
 }

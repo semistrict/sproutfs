@@ -3,9 +3,10 @@ id: TASK-104.11
 title: >-
   A journal disk marked empty can be deleted with an entry written after the
   mark
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-10-07 18:56'
+updated_date: '2026-10-07 19:33'
 labels:
   - journal
   - membership
@@ -28,9 +29,15 @@ Found by the spec/shards Journals model (spec agent, commit f8e2d1ce on its bran
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A host reports its own journal disk empty only once the membership it holds releases the disk
-- [ ] #2 From then on the host takes no VM
-- [ ] #3 A host's report names the assignment it holds the disk under, and the controller marks or unmarks only on a report of the disk's current assignment
+- [x] #1 A host reports its own journal disk empty only once the membership it holds releases the disk
+- [x] #2 From then on the host takes no VM
+- [x] #3 A host's report names the assignment it holds the disk under, and the controller marks or unmarks only on a report of the disk's current assignment
 - [ ] #4 spec/shards Journals: the B7 mutants (report before release, place on releasing, mark any assignment) are caught, and MCJournals passes with the fix
-- [ ] #5 A membership or host test shows that a late-placed VM's flush on a disk reported empty does not let the disk be deleted
+- [x] #5 A membership or host test shows that a late-placed VM's flush on a disk reported empty does not let the disk be deleted
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+A host reports the journal disk it writes empty only once the membership it holds releases the disk, it runs no VM, and it is letting none in (journalDisks.admitting); from the release on it takes no VM (ErrJournalReleased on receive, create and open) and reports durable flush not served. Every report names the assignment it holds the disk under (MemberDisk.Assigned), and the controller marks or unmarks only on a report of the disk's current assignment. Guards journal-report-own-disk-empty-early, journal-admit-on-a-released-disk and membership-mark-any-assignment. AC#4: the B7 mutants are in spec/shards (f8e2d1ce) and MCJournals passes; the code now follows the model's fixed rules.
+<!-- SECTION:NOTES:END -->

@@ -310,6 +310,11 @@ func (h *Host) Receive(ctx context.Context, handoff vmmigrate.Handoff) (*vmmigra
 }
 
 func (h *Host) receive(ctx context.Context, handoff vmmigrate.Handoff) (*vmmigrate.Received, error) {
+	admitted, err := h.admitVM()
+	if err != nil {
+		return nil, err
+	}
+	defer admitted()
 	// The fork point is this host's own for a child of a fork it took: such a child
 	// is bound to the pages rather than to a peer, so it needs no peer server
 	// of its own and dials none.

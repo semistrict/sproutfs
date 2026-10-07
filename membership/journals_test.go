@@ -31,9 +31,11 @@ func journalHost(n byte, held ...Disk) Host {
 	return host
 }
 
-// holding is journal disk j as a host reports it open.
-func holding(j Shard, empty bool) Disk {
-	return Disk{ID: j.ID, Volume: j.Volume, Kind: Journal, Empty: empty}
+// holding is journal disk j as a host reports it open, under the assignment
+// m holds it in.
+func holding(j Shard, m Membership, empty bool) Disk {
+	assigned, _ := m.Disk(j.ID)
+	return Disk{ID: j.ID, Volume: j.Volume, Kind: Journal, Assigned: assigned.Assigned, Empty: empty}
 }
 
 // diskIn is the disk of identity id in m, failing the test where it is not
@@ -62,7 +64,7 @@ func TestAMemberIsAssignedTheJournalDiskReservedForItsMachine(t *testing.T) {
 	if slices.ContainsFunc(m.List().Caches(), func(cache rank.Cache) bool { return cache.Identity == j.ID }) {
 		t.Fatal("a journal disk ranks windows")
 	}
-	want.Hosts = []Host{journalHost(1, holding(j, true))}
+	want.Hosts = []Host{journalHost(1, holding(j, m, true))}
 	m, _ = toward(t, m, want)
 	if disk := diskIn(t, m, j.ID); disk.State != Serving || disk.Empty {
 		t.Fatalf("the journal disk its writer reports open and empty is %+v, want serving and not empty", disk)
@@ -90,20 +92,20 @@ func TestAJournalDiskIsCreatedOnlyWhereNoneIsFree(t *testing.T) {
 // it on no machine. Its reservation goes with the machine.
 func TestADrainingHostsJournalIsLetGoOnceEmptyAndDetached(t *testing.T) {
 	j := journalOf(1)
-	want := Want{Code: rank.Code{K: 1, M: 0}, Hosts: []Host{journalHost(1, holding(j, false))},
+	want := Want{Code: rank.Code{K: 1, M: 0}, Hosts: []Host{journalHost(1, holding(j, Empty(), false))},
 		Journals: []Shard{journalOf(1, "machine-1")}, JournalsKnown: true, Pool: []string{"machine-1"}}
 	m, _ := toward(t, Empty(), want)
 	if disk := diskIn(t, m, j.ID); disk.State != Serving {
 		t.Fatalf("the journal disk is %s, want serving", disk.State)
 	}
-	leaving := journalHost(1, holding(j, false))
+	leaving := journalHost(1, holding(j, m, false))
 	leaving.Leaving = true
 	want.Hosts = []Host{leaving}
 	m, _ = toward(t, m, want)
 	if disk := diskIn(t, m, j.ID); disk.State != Releasing || disk.Empty {
 		t.Fatalf("a draining host's journal disk with live entries is %+v, want releasing and not empty", disk)
 	}
-	leaving.Disks = []Disk{diskOf(1), holding(j, true)}
+	leaving.Disks = []Disk{diskOf(1), holding(j, m, true)}
 	want.Hosts = []Host{leaving}
 	m, _ = toward(t, m, want)
 	if disk := diskIn(t, m, j.ID); disk.State != Releasing || !disk.Empty {
@@ -111,13 +113,13 @@ func TestADrainingHostsJournalIsLetGoOnceEmptyAndDetached(t *testing.T) {
 	}
 	// A flush wrote it since: its host found live entries at the close and
 	// opened it again.
-	leaving.Disks = []Disk{diskOf(1), holding(j, false)}
+	leaving.Disks = []Disk{diskOf(1), holding(j, m, false)}
 	want.Hosts = []Host{leaving}
 	m, _ = toward(t, m, want)
 	if disk := diskIn(t, m, j.ID); disk.State != Releasing || disk.Empty {
 		t.Fatalf("a disk marked empty whose host reports live entries is %+v, want releasing and unmarked", disk)
 	}
-	leaving.Disks = []Disk{diskOf(1), holding(j, true)}
+	leaving.Disks = []Disk{diskOf(1), holding(j, m, true)}
 	want.Hosts = []Host{leaving}
 	m, _ = toward(t, m, want)
 	leaving.Disks = []Disk{diskOf(1)}
@@ -144,30 +146,30 @@ func TestALostHostsJournalIsReadOnASurvivorUntilEmpty(t *testing.T) {
 		own[disk.Machine] = j
 	}
 	j1, j2 := own["machine-1"], own["machine-2"]
-	want.Hosts = []Host{journalHost(1, holding(j1, false)), journalHost(2, holding(j2, false))}
+	want.Hosts = []Host{journalHost(1, holding(j1, m, false)), journalHost(2, holding(j2, m, false))}
 	want.Journals = []Shard{j1, j2}
 	m, _ = toward(t, m, want)
 	// Host 1 and its machine are gone; the cloud detached its disk.
 	lost := j1
 	lost.Machines = nil
-	want.Hosts = []Host{journalHost(2, holding(j2, false))}
+	want.Hosts = []Host{journalHost(2, holding(j2, m, false))}
 	want.Journals, want.Pool = []Shard{lost, j2}, []string{"machine-2"}
 	m, _ = toward(t, m, want)
 	disk := diskIn(t, m, j1.ID)
 	if disk.State != Attaching || disk.Member != idOf(2) || disk.Empty || disk.Machine != "" {
 		t.Fatalf("the lost host's journal disk is %+v, want attaching to member 2 for reading, not empty", disk)
 	}
-	want.Hosts = []Host{journalHost(2, holding(j2, false), holding(j1, false))}
+	want.Hosts = []Host{journalHost(2, holding(j2, m, false), holding(j1, m, false))}
 	m, _ = toward(t, m, want)
 	if disk := diskIn(t, m, j1.ID); disk.State != Serving {
 		t.Fatalf("the read disk its holder reports open is %s, want serving", disk.State)
 	}
-	want.Hosts = []Host{journalHost(2, holding(j2, false), holding(j1, true))}
+	want.Hosts = []Host{journalHost(2, holding(j2, m, false), holding(j1, m, true))}
 	m, _ = toward(t, m, want)
 	if disk := diskIn(t, m, j1.ID); disk.State != Releasing || !disk.Empty {
 		t.Fatalf("the read disk reported empty is %+v, want releasing and empty", disk)
 	}
-	want.Hosts = []Host{journalHost(2, holding(j2, false))}
+	want.Hosts = []Host{journalHost(2, holding(j2, m, false))}
 	m, _ = toward(t, m, want)
 	if disk := diskIn(t, m, j1.ID); !disk.free() || !disk.Empty {
 		t.Fatalf("the read disk once closed and detached is %+v, want free and empty", disk)
@@ -200,23 +202,23 @@ func TestAJournalDiskIsReadFromItsHolderUntilItIsLetGoEmpty(t *testing.T) {
 				when, holder.ID, holds, served, wantHolder, wantHolds, wantServed, describe(m))
 		}
 	}
-	want.Hosts = []Host{journalHost(1, holding(j1, false)), journalHost(2, holding(j2, false))}
+	want.Hosts = []Host{journalHost(1, holding(j1, m, false)), journalHost(2, holding(j2, m, false))}
 	want.Journals = []Shard{j1, j2}
 	m, _ = toward(t, m, want)
 	holderIs("while its writer serves it,", true, true, idOf(1))
 	lost := j1
 	lost.Machines = nil
-	want.Hosts = []Host{journalHost(2, holding(j2, false))}
+	want.Hosts = []Host{journalHost(2, holding(j2, m, false))}
 	want.Journals, want.Pool = []Shard{lost, j2}, []string{"machine-2"}
 	m, _ = toward(t, m, want)
 	holderIs("while it moves to a survivor,", true, false, rank.Identity{})
-	want.Hosts = []Host{journalHost(2, holding(j2, false), holding(j1, false))}
+	want.Hosts = []Host{journalHost(2, holding(j2, m, false), holding(j1, m, false))}
 	m, _ = toward(t, m, want)
 	holderIs("once the survivor serves it,", true, true, idOf(2))
-	want.Hosts = []Host{journalHost(2, holding(j2, false), holding(j1, true))}
+	want.Hosts = []Host{journalHost(2, holding(j2, m, false), holding(j1, m, true))}
 	m, _ = toward(t, m, want)
 	holderIs("once the survivor says it holds nothing,", true, false, rank.Identity{})
-	want.Hosts = []Host{journalHost(2, holding(j2, false))}
+	want.Hosts = []Host{journalHost(2, holding(j2, m, false))}
 	m, _ = toward(t, m, want)
 	holderIs("once the survivor lets it go,", false, false, rank.Identity{})
 	if _, holds, served := m.JournalHolder(JournalIdentity("sproutfs-journal-deleted")); holds || served {
@@ -338,7 +340,12 @@ func (w *journalWorld) want() Want {
 		host := Host{ID: h.id, Address: platform.Address("host-" + h.machine), Machine: h.machine, Leaving: h.leaving}
 		for _, disk := range slices.SortedFunc(maps.Keys(h.held), compareIdentities) {
 			volume := h.held[disk]
-			host.Disks = append(host.Disks, Disk{ID: disk, Volume: volume, Kind: Journal, Empty: !w.live[volume]})
+			// A host reports a disk under the assignment it holds now, and
+			// its own disk empty only once the membership releases it.
+			assigned, _ := w.m.Disk(disk)
+			empty := !w.live[volume] && (assigned.Machine != h.machine || assigned.State == Releasing)
+			host.Disks = append(host.Disks, Disk{ID: disk, Volume: volume, Kind: Journal, Assigned: assigned.Assigned,
+				Empty: empty})
 		}
 		want.Hosts = append(want.Hosts, host)
 		want.Pool = append(want.Pool, h.machine)
@@ -544,5 +551,37 @@ func TestAStaleListingAddsNoJournalDisk(t *testing.T) {
 	}
 	if added := stepped(t, removed, change); !slices.ContainsFunc(added.Disks(), func(d Disk) bool { return d.ID == j.ID }) {
 		t.Fatalf("a fresh listing's step did not add the disk: %s", describe(added))
+	}
+}
+
+// A host's report of a journal disk is about the assignment it holds the disk
+// under. One under an older assignment says nothing of the disk as it is
+// assigned now: a host that read a lost host's disk, and is now assigned it to
+// write, does not mark it empty with the reader's report (spec/bugs.md B7).
+func TestAReportUnderAnOlderAssignmentMarksNothing(t *testing.T) {
+	j := journalOf(1, "machine-1")
+	want := Want{Code: rank.Code{K: 1, M: 0}, Hosts: []Host{journalHost(1)}, Journals: []Shard{j},
+		JournalsKnown: true, Pool: []string{"machine-1"}}
+	m, _ := toward(t, Empty(), want)
+	disk := diskIn(t, m, j.ID)
+	if disk.State != Attaching || disk.Member != idOf(1) {
+		t.Fatalf("the journal disk is %+v, want attaching to member 1", disk)
+	}
+	stale := holding(j, m, true)
+	stale.Assigned = disk.Assigned - 1
+	want.Hosts = []Host{journalHost(1, stale)}
+	want.Hosts[0].Leaving = true
+	ctx := sim.WithRuntime(t.Context(), sim.New(sim.Config{}))
+	for {
+		want.JournalsAfter = m.Generation()
+		change, ok := Next(ctx, m, want)
+		if !ok {
+			break
+		}
+		m = stepped(t, m, change)
+		if disk := diskIn(t, m, j.ID); disk.Empty {
+			t.Fatalf("a report under assignment %d marked the disk assigned at %d empty: %s", stale.Assigned,
+				disk.Assigned, describe(m))
+		}
 	}
 }

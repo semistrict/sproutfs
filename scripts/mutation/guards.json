@@ -1160,5 +1160,23 @@
     "package": "membership",
     "run": "^TestAStaleListingAddsNoJournalDisk$",
     "purpose": "Add a journal disk a listing names over a generation newer than the listing's, which may add back a disk another controller deleted and removed."
+  },
+  {
+    "id": "membership-mark-any-assignment",
+    "package": "membership",
+    "run": "^TestAReportUnderAnOlderAssignmentMarksNothing$",
+    "purpose": "Mark a journal disk empty on a report under an assignment older than the disk's, so a host that read it for a lost host marks the disk it now writes."
+  },
+  {
+    "id": "journal-report-own-disk-empty-early",
+    "package": "host",
+    "run": "^TestEachHostServesTheJournalDiskMadeForItsMachine$",
+    "purpose": "Report the journal disk a host writes empty before the membership releases it, so a VM placed late flushes to a disk that may be deleted."
+  },
+  {
+    "id": "journal-admit-on-a-released-disk",
+    "package": "host",
+    "run": "^TestAHostWhoseJournalDiskIsReleasedTakesNoVM$",
+    "purpose": "Take a VM on a host whose own journal disk the membership releases, so its flushes go to a disk about to be reported empty."
   }
 ]

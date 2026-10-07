@@ -69,7 +69,15 @@ type journalDisks struct {
 
 	mu   sync.Mutex
 	open map[rank.Identity]*openJournal
+	// admitting counts the VMs this host has let in that are not yet
+	// registered: an open, a create or a receive under way.
+	admitting int
 }
+
+// ErrJournalReleased refuses a VM on a host whose own journal disk the
+// membership releases: the host is draining, and its disk is on its way to
+// being reported empty, after which nothing may write it.
+var ErrJournalReleased = errors.New("host: its journal disk is released, so it takes no VM")
 
 func newJournalDisks(ctx context.Context, h *Host, devices platform.Devices, machine string,
 	interval time.Duration) *journalDisks {
@@ -233,9 +241,12 @@ func (d *journalDisks) close(ctx context.Context, identity rank.Identity, why st
 }
 
 // held is the journal disks this host holds open, as it reports them to the
-// membership: each with whether it holds no live entry. The disk the host
-// writes is empty only while the host runs no VM, which could flush to it
-// the moment after.
+// membership: each under the assignment it holds it under, with whether it
+// holds no live entry. A disk read for a lost host is empty once its entries
+// are. The disk the host writes is empty only once the membership it holds
+// releases the disk, so the host takes no VM from then on, and while it runs
+// none and lets none in: a VM could flush to it the moment after, and a disk
+// marked empty may be deleted (spec/bugs.md B7).
 func (d *journalDisks) held() []membership.Disk {
 	running := len(d.h.Machines()) > 0
 	d.mu.Lock()
@@ -243,11 +254,57 @@ func (d *journalDisks) held() []membership.Disk {
 	disks := make([]membership.Disk, 0, len(d.open))
 	for _, identity := range slices.SortedFunc(maps.Keys(d.open), compareIdentity) {
 		held := d.open[identity]
-		empty := len(held.j.Held()) == 0 && !(held.own && running)
+		empty := len(held.j.Held()) == 0
+		if held.own && !sim.Bug(d.ctx, "journal-report-own-disk-empty-early") {
+			empty = empty && held.disk.State == membership.Releasing && !running && d.admitting == 0
+		}
 		disks = append(disks, membership.Disk{ID: held.disk.ID, Volume: held.disk.Volume,
-			Kind: membership.Journal, Empty: empty})
+			Kind: membership.Journal, Assigned: held.disk.Assigned, Empty: empty})
 	}
 	return disks
+}
+
+// admit lets one VM in, and done ends its admission once it is registered or
+// has failed. It refuses with ErrJournalReleased once the membership this
+// host holds releases its own journal disk.
+func (d *journalDisks) admit() (done func(), err error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.releasedLocked() && !sim.Bug(d.ctx, "journal-admit-on-a-released-disk") {
+		return nil, ErrJournalReleased
+	}
+	d.admitting++
+	return sync.OnceFunc(func() {
+		d.mu.Lock()
+		d.admitting--
+		d.mu.Unlock()
+	}), nil
+}
+
+// released reports whether the membership this host holds releases its own
+// journal disk.
+func (d *journalDisks) released() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.releasedLocked()
+}
+
+func (d *journalDisks) releasedLocked() bool {
+	for _, held := range d.open {
+		if held.own && held.disk.State == membership.Releasing {
+			return true
+		}
+	}
+	return false
+}
+
+// admitVM lets one VM in, as journalDisks.admit does; a host that holds no
+// journal disks lets every VM in.
+func (h *Host) admitVM() (done func(), err error) {
+	if h.journalDisks == nil {
+		return func() {}, nil
+	}
+	return h.journalDisks.admit()
 }
 
 // journals is every journal this host holds open.

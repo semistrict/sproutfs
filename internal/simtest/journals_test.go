@@ -515,10 +515,11 @@ func TestAFlushSurvivesItsHostDyingDuringAScaleDownsWait(t *testing.T) {
 		draining := journalOf(t, ctx, world, "host-0")
 		world.Unlist(ctx, 0)
 		migrated(t, ctx, world, 1)
+		// Released, the disk is held open with its entry, and takes no VM.
 		if disk, _ := membershipOf(t, ctx, world).Disk(draining.ID); disk.State != membership.Releasing ||
-			disk.Empty || !world.JournalServed(0) {
-			t.Fatalf("the draining host's journal disk is %+v, served %t, want releasing and held open with its entry",
-				disk, world.JournalServed(0))
+			disk.Empty || world.JournalServed(0) {
+			t.Fatalf("the draining host's journal disk is %+v, served %t, want releasing, held open with its entry "+
+				"and taking no VM", disk, world.JournalServed(0))
 		}
 		if err := world.Kill(ctx, 0, sim.PowerLoss); err != nil {
 			t.Fatal(err)

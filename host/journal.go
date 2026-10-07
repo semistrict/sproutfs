@@ -796,7 +796,10 @@ func (h *Host) journalActivity() JournalActivity {
 		Flush: h.journals.flushTime.Snapshot(), Capture: h.journals.captureTime.Snapshot()}
 	if j := h.journal(); j != nil {
 		usage := j.Usage()
-		activity.Served, activity.RingBytes, activity.LiveBytes, activity.Position = true, usage.Ring, usage.Used,
+		// A released journal disk is served still, for the VMs left here,
+		// but takes no VM more.
+		released := h.journalDisks != nil && h.journalDisks.released()
+		activity.Served, activity.RingBytes, activity.LiveBytes, activity.Position = !released, usage.Ring, usage.Used,
 			usage.Next
 	}
 	return activity

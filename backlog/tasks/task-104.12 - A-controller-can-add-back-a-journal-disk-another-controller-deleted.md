@@ -4,7 +4,7 @@ title: A controller can add back a journal disk another controller deleted
 status: In Progress
 assignee: []
 created_date: '2026-10-07 18:56'
-updated_date: '2026-10-07 19:13'
+updated_date: '2026-10-07 19:33'
 labels:
   - journal
   - membership
@@ -26,7 +26,13 @@ Found by the spec/shards Journals model (spec/bugs.md B8 on the spec agent's bra
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Steps taken from the cloud's list of journal disks apply only over the generation read before the listing; Next skips an add when the membership is newer
-- [ ] #2 A test of two controllers shows a deleted disk is never added back
-- [ ] #3 The spec/shards journal-stale-list mutant is caught and the fixed model passes
+- [x] #1 Steps taken from the cloud's list of journal disks apply only over the generation read before the listing; Next skips an add when the membership is newer
+- [x] #2 A test of two controllers shows a deleted disk is never added back
+- [x] #3 The spec/shards journal-stale-list mutant is caught and the fixed model passes
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Want.JournalsAfter is the generation the listing followed; Next adds a listed disk only over it (guard membership-add-from-a-stale-list, TestAStaleListingAddsNoJournalDisk).
+<!-- SECTION:NOTES:END -->
