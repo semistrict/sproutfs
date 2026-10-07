@@ -655,6 +655,9 @@ sproutfs_journal_ring_bytes 39603875
 # HELP sproutfs_journal_live_bytes What trimming has not freed of the journal's ring.
 # TYPE sproutfs_journal_live_bytes gauge
 sproutfs_journal_live_bytes 11539200
+# HELP sproutfs_journal_written_bytes_total The journal's next position, which grows by every byte the journal writes, pads included.
+# TYPE sproutfs_journal_written_bytes_total counter
+sproutfs_journal_written_bytes_total 52583395
 # HELP sproutfs_template_imports_total Templates this host imported, by outcome.
 # TYPE sproutfs_template_imports_total counter
 sproutfs_template_imports_total{outcome="succeeded"} 20935472

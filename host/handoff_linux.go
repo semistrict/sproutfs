@@ -67,7 +67,7 @@ func apiJournal(j JournalActivity) hostapi.Journal {
 	return hostapi.Journal{DurableFlush: j.DurableFlush, Served: j.Served,
 		Flushes: hostapi.Outcomes{Succeeded: j.Flushes.Succeeded, Failed: j.Flushes.Failed},
 		Flush:   hostapi.LatencyOf(j.Flush), Capture: hostapi.LatencyOf(j.Capture),
-		RingBytes: j.RingBytes, LiveBytes: j.LiveBytes}
+		RingBytes: j.RingBytes, LiveBytes: j.LiveBytes, Position: j.Position}
 }
 
 // apiLifecycle is the wire form of what this host did with its VMs.

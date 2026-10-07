@@ -701,7 +701,8 @@ func (h *Host) journalActivity() JournalActivity {
 		Flush: h.journals.flushTime.Snapshot(), Capture: h.journals.captureTime.Snapshot()}
 	if j := h.journal(); j != nil {
 		usage := j.Usage()
-		activity.Served, activity.RingBytes, activity.LiveBytes = true, usage.Ring, usage.Used
+		activity.Served, activity.RingBytes, activity.LiveBytes, activity.Position = true, usage.Ring, usage.Used,
+			usage.Next
 	}
 	return activity
 }

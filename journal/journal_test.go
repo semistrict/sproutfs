@@ -388,7 +388,7 @@ func TestTrimmingByCoveredPositionsFreesTheRing(t *testing.T) {
 			t.Fatalf("a commit the ring had no room for was answered at %v", got)
 		default:
 		}
-		if got, want := j.Usage(), (Usage{Ring: ring, Used: 48 << 10}); got != want {
+		if got, want := j.Usage(), (Usage{Ring: ring, Used: 48 << 10, Next: ring + 48<<10}); got != want {
 			t.Fatalf("the ring's usage is %+v, want %+v", got, want)
 		}
 		// The header was last written as the journal opened. Half a second

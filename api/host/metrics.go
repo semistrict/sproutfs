@@ -485,6 +485,9 @@ func (e *exposition) journal(j Journal) {
 	e.one("sproutfs_journal_ring_bytes", Gauge, "The journal disk's ring.", float(j.RingBytes))
 	e.one("sproutfs_journal_live_bytes", Gauge, "What trimming has not freed of the journal's ring.",
 		float(j.LiveBytes))
+	e.one("sproutfs_journal_written_bytes_total", Counter,
+		"The journal's next position, which grows by every byte the journal writes, pads included.",
+		float(j.Position))
 }
 
 // diskBindings are the goals a disk limiter can report as binding, each a

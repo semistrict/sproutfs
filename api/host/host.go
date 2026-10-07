@@ -667,7 +667,9 @@ type Status struct {
 // flushes the mode answered, by outcome: a failed one is an I/O error in the
 // guest. Flush is what each took from its arrival to its answer, and Capture
 // what its capture of the disk's changed blocks took. RingBytes is the
-// journal's ring, and LiveBytes what trimming has not freed of it.
+// journal's ring, and LiveBytes what trimming has not freed of it. Position
+// is the journal's next position, which grows by every byte it writes, pads
+// included: its rate is the journal's write rate.
 type Journal struct {
 	DurableFlush bool     `json:"durable_flush"`
 	Served       bool     `json:"served"`
@@ -676,6 +678,7 @@ type Journal struct {
 	Capture      Latency  `json:"capture"`
 	RingBytes    int64    `json:"ring_bytes"`
 	LiveBytes    int64    `json:"live_bytes"`
+	Position     int64    `json:"position"`
 }
 
 // HotTier is what one host's reads of checkpoint objects through the hot

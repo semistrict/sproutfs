@@ -80,12 +80,13 @@ type Activity struct {
 // JournalActivity is what durable flush did on this host: whether the mode
 // is on and a journal disk is served, the flushes it answered by outcome,
 // what each took from its arrival to its answer and what its capture took,
-// and how much of the journal's ring its live entries hold.
+// how much of the journal's ring its live entries hold, and the journal's next
+// position, which grows by every byte it writes.
 type JournalActivity struct {
-	DurableFlush, Served bool
-	Flushes              Outcomes
-	Flush, Capture       latency.Snapshot
-	RingBytes, LiveBytes int64
+	DurableFlush, Served           bool
+	Flushes                        Outcomes
+	Flush, Capture                 latency.Snapshot
+	RingBytes, LiveBytes, Position int64
 }
 
 // CheckpointActivity is what the interval checkpoints did: every attempt, and

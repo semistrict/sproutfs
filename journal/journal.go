@@ -501,13 +501,17 @@ type Usage struct {
 	// Used is the bytes from the tail to the next position: what trimming
 	// has not yet freed.
 	Used int64
+	// Next is the next position. It starts at the ring's length when the
+	// journal is formatted and grows by every byte the journal places, pads
+	// included.
+	Next int64
 }
 
 // Usage reports how full the ring is.
 func (j *Journal) Usage() Usage {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	return Usage{Ring: j.ringLength, Used: int64(j.next - j.tail)}
+	return Usage{Ring: j.ringLength, Used: int64(j.next - j.tail), Next: int64(j.next)}
 }
 
 // Close stops the writer, after the batch in flight, and fails every commit
