@@ -482,7 +482,7 @@ func forkCampaign(t *testing.T, seed uint64) []byte {
 	go func() {
 		defer close(done)
 		ctx := sim.WithRuntime(t.Context(), runtime)
-		disk := sim.New(sim.Config{Seed: seed}).NewDisk("pager", sim.DiskConfig{})
+		disk := scheduledSpillDisk(seed, scheduler, done)
 		f, err := newFixtureOn(t, ctx, disk, vmmemory.Config{PageSize: uint64(pageSize), Arena: suiteArena,
 			ResidentPages: 16, LogicalPages: 64, DirtyPages: 32, ReadAheadPages: 1})
 		if err != nil {

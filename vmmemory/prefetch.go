@@ -618,8 +618,13 @@ func (pf *prefetch) land(ctx context.Context) []prefetchPage {
 	if err == nil && sim.Buggify(ctx, buggifyPrefetchFailed, 0.1) {
 		err = errPrefetchFailed
 	}
-	if err == nil {
-		err = sim.Admit(ctx, "vmmemory/prefetch-land")
+	// A read the prefetch's cancel ended woke at once, outside any turn of
+	// the run, beside the allocation that cancelled it and every other
+	// prefetch that allocation cancelled too: in a controlled run it goes on
+	// only when the run chooses, failed or not, so that which prefetch gives
+	// its slots back first is the seed's choice.
+	if admitted := sim.Admit(ctx, "vmmemory/prefetch-land"); err == nil {
+		err = admitted
 	}
 	// From this hold no allocation cancels the prefetch: one short of a slot
 	// waits for it to settle instead (cancelPrefetchesLocked). A cancel that

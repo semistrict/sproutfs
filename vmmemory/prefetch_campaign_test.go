@@ -105,10 +105,7 @@ func prefetchCampaign(t *testing.T, seed uint64) (map[string]uint64, map[string]
 	go func() {
 		defer close(done)
 		ctx := sim.WithRuntime(t.Context(), runtime)
-		// The spill file's disk is a runtime's of its own: what is under test
-		// is the pager's order, and the fixture closes the file after the
-		// scheduler has stopped.
-		disk := sim.New(sim.Config{Seed: seed}).NewDisk("pager", sim.DiskConfig{})
+		disk := scheduledSpillDisk(seed, scheduler, done)
 		f, err := newFixtureOn(t, ctx, disk, vmmemory.Config{PageSize: uint64(pageSize), Arena: suiteArena,
 			ResidentPages: 24, LogicalPages: 80, DirtyPages: 48, ReadAheadPages: 4, PrefetchRuns: 2})
 		if err != nil {
@@ -154,6 +151,26 @@ func prefetchCampaign(t *testing.T, seed uint64) (map[string]uint64, map[string]
 		t.Fatal(err)
 	}
 	return runtime.Probes(), runtime.FiredSites(), recording.Execution
+}
+
+// scheduledSpillDisk is the disk of a campaign's spill file, a runtime's of
+// its own whose waits the campaign's scheduler releases until done closes, as
+// it releases everything else the guests do. A disk is one queue, and whoever
+// gives it up wakes the next in it: before 2026-10-07 the disk was a runtime's
+// with no scheduler, and the two went on side by side at one instant, outside
+// any turn of the run, both faults that go on to take slots. Once done has
+// closed nothing waits: the fixture closes the file after the scheduler has
+// stopped.
+func scheduledSpillDisk(seed uint64, scheduler *sim.Scheduler, done <-chan struct{}) *sim.Disk {
+	wait := func(ctx context.Context, id string, minimum, maximum time.Duration) error {
+		select {
+		case <-done:
+			return nil
+		default:
+		}
+		return scheduler.Wait(ctx, id, minimum, maximum)
+	}
+	return sim.New(sim.Config{Seed: seed, Wait: wait}).NewDisk("pager", sim.DiskConfig{})
 }
 
 // A seed of the campaign replays: run twice, it releases every operation in
