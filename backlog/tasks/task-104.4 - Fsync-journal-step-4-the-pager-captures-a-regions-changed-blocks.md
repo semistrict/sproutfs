@@ -4,7 +4,7 @@ title: 'Fsync journal step 4: the pager captures a region''s changed blocks'
 status: To Do
 assignee: []
 created_date: '2026-10-07 00:48'
-updated_date: '2026-10-07 02:26'
+updated_date: '2026-10-07 03:35'
 labels:
   - durability
   - pager
@@ -37,4 +37,6 @@ Step 4 of the plan. Guest stores to a PMEM disk are CPU stores into mapped memor
 
 <!-- SECTION:NOTES:BEGIN -->
 From TASK-104.2: journal.Commit takes the room the capture's entries may use before the capture runs; the capture must fit that room (split across batches when it does not).
+
+From TASK-104.1 (spec/bugs.md B6): a batch whose write or sync fails must give its pages back as unjournaled and drop their digests; otherwise a later successful flush misses the stores the failed one covered. Digests are kept across a seal for pages not unjournaled at the seal, and dropped for pages that were (MCCapture, DigestsDescribeTheJournal).
 <!-- SECTION:NOTES:END -->
