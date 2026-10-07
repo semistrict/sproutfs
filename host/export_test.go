@@ -32,6 +32,10 @@ var CacheFillReport = cacheFillReport
 // HotTierReport is what the host's hot tier did as /status reports it.
 var HotTierReport = hotTierReport
 
+// RoomFor is the most bytes the entries of blocks blocks of one volume take
+// on a journal.
+var RoomFor = roomFor
+
 // PostCopied tells durable flush that every page of a VM brought here has
 // arrived, as a receive does once its post-copy ends.
 func (h *Host) PostCopied(vmID string) { h.postCopied(vmID) }

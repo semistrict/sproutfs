@@ -8,6 +8,7 @@ import (
 	"time"
 
 	hostapi "github.com/semistrict/sproutfs/api/host"
+	"github.com/semistrict/sproutfs/checkpoint"
 	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/host"
 	"github.com/semistrict/sproutfs/journal"
@@ -303,6 +304,48 @@ func TestAFlushOfAVMHoldingHalfTheRingWaitsForItsCheckpoint(t *testing.T) {
 	}
 	if held := s.held(); held.Bytes*2 > ring {
 		t.Fatalf("the VM holds %d bytes of the journal's %d after its checkpoint, want at most half", held.Bytes, ring)
+	}
+}
+
+// A commit needs room on the ring for its entries and for the pad that may
+// come before them, which may be as large. A flush of one page beside the
+// two its VM holds fits neither, though the VM holds no more than half the
+// ring and the ring would not be three quarters full: the host asks for the
+// checkpoint that frees the room, and the flush is answered once it has.
+func TestAFlushTheRingHasNoRoomForAsksForTheCheckpointThatFreesIt(t *testing.T) {
+	blocks := func(bytes int64) int64 {
+		return (bytes + journal.BlockBytes - 1) / journal.BlockBytes * journal.BlockBytes
+	}
+	// A page's entry is one batch, which ends on a block. The ring takes two
+	// and is three quarters full with a third.
+	page := host.RoomFor("vm-1", "disk", int(checkpoint.PageSize2MiB/journal.BlockBytes))
+	ring := blocks((4*(2*blocks(page)+page) + 2) / 3)
+	s := journalHostRing(t, ring)
+	for page, value := range []byte{1, 2} {
+		s.guest.store("disk", uint64(page), value)
+		if err := <-flush(s.guest); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if held := s.held(); held.Bytes*2 > ring {
+		t.Fatalf("two whole pages hold %d bytes of the journal, want at most half its %d", held.Bytes, ring)
+	}
+	if usage := s.j.Usage(); (usage.Used+page)*4 > usage.Ring*3 {
+		t.Fatalf("the ring holds %d of %d bytes, and a page more is past three quarters", usage.Used, usage.Ring)
+	}
+	if short := s.j.Shortfall(page); short == 0 {
+		t.Fatalf("a page fits on a ring of %d holding %d bytes", ring, s.j.Usage().Used)
+	}
+	before := s.vm.Status().Checkpoint
+	s.guest.store("disk", 2, 3)
+	if err := <-flush(s.guest); err != nil {
+		t.Fatalf("the flush the ring had no room for: %v", err)
+	}
+	if after := s.vm.Status().Checkpoint; after == before {
+		t.Fatal("the flush the ring had no room for was answered with no checkpoint taken")
+	}
+	if got := s.h.runtime.Probes()[host.ProbeJournalNoRoom]; got == 0 {
+		t.Fatal("the flush the ring had no room for never asked for room")
 	}
 }
 

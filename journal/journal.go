@@ -514,6 +514,17 @@ func (j *Journal) Usage() Usage {
 	return Usage{Ring: j.ringLength, Used: int64(j.next - j.tail), Next: int64(j.next)}
 }
 
+// Shortfall is how many bytes of live entries trimming has to free before a
+// commit of room fits on the ring by itself: zero once it fits. A commit needs
+// room for its entries and for the pad that keeps them from wrapping, which
+// may be as large.
+func (j *Journal) Shortfall(room int64) int64 {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	free := int64(j.tail) + j.ringLength - int64(j.next)
+	return max(0, reserve(room, room)-free)
+}
+
 // Close stops the writer, after the batch in flight, and fails every commit
 // still waiting. It then writes the tail into the header, with the empty flag
 // when no live entry is left, and reports whether it was. The file stays the

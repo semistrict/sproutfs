@@ -642,20 +642,28 @@ func (h *Host) underHalfRing(ctx context.Context, j *journal.Journal, vmID strin
 
 // relieveRing asks for checkpoints of the VMs holding the most of j once it
 // is three quarters full with room more, until what they hold would bring it
-// under half.
+// under half; and once a commit of room has no room on it, until what they
+// hold would make that room. A commit needs room for the pad before its
+// entries too, so the half the first leaves may not be enough.
 func (h *Host) relieveRing(j *journal.Journal, room int64) {
 	usage := j.Usage()
-	if (usage.Used+room)*4 <= usage.Ring*3 {
+	need := j.Shortfall(room)
+	if need > 0 {
+		sim.Probe(h.ctx, ProbeJournalNoRoom)
+	}
+	if (usage.Used+room)*4 > usage.Ring*3 {
+		sim.Probe(h.ctx, ProbeJournalThreeQuarters)
+		need = max(need, usage.Used-usage.Ring/2)
+	}
+	if need <= 0 {
 		return
 	}
-	sim.Probe(h.ctx, ProbeJournalThreeQuarters)
 	byVM := make(map[string]int64)
 	for _, held := range j.Held() {
 		byVM[held.VM] += held.Bytes
 	}
 	vms := slices.Sorted(maps.Keys(byVM))
 	slices.SortStableFunc(vms, func(a, b string) int { return int(byVM[b] - byVM[a]) })
-	need := usage.Used - usage.Ring/2
 	for _, vmID := range vms {
 		if need <= 0 {
 			return
@@ -690,6 +698,9 @@ const (
 	// ProbeJournalThreeQuarters is a journal past three quarters full,
 	// which asked for checkpoints out of turn.
 	ProbeJournalThreeQuarters = "host/journal-three-quarters"
+	// ProbeJournalNoRoom is a commit the journal's ring had no room for,
+	// which asked for checkpoints out of turn.
+	ProbeJournalNoRoom = "host/journal-no-room"
 	// ProbeJournalReadGaveUpVM is a read of this host's journal by a reader
 	// at a newer epoch of a VM this host runs, which gave the VM up.
 	ProbeJournalReadGaveUpVM = "host/journal-read-gave-up-vm"
