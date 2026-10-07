@@ -1192,18 +1192,6 @@
     "purpose": "Panic when a fault waits on a prefetch request the prefetch's supply already answered, rather than answer the request it sends at once."
   },
   {
-    "id": "pager-fork-copy-unkept",
-    "package": "vmmemory",
-    "run": "^TestAForkCopyWhosePointsSealEndsBeforeItIsKeptGoesBack$",
-    "purpose": "Keep a fork copy among its point's copies only after it has taken the lent page's place in the root, without looking whether the point still lends: a seal that ends in between gives the copy back with the root and the point's file with it, and the child is given the file the point no longer has, which panics on its holders."
-  },
-  {
-    "id": "pager-fork-file-after-its-seal",
-    "package": "vmmemory",
-    "run": "^TestAForkCopyMakesNoFileForAPointWhoseSealEnded$",
-    "purpose": "Make a fork point's file for a copy whose point's seal has already ended, a file nothing ever gives back."
-  },
-  {
     "id": "pager-unindex-into-a-detached-owner",
     "package": "vmmemory",
     "run": "^TestAnUnindexWhoseOwnerDetachesGivesThePageBack$",

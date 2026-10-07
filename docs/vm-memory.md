@@ -377,10 +377,9 @@ There are four kinds of file:
   receive the file read-only, as file 3 or up, just before they first map from
   it. The parent keeps its page. When the seal ends, the children's mappings of
   the copies are revoked, each child is sent DROP_FILE, and the file goes back
-  to the arena. A copy joins its point's copies before it takes the lent
-  page's place, and only while the point still lends: one whose seal ended
-  meanwhile goes back, and the child reads its own volume. No fork file is made
-  for a point whose seal has ended.
+  to the arena. The seal's end waits for a copy under way: it takes each
+  page's lent name away under that page's lock, which the copy holds from start
+  to end.
 
 Each file is a memfd of the pager's kind, with mode 0600. A read-only file is
 sent as a new open of the memfd with `O_RDONLY`, so the kernel refuses a VMM a
