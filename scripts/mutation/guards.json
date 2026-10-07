@@ -144,6 +144,12 @@
     "purpose": "Read the store for a fetch whose last caller left, after its read of the disk failed for that, though the disk holds the page a pull put there."
   },
   {
+    "id": "pager-count-detached-before-its-pages-go",
+    "package": "vmmemory",
+    "run": "^TestAPagerDoesNotCloseUnderADetachStillGivingItsPagesBack$",
+    "purpose": "Stop counting a detaching memory region as attached before its layer's pages are back, so a pager closed meanwhile releases its files under the pages the detach then frees into them."
+  },
+  {
     "id": "pager-evict-past-a-freed-slot",
     "package": "vmmemory",
     "run": "^TestAnAllocationCancelsAPrefetchRatherThanEvict$",

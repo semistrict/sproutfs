@@ -12,6 +12,7 @@ import (
 	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/internal/ctxsync"
 	"github.com/semistrict/sproutfs/internal/latency"
+	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/resource"
 	"github.com/semistrict/sproutfs/vmmemory/internal/zirconvm"
 )
@@ -722,8 +723,14 @@ func (r *MemoryRegion) Detach(ctx context.Context) error {
 	for _, origin := range origins {
 		r.host.dropOrigin(origin)
 	}
+	// The region counts as attached until its layer's pages are back: Close
+	// refuses a pager with a region attached, and one that closed now would
+	// release its files under the pages the layer is about to free into them.
+	early := sim.Bug(ctx, "pager-count-detached-before-its-pages-go")
 	h.mu.Lock()
-	h.logical -= r.pageCount
+	if early {
+		h.logical -= r.pageCount
+	}
 	h.forgetExtents(r)
 	delete(h.memoryRegions, r)
 	if r.hasZeros {
@@ -739,6 +746,10 @@ func (r *MemoryRegion) Detach(ctx context.Context) error {
 	r.layer.Destroy()
 	h.mu.Lock()
 	h.forgetFilesLocked(r)
+	if !early {
+		h.logical -= r.pageCount
+		h.signal()
+	}
 	h.mu.Unlock()
 	r.bindingsMu.Lock()
 	r.beside = zirconvm.NewPageList[binding](h.pageSize)
