@@ -840,11 +840,17 @@ Neither rule waits or evicts. A run ends at a page with no free dirty reservatio
 or no offset of its own, or whose offset a checkpoint holds. The settle hands
 back the pages a rule copied that the guest never wrote, except in a range made
 whole, which it leaves whole. `Stats.RuleCopies` counts the pages the rules
-copied.
+copied. A rule takes a page of another read-ahead window only if it can take
+that window's stripe at once, and a page only if it can take the page's lock at
+once; it ends its run at either. It holds each page it joins to the run until
+the store's command lands, so no eviction frees one first.
 
 **The mapping budget turns the gap rule on.** When the client refuses a store's
 mapping for its mapping-count budget, the store makes the range whole with one
 command and is served again, and from then on its memory region closes gaps.
+It does so only around a store whose page is at its own offset: a store that
+copied away from a sealed page to another offset is refused and served again,
+so the guest's page is never mapped onto the checkpoint's copy.
 `Stats.MappingMerges` counts this.
 
 PMEM's pager does none of this: its page is the whole range.

@@ -1534,12 +1534,14 @@ eviction and give-back paths admit there: `fault-lookup`, `reserve-runs`,
 `run-read`, `supplied`, `populate-take`, `allocate-evict`, `reclaim-step`,
 `evict-remove`, `prefetch-land`, `prefetch-landing`, `dirty-wait`,
 `give-back-spilled`, `give-back-volume`, `give-back-victim`, `give-fork`,
-`fork-file`, `fork-copy` and `move`, all under `vmmemory/`. A path that must
+`fork-file`, `fork-copy`, `move`, `reclaim-private`, `store-read-in`,
+`rule-copy` and `settle-reshare`, all under `vmmemory/`. A path that must
 finish once begun admits without its cancellation (`admitGoingOn`:
 `give-back-share`, `unindex`, `rebind`). The campaign neither checkpoints nor
 forks, never fills the dirty budget, and captures only from its guest's own
 task, so it does not reach the fork, move, unindex, dirty-wait and refault
-gaps; their seam tests do.
+gaps; their seam tests do. No campaign reaches the mapping rules, which need
+4 KiB pages, a read-ahead run under 2 MiB and a pressed or half-private range.
 
 **A fork point's children while its seal ends.**
 `TestAForkPointsChildrenReadWhatItLentWhileItsSealEnds` runs twelve seeds of a

@@ -1268,5 +1268,35 @@
     "package": "vmmemory",
     "run": "^(TestALookupAsksNoRootThatGaveItsPageUpBeforeItWentDown|TestALookupAsksNoLentRootWhoseSealEndedBeforeItWentDown)$",
     "purpose": "Let a lookup go down into the root its resolver named without asking under the root's lock whether it still holds the page, so a READ goes to a root's source without h.mu, where a prefetch's send meets it and panics, or to a lent root its seal's end removed."
+  },
+  {
+    "id": "pager-rule-takes-a-page-of-another-window",
+    "package": "vmmemory",
+    "run": "^(TestARuleNeverCopiesAPageAStoreOfItsOwnWindowIsCopying|TestARuleEndsItsRunAtAPageAFaultOfAnotherWindowHolds)$",
+    "purpose": "Let a rule copy a page of another read-ahead window without its stripe, and wait for that page's lock. A store of the page in between makes it private twice and the run maps a punched slot; a fault holding the page across its read, behind a queued seal, deadlocks with the store."
+  },
+  {
+    "id": "pager-rule-joins-a-page-it-does-not-hold",
+    "package": "vmmemory",
+    "run": "^TestAPageARuleJoinsToARunIsNotEvictedBeforeTheRunIsMapped$",
+    "purpose": "Join an already-private page to a store's run without holding it, so an eviction before the command frees the slot the command maps."
+  },
+  {
+    "id": "pager-wait-for-an-offset-gone-elsewhere",
+    "package": "vmmemory",
+    "run": "^TestAStoreWhoseRangeLostItsExtentWhileItWaitedTakesAnOrdinarySlot$",
+    "purpose": "Keep waiting for a private page's own offset after another range took a shared arena's last extent, evicting until that range loses its page."
+  },
+  {
+    "id": "pager-make-whole-around-a-page-elsewhere",
+    "package": "vmmemory",
+    "run": "^TestARangeMadeWholeAroundACopyAwayFromACheckpointMapsTheGuestsOwnCopy$",
+    "purpose": "Make a range whole around a refused store whose page copied away from a sealed one to another offset, mapping the guest's page onto the checkpoint's copy."
+  },
+  {
+    "id": "pager-copy-a-page-read-into-its-own-file",
+    "package": "vmmemory",
+    "run": "^(TestAStoreIntoAPageAForkPointNamesIsTheChildsOwn|TestAForkPointsChildrenReadWhatItLentWhileItsSealEnds)$",
+    "purpose": "Copy a page a store read into the region's own file as though it were a root's. The copy's supply loses and the region maps a punched slot."
   }
 ]
