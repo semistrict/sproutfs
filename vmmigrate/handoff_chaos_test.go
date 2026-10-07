@@ -37,10 +37,13 @@ func TestSourceLostAfterHandoffRewindsToTheLastCheckpoint(t *testing.T) {
 				if err := guest.checkpoint(t.Context(), vm); err != nil {
 					t.Fatal(err)
 				}
+				// The snapshot comes before the guest runs again: a running guest
+				// stores into page 0 at once, and those stores are not in the
+				// checkpoint.
+				durable, selected := guest.snapshot(), vm.Status().Checkpoint
 				guest.start(1)
 				// Everything the guest stores from here lives only in this host's
 				// pages until the destination fetches it or the next checkpoint lands.
-				durable, selected := guest.snapshot(), vm.Status().Checkpoint
 				stores(random, guest)
 				source, err := peer.NewServer(t.Context(), peer.ServerConfig{PageSize: pageSize,
 					Network: c.runtime.Network(), Address: sourceAddress})
