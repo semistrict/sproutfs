@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/semistrict/sproutfs/api/orch"
 	"github.com/semistrict/sproutfs/api/host"
+	"github.com/semistrict/sproutfs/api/orch"
 )
 
 // holdForAMinute is what a source in these tests says it holds a handover for:
