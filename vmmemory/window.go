@@ -100,8 +100,20 @@ type plan struct {
 	fault, store uint64
 	// window is the plan's pages located whole, once located says so, and
 	// alone the faulting page located alone before that.
+	//
+	// free marks the pages of the window the region held nothing at when it
+	// was located, nil where it is planned under the hold that located it. A
+	// page the region holds may be its own state, which its checkpoint names
+	// anew once published, and a fault may give its region up between
+	// locating its window and planning it (reclaimWith): a retire there
+	// leaves such a page spilled and held by nothing, and its name in window
+	// is its parent's. So only a page free marks joins the plan by the name
+	// located then (survey). A page the region held nothing at keeps its
+	// name while the plan holds the window's stripe: only a store into it
+	// makes it the region's own.
 	window  locations
 	located bool
+	free    []bool
 	alone   locations
 	reading reading
 	// provisional is the run of slots a fault that reads its page first took
@@ -154,7 +166,9 @@ func (r *MemoryRegion) newPlan(start, end, fault uint64) *plan {
 	return p
 }
 
-// plan is a plan of the window [start, end) located whole.
+// plan is a plan of the window [start, end) located whole, and of the pages
+// the region held nothing at then (free). Caller holds the region, as it does
+// for the whole of a fault's planning but where it gives the region up.
 func (r *MemoryRegion) plan(ctx context.Context, start, end, fault uint64) (*plan, error) {
 	window, err := r.locate(ctx, start, end)
 	if err != nil {
@@ -162,6 +176,7 @@ func (r *MemoryRegion) plan(ctx context.Context, start, end, fault uint64) (*pla
 	}
 	p := r.newPlan(start, end, fault)
 	p.window, p.located = window, true
+	p.free = r.eligibleIn(start, end)
 	return p, nil
 }
 
@@ -177,7 +192,9 @@ func (r *MemoryRegion) planPage(ctx context.Context, start, end, fault, page uin
 }
 
 // locateWindow locates the whole window of a plan that has located only its
-// faulting page.
+// faulting page. Its callers plan the window under the hold of the region
+// that located it (planRest, storeFresh), so free stays nil: what the region
+// holds there when they look is what it held then.
 func (p *plan) locateWindow(ctx context.Context) error {
 	if p.located {
 		return nil
@@ -416,7 +433,15 @@ type survey struct {
 func (p *plan) survey(ctx context.Context, except uint64, prefetched bool) survey {
 	r := p.region
 	found := survey{into: make([]*arenaFile, p.end-p.start)}
+	// A page may join where the region holds nothing there now, and held
+	// nothing there when the window was located: the name of one it held may
+	// be out of date (plan.free).
 	eligible := r.eligibleIn(p.start, p.end)
+	if p.free != nil && !sim.Bug(ctx, "pager-survey-by-a-stale-name") {
+		for i, free := range p.free {
+			eligible[i] = eligible[i] && free
+		}
+	}
 	holes := false
 	reading := r.host.readingIn(p.start, p.end)
 	files := &fileFinder{p: p}
