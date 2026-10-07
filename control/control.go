@@ -13,7 +13,7 @@
 // uses a create-if-absent condition; replacing one reads its validator and
 // writes under a compare-and-set. A reply that is lost rather than refused is
 // reconciled by reading the record back: a writer recognises its own work by
-// the random nonce it chose when it claimed its epoch.
+// the random nonce it chose when it took its epoch.
 //
 // Because the record is what allocates and selects checkpoints, the names of a
 // checkpoint and of the page a range reads live here too: a [Ref] is the (VM,

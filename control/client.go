@@ -170,8 +170,8 @@ func (c *Client) Create(ctx context.Context, vm string, selected uint64, publish
 	return newHandle(c, observed, observedETag), nil
 }
 
-// Open claims the next writer epoch of an existing VM and returns a handle at
-// it. The claim is a conditional write, so exactly one of two concurrent opens
+// Open takes the next writer epoch of an existing VM and returns a handle at
+// it. The write that takes it is conditional, so exactly one of two concurrent opens
 // gets each epoch, and the handle the previous epoch belonged to is fenced: its
 // next control-record write fails.
 //
@@ -183,14 +183,14 @@ func (c *Client) Open(ctx context.Context, vm string) (*Handle, error) {
 	return c.OpenAfter(ctx, vm, 0)
 }
 
-// OpenMigration is Open for a migration's destination. The write that claims
+// OpenMigration is Open for a migration's destination. The write that takes
 // the epoch also adds the destination's own journal to the record, after the
 // journals already there: the source's entries stay named until the
 // destination selects a checkpoint that holds every page the source held.
 //
 // journal names the destination's disk, its generation and the covered
 // position. Its Epoch must be zero, because the journal holds the entries of
-// the epoch this open claims, and the open stamps that epoch on it. A record
+// the epoch this open takes, and the open stamps that epoch on it. A record
 // that already names MaximumJournals journals is refused with
 // ErrTooManyJournals, and its epoch is left alone.
 func (c *Client) OpenMigration(ctx context.Context, vm string, journal Journal) (*Handle, error) {
@@ -200,17 +200,17 @@ func (c *Client) OpenMigration(ctx context.Context, vm string, journal Journal) 
 	return c.open(ctx, vm, 0, &journal)
 }
 
-// OpenAfter is Open that claims only the epoch after the one its caller read,
+// OpenAfter is Open that takes only the epoch after the one its caller read,
 // and refuses with ErrMoved once the record is past it. A caller that decided
 // from a survey that nothing runs the VM read the epoch before that survey: an
 // open made since, which the survey may have missed because it asked each host
 // at its own moment, moved the epoch, and the host that made it may be running
-// the VM. Zero claims whatever epoch comes next, as Open does.
+// the VM. Zero takes whatever epoch comes next, as Open does.
 func (c *Client) OpenAfter(ctx context.Context, vm string, epoch uint64) (*Handle, error) {
 	return c.open(ctx, vm, epoch, nil)
 }
 
-// open claims the next epoch, only the one after epoch when that is not zero,
+// open takes the next epoch, only the one after epoch when that is not zero,
 // and adds joining to the record's journals when it is not nil.
 func (c *Client) open(ctx context.Context, vm string, epoch uint64, joining *Journal) (*Handle, error) {
 	if !ValidID(vm) {
@@ -244,7 +244,7 @@ func (c *Client) open(ctx context.Context, vm string, epoch uint64, joining *Jou
 			return newHandle(c, next, nextETag), nil
 		}
 		if errors.Is(err, platform.ErrPrecondition) {
-			// Another open claimed this epoch first; claim the one after it.
+			// Another open took this epoch first; take the one after it.
 			continue
 		}
 		observed, observedETag, readErr := c.read(ctx, vm)
@@ -252,7 +252,7 @@ func (c *Client) open(ctx context.Context, vm string, epoch uint64, joining *Jou
 			return nil, errors.Join(err, readErr)
 		}
 		if observed.mine(next.Epoch, nonce) {
-			// The reply was lost; the claim landed.
+			// The reply was lost; the write landed.
 			sim.Probe(ctx, ProbeReplyReconciled)
 			return newHandle(c, observed, observedETag), nil
 		}

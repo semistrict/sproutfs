@@ -292,7 +292,7 @@ func TestPinsAreASortedSetNothingTakesFrom(t *testing.T) {
 }
 
 // A conditional write whose reply is lost has already taken effect. The writer
-// recognises its own work by the nonce it chose when it claimed its epoch, and
+// recognises its own work by the nonce it chose when it took its epoch, and
 // reports the write as the success it was.
 func TestLostReplyIsReconciledByNonce(t *testing.T) {
 	client, store := newClient(t)
@@ -435,9 +435,9 @@ func TestRefusedWriteLeavesTheHandleUsable(t *testing.T) {
 	}
 }
 
-// An open whose claim lands but whose reply is lost still owns the epoch it
-// claimed, which is what the nonce is for.
-func TestLostOpenReplyClaimsTheEpochAnyway(t *testing.T) {
+// An open whose write lands but whose reply is lost still owns the epoch it
+// took, which is what the nonce is for.
+func TestLostOpenReplyTakesTheEpochAnyway(t *testing.T) {
 	client, store := newClient(t)
 	ctx := t.Context()
 	if _, err := client.Create(ctx, "vm", root(), true); err != nil {

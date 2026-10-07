@@ -134,7 +134,7 @@ func TestAnOpenAPinAndAReleaseKeepTheJournals(t *testing.T) {
 }
 
 // A migration's open adds the destination's journal after the source's, in the
-// write that claims the epoch, and stamps it with that epoch. The source's
+// write that takes the epoch, and stamps it with that epoch. The source's
 // journal stays named until the destination selects without it.
 func TestAMigrationOpenAddsItsJournalAfterTheSources(t *testing.T) {
 	client, _ := newClient(t)
@@ -173,7 +173,7 @@ func TestAMigrationOpenAddsItsJournalAfterTheSources(t *testing.T) {
 	}
 }
 
-// A migration's open whose claim lands and whose reply is lost owns the epoch
+// A migration's open whose write lands and whose reply is lost owns the epoch
 // and the journal it added, as any open does.
 func TestALostMigrationOpenReplyKeepsItsJournal(t *testing.T) {
 	client, store := newClient(t)
