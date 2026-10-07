@@ -269,17 +269,18 @@ else
         agent_ready "$vm" || fail "the agent in the fork $vm never answered"
     done
     root_each "${workers[@]}"
+
+    # Every fork lands on its parent's host, and every fork of a fork lands on that
+    # one's, so left alone the whole run piles onto the host the base was created
+    # on while the other sits idle with its whole arena unused. One pause still
+    # starts every worker — that is the number this measures — and the workers are
+    # spread over the ready hosts afterwards, so that what each host is asked to
+    # keep resident is what its arena can hold. Without this a run of more than
+    # about six 2 GiB guests spends its time in one host's spill file, and a guest
+    # starved there stops answering long enough to fail the run.
+    balance "${workers[@]}"
 fi
 
-# Every fork lands on its parent's host, and every fork of a fork lands on that
-# one's, so left alone the whole run piles onto the host the base was created
-# on while the other sits idle with its whole arena unused. One pause still
-# starts every worker — that is the number this measures — and the workers are
-# spread over the ready hosts afterwards, so that what each host is asked to
-# keep resident is what its arena can hold. Without this a run of more than
-# about six 2 GiB guests spends its time in one host's spill file, and a guest
-# starved there stops answering long enough to fail the run.
-balance "${workers[@]}"
 sample forked
 active=("${workers[@]}")
 
