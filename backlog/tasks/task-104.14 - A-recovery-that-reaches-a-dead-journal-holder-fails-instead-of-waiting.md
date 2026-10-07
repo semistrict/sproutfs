@@ -1,10 +1,10 @@
 ---
 id: TASK-104.14
 title: A recovery that reaches a dead journal holder fails instead of waiting
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-07 18:56'
-updated_date: '2026-10-07 19:10'
+updated_date: '2026-10-07 19:34'
 labels:
   - journal
   - recovery
@@ -25,12 +25,14 @@ Found in the step 9 GCE run. A recovery started soon after a host died still fou
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A JOURNAL_READ that cannot reach the membership's holder reports volume.ErrJournalPending, before or after the epoch is taken, so the orchestrator retries
-- [ ] #2 A host test shows an open whose journal holder does not answer fails with ErrJournalPending and succeeds once another member serves the disk
+- [x] #1 A JOURNAL_READ that cannot reach the membership's holder reports volume.ErrJournalPending, before or after the epoch is taken, so the orchestrator retries
+- [x] #2 A host test shows an open whose journal holder does not answer fails with ErrJournalPending and succeeds once another member serves the disk
 <!-- AC:END -->
 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
 Fixed on the step 8 agent's branch, edeb0ad9 (TestAnOpenWhoseJournalHolderCannotBeReachedIsPending); lands when that branch is merged.
+
+Fixed by the step 8 branch's edeb0ad9, cherry-picked onto main.
 <!-- SECTION:NOTES:END -->

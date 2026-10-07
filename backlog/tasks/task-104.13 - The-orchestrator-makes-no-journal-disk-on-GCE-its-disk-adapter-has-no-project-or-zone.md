@@ -3,9 +3,10 @@ id: TASK-104.13
 title: >-
   The orchestrator makes no journal disk on GCE: its disk adapter has no project
   or zone
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-07 18:56'
+updated_date: '2026-10-07 19:33'
 labels:
   - journal
   - gce
@@ -27,6 +28,12 @@ Found in the step 9 GCE run. The orchestrator builds the Compute Engine adapter 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The GCE adapter fills the project and zone from the metadata server when the config leaves them empty, and a test against the fake API shows it
-- [ ] #2 With SPROUTFS_DURABLE_FLUSH=gce on GCE, the orchestrator creates and lists journal disks
+- [x] #1 The GCE adapter fills the project and zone from the metadata server when the config leaves them empty, and a test against the fake API shows it
+- [x] #2 With SPROUTFS_DURABLE_FLUSH=gce on GCE, the orchestrator creates and lists journal disks
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Fixed in 13d9b790 (cherry-picked from the step 9 branch): TestGCEDisksTakeTheInstancesProjectAndZoneFromTheMetadataServer; the step 9 GCE run made, listed and deleted journal disks with it.
+<!-- SECTION:NOTES:END -->
