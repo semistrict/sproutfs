@@ -246,6 +246,12 @@ func (h *Host) admit(ctx context.Context, memoryRegion MemoryRegionBacking, mapp
 	}
 	h.logical += int(count)
 	h.mu.Unlock()
+	// The logical pages are taken under that hold, and each later hold gives
+	// them back or adds the region; nothing else read under it is relied on.
+	// A pager that fails in between is found by the region's first fault
+	// (serving), and Close refuses while the pages are counted. Until the
+	// last hold the region is in no list: its files count it under holds of
+	// their own (newFiles), and no budget is relieved from one holding none.
 	if err := backing.Verify(ctx); err != nil {
 		h.mu.Lock()
 		h.logical -= int(count)
@@ -707,6 +713,12 @@ func (r *MemoryRegion) Detach(ctx context.Context) error {
 	// its identity.
 	// Its writes go with it, and their reservations back to the budget. The
 	// pages they were copied from go too, where nothing else maps them.
+	//
+	// The bindings are read under one hold of bindingsMu and acted on after
+	// it. That is safe: a binding stays in the list until the list is
+	// replaced below, and nothing else adds one, since no fault runs while
+	// live is held. What the list says of a binding is read again where it
+	// is acted on: its page under h.mu, its origin by dropOrigin.
 	r.bindingsMu.Lock()
 	var bound []*binding
 	var origins []*zirconvm.VmPage
@@ -717,6 +729,10 @@ func (r *MemoryRegion) Detach(ctx context.Context) error {
 		}
 	})
 	r.bindingsMu.Unlock()
+	own, err := r.holdOwnPages(ctx, bound)
+	if err != nil {
+		return err
+	}
 	r.releaseDirty()
 	h.mu.Lock()
 	for _, b := range bound {
@@ -725,6 +741,9 @@ func (r *MemoryRegion) Detach(ctx context.Context) error {
 		}
 	}
 	h.mu.Unlock()
+	// Between the hold above and the one below, a fault of another region
+	// may count this one among the attached: it holds nothing and maps
+	// nothing now, so it asks no checkpoint of it and is no victim's alias.
 	for _, origin := range origins {
 		r.host.dropOrigin(origin)
 	}
@@ -747,8 +766,13 @@ func (r *MemoryRegion) Detach(ctx context.Context) error {
 	r.closed = true
 	// The layer's own pages go back with it, and its page source, the
 	// region's, closes with it: no fault reads after this, so it has no
-	// request to end.
+	// request to end. Its files and its logical pages are its own until the
+	// hold below: Close refuses while they are counted, and no other region
+	// gives back a file this one still holds.
 	r.layer.Destroy()
+	for _, page := range own {
+		h.unlockPage(page)
+	}
 	h.mu.Lock()
 	h.forgetFilesLocked(r)
 	if !early {
@@ -761,4 +785,52 @@ func (r *MemoryRegion) Detach(ctx context.Context) error {
 	r.bindingsMu.Unlock()
 	r.pageCount = 0
 	return nil
+}
+
+// holdOwnPages takes the lock of every page of this region's own layer that
+// bound maps, which a detach holds until the layer has gone. An eviction of
+// such a page holds its lock and nothing of the region's while it reads the
+// page's reservation, revokes the page and writes its bytes into that
+// reservation. A detach in that moment gave the reservation back and freed
+// the page under it, and the eviction then read a slot no longer the page's
+// into a reservation no longer the region's. So a detach waits for an
+// eviction under way to end, and none starts while it holds the locks.
+//
+// Each lock is tried under h.mu, which keeps what a binding maps from
+// changing as it is tried. One that is held is waited for with nothing held,
+// as a fault waits for a page an eviction holds, and then every lock is tried
+// again, so a detach never holds one page while it waits for another. On
+// error it holds none.
+func (r *MemoryRegion) holdOwnPages(ctx context.Context, bound []*binding) ([]*zirconvm.VmPage, error) {
+	h := r.host
+	if sim.Bug(ctx, "pager-detach-under-an-eviction") {
+		return nil, nil
+	}
+	for {
+		var held []*zirconvm.VmPage
+		var busy *zirconvm.VmPage
+		h.mu.Lock()
+		for _, b := range bound {
+			page := b.page
+			if page == nil || frameOf(page).layer != r {
+				continue
+			}
+			if !frameOf(page).mu.TryLock() {
+				busy = page
+				break
+			}
+			held = append(held, page)
+		}
+		h.mu.Unlock()
+		if busy == nil {
+			return held, nil
+		}
+		for _, page := range held {
+			h.unlockPage(page)
+		}
+		if err := h.lockPage(ctx, busy); err != nil {
+			return nil, err
+		}
+		h.unlockPage(busy)
+	}
 }

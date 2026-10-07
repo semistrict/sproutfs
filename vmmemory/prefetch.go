@@ -494,7 +494,13 @@ type waiter struct {
 }
 
 // waiter is a READ request waiting on the prefetch's first, nil once the
-// prefetch has finished.
+// prefetch has finished or its supply has answered that request.
+//
+// The prefetch answers its requests under h.mu when it finishes, but its
+// supply answers them before that, under the root's lock alone. So a request
+// still listed here may have been answered already, and the one this sends
+// then meets no read: the root's proxy holds it, and it is answered at once,
+// as plan.inFlight answers one.
 func (pf *prefetch) waiter() *waiter {
 	h := pf.region.host
 	h.mu.Lock()
@@ -503,10 +509,16 @@ func (pf *prefetch) waiter() *waiter {
 		return nil
 	}
 	sent := pf.requests[0]
+	offset := pf.pages[0].key.id.Page * h.pageSize
 	request := h.newRequest()
-	_ = sent.root.reads.source.GetPages(pf.pages[0].key.id.Page*h.pageSize, h.pageSize, request)
+	_ = sent.root.reads.source.GetPages(offset, h.pageSize, request)
 	if sent.root.reads.proxy.Holds(request) {
-		panic("vmmemory: a fault's request to wait on a prefetch was sent")
+		if sim.Bug(pf.ctx, "pager-wait-on-a-supplied-prefetch") {
+			panic("vmmemory: a fault's request to wait on a prefetch was sent")
+		}
+		sent.root.reads.source.OnPagesSupplied(offset, h.pageSize)
+		h.requests.Put(request)
+		return nil
 	}
 	return &waiter{host: h, request: request}
 }
