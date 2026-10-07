@@ -270,6 +270,18 @@ func (p *plan) release(page *zirconvm.VmPage) {
 	panic("vmmemory: a plan gave up a page it does not hold")
 }
 
+// holdsOwn reports whether the plan holds a page of its region's own layer:
+// the faulting page, where the lookup found the region's own page there.
+// Caller holds those pages, which keeps them in the layer.
+func (p *plan) holdsOwn() bool {
+	for _, page := range p.locked {
+		if frameOf(page).layer == p.region {
+			return true
+		}
+	}
+	return false
+}
+
 // hold takes the lock of a page the plan is about to take, which it holds
 // until it is unlocked, and reports false where something else holds it, an
 // eviction most likely, and the plan leaves the page alone. It is called
@@ -737,6 +749,15 @@ func (p *plan) loadReserved(ctx context.Context) error {
 		loading++
 	}
 	if loading == 0 {
+		return nil
+	}
+	if p.holdsOwn() && !sim.Bug(ctx, "pager-read-holding-its-own-page") {
+		// A retire or an unseal holds the region exclusively and waits for
+		// the lock of the region's own page the checkpoint shares, and a read
+		// gives the region up and takes it again: with such a page held
+		// across the read, each would wait for the other. The plan reads
+		// nothing more; the pages it reserved are left to their own faults,
+		// and their slots go back when it is unlocked.
 		return nil
 	}
 	wanted := make([]bool, last-first)
