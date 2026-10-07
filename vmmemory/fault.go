@@ -128,6 +128,11 @@ func (r *MemoryRegion) faultOnce(ctx context.Context, index uint64, write bool, 
 	if !write || r.writable(index) {
 		return false, r.load(ctx, index, spill)
 	}
+	if r.journalProtected(index) {
+		// A protect trap on a page a journal capture write-protected: it is
+		// the region's own already, so nothing is copied.
+		return r.unprotectForStore(ctx, index)
+	}
 	if spill.none() {
 		// The page needed one after all: it stopped being the region's own
 		// between the decision and the region lock.
@@ -246,7 +251,7 @@ func (r *MemoryRegion) refault(ctx context.Context, b *binding) (bool, error) {
 	h := r.host
 	ps := h.pageSize
 	r.bindingsMu.Lock()
-	dirty, held := b.dirty, b.checkpoint
+	dirty, held, protected := b.dirty, b.checkpoint, b.protected
 	spill := b.spill
 	if held != nil {
 		spill = held.spill
@@ -297,7 +302,9 @@ func (r *MemoryRegion) refault(ctx context.Context, b *binding) (bool, error) {
 	// generation of them, not a step back.
 	h.probe.granted(b, frameOf(frame), nil)
 	r.host.node.PageQueues().MarkAccessed(frame)
-	writable := held == nil
+	// A page a journal capture protected stays protected: the store that
+	// traps on it is what makes it unjournaled again.
+	writable := held == nil && !protected
 	r.setMapped(b.index, b.index+1, true)
 	if err := r.mapPages(ctx, r.runAt(b.index, frameOf(frame).fileSlot, 1), writable); err != nil {
 		return false, r.mappingFailed(err, func() { r.setMapped(b.index, b.index+1, false) })

@@ -144,6 +144,30 @@
     "purpose": "Read the store for a fetch whose last caller left, after its read of the disk failed for that, though the disk holds the page a pull put there."
   },
   {
+    "id": "journal-trap-not-marked",
+    "package": "vmmemory",
+    "run": "^TestAStoreAfterACaptureTrapsAndCopiesNothing$",
+    "purpose": "Map a page a capture write-protected writable again on the guest's store without making it unjournaled, so the next flush leaves out what the guest stored."
+  },
+  {
+    "id": "journal-seal-drops-unjournaled",
+    "package": "vmmemory",
+    "run": "^TestACaptureDuringASealTakesTheSealedCopy$",
+    "purpose": "Forget at a seal the pages no journal entry holds yet, so a flush while the seal stands does not take what the guest stored before it."
+  },
+  {
+    "id": "journal-digests-survive-unjournaled-seal",
+    "package": "vmmemory",
+    "run": "^TestAPageStoredIntoUnderTheSealIsWrittenWhole$",
+    "purpose": "Keep across a seal the digests of a page unjournaled at it, so a capture under the seal leaves out a block the guest put back to the journal's old bytes, which the selected checkpoint no longer holds."
+  },
+  {
+    "id": "journal-failed-keeps-digests",
+    "package": "vmmemory",
+    "run": "^TestAFailedCaptureGivesItsPagesBack$",
+    "purpose": "Keep the digests of a capture whose journal write failed, so the next capture leaves out the blocks the failed entry held."
+  },
+  {
     "id": "pager-count-detached-before-its-pages-go",
     "package": "vmmemory",
     "run": "^TestAPagerDoesNotCloseUnderADetachStillGivingItsPagesBack$",

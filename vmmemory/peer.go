@@ -73,6 +73,7 @@ func (p *plan) publishPrivate(ctx context.Context, page uint64, data []byte) err
 	b := r.bindingLocked(page)
 	r.uncoldLocked(b)
 	b.zero, b.checkpoint, b.spill, b.dirty, b.origin, b.ahead = false, nil, spill, true, nil, false
+	b.zeroed = false
 	r.noteDirtyLocked(b)
 	r.bindingsMu.Unlock()
 	h.mu.Lock()

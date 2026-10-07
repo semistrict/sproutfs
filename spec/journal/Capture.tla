@@ -67,7 +67,11 @@ CONSTANTS
     MaxStores,  \* stores across a run
     MaxPos,     \* positions the journal may give out
     Digests,    \* "keep": a page that was not unjournaled at a seal keeps
-                \* its digests; "drop": every page loses them at every seal
+                \* its digests; "drop": every page loses them at every seal;
+                \* "refresh": as "keep", and the selection gives each page
+                \* still on the list the digests of the selected checkpoint's
+                \* bytes, which is what the next copy of the published page
+                \* takes
     Bugs        \* defects to put back, to show the invariants catch each one
 
 Addrs == Pages \X Blocks
@@ -273,7 +277,10 @@ Select ==
     /\ seal' = NoSeal
     /\ protected' = protected \cup held
     /\ held' = {}
-    /\ UNCHANGED <<bytes, writable, unj, digest, capturing, taken, batch, disk,
+    /\ digest' = IF Digests = "refresh"
+                 THEN [a \in Addrs |-> IF a[1] \in seal.list THEN seal.bytes[a] ELSE digest[a]]
+                 ELSE digest
+    /\ UNCHANGED <<bytes, writable, unj, capturing, taken, batch, disk,
                    nextPos, padFrom, flush, sending, flushed, stores>>
 
 Abandon ==

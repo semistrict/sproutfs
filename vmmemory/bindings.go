@@ -45,17 +45,24 @@ type binding struct {
 	// MemoryRegion.bindingsMu. The marks sit beside the reservation, which
 	// leaves them room, so that a binding, which every page a region touches
 	// has, is 64 bytes.
-	dirty       bool
-	spill       reservation
-	cold, ahead bool
-	checkpoint  *binding
-	origin      *zirconvm.VmPage
-	coldAt      int64
+	//
+	// protected marks a dirty page a journal capture write-protected: its
+	// bytes are in the journal, and the guest's next store takes a protect
+	// trap that maps it writable again (journal.go). zeroed marks a page a
+	// store made private from zeros, so its first capture knows what its
+	// blocks held before.
+	dirty                          bool
+	spill                          reservation
+	cold, ahead, protected, zeroed bool
+	checkpoint                     *binding
+	origin                         *zirconvm.VmPage
+	coldAt                         int64
 }
 
 // writable reports whether the guest may store into b's page where it is: its
-// own dirty state, which no checkpoint still holds.
-func (b *binding) writable() bool { return b.dirty && b.checkpoint == nil }
+// own dirty state, which no checkpoint still holds and no journal capture has
+// write-protected.
+func (b *binding) writable() bool { return b.dirty && b.checkpoint == nil && !b.protected }
 
 // repeated reports whether a fault on index for this access would be a repeated
 // fault: this memory region already maps the page for it. See repeats.go.
@@ -283,6 +290,7 @@ func (r *MemoryRegion) noteDirtyLocked(b *binding) {
 	if r.dirtySince.IsZero() {
 		r.dirtySince = r.host.clock.Now()
 	}
+	r.noteStoredLocked(b)
 	r.noteSealableLocked(b)
 }
 

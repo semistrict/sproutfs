@@ -48,7 +48,9 @@ func (r *MemoryRegion) holdsOwn(index uint64) bool {
 // needsPrivatePage reports whether a store to index would have to make a page
 // of its own, and with it take a dirty reservation. It takes no region lock:
 // a store decides this before it competes for one, and decides again after.
-func (r *MemoryRegion) needsPrivatePage(index uint64) bool { return !r.writable(index) }
+func (r *MemoryRegion) needsPrivatePage(index uint64) bool {
+	return !r.writable(index) && !r.journalProtected(index)
+}
 
 // fresh reports what a store may assume about a page whose lock it does not
 // hold: zero where the page is mapped to zero, untouched where the region
@@ -428,9 +430,10 @@ func (r *MemoryRegion) bindDirtyRun(first uint64, frames []*zirconvm.VmPage, res
 		b := r.bindingLocked(first + uint64(k))
 		r.uncoldLocked(b)
 		b.dirty, b.spill, b.ahead, b.origin, b.zero, b.mapped = true, reservations[k], ahead[k], nil, false, true
-		b.checkpoint = nil
+		b.checkpoint, b.zeroed = nil, true
 		bindings[k] = b
 		r.dirtySet[b.index] = b
+		r.noteStoredLocked(b)
 	}
 	if r.dirtySince.IsZero() && len(frames) > 0 {
 		r.dirtySince = r.host.clock.Now()
@@ -490,6 +493,7 @@ func (r *MemoryRegion) takePrivate(ctx context.Context, index uint64, frame *zir
 	r.bindingsMu.Lock()
 	r.uncoldLocked(b)
 	b.checkpoint, b.spill, b.dirty, b.zero, b.ahead, b.origin = nil, spill, true, false, false, origin
+	b.zeroed = false
 	r.noteDirtyLocked(b)
 	r.bindingsMu.Unlock()
 	h.probe.granted(b, frameOf(frame), probeFrame(origin))
@@ -526,7 +530,7 @@ func (r *MemoryRegion) dirtyInPlace(ctx context.Context, index uint64, spill res
 	r.bindingsMu.Lock()
 	b := r.bindingLocked(index)
 	r.uncoldLocked(b)
-	b.checkpoint, b.spill, b.dirty, b.ahead, b.origin = nil, spill, true, false, nil
+	b.checkpoint, b.spill, b.dirty, b.ahead, b.origin, b.zeroed = nil, spill, true, false, nil, false
 	r.noteDirtyLocked(b)
 	r.bindingsMu.Unlock()
 	h := r.host
@@ -1112,9 +1116,11 @@ func (r *MemoryRegion) releaseDirty() {
 		}
 		r.uncoldLocked(b)
 		b.dirty, b.spill, b.origin, b.ahead, b.checkpoint = false, noReservation, nil, false, nil
+		b.protected, b.zeroed = false, false
 	})
 	r.dirtySet, r.dirtySince = nil, time.Time{}
 	r.dirtyRuns = newPageRuns(r.host.pageSize)
+	r.journal = regionJournal{unjournaled: newPageRuns(r.host.pageSize)}
 	r.bindingsMu.Unlock()
 	for _, spill := range spills {
 		h.releaseSpill(spill)

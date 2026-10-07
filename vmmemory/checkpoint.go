@@ -101,8 +101,12 @@ type MemoryRegionCheckpoint struct {
 	// copies is the set, in ascending page order: the checkpoint's copy of
 	// each page, beside the region's layer. Guarded by mu.
 	copies []*binding
-	done   chan struct{}
-	err    error // read only after done is closed
+	// unjournaled is the pages the region had not journaled at the seal, which
+	// a capture takes until the guest stores into them or the seal ends
+	// (journal.go). Guarded by the region's bindingsMu.
+	unjournaled pageRuns
+	done        chan struct{}
+	err         error // read only after done is closed
 }
 
 func (c *MemoryRegionCheckpoint) finish(err error) {
@@ -235,7 +239,7 @@ func (r *MemoryRegion) Seal(ctx context.Context) error {
 	// once the protection has succeeded: a seal that protected nothing takes
 	// nothing else either.
 	checkpoint := &MemoryRegionCheckpoint{memoryRegion: r, dirtySince: r.takeDirtySince(),
-		done: make(chan struct{}), taken: make(chan struct{})}
+		done: make(chan struct{}), taken: make(chan struct{}), unjournaled: r.takeUnjournaled(ctx)}
 	pending := r.takeDirtySet()
 	r.setCheckpoint(checkpoint)
 	// The region stays locked, and the walk gives it back.
@@ -495,6 +499,7 @@ func (r *MemoryRegion) endSeal(ctx context.Context, checkpoint *MemoryRegionChec
 	if !published {
 		r.restoreDirtySince(current.since())
 	}
+	r.endUnjournaled(current, published)
 	if err := r.endFork(ctx, current); err != nil {
 		return err
 	}
@@ -673,6 +678,7 @@ func (r *MemoryRegion) takePages(ctx context.Context, pending map[uint64]*bindin
 // before it can change its bytes. Caller holds r.bindingsMu.
 func (r *MemoryRegion) holdInCheckpointLocked(b, held *binding) {
 	r.uncoldLocked(b)
+	b.protected, b.zeroed = false, false
 	b.checkpoint, held.spill, b.spill = held, b.spill, noReservation
 	held.ahead, b.ahead = b.ahead, false
 	held.origin, b.origin = b.origin, nil

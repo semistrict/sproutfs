@@ -99,6 +99,10 @@ type MemoryRegion struct {
 	dirtySet   map[uint64]*binding
 	dirtyRuns  pageRuns
 	dirtySince time.Time
+	// journal is the durable flush's state: which pages' bytes may differ
+	// from the region's last journal entry, and digests of what that entry
+	// holds (journal.go).
+	journal regionJournal
 	// coldPages is every cold copy of the region, and coldCopies the ones its
 	// session's worker has not taken yet (cold.go).
 	coldPages  map[uint64]*binding
@@ -289,6 +293,7 @@ func (h *Host) admit(ctx context.Context, memoryRegion MemoryRegionBacking, mapp
 func (r *MemoryRegion) newLayer() error {
 	ps := r.host.pageSize
 	r.beside, r.dirtyRuns = zirconvm.NewPageList[binding](ps), newPageRuns(ps)
+	r.journal.unjournaled = newPageRuns(ps)
 	r.resolver = &rootResolver{region: r}
 	// The layer's source is the region's own, and it traps dirty
 	// transitions, as a VMO whose pager tracks its writes does: a page of

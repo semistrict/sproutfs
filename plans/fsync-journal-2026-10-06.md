@@ -398,7 +398,17 @@ capture's, a stop's and a fork point's.
 holds exactly the bytes its last entry left. Those are also the bytes the
 checkpoint holds for it, and the bytes a replay starts from whether the
 checkpoint lands or not. So its digests stay, and its next capture writes
-only the blocks that changed. `MCCapture` passes with this rule (step 1, see
+only the blocks that changed.
+
+**At the selection**, a page still on the list, which the guest has not
+stored into since the seal, takes the digests of the selected bytes: a replay
+starts from them, and every entry a capture made of it under the seal holds
+them too. The pager does this by dropping the page's digests, so the next copy
+of the published page takes them from that page. A page the guest stored
+into under the seal keeps the digests its capture gave it. `MCCapture` checks
+this rule (`Digests = "refresh"`). Giving those digests to every page, the
+stored-into ones too, loses a block, which TLC showed: a capture under the
+seal compares a page with digests that the selection then makes stale. `MCCapture` passes with this rule (step 1, see
 [Decided](#decided)). An unjournaled page that kept its digests would lose a
 store whose bytes go back to the page's last entry.
 

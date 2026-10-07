@@ -1111,3 +1111,59 @@ func TestManagedPagerSealProtectsAndCopiesOnWriteOnUFFD(t *testing.T) {
 		t.Fatalf("the two captures counted %d sealed pages, want 2: %v", s.CheckpointPages, err)
 	}
 }
+
+// A journal capture takes write access away from a disk's page in place, on a
+// real UFFD, at both pages a pager runs. The guest keeps reading the page,
+// its next store traps and comes back on the same physical page with nothing
+// copied, and the page is unjournaled again, so the next capture takes the
+// block that store changed.
+func TestManagedPagerCaptureProtectsAndTrapsOnUFFD(t *testing.T) {
+	for _, size := range []int{os.Getpagesize(), hugePageSize} {
+		t.Run(fmt.Sprintf("page-%d", size), func(t *testing.T) {
+			h := kernelHostPaged(t, size, 4, 8, 8)
+			p := startNative(t, h, 2)
+			disk := p.memoryRegion(0)
+			p.request("fill 0 0 1 70", "filled")
+			captured, err := disk.Capture(t.Context(), disk.Unjournaled())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(captured.Blocks) == 0 || captured.Blocks[0] != 0 || captured.Data[0] != 70 {
+				t.Fatalf("the capture took blocks %v starting with byte %d, want block 0 with 70",
+					captured.Blocks, captured.Data[0])
+			}
+			if got := disk.Unjournaled(); len(got) != 0 {
+				t.Fatalf("unjournaled pages %v after the capture, want none", got)
+			}
+			page := p.pfn(0)
+			p.request("read 0 0 1", "data 46")
+			before, err := h.Stats(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			// A store into the captured page traps and keeps its physical page.
+			p.request("fill 0 1 1 71", "filled")
+			p.request("read 0 1 1", "data 47")
+			after, err := h.Stats(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := p.pfn(0); got != page {
+				t.Fatalf("the store after the capture moved the guest to physical page %d, want %d", got, page)
+			}
+			if traps, copies := after.ProtectTraps-before.ProtectTraps, after.CopyOnWrites-before.CopyOnWrites; traps != 1 || copies != 0 {
+				t.Fatalf("the store after the capture took %d protect traps and %d copies, want 1 and 0", traps, copies)
+			}
+			if got := disk.Unjournaled(); len(got) != 1 || got[0] != 0 {
+				t.Fatalf("unjournaled pages %v after the trapped store, want [0]", got)
+			}
+			captured, err = disk.Capture(t.Context(), disk.Unjournaled())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(captured.Blocks) != 1 || captured.Blocks[0] != 0 || captured.Data[1] != 71 {
+				t.Fatalf("the capture after the trapped store took blocks %v, want block 0 holding 71", captured.Blocks)
+			}
+		})
+	}
+}

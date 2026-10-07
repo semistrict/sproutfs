@@ -291,6 +291,9 @@ func (r *MemoryRegion) endDirty(b *binding) reservation {
 	b.spill, b.dirty, b.ahead, b.origin = noReservation, false, false, nil
 	delete(r.dirtySet, b.index)
 	r.noteSealableLocked(b)
+	// Its bytes are its origin's again, which no journal entry has to bring
+	// back: a copy a capture took is protected, so never a cold copy.
+	r.forgetJournaledLocked(b.index)
 	if len(r.dirtySet) == 0 {
 		r.dirtySince = time.Time{}
 	}

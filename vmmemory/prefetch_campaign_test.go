@@ -110,7 +110,7 @@ func prefetchCampaign(t *testing.T, seed uint64) (map[string]uint64, map[string]
 		// scheduler has stopped.
 		disk := sim.New(sim.Config{Seed: seed}).NewDisk("pager", sim.DiskConfig{})
 		f, err := newFixtureOn(t, ctx, disk, vmmemory.Config{PageSize: uint64(pageSize), Arena: suiteArena,
-			ResidentPages: 24, LogicalPages: 64, DirtyPages: 48, ReadAheadPages: 4, PrefetchRuns: 2})
+			ResidentPages: 24, LogicalPages: 80, DirtyPages: 48, ReadAheadPages: 4, PrefetchRuns: 2})
 		if err != nil {
 			t.Error(err)
 			return
@@ -203,6 +203,10 @@ func campaignGuests(f *fixture) []*campaignGuest {
 	want := initialBytes(campaignPages)
 	want[5], want[11] = 0xa5, 0xab
 	guests = append(guests, &campaignGuest{name: "migrated", region: r, m: m, want: want})
+	// A disk whose guest flushes between its stores, so a journal capture
+	// write-protects pages the other steps then store into, read and spill.
+	disk, diskMapping := f.attachKind(vmmemory.Pmem, f.slowBacking(campaignPages))
+	guests = append(guests, &campaignGuest{name: "disk", region: disk, m: diskMapping, want: initialBytes(campaignPages)})
 	return guests
 }
 
@@ -251,6 +255,24 @@ func runCampaignGuest(ctx context.Context, t *testing.T, g *campaignGuest, rando
 				t.Errorf("%s page %d reads %d, want %d", g.name, page, got, g.want[page])
 				return
 			}
+		}
+		if g.region.Kind() == vmmemory.Pmem && random.IntN(5) == 0 {
+			// A flush: a capture of what the guest stored, whose journal
+			// write fails one time in four.
+			captured, err := g.region.Capture(ctx, g.region.Unjournaled())
+			if err != nil {
+				t.Errorf("%s capturing: %v", g.name, err)
+				return
+			}
+			if random.IntN(4) == 0 {
+				captured.Fail(ctx)
+			}
+		}
+		// The journal's rule holds after every step, in RAM as in a disk: a
+		// page the guest may store into without a fault is unjournaled.
+		if err := unjournaledWritable(g.region, g.m); err != nil {
+			t.Errorf("%s after step %d: %v", g.name, op, err)
+			return
 		}
 		if random.IntN(3) == 0 {
 			time.Sleep(time.Duration(random.IntN(4)) * time.Millisecond)
