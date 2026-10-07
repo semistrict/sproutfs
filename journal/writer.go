@@ -139,6 +139,13 @@ func (j *Journal) nextBatch() []*commit {
 			waited = true
 			sim.Probe(j.ctx, ProbeFull)
 		}
+		if len(j.queue) > 0 && j.written < j.next && !sim.Bug(j.ctx, "journal-pad-only-with-a-commit") {
+			// A failed range is given back only by a batch's pad, and nothing
+			// in it is live for a trim to free: the next batch is that pad
+			// alone.
+			j.mu.Unlock()
+			return []*commit{}
+		}
 		changed := j.changed
 		if !moved {
 			j.mu.Unlock()
@@ -250,8 +257,8 @@ func capture(ctx context.Context, c *commit) ([]Entry, error) {
 // place lays a batch out from written: pads over a failed batch, then each
 // commit's entries, with a pad wherever an entry would cross the ring's end,
 // and a pad to the next 4 KiB boundary. A commit with an entry of a VM a read
-// fenced at a newer epoch is refused whole. A batch with no entry has no
-// image and writes nothing. The caller holds mu.
+// fenced at a newer epoch is refused whole. A batch with neither an entry nor
+// a failed range to pad has no image and writes nothing. The caller holds mu.
 func (j *Journal) place(batch []*commit, captured [][]Entry) placement {
 	p := placement{start: j.written, positions: make([][]uint64, len(batch))}
 	position := j.written
@@ -287,7 +294,7 @@ func (j *Journal) place(batch []*commit, captured [][]Entry) placement {
 			position += uint64(size)
 		}
 	}
-	if len(p.entries) == 0 {
+	if len(p.entries) == 0 && !padded {
 		return placement{start: j.written, positions: p.positions}
 	}
 	if padded {

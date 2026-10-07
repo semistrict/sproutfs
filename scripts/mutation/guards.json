@@ -946,6 +946,12 @@
     "purpose": "Answer a journal batch's commits once its write returns, before its sync. A commit is answered while its sync is held, and one whose sync a power loss interrupted is answered and then lost."
   },
   {
+    "id": "journal-pad-only-with-a-commit",
+    "package": "journal",
+    "run": "^TestAFailedRangeACommitDoesNotFitBesideIsPaddedByItself$",
+    "purpose": "Pad over a failed batch's range only in a batch with a commit, so a commit that does not fit beside the range waits for a trim that frees nothing."
+  },
+  {
     "id": "journal-read-without-fence",
     "package": "journal",
     "run": "^TestAReadFencesTheVMAndWaitsForTheBatchInFlight$",

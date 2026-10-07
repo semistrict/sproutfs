@@ -147,6 +147,40 @@ func TestAFailedBatchIsPaddedOverAndNothingAfterItIsLost(t *testing.T) {
 	})
 }
 
+// A failed batch's range is given back only by the pad a later batch writes
+// over it. A commit that does not fit on the ring beside that range waits for
+// no trim, since nothing in the range is live: the journal writes the pad by
+// itself, and the commit goes after it.
+func TestAFailedRangeACommitDoesNotFitBesideIsPaddedByItself(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		runtime := sim.New(sim.Config{})
+		ctx := sim.WithRuntime(t.Context(), runtime)
+		const ring = 64 << 10
+		disk, handle := device(t, ctx, runtime, ring, sim.DiskConfig{PowerLossFaults: true})
+		j := open(t, ctx, handle(), Lease{Assigned: 1, Member: memberA})
+		failed, next := entryOf("vm-a", 1, 0x10, 0, 1, 2, 3, 4, 5), entryOf("vm-a", 1, 0x20, 6, 7, 8, 9)
+		disk.FailNext(sim.DiskSync, 1)
+		if _, err := commitOf(ctx, j, failed); !errors.Is(err, platform.ErrInjectedFault) {
+			t.Fatalf("a commit whose sync failed: %v, want ErrInjectedFault", err)
+		}
+		// The failed batch is 28 KiB, and the next commit needs room for its
+		// entry and as large a pad: more than the 36 KiB left beside it.
+		if need := reserve(roomOf(next), roomOf(next)); need <= ring-28<<10 || need > ring {
+			t.Fatalf("the next commit needs %d bytes of a ring of %d", need, ring)
+		}
+		got := mustCommit(t, ctx, j, next)
+		if want := uint64(ring + 28<<10); got[0] != want {
+			t.Fatalf("the commit after the failed range is at %d, want %d", got[0], want)
+		}
+		if runtime.Probes()[ProbeFailedRangePadded] != 1 {
+			t.Fatalf("%d batches padded over a failed one, want 1", runtime.Probes()[ProbeFailedRangePadded])
+		}
+		if diff := sameEntries(readAll(t, ctx, j, "vm-a", 1, 0, 2), []Entry{at(next, got[0])}); diff != "" {
+			t.Fatal(diff)
+		}
+	})
+}
+
 // A lease of a newer assignment refuses the disk, as it opens and while it is
 // open: a holder whose lease was taken refuses every commit and read from
 // then on.
