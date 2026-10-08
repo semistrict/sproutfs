@@ -19,8 +19,8 @@ import (
 // witness reads measures what a guest's reads of one file cost while it
 // writes others: it writes --file of --size whole, then reads it at random,
 // --block at a time, one read every --interval, while one writer writes
-// --write-bytes of fresh files into --dir; and goes on reading for --idle once
-// the writes are done. It prints one JSON object: the latency of the reads
+// --write-bytes of fresh files into --dir, at --write-rate bytes a second where
+// that is given; and goes on reading for --idle once the writes are done. It prints one JSON object: the latency of the reads
 // during the writes and after them, and what the writes did.
 //
 // On a DAX root a read is a copy out of the host's page, so what it costs is
@@ -31,11 +31,11 @@ import (
 
 // readsOptions is one reads command line, parsed.
 type readsOptions struct {
-	file, dir        string
-	size, writeBytes int64
-	block            int
-	interval, idle   time.Duration
-	direct           bool
+	file, dir                   string
+	size, writeBytes, writeRate int64
+	block                       int
+	interval, idle              time.Duration
+	direct                      bool
 }
 
 // readsPhase is the reads of one phase, in microseconds.
@@ -65,6 +65,7 @@ func parseReads(args []string) (readsOptions, error) {
 	set.StringVar(&parsed.dir, "dir", "", "the directory the writes go into")
 	size := set.String("size", "64M", "the size of the file that is read")
 	written := set.String("write-bytes", "1G", "how much the writer writes")
+	rate := set.String("write-rate", "", "the bytes the writer writes a second, as fast as it can where unset")
 	set.IntVar(&parsed.block, "block", 4096, "the bytes of one read")
 	set.DurationVar(&parsed.interval, "interval", 2*time.Millisecond, "the time between two reads")
 	set.DurationVar(&parsed.idle, "idle", 5*time.Second, "how long the reads go on once the writes are done")
@@ -84,6 +85,11 @@ func parseReads(args []string) (readsOptions, error) {
 	}
 	if parsed.writeBytes, err = parseSize(*written); err != nil {
 		return readsOptions{}, fmt.Errorf("--write-bytes: %w", err)
+	}
+	if *rate != "" {
+		if parsed.writeRate, err = parseSize(*rate); err != nil {
+			return readsOptions{}, fmt.Errorf("--write-rate: %w", err)
+		}
 	}
 	parsed.direct = !*buffered
 	switch {
@@ -142,7 +148,7 @@ func measureReads(parsed readsOptions) (readsReport, error) {
 	began := time.Now()
 	group.Go(func() {
 		defer close(writing)
-		written, writeErr = writeFresh(parsed.dir, parsed.writeBytes)
+		written, writeErr = writeFresh(parsed.dir, parsed.writeBytes, parsed.writeRate)
 	})
 	during, readErr := readUntil(file, parsed, writing)
 	report.WriteSeconds = time.Since(began).Seconds()
@@ -182,11 +188,13 @@ func writeReadFile(path string, size int64) error {
 }
 
 // writeFresh writes total bytes into new files of 64 MiB in dir, bytes no
-// two files share, and flushes each.
-func writeFresh(dir string, total int64) (int64, error) {
+// two files share, and flushes each. A rate other than zero paces the writes
+// to that many bytes a second, as a build or an install writes over minutes.
+func writeFresh(dir string, total, rate int64) (int64, error) {
 	const fileBytes = 64 << 20
 	chunk := make([]byte, 1<<20)
 	var written int64
+	began := time.Now()
 	for index := 0; written < total; index++ {
 		file, err := os.Create(filepath.Join(dir, fmt.Sprintf("fresh-%d", index)))
 		if err != nil {
@@ -202,6 +210,9 @@ func writeFresh(dir string, total int64) (int64, error) {
 				return written, err
 			}
 			written += n
+			if rate > 0 {
+				time.Sleep(time.Until(began.Add(time.Duration(float64(written) / float64(rate) * float64(time.Second)))))
+			}
 		}
 		if err := errors.Join(file.Sync(), file.Close()); err != nil {
 			return written, err

@@ -12,7 +12,8 @@ import (
 func TestReadsWritesWhatItWasAskedAndReadsBesideIt(t *testing.T) {
 	dir := t.TempDir()
 	parsed, err := parseReads([]string{"--file", filepath.Join(dir, "read"), "--dir", filepath.Join(dir, "fresh"),
-		"--size", "64K", "--write-bytes", "3M", "--interval", "0s", "--idle", "50ms", "--buffered"})
+		"--size", "64K", "--write-bytes", "3M", "--write-rate", "64M", "--interval", "0s", "--idle", "50ms",
+		"--buffered"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -23,6 +24,11 @@ func TestReadsWritesWhatItWasAskedAndReadsBesideIt(t *testing.T) {
 	if report.Block != 4096 || report.FileBytes != 64<<10 || report.WrittenBytes != 3<<20 {
 		t.Fatalf("the report is of %d-byte reads of a %d-byte file beside %d bytes written; want 4096, %d and %d",
 			report.Block, report.FileBytes, report.WrittenBytes, 64<<10, 3<<20)
+	}
+	// 3 MiB at 64 MiB a second is 47 ms of writes, paced: the writer does not
+	// finish faster than its rate.
+	if report.WriteSeconds < 0.046 {
+		t.Fatalf("the writes took %.3f s, want at least the 0.047 s their rate allows", report.WriteSeconds)
 	}
 	if report.Idle.Reads == 0 {
 		t.Fatal("no read ran in the 50 ms after the writes")

@@ -91,8 +91,8 @@ const usage = `sproutfs-guest-witness says whether a guest's memory and disk are
   witness kvm count [--file PATH]
   witness kvm controls
   witness flush --dir DIR [--threads 1] [--block 4096] [--file 4M] [--seconds 10s] [--no-sync]
-  witness reads --file PATH --dir DIR [--size 64M] [--write-bytes 1G] [--block 4096]
-                [--interval 2ms] [--idle 5s] [--buffered]
+  witness reads --file PATH --dir DIR [--size 64M] [--write-bytes 1G] [--write-rate 64M]
+                [--block 4096] [--interval 2ms] [--idle 5s] [--buffered]
   witness version
 
 The pattern is a pure function of (seed, step, page), so what a guest must hold

@@ -15,15 +15,17 @@ import (
 	"github.com/semistrict/sproutfs/volume"
 )
 
-// The shape of the reads below, a sixteenth of the run an embedder measured on
-// 2026-10-08: an 80 GiB DAX root over a 6.4 GiB PMEM arena, a 512 MiB file read
-// at random while several GiB were written. Here the root is 2 GiB, the arena
-// 256 MiB, the file 32 MiB, and the writes four arenas.
+// The shape of the reads below, scaled down from the run an embedder measured
+// on 2026-10-08: an 80 GiB DAX root over a 6.4 GiB PMEM arena, a 512 MiB file
+// read at random while several GiB were written over minutes. Here the root is
+// 3 GiB and the arena 256 MiB, and the guest writes eight arenas at 64 MiB a
+// second, so the arena turns over every four seconds for half a minute, while
+// it reads a file of an eighth or of half the arena.
 const (
-	readsRootBytes  = 2 << 30
+	readsRootBytes  = 3 << 30
 	readsArenaBytes = 256 << 20
-	readsFileBytes  = 32 << 20
-	readsWriteBytes = 4 * readsArenaBytes
+	readsWriteBytes = 8 * readsArenaBytes
+	readsWriteRate  = 64 << 20
 )
 
 // readsReport is what `witness reads` prints (cmd/sproutfs-guest-witness/reads.go).
@@ -44,7 +46,7 @@ type readsPhase struct {
 }
 
 // TestWhatAGuestReadsOfItsDAXRootWhileItWrites measures what a guest's reads
-// of one file of its DAX root cost while it writes four times the PMEM arena
+// of one file of its DAX root cost while it writes eight times the PMEM arena
 // of fresh files, and after. A DAX read copies out of the host's page through
 // the guest's mapping, which the pager never sees, so the reads are fast only
 // while the evictor keeps the pages the guest keeps reading. The witness checks
@@ -56,7 +58,17 @@ func TestWhatAGuestReadsOfItsDAXRootWhileItWrites(t *testing.T) {
 	if binaryPath == "" {
 		t.Skip("run the Firecracker qualification script")
 	}
-	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Minute)
+	for _, fileBytes := range []int{readsArenaBytes / 8, readsArenaBytes / 2} {
+		t.Run(fmt.Sprintf("%dMiB", fileBytes>>20), func(t *testing.T) {
+			measureReadsWhileWriting(t, binaryPath, fileBytes)
+		})
+	}
+}
+
+// measureReadsWhileWriting is one run of the measurement, of a read file of
+// fileBytes.
+func measureReadsWhileWriting(t *testing.T, binaryPath string, fileBytes int) {
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Minute)
 	defer cancel()
 	vm := newGuestVM(t, ctx, "reads")
 	if err := vm.DiscardMemory(ctx, vmmachine.RAMVolume,
@@ -70,8 +82,8 @@ func TestWhatAGuestReadsOfItsDAXRootWhileItWrites(t *testing.T) {
 
 	before := statsOf(t, ctx, pagers.pagers.Pmem)
 	command := fmt.Sprintf("%s reads --file /reads-file --dir /reads-fresh --size %d --write-bytes %d "+
-		"--interval 2ms --idle 10s", guestWitness, readsFileBytes, readsWriteBytes)
-	result, err := guestExec(ctx, p, guest.ExecRequest{Cmd: command, Timeout: 900})
+		"--write-rate %d --interval 2ms --idle 10s", guestWitness, fileBytes, readsWriteBytes, readsWriteRate)
+	result, err := guestExec(ctx, p, guest.ExecRequest{Cmd: command, Timeout: 600})
 	if err != nil {
 		t.Fatalf("running %q in the guest: %v\n%s", command, err, consoleText(p))
 	}
