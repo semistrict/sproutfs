@@ -59,7 +59,18 @@ type fakePods struct {
 	err     error
 }
 
+// arrive is a request reaching the Kubernetes API or the bucket, which call
+// names. It goes on when a controlled run chooses (sim.Admit): the
+// orchestrator's concurrent callers otherwise meet the fakes' shared state in
+// the order the Go scheduler runs them.
+func arrive(ctx context.Context, call string) error {
+	return sim.Admit(ctx, "orchestrator-test/"+call)
+}
+
 func (f *fakePods) List(ctx context.Context) ([]pod, error) {
+	if err := arrive(ctx, "pods/List"); err != nil {
+		return nil, err
+	}
 	if sim.Buggify(ctx, "orchestrator/pods-unavailable/List", faultChance) {
 		return nil, errUnavailable
 	}
@@ -74,6 +85,9 @@ func (f *fakePods) List(ctx context.Context) ([]pod, error) {
 // Delete stops listing the pod, which is what the Kubernetes API does and what
 // a recovery takes as evidence that the host is gone.
 func (f *fakePods) Delete(ctx context.Context, name string) error {
+	if err := arrive(ctx, "pods/Delete"); err != nil {
+		return err
+	}
 	if sim.Buggify(ctx, "orchestrator/pods-unavailable/Delete", faultChance) {
 		return errUnavailable
 	}
@@ -108,14 +122,21 @@ type fakeRecords struct {
 	journals map[string][]control.Journal
 }
 
-// unavailable is the bucket failing one request, which method names.
-func (f *fakeRecords) unavailable(ctx context.Context, method string) bool {
-	return sim.Buggify(ctx, "orchestrator/records-unavailable/"+method, faultChance)
+// request is the bucket receiving one request, which method names, and
+// failing it at random.
+func (f *fakeRecords) request(ctx context.Context, method string) error {
+	if err := arrive(ctx, "records/"+method); err != nil {
+		return err
+	}
+	if sim.Buggify(ctx, "orchestrator/records-unavailable/"+method, faultChance) {
+		return errUnavailable
+	}
+	return nil
 }
 
 func (f *fakeRecords) Pending(ctx context.Context, id string) (bool, error) {
-	if f.unavailable(ctx, "Pending") {
-		return false, errUnavailable
+	if err := f.request(ctx, "Pending"); err != nil {
+		return false, err
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -123,8 +144,8 @@ func (f *fakeRecords) Pending(ctx context.Context, id string) (bool, error) {
 }
 
 func (f *fakeRecords) Journals(ctx context.Context, id string) ([]control.Journal, error) {
-	if f.unavailable(ctx, "Journals") {
-		return nil, errUnavailable
+	if err := f.request(ctx, "Journals"); err != nil {
+		return nil, err
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -132,8 +153,8 @@ func (f *fakeRecords) Journals(ctx context.Context, id string) ([]control.Journa
 }
 
 func (f *fakeRecords) Epoch(ctx context.Context, id string) (uint64, error) {
-	if f.unavailable(ctx, "Epoch") {
-		return 0, errUnavailable
+	if err := f.request(ctx, "Epoch"); err != nil {
+		return 0, err
 	}
 	f.mu.Lock()
 	epoch := f.epochs[id]
@@ -146,8 +167,8 @@ func (f *fakeRecords) Epoch(ctx context.Context, id string) (uint64, error) {
 }
 
 func (f *fakeRecords) List(ctx context.Context) ([]listing, error) {
-	if f.unavailable(ctx, "List") {
-		return nil, errUnavailable
+	if err := f.request(ctx, "List"); err != nil {
+		return nil, err
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -312,6 +333,9 @@ type fakeHostClient struct {
 	// lost because the network broke.
 	partitioned time.Time
 	onReplyLost func(*fakeHostClient)
+	// holds numbers the holds this host began, each of which ends on its own
+	// timer (after).
+	holds int
 }
 
 // release lets a held receive finish, which is the source's pages arriving
@@ -359,6 +383,11 @@ const wedgeGuard = 6 * time.Second
 // with an error status. A host that was killed or is cut off answers nothing.
 // method names the call, so each fault of each method is a site of its own.
 func (f *fakeHostClient) unanswered(ctx context.Context, method string) error {
+	// The request reaches this host when a controlled run chooses, as the
+	// bucket's do (arrive).
+	if err := sim.Admit(ctx, "orchestrator-test/"+f.name+"/"+method); err != nil {
+		return err
+	}
 	f.mu.Lock()
 	cut := f.killed || time.Now().Before(f.partitioned)
 	f.mu.Unlock()
@@ -385,6 +414,25 @@ func (f *fakeHostClient) replyLost(ctx context.Context, method string) bool {
 		f.onReplyLost(f)
 	}
 	return lost
+}
+
+// after ends a hold on this host's own timer once d has passed, with mu held.
+// The end is a task of its own, numbered by this host, which goes on when a
+// controlled run chooses: other things end at the same instant, a reconcile's
+// timer or another hold, and they go on in the seed's order. The caller holds
+// mu, and ctx is the request that began the hold.
+func (f *fakeHostClient) after(ctx context.Context, d time.Duration, end func()) {
+	f.holds++
+	ending := sim.WithTask(context.WithoutCancel(ctx), fmt.Sprintf("%s hold %d", f.name, f.holds))
+	time.AfterFunc(d, func() {
+		// Nothing cancels the context, so the run admits it in the end.
+		if err := sim.Admit(ending, "orchestrator-test/hold-ends"); err != nil {
+			panic(err)
+		}
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		end()
+	})
 }
 
 // die is this host's process ending with its pod: every guest it ran, every
@@ -603,11 +651,7 @@ func (f *fakeHostClient) Fork(ctx context.Context, parent string, request host.F
 		if f.hold > 0 {
 			// Every hold ends on its own at the end of the hold this host
 			// reports, whether or not anything can reach it.
-			time.AfterFunc(f.hold.Duration(), func() {
-				f.mu.Lock()
-				defer f.mu.Unlock()
-				f.retire(id)
-			})
+			f.after(ctx, f.hold.Duration(), func() { f.retire(id) })
 		}
 		result.Handoffs = append(result.Handoffs, host.Handoff{VMID: id, Parent: parent, Source: source,
 			Pull: request.Pull})
@@ -704,9 +748,7 @@ func (f *fakeHostClient) Migrate(ctx context.Context, id string, request host.Mi
 	if f.hold > 0 {
 		// A host gives the pages up on its own at the end of the hold it
 		// reports, whether or not anything can reach it.
-		time.AfterFunc(f.hold.Duration()+f.letGoLate, func() {
-			f.mu.Lock()
-			defer f.mu.Unlock()
+		f.after(ctx, f.hold.Duration()+f.letGoLate, func() {
 			f.serving = slices.DeleteFunc(f.serving, func(value string) bool { return value == id })
 		})
 	}

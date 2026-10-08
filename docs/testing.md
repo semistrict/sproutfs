@@ -2207,10 +2207,20 @@ removed its record under a running guest. Each now needs every host to answer,
 or a table row that says the VM stopped, and a row says stopped only on a
 host's word. Three places wrote it without one: an open whose answer was lost,
 a reconcile while the VM's host was quiet, and a handover that ended while its
-destination was quiet after a lost answer (`errUnsettled`). The orchestrator
-surveys its hosts at once and reconciles on its own timer, so a seed is not
-replayed exactly; a failing one prints what the deployment did and what the
-orchestrator logged.
+destination was quiet after a lost answer (`errUnsettled`). A failing seed
+prints what the deployment did and what the orchestrator logged.
+
+The campaign runs under a `sim.Scheduler`, so a seed replays exactly. Every
+request the fakes receive, and every timer that ends, waits for its turn
+(`sim.Admit`): the campaign's own waits, a host's hold, and the orchestrator's
+reconcile, flight, source watch, retry and membership timers. Each caller that
+goes on beside another is a task of its own (`sim.WithTask`): a campaign step,
+an orchestrator process's reconcile, a survey's request to one host, a
+migration's source watch, a flight's rewrites and a handover a survey took up.
+`TestTheOrchestratorCampaignReplaysItsSeeds` runs 16 seeds twice and requires
+the same releases, the same faults and the same log; 500 replay. Before
+2026-10-08 the campaign ran without a scheduler, and 19 of its first 32 seeds
+went another way on a second run.
 
 ## Negative tests in the tree
 

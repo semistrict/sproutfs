@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"maps"
 	"slices"
+	"strconv"
 	"time"
 
 	"github.com/semistrict/sproutfs/api/host"
@@ -169,8 +170,14 @@ func (o *orchestrator) SteppingMembership(ctx context.Context, every time.Durati
 	}
 	ticker := time.NewTicker(every)
 	defer ticker.Stop()
-	for {
-		if _, _, err := o.StepMembership(ctx); err != nil && !errors.Is(err, context.Canceled) {
+	for step := 1; ; step++ {
+		// Each step is a task of its own, and goes on beside the requests
+		// being served when a controlled run chooses.
+		stepping := sim.WithTask(ctx, "membership step "+strconv.Itoa(step))
+		if err := sim.Admit(stepping, "orchestrator/membership-step"); err != nil {
+			return
+		}
+		if _, _, err := o.StepMembership(stepping); err != nil && !errors.Is(err, context.Canceled) {
 			slog.WarnContext(ctx, "sproutfs-orchestrator: a step of the membership failed", "error", err)
 		}
 		select {

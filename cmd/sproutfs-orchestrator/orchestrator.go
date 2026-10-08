@@ -457,8 +457,12 @@ func (o *orchestrator) fanOut(ctx context.Context, remember bool) ([]liveHost, e
 		}
 		client := o.dial(p)
 		hosts[index].client = client
+		// Each host's answer is a task of its own, named by the host, so a
+		// controlled run lets them go on in an order the seed chooses rather
+		// than the order they arrive in.
+		asking := sim.WithTask(ctx, "status "+p.Name)
 		wg.Go(func() {
-			asked, cancel := context.WithTimeout(ctx, hostStatusTimeout)
+			asked, cancel := context.WithTimeout(asking, hostStatusTimeout)
 			defer cancel()
 			status, err := client.Status(asked)
 			if err != nil {
@@ -619,9 +623,17 @@ func (o *orchestrator) resume(ctx context.Context, hosts []liveHost, source live
 		From: source.report.Name, To: target.report.Name})
 	slog.WarnContext(ctx, "sproutfs-orchestrator: took up a handover nothing was driving",
 		"vm", id, "from", source.report.Name, "to", target.report.Name, "hold_seconds", float64(handed.Hold))
+	carrying := sim.WithTask(context.WithoutCancel(ctx), "resume "+id)
 	o.resumes.Go(func() {
 		defer done()
-		if _, err := o.carry(context.WithoutCancel(ctx), time.Now(), source, target, id, need, handed); err != nil {
+		// The carry goes on beside the survey that took it up, so it waits
+		// for its turn before it does anything.
+		if err := sim.Admit(carrying, "orchestrator/resume"); err != nil {
+			slog.ErrorContext(ctx, "sproutfs-orchestrator: a handover taken up again never began",
+				"vm", id, "from", source.report.Name, "error", err)
+			return
+		}
+		if _, err := o.carry(carrying, time.Now(), source, target, id, need, handed); err != nil {
 			slog.ErrorContext(ctx, "sproutfs-orchestrator: a handover taken up again failed",
 				"vm", id, "from", source.report.Name, "error", err)
 		}
@@ -687,13 +699,19 @@ func (o *orchestrator) Reconciling(ctx context.Context, every time.Duration) {
 	}
 	ticker := time.NewTicker(every)
 	defer ticker.Stop()
-	for {
+	for tick := 1; ; tick++ {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
 		}
-		if err := o.Reconcile(ctx); err != nil {
+		// Each reconcile is a task of its own, and goes on beside the
+		// requests being served when a controlled run chooses.
+		reconciling := sim.WithTask(ctx, "reconcile "+strconv.Itoa(tick))
+		if err := sim.Admit(reconciling, "orchestrator/reconcile"); err != nil {
+			return
+		}
+		if err := o.Reconcile(reconciling); err != nil {
 			slog.WarnContext(ctx, "sproutfs-orchestrator: reconciling the table failed", "error", err)
 		}
 	}
@@ -1533,7 +1551,7 @@ func (o *orchestrator) retry(ctx context.Context, attempts *handover.Attempts, h
 	}
 	for {
 		wait, more := attempts.Wait(ctx, time.Now())
-		if err := ctxsync.Sleep(ctx, wait); err != nil {
+		if err := pause(ctx, wait, "orchestrator/retry-receive"); err != nil {
 			return liveHost{}, false, errors.Join(cause, err)
 		}
 		// The row is kept fresh while the handover waits, so that nothing takes
@@ -1619,7 +1637,8 @@ func (o *orchestrator) receive(ctx context.Context, source, target liveHost, id 
 	defer lose(nil)
 	watched := make(chan struct{})
 	defer close(watched)
-	go o.watchSource(receiving, source.report.Name, id, hold, row, watched, lose)
+	go o.watchSource(sim.WithTask(receiving, "watch "+source.report.Name), source.report.Name, id, hold, row,
+		watched, lose)
 	result, err := target.client.Receive(receiving, handoff)
 	if err != nil && ctx.Err() == nil && receiving.Err() != nil {
 		// The receive was ended here rather than by the caller or the
@@ -1651,6 +1670,9 @@ func (o *orchestrator) watchSource(ctx context.Context, from, id string, hold ha
 			return
 		case <-ticker.C:
 		}
+		if err := sim.Admit(ctx, "orchestrator/watch-source"); err != nil {
+			return
+		}
 		if row != nil {
 			o.note(ctx, *row)
 		}
@@ -1670,6 +1692,16 @@ func (o *orchestrator) watchSource(ctx context.Context, from, id string, hold ha
 		lose(lost(from, id, evidence))
 		return
 	}
+}
+
+// pause waits d, and then goes on when a controlled run chooses (sim.Admit):
+// whatever else wakes at the same instant goes on in the seed's order rather
+// than the Go scheduler's. resource names what the wait is for.
+func pause(ctx context.Context, d time.Duration, resource string) error {
+	if err := ctxsync.Sleep(ctx, d); err != nil {
+		return err
+	}
+	return sim.Admit(ctx, resource)
 }
 
 // lost is the error of a handover whose source no longer has the pages, and
@@ -1739,7 +1771,7 @@ func (o *orchestrator) recoverLost(ctx context.Context, id, from string) error {
 		if !waiting || time.Now().After(deadline) {
 			return fmt.Errorf("recovering %s after losing the host holding its pages: %w", id, err)
 		}
-		if err := ctxsync.Sleep(ctx, o.watchInterval()); err != nil {
+		if err := pause(ctx, o.watchInterval(), "orchestrator/recover-lost"); err != nil {
 			return fmt.Errorf("recovering %s after losing the host holding its pages: %w", id, err)
 		}
 	}

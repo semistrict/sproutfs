@@ -58,6 +58,9 @@ const (
 	// SPROUTFS_ORCHESTRATOR_SEEDS selects another count.
 	campaignSeeds = 128
 	campaignSteps = 300
+	// replaySeeds is how many of the campaign's seeds the replay test runs
+	// twice, unless SPROUTFS_ORCHESTRATOR_SEEDS selects another count.
+	replaySeeds = 16
 	// campaignHold is what a host holds a handover for, as a deployment's
 	// four checkpoint intervals are.
 	campaignHold = 4 * time.Minute
@@ -77,20 +80,14 @@ const (
 // have its record; and no host may run a VM that has none, or still hold a
 // handover. Across the seeds, every fault site fires.
 //
-// A seed chooses the steps and which sites it activates. The orchestrator
-// surveys its hosts at once and reconciles on its own timer, and those calls
-// draw their faults in the order they arrive, so a seed is not replayed
-// exactly: a failing one prints what the deployment did and what the
-// orchestrator logged.
+// A seed chooses the steps, which sites it activates, and the order in which
+// everything that goes on at once goes on: every request the orchestrator
+// makes of the fakes, and every timer that ends, is released by the seed's
+// scheduler. A failing seed fails the same way every time it runs
+// (TestTheOrchestratorCampaignReplaysItsSeeds), and prints what the deployment
+// did and what the orchestrator logged.
 func TestTheOrchestratorUnderBoundaryFaults(t *testing.T) {
-	seeds := uint64(campaignSeeds)
-	if value := os.Getenv("SPROUTFS_ORCHESTRATOR_SEEDS"); value != "" {
-		parsed, err := strconv.ParseUint(value, 10, 32)
-		if err != nil || parsed == 0 {
-			t.Fatal("SPROUTFS_ORCHESTRATOR_SEEDS must be positive")
-		}
-		seeds = parsed
-	}
+	seeds := seedCount(t, campaignSeeds)
 	fired := map[string]bool{}
 	// What the orchestrator logs is a seed's own, and shown only when the
 	// seed fails: a passing campaign would otherwise print thousands of lines.
@@ -101,7 +98,7 @@ func TestTheOrchestratorUnderBoundaryFaults(t *testing.T) {
 			slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
 			synctest.Test(t, func(t *testing.T) {
 				run := orchestratorCampaign(t, seed)
-				for site := range run.FiredSites() {
+				for site := range run.fired {
 					fired[site] = true
 				}
 				if t.Failed() {
@@ -120,13 +117,90 @@ func TestTheOrchestratorUnderBoundaryFaults(t *testing.T) {
 	}
 }
 
+// seedCount is how many seeds a campaign test runs: standard unless
+// SPROUTFS_ORCHESTRATOR_SEEDS selects another count.
+func seedCount(t *testing.T, standard uint64) uint64 {
+	value := os.Getenv("SPROUTFS_ORCHESTRATOR_SEEDS")
+	if value == "" {
+		return standard
+	}
+	parsed, err := strconv.ParseUint(value, 10, 32)
+	if err != nil || parsed == 0 {
+		t.Fatal("SPROUTFS_ORCHESTRATOR_SEEDS must be positive")
+	}
+	return parsed
+}
+
+// TestTheOrchestratorCampaignReplaysItsSeeds runs seeds of the campaign twice
+// each and requires the two runs to release every request and every timer in
+// the same order, fire the same faults and leave the same log: what a seed
+// does is the seed's, not the Go scheduler's. Before 2026-10-08 a seed did
+// not replay: the orchestrator surveyed its hosts at once, reconciled on its
+// own timer, watched a migration's source and wrote its flights' rows again
+// beside the requests it served, and each of them drew its faults and changed
+// the deployment in whatever order the Go scheduler ran it.
+func TestTheOrchestratorCampaignReplaysItsSeeds(t *testing.T) {
+	seeds := seedCount(t, replaySeeds)
+	defer slog.SetDefault(slog.Default())
+	slog.SetDefault(slog.New(slog.DiscardHandler))
+	for seed := uint64(1); seed <= seeds; seed++ {
+		t.Run(fmt.Sprintf("seed %d", seed), func(t *testing.T) {
+			var runs [2]campaignRun
+			for run := range runs {
+				synctest.Test(t, func(t *testing.T) { runs[run] = orchestratorCampaign(t, seed) })
+			}
+			requireReplay(t, seed, runs)
+		})
+	}
+}
+
+// requireReplay fails unless two runs of a seed released everything in the
+// same order, fired the same faults and logged the same deployment. A failure
+// prints the first line the runs differ at and the ones before it, which is
+// where a search for what the Go scheduler chose begins.
+func requireReplay(t *testing.T, seed uint64, runs [2]campaignRun) {
+	t.Helper()
+	var texts [2][]string
+	for run, r := range runs {
+		var text strings.Builder
+		if err := r.recording.WriteText(&text); err != nil {
+			t.Fatal(err)
+		}
+		text.WriteString("Deployment:\n")
+		text.WriteString(strings.Join(r.log, "\n"))
+		texts[run] = strings.Split(text.String(), "\n")
+	}
+	a, b := texts[0], texts[1]
+	if slices.Equal(a, b) {
+		return
+	}
+	at := 0
+	for at < min(len(a), len(b)) && a[at] == b[at] {
+		at++
+	}
+	from := max(0, at-12)
+	t.Fatalf("seed %d went another way on its second run, from line %d:\nfirst run:\n%s\nsecond run:\n%s",
+		seed, at, strings.Join(a[from:min(len(a), at+6)], "\n"), strings.Join(b[from:min(len(b), at+6)], "\n"))
+}
+
+// campaignRun is what one run of a campaign's seed reports: the sites it
+// fired, the order its scheduler released everything in with the faults the
+// runtime drew, and what the deployment did.
+type campaignRun struct {
+	fired     map[string]uint64
+	recording sim.Recording
+	log       []string
+}
+
 // world is one seed's deployment and what the campaign knows of it.
 type world struct {
 	*deployment
-	t       *testing.T
-	ctx     context.Context
-	runtime *sim.Runtime
-	random  sim.Random
+	t *testing.T
+	// base carries the runtime, and ctx is the task the campaign is on: a
+	// step, or the settling at the end.
+	base, ctx context.Context
+	runtime   *sim.Runtime
+	random    sim.Random
 	// made is every VM the orchestrator said it made and nothing has been
 	// asked to delete since: each must keep its control record.
 	made map[string]bool
@@ -135,39 +209,85 @@ type world struct {
 	hostsMade int
 	losses    atomic.Uint64
 	// stopReconciling ends the orchestrator's own reconcile timer, which
-	// every orchestrator process runs beside the requests it serves.
+	// every orchestrator process runs beside the requests it serves, and
+	// processes counts those processes.
 	stopReconciling func()
+	processes       int
 }
 
-func orchestratorCampaign(t *testing.T, seed uint64) *sim.Runtime {
-	runtime := sim.New(sim.Config{Seed: seed})
-	w := &world{deployment: newDeployment(t, map[string][]string{}), t: t,
-		ctx: sim.WithRuntime(t.Context(), runtime), runtime: runtime,
-		random: runtime.Random("orchestrator-campaign"), made: map[string]bool{}}
+// orchestratorCampaign runs one seed of the campaign, everything it does
+// released by a scheduler of that seed.
+func orchestratorCampaign(t *testing.T, seed uint64) campaignRun {
+	scheduler := sim.NewScheduler(seed)
+	done := make(chan struct{})
+	// Once the campaign is over nothing waits for a turn: a hold that ends
+	// after it, on a host's own timer, ends at once.
+	wait := func(ctx context.Context, id string, minimum, maximum time.Duration) error {
+		select {
+		case <-done:
+			return nil
+		default:
+		}
+		return scheduler.Wait(ctx, id, minimum, maximum)
+	}
+	runtime := sim.New(sim.Config{Seed: seed, Wait: wait})
+	base := sim.WithRuntime(t.Context(), runtime)
+	w := &world{deployment: newDeployment(t, map[string][]string{}), t: t, base: base, ctx: base,
+		runtime: runtime, random: runtime.Random("orchestrator-campaign"), made: map[string]bool{}}
 	// The deployment's own timings: the simulated clock makes them free.
 	w.orchestrator.handover = handover.Default
 	w.orchestrator.sourceWatch = 0
 	// A journal is read only through a membership.
 	w.orchestrator.members = newMembershipStore(t, runtime, "orchestrator")
+	go func() {
+		defer close(done)
+		w.run()
+	}()
+	if err := scheduler.Run(done); err != nil {
+		t.Fatal(err)
+	}
+	recording, err := scheduler.Recording(runtime.Trace())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return campaignRun{fired: runtime.FiredSites(), recording: recording, log: w.log}
+}
+
+// run is the campaign: a deployment of campaignHosts hosts takes
+// campaignSteps steps with the faults on, settles with them off, and is
+// checked.
+func (w *world) run() {
 	for range campaignHosts {
 		w.replenish()
 	}
 	w.reconciling()
-	runtime.SetBuggify(true)
+	w.runtime.SetBuggify(true)
 	for step := range campaignSteps {
 		w.step(step)
 	}
-	runtime.SetBuggify(false)
+	w.runtime.SetBuggify(false)
+	w.ctx = sim.WithTask(w.base, "settle")
 	w.settle()
 	w.stopReconciling()
 	w.check()
-	return runtime
 }
 
-// reconciling runs the orchestrator's reconcile timer until stopReconciling
-// is called, which returns once nothing it began is still running.
+// sleep lets d pass, and goes on when the run chooses: whatever else ends at
+// the same instant, a hold or a reconcile's timer, goes on in the seed's
+// order.
+func (w *world) sleep(d time.Duration) {
+	time.Sleep(d)
+	if err := sim.Admit(w.ctx, "orchestrator-campaign/wake"); err != nil {
+		w.t.Errorf("waking: %v", err)
+	}
+}
+
+// reconciling runs a new orchestrator process's reconcile timer, a task of
+// its own, until stopReconciling is called, which returns once nothing it
+// began is still running.
 func (w *world) reconciling() {
-	ctx, cancel := context.WithCancel(w.ctx)
+	w.processes++
+	ctx, cancel := context.WithCancel(sim.WithTask(w.base, "orchestrator "+strconv.Itoa(w.processes)))
 	o := w.orchestrator
 	done := make(chan struct{})
 	go func() {
@@ -204,12 +324,14 @@ var steps = []struct {
 	{1, func(w *world, _ string) { w.reconcile() }},
 	// Time passes, a minute at most at a time: rows age out of flight and
 	// holds end, with the deployment surveyed in between.
-	{3, func(w *world, key string) { time.Sleep(w.random.Duration("wait/"+key, time.Minute)) }},
+	{3, func(w *world, key string) { w.sleep(w.random.Duration("wait/"+key, time.Minute)) }},
 }
 
-// step does one thing a deployment does, chosen by the seed.
+// step does one thing a deployment does, chosen by the seed, as a task of its
+// own.
 func (w *world) step(step int) {
 	key := strconv.Itoa(step)
+	w.ctx = sim.WithTask(w.base, "step "+key)
 	total := 0
 	for _, s := range steps {
 		total += s.weight
@@ -358,7 +480,8 @@ func (w *world) drain(key string) {
 	for _, id := range running {
 		report := orch.DrainReport{Host: chosen.Name, VM: id, Phase: orch.DrainStarted}
 		if err := w.orchestrator.Drained(w.ctx, report); err != nil {
-			w.t.Fatalf("a drain report was refused: %v", err)
+			w.t.Errorf("a drain report was refused: %v", err)
+			return
 		}
 		report.Phase = orch.DrainFinished
 		_, err := w.orchestrator.Migrate(w.ctx, id, "")
@@ -367,7 +490,8 @@ func (w *world) drain(key string) {
 			report.Error = err.Error()
 		}
 		if err := w.orchestrator.Drained(w.ctx, report); err != nil {
-			w.t.Fatalf("a drain report was refused: %v", err)
+			w.t.Errorf("a drain report was refused: %v", err)
+			return
 		}
 	}
 	// The pod ends when its drain does, whatever the drain managed: what it
@@ -532,11 +656,12 @@ func (w *world) settle() {
 		}
 	}
 	w.mu.Unlock()
-	time.Sleep(time.Until(healed))
+	w.sleep(time.Until(healed))
 	for round := range 4 {
-		time.Sleep(campaignHold + inFlightFor)
+		w.sleep(campaignHold + inFlightFor)
 		if err := w.orchestrator.Reconcile(w.ctx); err != nil {
-			w.t.Fatalf("reconciling with the faults stopped: %v", err)
+			w.t.Errorf("reconciling with the faults stopped: %v", err)
+			return
 		}
 		w.orchestrator.resumes.Wait()
 		if round > 0 && !w.handingOver() {

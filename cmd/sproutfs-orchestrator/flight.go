@@ -6,6 +6,8 @@ import (
 	"slices"
 	"sync"
 	"time"
+
+	"github.com/semistrict/sproutfs/platform/sim"
 )
 
 // flight is the rows of an operation under way, which it writes again for as
@@ -41,6 +43,8 @@ func (o *orchestrator) fly(ctx context.Context, rows []vmRecord) *flight {
 	// A quarter of the bound leaves a row three chances to be written again
 	// before anything could take it for an operation that died.
 	every := o.table.believed() / 4
+	// The rewrites go on beside the operation, as a task of its own.
+	ctx = sim.WithTask(ctx, "flight")
 	f.wg.Go(func() {
 		ticker := time.NewTicker(every)
 		defer ticker.Stop()
@@ -51,6 +55,9 @@ func (o *orchestrator) fly(ctx context.Context, rows []vmRecord) *flight {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
+			}
+			if err := sim.Admit(ctx, "orchestrator/flight"); err != nil {
+				return
 			}
 			f.mu.Lock()
 			// The table stamps each row with the time of this write.
