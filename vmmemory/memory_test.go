@@ -894,7 +894,11 @@ func (f *fixture) attachBacking(backing vmmemory.MemoryRegionBacking) (*vmmemory
 		f.t.Fatal(err)
 	}
 	f.t.Cleanup(func() {
+		// A prefetch a failed test left running may still map and resolve
+		// pages until the detach waits for it, under the arena's lock.
+		m.arena.mu.Lock()
 		clear(m.pages)
+		m.arena.mu.Unlock()
 		if err := r.Detach(context.Background()); err != nil {
 			f.t.Error(err)
 		}
