@@ -4,7 +4,7 @@ title: 'Find the pager''s races between two lock holds, which no test interleave
 status: In Progress
 assignee: []
 created_date: '2026-10-07 19:19'
-updated_date: '2026-10-07 20:40'
+updated_date: '2026-10-08 01:17'
 labels:
   - vmmemory
   - testing
@@ -35,4 +35,8 @@ An embedder found TASK-105 (a prefetch's READ request met another and the pager 
 
 <!-- SECTION:NOTES:BEGIN -->
 Audit of all 67 gaps (scratchpad list) by six agents, merged to main at e9dedf71. Each gap is commented safe or fixed with a seam test and a guard (vmmemory/lockgap_*_test.go). Fixed: detach vs eviction (eviction holds region live), prefetch waiter on a supplied request, unindex into a detaching owner, run read by stale name, run read deadlocking a retire, refault mapping by stale protection, allocateOwn freeing a page a settle handed back (evictIfIdle), cold-copy loss on a failed compare, lookup into a root that dropped its page (Holds; F1, TASK-105 by another path) and into an ended lent root (F2), lent names outliving pages (unlend), seal end destroying a lent root under readers, share after seal end, fork number freed before its drop, protection lost through an abandoned seal, ReadDirty vs detach, five store bugs (rule across windows, rule deadlock, joined page evicted, make-whole onto checkpoint copy, wait for an extent gone elsewhere) and copyOnWrite of a page read into the region's own file. Admission points added on fault, store, prefetch, eviction, give-back and fork paths (listed in docs/testing.md); a seeded fork campaign added. Open: TestPrefetchCampaignReplaysItsSeeds flakes (seed 1, prefetch-cancelled-for-pressure differs), being chased; no campaign reaches the mapping rules or the refault/capture gap.
+
+Unscheduled soak fixes since: capture protection read before the protection, lost reads counted as decisions (ErrContended), prefetch request read after send, replaced page let go before the store's command, orchestrator recovery past a serving source, and (3cb697d8) allocateOwn counting a page an eviction is taking as mapped (ErrCapacity 'both places'). Still open, each about 1 in 70 Mac soak runs: a writable resolve of a page mapped read-only after an unseal (the parent's store is lost), and keepFork giving a child a fork file whose seal ended (nil map). Being soaked on GCE with map, revoke and fork-file histories.
+
+18c8fe93 fixes the keepFork nil map: dropLentRoot now takes the lent pages out under their locks before the copies, since a retire that publishes a page under another name leaves its lent page (TestTheEndOfASealWaitsForAChildsCopyOfAPageTheRetirePublishedElsewhere, guard pager-drop-lent-copies-before-their-lent-pages).
 <!-- SECTION:NOTES:END -->
