@@ -4,7 +4,7 @@ title: 'Find the pager''s races between two lock holds, which no test interleave
 status: In Progress
 assignee: []
 created_date: '2026-10-07 19:19'
-updated_date: '2026-10-08 01:17'
+updated_date: '2026-10-08 06:33'
 labels:
   - vmmemory
   - testing
@@ -39,4 +39,6 @@ Audit of all 67 gaps (scratchpad list) by six agents, merged to main at e9dedf71
 Unscheduled soak fixes since: capture protection read before the protection, lost reads counted as decisions (ErrContended), prefetch request read after send, replaced page let go before the store's command, orchestrator recovery past a serving source, and (3cb697d8) allocateOwn counting a page an eviction is taking as mapped (ErrCapacity 'both places'). Still open, each about 1 in 70 Mac soak runs: a writable resolve of a page mapped read-only after an unseal (the parent's store is lost), and keepFork giving a child a fork file whose seal ended (nil map). Being soaked on GCE with map, revoke and fork-file histories.
 
 18c8fe93 fixes the keepFork nil map: dropLentRoot now takes the lent pages out under their locks before the copies, since a retire that publishes a page under another name leaves its lent page (TestTheEndOfASealWaitsForAChildsCopyOfAPageTheRetirePublishedElsewhere, guard pager-drop-lent-copies-before-their-lent-pages).
+
+Mapping audit (7b8680ab, 86114c0e): every vmmemory test checks the pager's resolves and bindings against what each mapping command installed; it turned the lost store (about 1 in 70 soak runs, as an invalid resolution) into a finding in five runs and then into its cause, fixed in d17581af: a fault let its own unmapped page's lock go before its lookup, an eviction spilled the page, and the lookup bound a root's page or the volume's bytes over the guest's own (TestAFaultRefaultsItsOwnPageAnEvictionSpilledBeforeItsLookup, guard pager-look-a-spilled-page-up-past-its-layer). AC4: the cold-forks test (branch cold-forks-gce) ran on GCE and every fork stalled on a dirty budget sized to its stamps; budgets resized, rerunning.
 <!-- SECTION:NOTES:END -->
