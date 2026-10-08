@@ -1992,6 +1992,28 @@ trap on a page the guest read until a harvest is served as a load: the page is
 mapped read-only again, and a real store traps on that mapping and copies, so a
 read KVM's worker asks for writable makes no cold copy.
 
+On GCE (n2-standard-8, nested KVM, 2026-10-08), a guest on a 3 GiB DAX root
+over a 256 MiB PMEM arena of 2 MiB pages wrote 2 GiB at 64 MiB a second while it
+read one file at random, a 4 KiB `O_DIRECT` read every 2 ms
+(`TestWhatAGuestReadsOfItsDAXRootWhileItWrites`). The reads during the 32 s of
+writes, before the harvest and with it:
+
+| file read | run | p50 | p90 | p99 | spill refaults | evictions |
+|---|---|---|---|---|---|---|
+| 32 MiB | before | 3 µs | 5 µs | 2,417 µs | 169 | 1,162 |
+| 32 MiB | harvest | 4 µs | 7 µs | 430 µs | 13 | 997 |
+| 128 MiB | before | 4 µs | 14 µs | 2,971 µs | 967 | 2,013 |
+| 128 MiB | harvest | 9 µs | 315 µs | 560 µs | 54 | 1,086 |
+
+Fault order loses a page the guest reads all the time once per turnover of the
+arena, so before the harvest the cost was a slow read now and then: the p99,
+and a refault of a whole page from the spill each time. The harvest keeps
+those pages, and the p99 falls about five times. What it costs is a fault per
+harvested page the guest touches again: 1,568 in the 128 MiB run, about
+300 µs each under nested KVM, which is its p90. A page the guest reads less
+often than once a turnover is lost either way; for it, what a refault reads,
+a whole 2 MiB page, is the lever (TASK-110).
+
 An allocation short of a slot evicts one page by the synchronous path of
 Zircon's evictor (`internal/zirconvm/evictor.go`), which calls the pager's
 reclaim step (`vmmemory/evict.go`) until a page is freed or the step finds
