@@ -411,6 +411,8 @@ func (f *templateFork) run(ctx context.Context, sums templateSums, opened time.T
 			return fmt.Errorf("step %d (%s): %w", index, line, err)
 		}
 		if step.command == "stamp" {
+			// The serial console ends its lines with a carriage return.
+			answer = strings.TrimSuffix(answer, "\r")
 			if want := fmt.Sprintf("SPROUTFS_STAMP mark=%d pages=%d", f.mark, templatePages/templateStride); answer != want {
 				return fmt.Errorf("step %d: the guest answered %q, want %q", index, answer, want)
 			}
