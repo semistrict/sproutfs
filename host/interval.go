@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/semistrict/sproutfs/platform"
+	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/vmmemory"
 	"github.com/semistrict/sproutfs/volume"
 )
@@ -32,11 +33,18 @@ import (
 // guest running whose writes can never be published.
 func (h *Host) checkpointing(ctx context.Context, vmID string, entry *registration) {
 	failures := 0
+	// owed is a checkpoint asked for out of turn whose attempt failed: a
+	// flush waiting for its journal to be named, or a ring that needs room.
+	// Its asker asked once and waits for what that checkpoint changes, so it
+	// is tried again after the backoff rather than at the next turn.
+	owed := false
 	for {
-		wait, onRequest := h.nextAttempt(entry, failures)
-		if !h.waitForCheckpoint(ctx, entry, wait, onRequest, failures) {
+		wait, onRequest := h.nextAttempt(entry, failures, owed)
+		due, asked := h.waitForCheckpoint(ctx, entry, wait, onRequest, failures)
+		if !due {
 			return
 		}
+		owed = owed || asked
 		vm := h.vm(vmID)
 		if vm == nil {
 			// The handle is gone: this host no longer writes for that VM.
@@ -62,6 +70,7 @@ func (h *Host) checkpointing(ctx context.Context, vmID string, entry *registrati
 				return
 			}
 			failures++
+			owed = owed && !sim.Bug(ctx, "host-forget-a-requested-checkpoint-that-failed")
 			slog.ErrorContext(ctx, "host: the interval checkpoint failed", "vm", vmID, "error", err)
 			if errors.Is(err, volume.ErrNeedsRecovery) {
 				h.fenced(ctx, vmID, entry, err)
@@ -86,6 +95,7 @@ func (h *Host) checkpointing(ctx context.Context, vmID string, entry *registrati
 				return
 			}
 			failures++
+			owed = owed && !sim.Bug(ctx, "host-forget-a-requested-checkpoint-that-failed")
 			slog.ErrorContext(ctx, "host: publishing the interval checkpoint failed",
 				"vm", vmID, "checkpoint", checkpoint.Ref().String(), "error", err)
 			// A later writer holds the control record: nothing this handle
@@ -96,7 +106,7 @@ func (h *Host) checkpointing(ctx context.Context, vmID string, entry *registrati
 				return
 			}
 		} else {
-			failures = 0
+			failures, owed = 0, false
 			releaseFlushes(entry)
 		}
 		if ctx.Err() != nil {
@@ -143,18 +153,18 @@ func (h *Host) retryPastWindow(ctx context.Context, vmID string, entry *registra
 // nextAttempt is how long the loop waits for its next turn at one VM, and
 // whether a request out of turn may cut that wait short: the VM's jittered
 // interval, which one may, or the backoff of a VM whose last attempt failed and
-// whose stores the loss window is already holding back, which one may not. A VM
-// that asked for no interval waits for requests alone, which a zero wait
-// says. The window
-// is read where the wait is chosen, because that is where the choice matters —
-// a VM that crossed it while the last publication was in flight is one to come
-// back to at once.
-func (h *Host) nextAttempt(entry *registration, failures int) (time.Duration, bool) {
+// whose stores the loss window is already holding back, or whose asker is still
+// owed the checkpoint it asked for, which one may not. A VM that asked for no
+// interval waits for requests alone, which a zero wait says. The window is read
+// where the wait is chosen, because that is where the choice matters — a VM
+// that crossed it while the last publication was in flight is one to come back
+// to at once.
+func (h *Host) nextAttempt(entry *registration, failures int, owed bool) (time.Duration, bool) {
 	interval := entry.cadence.interval
 	if interval <= 0 {
 		return 0, true
 	}
-	if failures == 0 || !h.overLossWindow(entry) {
+	if failures == 0 || !(owed || h.overLossWindow(entry)) {
 		return jittered(h.entropy, interval), true
 	}
 	return backoff(interval, failures), false
@@ -183,8 +193,10 @@ func (h *Host) nextAttempt(entry *registration, failures int) (time.Duration, bo
 // while a capture that cannot be published gives it nothing. Answering each of
 // those asks would spin a host that cannot reach the store. The request stays in
 // the channel and is answered by the attempt the backoff schedules.
+//
+// It also reports whether a request is what made the checkpoint due.
 func (h *Host) waitForCheckpoint(ctx context.Context, entry *registration, interval time.Duration,
-	onRequest bool, failures int) bool {
+	onRequest bool, failures int) (due, asked bool) {
 	// A zero wait is a VM that takes no turns: only a request is due.
 	var turn <-chan time.Time
 	if interval > 0 {
@@ -210,7 +222,7 @@ func (h *Host) waitForCheckpoint(ctx context.Context, entry *registration, inter
 					next := entry.windowTurn.Add(h.lossWindow / 8)
 					if !now.Before(next) {
 						entry.windowTurn = now
-						return true
+						return true, false
 					}
 					mark = next.Sub(now)
 				}
@@ -218,11 +230,13 @@ func (h *Host) waitForCheckpoint(ctx context.Context, entry *registration, inter
 				window = check.C()
 			}
 		}
-		due, waiting := true, false
+		waiting := false
+		due, asked = true, false
 		select {
 		case <-ctx.Done():
 			due = false
 		case <-requested:
+			asked = true
 		case <-turn:
 		case <-window:
 			waiting = true
@@ -231,7 +245,7 @@ func (h *Host) waitForCheckpoint(ctx context.Context, entry *registration, inter
 			check.Stop()
 		}
 		if !waiting {
-			return due
+			return due, asked
 		}
 	}
 }

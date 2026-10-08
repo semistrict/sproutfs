@@ -9,6 +9,7 @@ import (
 
 	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/platform"
+	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/vmmemory"
 	"github.com/semistrict/sproutfs/vmmigrate"
 	"github.com/semistrict/sproutfs/volume"
@@ -187,10 +188,16 @@ func (h *Host) migrate(ctx context.Context, vmID string, destination platform.Ad
 			return vmmigrate.Handoff{}, err
 		}
 		// A failure before the handoff leaves the VM running here, so it goes on
-		// being checkpointed on the interval.
+		// being checkpointed on the interval, and its flushes waiting for its
+		// journal go on waiting for the checkpoint that names it.
+		if sim.Bug(ctx, "host-drop-the-flushes-of-a-refused-handover") {
+			entry.journal.left()
+		}
 		h.run(vmID, entry)
 		return vmmigrate.Handoff{}, err
 	}
+	// The VM leaves this host: its flushes waiting for its journal go with it.
+	entry.journal.left()
 	// A VM marked to pull its memory stays marked wherever it runs.
 	handoff.Pull = entry.terms.Pull
 	handoff.CheckpointInterval = entry.terms.CheckpointInterval

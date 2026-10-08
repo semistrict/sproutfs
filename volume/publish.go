@@ -523,23 +523,38 @@ func (vm *VM) complete(ctx context.Context, ckpt *Checkpoint) error {
 	// the checkpoint is told that rather than only the conditional write that
 	// failed.
 	err = vm.observe(err)
+	published := err == nil
 	// Retiring comes after the install, because what makes a sealed page clean
 	// is the identity this VM now gives it, which is the checkpoint just
 	// selected — and before anything else this publication does, because a
-	// guest whose seal still stands copies every store it makes. A retire that
-	// fails does not unpublish anything: the bytes are durable, and the pager
-	// reports why its pages are still sealed.
-	if retired := ckpt.retire(context.WithoutCancel(ctx), err == nil); retired != nil {
-		err = errors.Join(err, retired)
+	// guest whose seal still stands copies every store it makes.
+	//
+	// A seal that does not end does not unpublish anything: the bytes are
+	// durable and selected, so what the checkpoint reports is that it landed.
+	// Reporting the seal instead would have its caller take a checkpoint that
+	// landed for one that did not: a stop would keep running a VM whose last
+	// checkpoint the record selects, and a fork's root would keep its parent
+	// sealed. The seal is logged and stays until the next capture of this VM,
+	// whose release ends it and hands its pages back to be published again.
+	var unsealed error
+	if retired := ckpt.retire(context.WithoutCancel(ctx), published); retired != nil {
+		unsealed = errors.Join(unsealed, retired)
 	}
-	if err == nil {
+	if published {
 		// A fork that has published its root owns every page it inherited, so
 		// the parent's sealed pages go back to its guest. The pin on the
 		// parent's checkpoint is not given back with them: this index may still
-		// name the parent's checkpoints, and an index of a VM forked from this one
-		// may name them even when this one does not.
+		// name the parent's checkpoints, and an index of a VM forked from this
+		// one may name them even when this one does not.
 		if point := vm.takePoint(); point != nil {
-			err = point.Retire(context.WithoutCancel(ctx))
+			unsealed = errors.Join(unsealed, point.Retire(context.WithoutCancel(ctx)))
+		}
+	}
+	if unsealed != nil {
+		if !published || sim.Bug(ctx, "volume-report-a-landed-checkpoint-whose-seal-stayed") {
+			err = errors.Join(err, unsealed)
+		} else {
+			report(ctx, "volume: a checkpoint landed and its seal did not end", vm.id, unsealed)
 		}
 	}
 	// A fork is rooted only once its hold on the point it was forked at is

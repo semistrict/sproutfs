@@ -1406,5 +1406,29 @@
     "package": "vmmemory",
     "run": "^TestARefusedStoreTakesTheOldMappingAway$",
     "purpose": "Leave a store's old read-only mapping in place when the client refuses the writable one, the binding already the region's own writable page, so the next fault resolves writable over a read-only mapping."
+  },
+  {
+    "id": "host-stop-reports-a-failed-close",
+    "package": "host",
+    "run": "^TestAStopWhoseVMMFailsToCloseStillReportsTheStop$",
+    "purpose": "Report a stop whose checkpoint landed as failed because the VMM process did not close cleanly, so the deployment believes the VM still runs on a host that has given it up."
+  },
+  {
+    "id": "volume-report-a-landed-checkpoint-whose-seal-stayed",
+    "package": "volume",
+    "run": "^TestARootWhoseSealFailedToRetireStillLandsAndGivesThePointBack$",
+    "purpose": "Report a checkpoint that landed as failed because its seal did not end, so a fork root keeps its parent sealed for good and a stop keeps running a VM whose last checkpoint the record selects."
+  },
+  {
+    "id": "host-forget-a-requested-checkpoint-that-failed",
+    "package": "host",
+    "run": "^TestARequestedCheckpointThatFailedIsTriedAgainAfterTheBackoff$",
+    "purpose": "Forget a checkpoint asked for out of turn once its attempt failed, so a flush waiting for its journal to be named waits a whole interval after one refused pause."
+  },
+  {
+    "id": "host-drop-the-flushes-of-a-refused-handover",
+    "package": "internal/simtest",
+    "run": "^TestAFlushAfterAHandoverItsVMMRefusedIsAnswered$",
+    "purpose": "Mark a VM as gone from its host when a handover of it is refused, so every flush of it that waits for its journal to be named goes unanswered for good."
   }
 ]

@@ -882,7 +882,7 @@ func (h *Host) shutdown() {
 	entries := slices.Collect(maps.Values(h.machines.running))
 	h.machines.mu.Unlock()
 	for _, entry := range entries {
-		entry.end()
+		entry.leave()
 	}
 	if h.pages != nil {
 		// Serving stops before the VM handles do: nothing is left to serve once

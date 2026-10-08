@@ -39,3 +39,14 @@ var RoomFor = roomFor
 // PostCopied tells durable flush that every page of a VM brought here has
 // arrived, as a receive does once its post-copy ends.
 func (h *Host) PostCopied(vmID string) { h.postCopied(vmID) }
+
+// AskCheckpoint asks one VM's loop for a checkpoint out of the interval's
+// turn, as a flush waiting for its journal to be named does.
+func (h *Host) AskCheckpoint(vmID string) {
+	h.machines.mu.Lock()
+	entry := h.machines.running[vmID]
+	h.machines.mu.Unlock()
+	if entry != nil {
+		h.askCheckpoint(entry)
+	}
+}
