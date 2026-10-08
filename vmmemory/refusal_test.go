@@ -198,3 +198,35 @@ func TestARefusedReadOnlyRunTakesBackTheWritableRunsOfItsFault(t *testing.T) {
 		}
 	})
 }
+
+// A store that makes a page the region's own before its writable mapping lands
+// takes the old read-only mapping away when the client refuses the new one: a
+// protect trap's page, here, which a capture write-protected. The binding is
+// writable from the trap on, and a read-only mapping left under it is one the
+// next fault resolves writable over, or one an eviction skips if it is
+// recorded gone while still there.
+func TestARefusedStoreTakesTheOldMappingAway(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := newFixture(t, 8, 8, 8)
+		r, m, _ := f.pmemRegion(2)
+		f.storeAt(r, m, 0, 0, 0xee)
+		if _, err := r.Capture(f.ctx, r.Unjournaled()); err != nil {
+			t.Fatal(err)
+		}
+		if p, mapped := m.mappedPage(0); !mapped || p.writable {
+			t.Fatalf("page 0 after its capture is %+v (mapped %t), want it mapped read-only", p, mapped)
+		}
+		m.refuseMap = true
+		if err := r.Fault(f.ctx, 0, true); !errors.Is(err, vmmemory.ErrMappingRefused) {
+			t.Fatalf("a store whose writable mapping was refused = %v, want the refusal", err)
+		}
+		m.refuseMap = false
+		if p, mapped := m.mappedPage(0); mapped {
+			t.Fatalf("page 0 is still mapped as %+v after its store was refused, want the old mapping gone", p)
+		}
+		f.storeAt(r, m, 0, 1, 0xef)
+		if got := access(t, r, m, 0, false)[:2]; got[0] != 0xee || got[1] != 0xef {
+			t.Fatalf("page 0 reads %#x, want the 0xee and 0xef the guest stored", got)
+		}
+	})
+}

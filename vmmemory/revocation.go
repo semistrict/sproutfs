@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"sort"
+
+	"github.com/semistrict/sproutfs/platform/sim"
 )
 
 const revokeBatchPages = 1024
@@ -41,6 +43,10 @@ func (r *MemoryRegion) underProtection(ctx context.Context, revoke func() error)
 	defer r.protectMu.RUnlock()
 	return revoke()
 }
+
+// A revocation records its pages unmapped once its command has landed, and
+// leaves them recorded mapped where it failed, which is terminal: it is the
+// other half of the mapper (mapper.go).
 
 // Zircon's Unmap and UnmapAndHarvest are RevokeBatch here, and each command is
 // issued with the region's protection held shared, so a seal's write-protect
@@ -86,6 +92,11 @@ func (r *MemoryRegion) revokeBindings(ctx context.Context, bindings []*binding) 
 		for _, b := range bindings {
 			r.setBindingMapped(b, false)
 		}
+		// Checked once every binding is recorded: a page's guest binding and
+		// the checkpoint's copy of it share an index.
+		for _, run := range runs {
+			r.agreeRecorded(run.Page, run.Page+uint64(run.Count))
+		}
 		h.mu.Lock()
 		h.stats.Revocations += uint64(commands)
 		h.stats.RevokeRuns += uint64(count)
@@ -110,6 +121,7 @@ func (r *MemoryRegion) revoke(ctx context.Context, b *binding) error {
 			return r.revocationFailed(err)
 		}
 		r.setBindingMapped(b, false)
+		r.agreeRecorded(b.index, b.index+1)
 		h.mu.Lock()
 		h.stats.Revocations++
 		h.stats.RevokeRuns++
@@ -118,4 +130,26 @@ func (r *MemoryRegion) revoke(ctx context.Context, b *binding) error {
 		h.mu.Unlock()
 		return nil
 	})
+}
+
+// refusedWritable is what a store does when the command that maps its pages
+// [first, last) writable was refused, the bindings already the region's own
+// writable pages: a copy, a page dirtied in place, a protect trap's page, or
+// fresh zeros. The guest still maps what it read there, read-only, which the
+// bindings can no longer say, so those mappings are taken away and recorded
+// gone, and the guest's next access faults and maps its own page. A copy's
+// store does the same through its replacement. Where err is no refusal the
+// mapper has ended the region, and it is returned as it is.
+func (r *MemoryRegion) refusedWritable(ctx context.Context, err error, first, last uint64) error {
+	if !errors.Is(err, ErrMappingRefused) || sim.Bug(ctx, "pager-keep-a-refused-store-s-old-mapping") {
+		return err
+	}
+	var bindings []*binding
+	r.bindingsMu.Lock()
+	r.eachBoundLocked(first, last, func(b *binding) { bindings = append(bindings, b) })
+	r.bindingsMu.Unlock()
+	if revoked := r.revokeBindings(ctx, bindings); revoked != nil {
+		return revoked
+	}
+	return err
 }

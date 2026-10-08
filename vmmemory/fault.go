@@ -370,9 +370,8 @@ func (r *MemoryRegion) refault(ctx context.Context, b *binding) (bool, error) {
 	// A page a journal capture protected stays protected: the store that
 	// traps on it is what makes it unjournaled again.
 	writable := held == nil && !protected
-	r.setMapped(b.index, b.index+1, true)
-	if err := r.mapPages(ctx, r.runAt(b.index, frameOf(frame).fileSlot, 1), writable); err != nil {
-		return false, r.mappingFailed(err, func() { r.setMapped(b.index, b.index+1, false) })
+	if err := r.mapRun(ctx, r.runAt(b.index, frameOf(frame).fileSlot, 1), writable); err != nil {
+		return false, err
 	}
 	if err := r.resolvePages(ctx, b.index, 1, writable); err != nil {
 		return false, r.fail(err)

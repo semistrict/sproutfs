@@ -3,7 +3,6 @@ package vmmemory
 import (
 	"context"
 	"errors"
-	"slices"
 
 	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/platform/sim"
@@ -1058,13 +1057,10 @@ func (p *plan) install(ctx context.Context) (bool, error) {
 		}
 		switch {
 		case zero:
-			r.mapZeros(page, page+run)
 			runs = append(runs, MapRun{Page: page, Count: int(run), Zero: true})
 		case p.writable[i]:
-			r.setMapped(page, page+run, true)
 			writable = append(writable, r.runAt(page, at, int(run)))
 		default:
-			r.setMapped(page, page+run, true)
 			runs = append(runs, r.runAt(page, at, int(run)))
 		}
 		h.mu.Lock()
@@ -1072,36 +1068,13 @@ func (p *plan) install(ctx context.Context) (bool, error) {
 		h.mu.Unlock()
 		page += run
 	}
-	// Every run above is recorded mapped before any command is sent, so a
-	// refusal takes back every run it left unsent: the read-only and zero runs
-	// from the one refused, and every writable run, which go after them.
-	unsent := func(from []MapRun) []MapRun {
-		if sim.Bug(ctx, "pager-refusal-keeps-the-writable-runs-recorded") {
-			return from
-		}
-		return slices.Concat(from, writable)
-	}
+	// Each run is recorded mapped as its command lands (mapper.go), the
+	// read-only and zero runs first: a refusal leaves the rest unsent and
+	// unrecorded.
 	if len(runs) > 0 {
-		commands := len(runs)
-		mappingRuns := len(runs)
-		if batch, ok := r.mapping.(BatchMapping); ok {
-			var err error
-			commands, mappingRuns, err = r.mapBatch(ctx, batch, runs)
-			if err != nil {
-				return false, r.mappingFailed(err, func() { r.unmapRuns(unsent(runs)) })
-			}
-		} else {
-			for i, run := range runs {
-				var err error
-				if run.Zero {
-					err = r.mapZeroPages(ctx, run.Page, run.Count)
-				} else {
-					err = r.mapPages(ctx, run, false)
-				}
-				if err != nil {
-					return false, r.mappingFailed(err, func() { r.unmapRuns(unsent(runs[i:])) })
-				}
-			}
+		commands, mappingRuns, err := r.mapReadOnly(ctx, runs)
+		if err != nil {
+			return false, err
 		}
 		h.mu.Lock()
 		h.stats.Mappings += uint64(commands)
@@ -1109,9 +1082,9 @@ func (p *plan) install(ctx context.Context) (bool, error) {
 		h.mu.Unlock()
 		p.installed.add(installedRuns{commands: uint64(commands), runs: uint64(mappingRuns), pages: pagesOf(runs)})
 	}
-	for i, run := range writable {
-		if err := r.mapPages(ctx, run, true); err != nil {
-			return false, r.mappingFailed(err, func() { r.unmapRuns(writable[i:]) })
+	for _, run := range writable {
+		if err := r.mapRun(ctx, run, true); err != nil {
+			return false, err
 		}
 		h.mu.Lock()
 		h.stats.Mappings++

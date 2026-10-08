@@ -255,6 +255,32 @@ func (r *MemoryRegion) disagreement(index uint64) string {
 		described)
 }
 
+// agreeRecorded fails where what the bindings say of a page of [first, last)
+// is not what the commands installed: recorded mapped where nothing is, which
+// a resolve or a protect then meets, or recorded unmapped where something is,
+// which a revocation skips. The mapper calls it as it records a command's
+// outcome, with the pages held, so the two cannot be apart there.
+func (r *MemoryRegion) agreeRecorded(first, last uint64) {
+	a := r.audit
+	if a == nil {
+		return
+	}
+	for page := first; page < last; page++ {
+		r.bindingsMu.Lock()
+		b, zeroRun := r.lookupLocked(page)
+		recorded := zeroRun || b != nil && b.mapped
+		r.bindingsMu.Unlock()
+		a.mu.Lock()
+		state := a.stateLocked(page)
+		if !a.broken && (state != notInstalled) != recorded {
+			finding := a.findingLocked(page, fmt.Sprintf("is recorded mapped=%t over a page %s", recorded, state))
+			a.mu.Unlock()
+			panic(finding)
+		}
+		a.mu.Unlock()
+	}
+}
+
 // auditBind fails where page index, the region's own dirty state, is bound
 // to a root's page: the guest would read the bytes it stored over.
 func (r *MemoryRegion) auditBind(index uint64, dirty bool, p *zirconvm.VmPage) {

@@ -71,15 +71,10 @@ func (p *replacement) unlock() {
 }
 
 // revoke takes the guest's mappings of the held pages away, which a store
-// whose command did not land does, and gives the pages up.
+// whose command did not land does, and gives the pages up. Each is recorded
+// gone as its revocation lands (revocation.go).
 func (p *replacement) revoke(ctx context.Context) error {
-	r := p.region
-	for _, b := range p.guests {
-		if err := r.revokePage(ctx, b.index); err != nil {
-			p.done()
-			return r.fail(err)
-		}
-	}
+	err := p.region.revokeBindings(ctx, p.guests)
 	p.done()
-	return nil
+	return err
 }

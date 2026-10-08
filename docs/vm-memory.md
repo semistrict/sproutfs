@@ -1865,6 +1865,19 @@ pager has revoked a mapping, and not after any other change, so two refused
 faults cannot wake each other. The guest waits there as it waits for the dirty
 budget, and the VM can still be checkpointed or migrated off the host.
 
+What the bindings say is mapped is the pager's record of page tables it cannot
+read, and one place keeps it (`vmmemory/mapper.go` and `revocation.go`). Every
+mapping command is sent there, and a run is recorded mapped once its command
+has landed, while the caller holds its pages. A refusal records nothing. Any
+other failure records the run mapped and ends the region. A revocation records
+its pages unmapped once it lands. A store that made a page the region's own
+before its writable mapping was refused takes the old read-only mapping away,
+so the binding never says writable over a read-only page. A test fails if any
+other file writes the record or sends a command. Before 2026-10-08 each path
+recorded its runs before sending them and undid the record on a refusal; three
+undid the wrong runs, and one of them ended an embedder's VM with
+`UFFDIO_CONTINUE: invalid argument`.
+
 Only replacements that install a mapping are charged against the budget. A
 revocation returns its range to the trap mapping the region was attached as,
 which merges with the traps around it, so it can only lower the count. It is

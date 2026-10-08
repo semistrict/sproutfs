@@ -226,8 +226,6 @@ func (r *MemoryRegion) storeZeros(ctx context.Context, index, first, last uint64
 	for _, run := range frames {
 		all = append(all, run...)
 	}
-	// Mapped before the command: an ambiguous answer may still have
-	// installed it.
 	r.bindDirtyRun(first, all, reservations, ahead)
 	if h.measuring() {
 		for k := range count {
@@ -238,9 +236,9 @@ func (r *MemoryRegion) storeZeros(ctx context.Context, index, first, last uint64
 	h.stats.CopyOnWrites++
 	h.stats.WriteAheadPages += uint64(count - 1)
 	h.mu.Unlock()
-	for i, run := range runs {
-		if err := r.mapPages(ctx, run, true); err != nil {
-			return r.mappingFailed(err, func() { r.unmapRuns(runs[i:]) })
+	for _, run := range runs {
+		if err := r.mapRun(ctx, run, true); err != nil {
+			return r.refusedWritable(ctx, err, run.Page, runs[len(runs)-1].Page+uint64(runs[len(runs)-1].Count))
 		}
 	}
 	for _, run := range runs {
@@ -468,7 +466,7 @@ func (r *MemoryRegion) bindDirtyRun(first uint64, frames []*zirconvm.VmPage, res
 	for k := range frames {
 		b := r.bindingLocked(first + uint64(k))
 		r.uncoldLocked(b)
-		b.dirty, b.spill, b.ahead, b.origin, b.zero, b.mapped = true, reservations[k], ahead[k], nil, false, true
+		b.dirty, b.spill, b.ahead, b.origin, b.zero = true, reservations[k], ahead[k], nil, false
 		b.checkpoint, b.zeroed = nil, true
 		bindings[k] = b
 		r.dirtySet[b.index] = b
@@ -477,10 +475,6 @@ func (r *MemoryRegion) bindDirtyRun(first uint64, frames []*zirconvm.VmPage, res
 	if r.dirtySince.IsZero() && len(frames) > 0 {
 		r.dirtySince = r.host.clock.Now()
 	}
-	// A run of fresh pages no checkpoint holds is one sealable run: one
-	// change to the runs a seal reads rather than one per page.
-	r.dirtyRuns.add(first, first+uint64(len(frames)))
-	r.recordedMapped(first, first+uint64(len(frames)), true, "bound dirty")
 	r.bindingsMu.Unlock()
 	for k, b := range bindings {
 		h.probe.granted(b, frameOf(frames[k]), nil)
@@ -660,9 +654,8 @@ func (r *MemoryRegion) copyOnWrite(ctx context.Context, index uint64, spill *res
 		}
 		*spill = noReservation
 		at := frameOf(src).fileSlot
-		r.setMapped(index, index+1, true)
-		if err := r.mapPages(ctx, r.runAt(index, at, 1), true); err != nil {
-			return false, r.mappingFailed(err, func() { r.setMapped(index, index+1, false) })
+		if err := r.mapRun(ctx, r.runAt(index, at, 1), true); err != nil {
+			return false, r.refusedWritable(ctx, err, index, index+1)
 		}
 		if err := r.resolvePages(ctx, index, 1, true); err != nil {
 			return false, r.fail(err)
@@ -750,13 +743,11 @@ func (r *MemoryRegion) copyOnWrite(ctx context.Context, index uint64, spill *res
 	if err != nil {
 		return false, errors.Join(err, replaced.revoke(ctx))
 	}
-	r.setMapped(first, last, true)
 	count := int(last - first)
-	if err := r.mapPages(ctx, r.runAt(first, at.plus(-int(index-first)), count), true); err != nil {
+	if err := r.mapRun(ctx, r.runAt(first, at.plus(-int(index-first)), count), true); err != nil {
 		if revoked := replaced.revoke(ctx); revoked != nil {
-			return false, errors.Join(r.fail(err), revoked)
+			return false, errors.Join(err, revoked)
 		}
-		err = r.mappingFailed(err, func() { r.setMapped(first, last, false) })
 		if !errors.Is(err, ErrMappingRefused) {
 			return false, err
 		}
@@ -1299,12 +1290,8 @@ func (r *MemoryRegion) makeWhole(ctx context.Context, index uint64, replaced *re
 	h.stats.MappingMerges++
 	h.mu.Unlock()
 	count := int(hi - lo)
-	r.setMapped(lo, hi, true)
-	if err := r.mapPages(ctx, r.runAt(lo, at, count), true); err != nil {
-		if revoked := replaced.revoke(ctx); revoked != nil {
-			return false, errors.Join(r.fail(err), revoked)
-		}
-		return false, r.mappingFailed(err, func() { r.setMapped(lo, hi, false) })
+	if err := r.mapRun(ctx, r.runAt(lo, at, count), true); err != nil {
+		return false, errors.Join(err, replaced.revoke(ctx))
 	}
 	replaced.done()
 	return true, nil

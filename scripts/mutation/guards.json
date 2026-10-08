@@ -1378,10 +1378,10 @@
     "purpose": "Move a page to the harvested queue without taking its mappings away, so the guest reads on through them without a fault, nothing marks the page accessed, and the evictor takes a page the guest keeps reading."
   },
   {
-    "id": "pager-refusal-keeps-the-writable-runs-recorded",
+    "id": "pager-record-a-refused-run-mapped",
     "package": "vmmemory",
     "run": "^TestARefusedReadOnlyRunTakesBackTheWritableRunsOfItsFault$",
-    "purpose": "Take back only the read-only and zero runs of a fault whose first mapping command was refused, so its writable runs stay recorded mapped with nothing installed, and the guest's next store into one resolves writable over nothing: UFFDIO_CONTINUE on the client's anonymous trap, invalid argument."
+    "purpose": "Record a run mapped although the client refused its command, so a dirty page is recorded mapped with nothing installed, and the guest's next store into it resolves writable over nothing: UFFDIO_CONTINUE on the client's anonymous trap, invalid argument."
   },
   {
     "id": "pager-population-refused-fails-the-attach",
@@ -1394,5 +1394,11 @@
     "package": "vmmemory",
     "run": "^TestACaptureWhoseProtectFailsEndsWithTheFailure$",
     "purpose": "Take a failed capture's protected mappings away still holding the region's protection, which the revocation takes shared: the capture waits for itself with the region held, the guest's flush never ends and its machine never detaches."
+  },
+  {
+    "id": "pager-keep-a-refused-store-s-old-mapping",
+    "package": "vmmemory",
+    "run": "^TestARefusedStoreTakesTheOldMappingAway$",
+    "purpose": "Leave a store's old read-only mapping in place when the client refuses the writable one, the binding already the region's own writable page, so the next fault resolves writable over a read-only mapping."
   }
 ]

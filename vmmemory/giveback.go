@@ -409,8 +409,8 @@ func (r *MemoryRegion) mapInPlace(ctx context.Context, b *binding, to *zirconvm.
 		if !r.isMapped(b) {
 			return nil
 		}
-		if err := r.mapPages(ctx, r.runAt(b.index, frameOf(to).fileSlot, 1), false); err != nil {
-			return r.mappingFailed(err, func() {})
+		if err := r.mapRun(ctx, r.runAt(b.index, frameOf(to).fileSlot, 1), false); err != nil {
+			return err
 		}
 		h.mu.Lock()
 		h.stats.Mappings++
