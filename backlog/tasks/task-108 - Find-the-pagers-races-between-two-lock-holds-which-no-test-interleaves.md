@@ -1,10 +1,10 @@
 ---
 id: TASK-108
 title: 'Find the pager''s races between two lock holds, which no test interleaves'
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-07 19:19'
-updated_date: '2026-10-08 07:31'
+updated_date: '2026-10-08 09:40'
 labels:
   - vmmemory
   - testing
@@ -27,7 +27,7 @@ An embedder found TASK-105 (a prefetch's READ request met another and the pager 
 <!-- AC:BEGIN -->
 - [x] #1 Every place in vmmemory that releases a lock between a check and the act that depends on it is listed in the task; each is either made one hold or shown safe in its comment
 - [x] #2 Each lock release on a fault or prefetch path has a Buggify yield or an admission point, so seeded campaigns interleave there, and the prefetch campaign finds TASK-105's race with that fix reverted
-- [ ] #3 An unseeded stress arm runs the prefetch campaign with real parallelism under -race on many cores in a soak, and is documented in docs/testing.md
+- [x] #3 An unseeded stress arm runs the prefetch campaign with real parallelism under -race on many cores in a soak, and is documented in docs/testing.md
 - [x] #4 A GCE test starts several forks of one cold template on one host at once and checks every page they read
 <!-- AC:END -->
 
@@ -43,4 +43,12 @@ Unscheduled soak fixes since: capture protection read before the protection, los
 Mapping audit (7b8680ab, 86114c0e): every vmmemory test checks the pager's resolves and bindings against what each mapping command installed; it turned the lost store (about 1 in 70 soak runs, as an invalid resolution) into a finding in five runs and then into its cause, fixed in d17581af: a fault let its own unmapped page's lock go before its lookup, an eviction spilled the page, and the lookup bound a root's page or the volume's bytes over the guest's own (TestAFaultRefaultsItsOwnPageAnEvictionSpilledBeforeItsLookup, guard pager-look-a-spilled-page-up-past-its-layer). AC4: the cold-forks test (branch cold-forks-gce) ran on GCE and every fork stalled on a dirty budget sized to its stamps; budgets resized, rerunning.
 
 AC4 verified on GCE (n2-standard-8, nested KVM, 2026-10-08): TestForksOfOneColdTemplateStartAtOnceAndReadEveryPage passed with 2 forks (7.4 s; 1,045 evictions, 784 refaults, 249 identity hits) and with 4 forks (27 s phase; 15,380 evictions, 13,451 refaults, 3,671 identity hits), every page of every fork correct. Eight forks thrash that host until the guests stall, so four is the default. Its first runs found two test faults (a dirty budget sized to the stamps, and the console's carriage return), fixed in 93b133bf's series; the memory benchmark now stages source with stage-source.py (1effedf4).
+
+AC3 verified: the unscheduled soak (TestThePagersCampaignsSoakWithoutAScheduler, prefetch, fork and rules worlds, real goroutines under -race, mapping audit on) ran on a 22-core GCE VM via scripts/soak-pager-gce.sh on d09c46e3: 24,109 worlds at 4 KiB and 367 at 2 MiB in the isolated arena, 24,499 and 368 in the shared one, all clean; documented in docs/testing.md. Earlier soaks found and drove the fixes for the lost store (d17581af), the eviction place (3cb697d8), the lent root's copies (18c8fe93) and the capture and settle deadlock (d09c46e3); the soak now ends itself with every stack when a world hangs (88938001).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Audited all 67 lock gaps in vmmemory: each is one hold or commented safe, with seam tests and sim.Bug guards; admission points let the seeded prefetch, fork and rules campaigns interleave at them, and Buggify draws are keyed per task. Added an unscheduled soak (real goroutines, -race, a GCE script) and a mapping audit in every vmmemory test, which together found and drove fixes for a lost store after an unseal (d17581af), an eviction's place counted taken (3cb697d8), a lent root's copies outliving their file (18c8fe93) and a capture/settle deadlock (d09c46e3); the writeback TLA+ spec models the lookup (733638ba). Verified: the 22-core GCE soak on d09c46e3 ran about 49,000 worlds in both arenas clean; the cold-forks Firecracker test passes on GCE with 2 and 4 forks; just check passes, every new guard is killed.
+<!-- SECTION:FINAL_SUMMARY:END -->

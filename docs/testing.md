@@ -1576,10 +1576,17 @@ SPROUTFS_PAGER_SOAK=30m go test -race ./vmmemory -run '^TestThePagersCampaignsSo
 
 `SPROUTFS_PAGER_SOAK_SEED` sets the first seed; it is the clock's otherwise.
 Run it on a machine with many cores, not on a laptop that runs anything else.
+`scripts/soak-pager-gce.sh all` runs it on a disposable 22-core GCE VM, 15
+minutes per page size in each arena, and deletes the VM. On d09c46e3
+(2026-10-08) it soaked 24,109 worlds at 4 KiB and 367 at 2 MiB in the isolated
+arena and 24,499 and 368 in the shared one, every world clean, under -race and
+the mapping audit. The runs before it found the lost store the mapping audit
+describes, and a deadlock between a journal capture, a prefetch and a fault
+(`TestACaptureNeverWaitsForTheLockOfThePageItsCopyWasMadeFrom`).
 A world that runs for five minutes is taken for hung: the soak ends the process
 with every goroutine's stack, which names the seed and the locks each waits
-for. A deadlock held a GCE soak silent for an hour before it did
-(`TestACaptureNeverWaitsForTheLockOfThePageItsCopyWasMadeFrom`).
+for. That deadlock held a GCE soak silent for an hour, until it was sent
+SIGQUIT by hand.
 
 **The mapping audit.** A failure that needs two rare events to meet is rarer
 still than either. Every `vmmemory` test keeps what each mapping command
