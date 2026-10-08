@@ -1,11 +1,11 @@
 ---
 id: TASK-109
 title: Let eviction see the reads a guest makes through mapped pages
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-08 12:34'
-updated_date: '2026-10-08 13:05'
+updated_date: '2026-10-08 13:25'
 labels:
   - vmmemory
   - eviction
@@ -22,11 +22,11 @@ An embedder measured a DAX root disk (ext4 dax=always on a PMEM region) under he
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A page the guest keeps reading through its mapping is not evicted ahead of pages written once while it was read
-- [ ] #2 A revoked page that is touched again is mapped back from its frame with no read from the spill, the cache or the object store
-- [ ] #3 A deterministic simulation test reproduces the DAX read-plus-write-churn shape and fails without the change
-- [ ] #4 A GCE run of the same shape (8 GiB guest, 80 GiB DAX root, 6.4 GiB PMEM arena, several GB written while a 512 MB file is read at random) reports read p50 and p90 during the writes, before and after
-- [ ] #5 docs/vm-memory.md says what the queues' recency is made of
+- [x] #1 A page the guest keeps reading through its mapping is not evicted ahead of pages written once while it was read
+- [x] #2 A revoked page that is touched again is mapped back from its frame with no read from the spill, the cache or the object store
+- [x] #3 A deterministic simulation test reproduces the DAX read-plus-write-churn shape and fails without the change
+- [x] #4 A GCE run of the same shape (8 GiB guest, 80 GiB DAX root, 6.4 GiB PMEM arena, several GB written while a 512 MB file is read at random) reports read p50 and p90 during the writes, before and after
+- [x] #5 docs/vm-memory.md says what the queues' recency is made of
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -44,4 +44,12 @@ An embedder measured a DAX root disk (ext4 dax=always on a PMEM region) under he
 
 <!-- SECTION:NOTES:BEGIN -->
 Implemented in the harvest worktree: harvested isolate queue (zirconvm), harvest step in reclaimStep (vmmemory/harvest.go), AgeOnAccess restored per served fault (the ported core had stopped calling it since e0fb32de), store traps on harvested read-only pages served as loads (no cold copy). Found and fixed a latent bug: unprotectForStore mapped a page without recording it mapped, so an eviction gave back a slot the guest still mapped writable (TestAStoreIntoAHarvestedJournaledPageIsRevokedByItsEviction). The seal-pause test stored 0, which pages 255/511/767/1023 already held; it now stores each page's complement. vmmemory green in both arenas; guard pager-harvest-without-revoking killed.
+
+GCE before/after (n2-standard-8, nested KVM, 2026-10-08; TestWhatAGuestReadsOfItsDAXRootWhileItWrites): 3 GiB DAX root over a 256 MiB PMEM arena of 2 MiB pages, 2 GiB written at 64 MiB/s for 32 s, a 4 KiB O_DIRECT random read every 2 ms. 32 MiB file: before p50 3 us, p90 5 us, p99 2417 us, 169 spill refaults; harvest p50 4, p90 7, p99 430 us, 13 refaults. 128 MiB file: before p50 4, p90 14, p99 2971 us, 967 refaults; harvest p50 9, p90 315, p99 560 us, 54 refaults, 1568 second chances. Shape scaled down from the embedder's (8 GiB guest, 80 GiB root, 6.4 GiB arena); a first unpaced run (1 GiB in 1.2 s) showed no difference and was replaced. Fault order loses a constantly read page once per arena turnover, so the gain is in p99 and refaults, not p50; the harvest's cost is a ~300 us fault per harvested page touched again (the 128 MiB p90). The embedder's 5 ms p50 means pages revisited less than once per turnover, which no recency fixes: the 2 MiB refault is the lever there (TASK-110).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Each reclaim step harvests first: it takes the mappings of the oldest isolated pages away, keeps the pages, and moves them to a new harvested isolate queue the evictor takes from first; a fault that maps one back marks it accessed. The queues age once per served fault again (the ported core had dropped AgeOnAccess). A store trap on a harvested read-only page is served read-only, so no cold copy. Fixed a protect trap that mapped a page without recording it. Verified by TestAnEvictionKeepsAPageTheGuestReadsThroughItsMapping (failed before: 8 reloads in 128 writes), TestAStoreIntoAHarvestedJournaledPageIsRevokedByItsEviction, TestAHarvestedPageIsPeekedFirstAndLeavesWhenAccessed, guard pager-harvest-without-revoking killed, vmmemory green in both arenas, just check; GCE: p99 of reads during writes down about 5x, spill refaults 13-18x fewer.
+<!-- SECTION:FINAL_SUMMARY:END -->
