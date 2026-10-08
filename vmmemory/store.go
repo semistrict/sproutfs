@@ -553,6 +553,7 @@ func (r *MemoryRegion) takePrivate(ctx context.Context, index uint64, frame *zir
 	b.zeroed = false
 	r.noteDirtyLocked(b)
 	r.bindingsMu.Unlock()
+	r.madeOwn(index, "taken private")
 	h.probe.granted(b, frameOf(frame), probeFrame(origin))
 	if h.measuring() {
 		if err := r.noteCopiedAt(ctx, index, frameOf(frame).fileSlot); err != nil {
@@ -597,6 +598,7 @@ func (r *MemoryRegion) dirtyInPlace(ctx context.Context, index uint64, spill res
 	b.checkpoint, b.spill, b.dirty, b.ahead, b.origin, b.zeroed = nil, spill, true, false, nil, false
 	r.noteDirtyLocked(b)
 	r.bindingsMu.Unlock()
+	r.madeOwn(index, "dirtied in place")
 	h := r.host
 	h.mu.Lock()
 	page := b.page

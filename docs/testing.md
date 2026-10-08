@@ -1587,10 +1587,13 @@ checks the pager against it:
 - when the region is let go, at the end of a seal, retire, unseal, handoff or
   detach for every page and at the end of a fault for its window, no page its
   binding says is writable is mapped read-only, because the next fault on it
-  resolves it writable;
+  resolves it writable. A page whose lock something holds is passed over: a
+  store's rule makes a page of another window private before the store's
+  command maps it, and a fault on that page waits for its lock;
 - a page that is the region's own dirty state is never bound to a root's page.
 
-A finding names the page's latest commands with their callers, and the
+A finding names the page's latest commands with their callers, refused ones
+and the transitions that made the page the region's own among them, and the
 binding's state. The audit turned a lost store that the soak found about once
 in seventy runs, as an invalid resolution with no cause, into a finding in
 five, then into its cause: a fault that let its own unmapped page's lock go

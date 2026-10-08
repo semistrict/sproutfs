@@ -462,14 +462,12 @@ func (r *MemoryRegion) mapPages(ctx context.Context, run MapRun, writable bool) 
 	start := r.host.clock.Now()
 	err := r.mapping.Map(ctx, run.Page, run.File, run.Slot, run.Count, writable)
 	r.host.mappingLatency.Observe(r.host.clock.Since(start))
-	if writable {
-		r.audited(err, func() { r.audit.installed(run.Page, run.Count, installedWritable, "map writable") })
-	} else {
-		r.audited(err, func() {
-			if r.audit != nil {
-				r.audit.installed(run.Page, run.Count, installedReadOnly, "map read-only, "+r.describeBinding(run.Page))
-			}
-		})
+	if r.audit != nil {
+		if writable {
+			r.audited(err, run.Page, run.Count, installedWritable, "map writable")
+		} else {
+			r.audited(err, run.Page, run.Count, installedReadOnly, "map read-only, "+r.describeBinding(run.Page))
+		}
 	}
 	return err
 }
@@ -478,7 +476,7 @@ func (r *MemoryRegion) mapZeroPages(ctx context.Context, page uint64, count int)
 	start := r.host.clock.Now()
 	err := r.mapping.MapZero(ctx, page, count)
 	r.host.mappingLatency.Observe(r.host.clock.Since(start))
-	r.audited(err, func() { r.audit.installed(page, count, installedReadOnly, "map zero") })
+	r.audited(err, page, count, installedReadOnly, "map zero")
 	return err
 }
 
@@ -486,24 +484,25 @@ func (r *MemoryRegion) mapBatch(ctx context.Context, batch BatchMapping, runs []
 	start := r.host.clock.Now()
 	commands, mappingRuns, err := batch.MapBatch(ctx, runs)
 	r.host.mappingLatency.Observe(r.host.clock.Since(start))
-	r.audited(err, func() {
-		for _, run := range runs {
-			r.audit.installed(run.Page, run.Count, installedReadOnly, "map batch")
-		}
-	})
+	for _, run := range runs {
+		r.audited(err, run.Page, run.Count, installedReadOnly, "map batch")
+	}
 	return commands, mappingRuns, err
 }
 
-// audited records what a command installed where it landed. A refusal
-// changed nothing, and any other failure leaves the mapping unknown.
-func (r *MemoryRegion) audited(err error, record func()) {
+// audited records what a command left the pages [first, first+count) as:
+// state where it landed; nothing changed where it was refused, which the
+// pages' histories still name; and unknown after any other failure.
+func (r *MemoryRegion) audited(err error, first uint64, count int, state installed, what string) {
 	if r.audit == nil {
 		return
 	}
 	switch {
 	case err == nil:
-		record()
-	case !errors.Is(err, ErrMappingRefused):
+		r.audit.installed(first, count, state, what)
+	case errors.Is(err, ErrMappingRefused):
+		r.audit.refused(first, count, what)
+	default:
 		r.audit.fail()
 	}
 }
@@ -528,7 +527,7 @@ func (r *MemoryRegion) revokePage(ctx context.Context, page uint64) error {
 	start := r.host.clock.Now()
 	err := r.mapping.Revoke(ctx, page)
 	r.host.revokeLatency.Observe(r.host.clock.Since(start))
-	r.audited(err, func() { r.audit.installed(page, 1, notInstalled, "revoke") })
+	r.audited(err, page, 1, notInstalled, "revoke")
 	return err
 }
 
@@ -536,11 +535,9 @@ func (r *MemoryRegion) revokeBatch(ctx context.Context, batch BatchRevocation, r
 	start := r.host.clock.Now()
 	commands, revokedRuns, err := batch.RevokeBatch(ctx, runs)
 	r.host.revokeLatency.Observe(r.host.clock.Since(start))
-	r.audited(err, func() {
-		for _, run := range runs {
-			r.audit.installed(run.Page, run.Count, notInstalled, "revoke batch")
-		}
-	})
+	for _, run := range runs {
+		r.audited(err, run.Page, run.Count, notInstalled, "revoke batch")
+	}
 	return commands, revokedRuns, err
 }
 
@@ -549,7 +546,9 @@ func (r *MemoryRegion) resolvePages(ctx context.Context, page uint64, count int,
 	start := r.host.clock.Now()
 	err := r.mapping.Resolve(ctx, page, count, writable)
 	r.host.resolveLatency.Observe(r.host.clock.Since(start))
-	r.audited(err, func() {})
+	if err != nil && !errors.Is(err, ErrMappingRefused) {
+		r.audit.fail()
+	}
 	return err
 }
 
@@ -557,7 +556,11 @@ func (r *MemoryRegion) protectPages(ctx context.Context, page uint64, count int)
 	start := r.host.clock.Now()
 	err := r.mapping.Protect(ctx, page, count)
 	r.host.protectLatency.Observe(r.host.clock.Since(start))
-	r.audited(err, func() { r.audit.protected(page, count) })
+	if err == nil {
+		r.audit.protected(page, count)
+	} else if !errors.Is(err, ErrMappingRefused) {
+		r.audit.fail()
+	}
 	return err
 }
 

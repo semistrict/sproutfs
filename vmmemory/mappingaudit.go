@@ -90,6 +90,28 @@ func (a *mappingAudit) installed(first uint64, count int, state installed, what 
 	}
 }
 
+// refused names a refused command in the histories of [first,
+// first+count), whose state it did not change.
+func (a *mappingAudit) refused(first uint64, count int, what string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for page := first; page < first+uint64(count); page++ {
+		a.recordLocked(page, a.stateLocked(page), what+", refused")
+	}
+}
+
+// madeOwn names, in a page's history, a transition that made it the
+// region's own dirty state, which changes nothing it has installed.
+func (r *MemoryRegion) madeOwn(page uint64, what string) {
+	a := r.audit
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.recordLocked(page, a.stateLocked(page), what)
+}
+
 // resolved checks a resolve of [first, first+count) against what is
 // installed, and records a writable one taking a protection off.
 func (a *mappingAudit) resolved(first uint64, count int, writable bool) {
@@ -135,9 +157,12 @@ func (a *mappingAudit) protected(first uint64, count int) {
 // page its binding says is writable is never mapped read-only, because the
 // fault that completes its next trapped access resolves it writable
 // (loadBound), and a mapping can take that only where it was mapped
-// writable. A transition may leave the two apart while it holds the region,
-// as a give-back mapping the page it puts the guest back on before it
-// rebinds, and must bring them together before it lets the region go.
+// writable. A transition may leave the two apart while it holds the page's
+// lock, which that fault takes first: a give-back maps the page it puts the
+// guest back on before it rebinds, and a store's rule makes a page of
+// another window private before the store's command maps it. So a page whose
+// lock something holds is passed over, and one whose lock is free is checked
+// under it.
 func (r *MemoryRegion) agree(first, last uint64) {
 	a := r.audit
 	if a == nil {
@@ -153,33 +178,46 @@ func (r *MemoryRegion) agree(first, last uint64) {
 		}
 	}
 	a.mu.Unlock()
-	h := r.host
 	for _, page := range readOnly {
-		r.bindingsMu.Lock()
-		b, _ := r.lookupLocked(page)
-		writable := b != nil && b.mapped && b.writable()
-		r.bindingsMu.Unlock()
-		if !writable {
-			continue
-		}
-		h.mu.Lock()
-		held := b.page != nil
-		h.mu.Unlock()
-		if !held {
-			continue
-		}
-		described := r.describeBinding(page)
-		a.mu.Lock()
-		var finding string
-		if !a.broken && a.stateLocked(page) == installedReadOnly {
-			finding = a.findingLocked(page, "is mapped read-only while its binding is writable, as the region is let go: "+
-				described)
-		}
-		a.mu.Unlock()
-		if finding != "" {
+		if finding := r.disagreement(page); finding != "" {
 			panic(finding)
 		}
 	}
+}
+
+// disagreement is agree's finding for one page mapped read-only, "" where its
+// binding is not writable, or where something holds the page's lock.
+func (r *MemoryRegion) disagreement(index uint64) string {
+	h := r.host
+	b := r.lookupBinding(index)
+	if b == nil {
+		return ""
+	}
+	h.mu.Lock()
+	page := b.page
+	h.mu.Unlock()
+	if page == nil || !frameOf(page).mu.TryLock() {
+		return ""
+	}
+	defer h.unlockPage(page)
+	r.bindingsMu.Lock()
+	writable := b.mapped && b.writable()
+	r.bindingsMu.Unlock()
+	h.mu.Lock()
+	same := b.page == page
+	h.mu.Unlock()
+	if !writable || !same {
+		return ""
+	}
+	described := r.describeBinding(index)
+	a := r.audit
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.broken || a.stateLocked(index) != installedReadOnly {
+		return ""
+	}
+	return a.findingLocked(index, "is mapped read-only while its binding is writable, as the region is let go: "+
+		described)
 }
 
 // auditBind fails where page index, the region's own dirty state, is bound
