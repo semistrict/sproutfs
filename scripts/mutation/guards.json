@@ -1348,6 +1348,36 @@
     "purpose": "Let a survey take up a handover this orchestrator is still carrying, between a failed carry and its recovery, so two recoveries of one VM race and one fails finding the other's open."
   },
   {
+    "id": "orchestrator-start-past-a-quiet-host",
+    "package": "cmd/sproutfs-orchestrator",
+    "run": "^TestStartIsRefusedWhileTheHostRunningTheVMIsQuiet$",
+    "purpose": "Start a VM no answering host runs while a quiet host may run it and nothing saw it stop, so the open fences a running guest."
+  },
+  {
+    "id": "orchestrator-delete-past-a-quiet-host",
+    "package": "cmd/sproutfs-orchestrator",
+    "run": "^TestADeleteWaitsForTheQuietHostThatMayRunTheVM$",
+    "purpose": "Delete the record of a VM no answering host runs while a quiet host may run it, so its guest runs on with no record."
+  },
+  {
+    "id": "orchestrator-take-a-lost-open-for-a-refusal",
+    "package": "cmd/sproutfs-orchestrator",
+    "run": "^TestAStartWhoseAnswerWasLostIsNotTakenForAStop$",
+    "purpose": "Write a VM stopped when its open's answer was lost, although the host may have opened it, so a later start goes past that host while it is quiet."
+  },
+  {
+    "id": "orchestrator-table-stops-a-quiet-hosts-vm",
+    "package": "cmd/sproutfs-orchestrator",
+    "run": "^TestAReconcileDoesNotTakeAQuietHostsVMForStopped$",
+    "purpose": "Write a VM in the bucket stopped although the host its row names did not answer, or any host did not and the VM has no row, so a start goes past the quiet host running it."
+  },
+  {
+    "id": "orchestrator-keep-a-deleted-vms-row",
+    "package": "cmd/sproutfs-orchestrator",
+    "run": "^TestReconcileTellsADeletedVMFromOneWhoseHostIsGone$",
+    "purpose": "Keep the row of a VM the bucket no longer lists, written stopped because its host is gone, until the next reconcile."
+  },
+  {
     "id": "journal-protect-runs-read-before-the-protection",
     "package": "vmmemory",
     "run": "^TestACaptureProtectsNoPageAnEvictionUnmappedAfterItTookThePages$",

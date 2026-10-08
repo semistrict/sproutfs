@@ -120,6 +120,121 @@ func TestStartOfAVMAHostAlreadyRunsIsRefused(t *testing.T) {
 	}
 }
 
+// TestStartIsRefusedWhileTheHostRunningTheVMIsQuiet: a host that did not
+// answer one survey may be running the VM perfectly well, and a start opens it
+// elsewhere at the next epoch, which fences that guest and loses its writes
+// since its last checkpoint. The orchestrator's fault campaign found this: a
+// fork's child ran on a host whose status request failed, and a start opened
+// it on another host. A start goes past a quiet host only for a VM this
+// orchestrator saw stop.
+func TestStartIsRefusedWhileTheHostRunningTheVMIsQuiet(t *testing.T) {
+	ctx := simulated(t)
+	d := newDeployment(t, map[string][]string{"host-0": {"vm-a"}, "host-1": {}})
+	d.orchestrator.note(ctx, vmRecord{ID: "vm-a", Host: "host-0", State: stateRunning})
+	d.hosts["host-0"].down = true
+	if _, err := d.orchestrator.Start(ctx, "vm-a", orch.StartRequest{}); !errors.Is(err, errRunning) {
+		t.Fatalf("starting a VM whose host is quiet = %v, want errRunning", err)
+	}
+	if len(d.log) != 0 {
+		t.Fatalf("the refused start did %v", d.log)
+	}
+	// Once the VM is seen to stop, a quiet host is no reason to refuse.
+	d.hosts["host-0"].down = false
+	if _, err := d.orchestrator.Stop(ctx, "vm-a", orch.StopRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	d.hosts["host-0"].down = true
+	if _, err := d.orchestrator.Start(ctx, "vm-a", orch.StartRequest{}); err != nil {
+		t.Fatalf("starting a VM that stopped, with a host quiet = %v, want it started", err)
+	}
+	want := []string{"host-0 stop vm-a", "host-1 open vm-a"}
+	if !slices.Equal(d.log, want) {
+		t.Fatalf("the deployment did %v, want %v", d.log, want)
+	}
+}
+
+// TestAStartWhoseAnswerWasLostIsNotTakenForAStop: a host whose answer to an
+// open never came may have opened the VM. Writing the row stopped then was the
+// evidence a later start took to go past that host while it was quiet, and
+// the VM ran on two hosts. The row stays in flight on the host asked instead.
+func TestAStartWhoseAnswerWasLostIsNotTakenForAStop(t *testing.T) {
+	ctx := simulated(t)
+	d := newDeployment(t, map[string][]string{"host-0": {}, "host-1": {}})
+	d.records.ids = []string{"vm-a"}
+	d.orchestrator.note(ctx, vmRecord{ID: "vm-a", State: stateStopped})
+	d.hosts["host-0"].loseAnswer = "Open"
+	if _, err := d.orchestrator.Start(ctx, "vm-a", orch.StartRequest{To: "host-0"}); !errors.Is(err, errReplyLost) {
+		t.Fatalf("a start whose answer was lost = %v, want the lost answer", err)
+	}
+	row := d.orchestrator.rowOf(ctx, "vm-a")
+	if row.State != stateStarting || row.Host != "host-0" {
+		t.Fatalf("the table says %+v, want vm-a starting on host-0", row)
+	}
+	d.hosts["host-0"].down = true
+	if _, err := d.orchestrator.Start(ctx, "vm-a", orch.StartRequest{To: "host-1"}); !errors.Is(err, errRunning) {
+		t.Fatalf("starting it again while host-0 is quiet = %v, want errRunning", err)
+	}
+	if want := []string{"host-0 open vm-a"}; !slices.Equal(d.log, want) {
+		t.Fatalf("the deployment did %v, want %v", d.log, want)
+	}
+}
+
+// TestAReconcileDoesNotTakeAQuietHostsVMForStopped: the bucket lists every VM,
+// and one no answering host runs was written stopped although the host its row
+// named was quiet and still running it. That row was the evidence a start took
+// to open the VM elsewhere. A VM the table has no row for is the same while
+// any host is quiet: it may be running there.
+func TestAReconcileDoesNotTakeAQuietHostsVMForStopped(t *testing.T) {
+	ctx := simulated(t)
+	d := newDeployment(t, map[string][]string{"host-0": {"vm-a", "vm-b"}, "host-1": {}})
+	d.orchestrator.note(ctx, vmRecord{ID: "vm-a", Host: "host-0", State: stateRunning})
+	d.hosts["host-0"].down = true
+	if err := d.orchestrator.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if row := d.orchestrator.rowOf(ctx, "vm-a"); row.State != stateRunning || row.Host != "host-0" {
+		t.Fatalf("the table says %+v, want vm-a running on host-0", row)
+	}
+	if row := d.orchestrator.rowOf(ctx, "vm-b"); row.State != "" {
+		t.Fatalf("the table says %+v, want no row for vm-b", row)
+	}
+	for _, id := range []string{"vm-a", "vm-b"} {
+		if _, err := d.orchestrator.Start(ctx, id, orch.StartRequest{To: "host-1"}); !errors.Is(err, errRunning) {
+			t.Fatalf("starting %s while host-0 is quiet = %v, want errRunning", id, err)
+		}
+	}
+	if len(d.log) != 0 {
+		t.Fatalf("the refused starts did %v", d.log)
+	}
+}
+
+// TestARefusedStartLeavesTheVMStopped: a host that answered with a refusal
+// opened nothing, so the VM is as stopped as it was and may start elsewhere at
+// once.
+func TestARefusedStartLeavesTheVMStopped(t *testing.T) {
+	ctx := simulated(t)
+	d := newDeployment(t, map[string][]string{"host-0": {}, "host-1": {}})
+	d.records.ids = []string{"vm-a"}
+	d.orchestrator.note(ctx, vmRecord{ID: "vm-a", State: stateStopped})
+	d.records.epochs["vm-a"] = 3
+	d.hosts["host-0"].onOpen = func() {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		// Something opened and closed the VM since the start read its epoch.
+		d.records.epochs["vm-a"]++
+	}
+	if _, err := d.orchestrator.Start(ctx, "vm-a", orch.StartRequest{To: "host-0"}); err == nil {
+		t.Fatal("a start the host refused succeeded")
+	}
+	if row := d.orchestrator.rowOf(ctx, "vm-a"); row.State != stateStopped {
+		t.Fatalf("the table says %+v, want vm-a stopped", row)
+	}
+	d.hosts["host-0"].onOpen = nil
+	if _, err := d.orchestrator.Start(ctx, "vm-a", orch.StartRequest{To: "host-1"}); err != nil {
+		t.Fatalf("starting it again: %v", err)
+	}
+}
+
 // TestStartIsRefusedWhileAHostStillServesTheVM: a source that has handed a VM
 // over holds the pages no checkpoint of it has until the destination reports
 // having them, and no host reports running such a VM. It is between hosts

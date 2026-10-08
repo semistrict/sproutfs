@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/semistrict/sproutfs/platform/sim"
+
 	// The pure-Go SQLite driver, BSD-3-Clause, so the orchestrator image needs
 	// no cgo and no shared library.
 	_ "modernc.org/sqlite"
@@ -260,6 +262,12 @@ func (s surveyed) accounted(host string) bool {
 	return slices.Contains(s.answered, host) || !slices.Contains(s.listed, host)
 }
 
+// quiet reports a survey that some listed host did not answer, any of whose
+// VMs it may be running.
+func (s surveyed) quiet() bool {
+	return slices.ContainsFunc(s.listed, func(host string) bool { return !slices.Contains(s.answered, host) })
+}
+
 // Observe writes down one survey.
 //
 // A VM the table had on a host that accounted for itself and no longer reports
@@ -336,9 +344,13 @@ func (t *table) reconcile(ctx context.Context, found surveyed,
 		}
 	}
 	// A VM whose own host accounted for itself without naming it has no host
-	// running it.
+	// running it. A row between two hosts needs the word of both: the one it
+	// was going to may have taken it in.
 	for id, row := range known {
 		if settled[id] || t.stillInFlight(row) || row.Host == "" || !found.accounted(row.Host) {
+			continue
+		}
+		if row.To != "" && !found.accounted(row.To) && !sim.Bug(ctx, "orchestrator-stop-an-unsettled-handover") {
 			continue
 		}
 		settled[id] = true
@@ -349,11 +361,22 @@ func (t *table) reconcile(ctx context.Context, found surveyed,
 		}
 	}
 	if fromBucket {
+		recorded := make(map[string]bool, len(inBucket))
 		for _, id := range inBucket {
+			recorded[id] = true
 			if settled[id] || t.stillInFlight(known[id]) {
 				continue
 			}
 			settled[id] = true
+			// A stopped row is what lets a start or a delete go past a quiet
+			// host, so it is written only where no quiet host may run the VM:
+			// a row naming a host that did not answer stays as it is, and so
+			// does a VM the table has no row for while any host is quiet.
+			row, kept := known[id]
+			if ((kept && row.Host != "") || (!kept && found.quiet())) &&
+				!sim.Bug(ctx, "orchestrator-table-stops-a-quiet-hosts-vm") {
+				continue
+			}
 			if err := record(ctx, transaction, vmRecord{ID: id, State: stateStopped,
 				Template: known[id].Template, Parent: known[id].Parent, Memory: known[id].Memory,
 				Pull: known[id].Pull, Updated: now}); err != nil {
@@ -361,9 +384,10 @@ func (t *table) reconcile(ctx context.Context, found surveyed,
 			}
 		}
 		// Nothing runs it and the bucket has no record of it: it is deleted,
-		// by this orchestrator or by another.
+		// by this orchestrator or by another, whatever its host said of it.
 		for id, row := range known {
-			if settled[id] || t.stillInFlight(row) {
+			if found.running[id] != "" || recorded[id] || t.stillInFlight(row) ||
+				(settled[id] && sim.Bug(ctx, "orchestrator-keep-a-deleted-vms-row")) {
 				continue
 			}
 			if _, err := transaction.ExecContext(ctx, `DELETE FROM vms WHERE id = ?`, id); err != nil {

@@ -20,8 +20,34 @@ import (
 	"github.com/semistrict/sproutfs/api/orch"
 	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/internal/handover"
+	"github.com/semistrict/sproutfs/internal/jsonhttp"
+	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/rank"
 )
+
+// faultChance is how often an activated fault site fails one call. A seed
+// activates a quarter of the sites, so a run explores a few of the boundary's
+// faults often rather than all of them rarely.
+const faultChance = 0.2
+
+// errRefused is a host's API answering with an error status: the host did
+// nothing the request asked.
+var errRefused = jsonhttp.Error{Op: "simulated", Message: "the host refused the request",
+	Status: http.StatusServiceUnavailable}
+
+// errReplyLost is a request the far side carried out whose answer never came
+// back: the connection broke, or the caller's deadline passed, after it acted.
+var errReplyLost = errors.New("the connection was reset before the reply")
+
+// errUnavailable is the Kubernetes API or the bucket failing a request it did
+// not carry out.
+var errUnavailable = errors.New("the service is unavailable")
+
+// refusal is a host answering that it will not do what it was asked, and did
+// nothing.
+func refusal(message string) error {
+	return jsonhttp.Error{Message: message, Status: http.StatusConflict}
+}
 
 // fakePods is the Kubernetes API: the host pods the orchestrator finds, and the
 // one it deletes. It answers from two goroutines at once, because a migration
@@ -33,7 +59,10 @@ type fakePods struct {
 	err     error
 }
 
-func (f *fakePods) List(context.Context) ([]pod, error) {
+func (f *fakePods) List(ctx context.Context) ([]pod, error) {
+	if sim.Buggify(ctx, "orchestrator/pods-unavailable/List", faultChance) {
+		return nil, errUnavailable
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.err != nil {
@@ -44,7 +73,10 @@ func (f *fakePods) List(context.Context) ([]pod, error) {
 
 // Delete stops listing the pod, which is what the Kubernetes API does and what
 // a recovery takes as evidence that the host is gone.
-func (f *fakePods) Delete(_ context.Context, name string) error {
+func (f *fakePods) Delete(ctx context.Context, name string) error {
+	if sim.Buggify(ctx, "orchestrator/pods-unavailable/Delete", faultChance) {
+		return errUnavailable
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.err != nil {
@@ -52,11 +84,15 @@ func (f *fakePods) Delete(_ context.Context, name string) error {
 	}
 	f.deleted = append(f.deleted, name)
 	f.pods = slices.DeleteFunc(f.pods, func(p pod) bool { return p.Name == name })
+	if sim.Buggify(ctx, "orchestrator/pods-reply-lost/Delete", faultChance) {
+		return errReplyLost
+	}
 	return nil
 }
 
 // fakeRecords is the bucket: every VM that has a control record, which is every
-// VM that exists.
+// VM that exists. The hosts write it as they create, take in and delete VMs,
+// and a test may stage it itself.
 type fakeRecords struct {
 	ids []string
 	err error
@@ -72,17 +108,33 @@ type fakeRecords struct {
 	journals map[string][]control.Journal
 }
 
-func (f *fakeRecords) Pending(_ context.Context, id string) (bool, error) {
+// unavailable is the bucket failing one request, which method names.
+func (f *fakeRecords) unavailable(ctx context.Context, method string) bool {
+	return sim.Buggify(ctx, "orchestrator/records-unavailable/"+method, faultChance)
+}
+
+func (f *fakeRecords) Pending(ctx context.Context, id string) (bool, error) {
+	if f.unavailable(ctx, "Pending") {
+		return false, errUnavailable
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	return f.pending[id], f.err
 }
 
-func (f *fakeRecords) Journals(_ context.Context, id string) ([]control.Journal, error) {
+func (f *fakeRecords) Journals(ctx context.Context, id string) ([]control.Journal, error) {
+	if f.unavailable(ctx, "Journals") {
+		return nil, errUnavailable
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.journals[id], f.err
 }
 
-func (f *fakeRecords) Epoch(_ context.Context, id string) (uint64, error) {
+func (f *fakeRecords) Epoch(ctx context.Context, id string) (uint64, error) {
+	if f.unavailable(ctx, "Epoch") {
+		return 0, errUnavailable
+	}
 	f.mu.Lock()
 	epoch := f.epochs[id]
 	after := f.afterEpoch
@@ -93,13 +145,35 @@ func (f *fakeRecords) Epoch(_ context.Context, id string) (uint64, error) {
 	return epoch, f.err
 }
 
-func (f *fakeRecords) List(context.Context) ([]listing, error) {
+func (f *fakeRecords) List(ctx context.Context) ([]listing, error) {
+	if f.unavailable(ctx, "List") {
+		return nil, errUnavailable
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	found := make([]listing, 0, len(f.ids))
 	for _, id := range f.ids {
 		found = append(found, listing{ID: id})
 	}
 	return found, f.err
 }
+
+// write gives a VM a control record, at its first epoch when it has none. The
+// caller holds mu, as every host of the deployment does while it acts.
+func (f *fakeRecords) write(id string) {
+	if !slices.Contains(f.ids, id) {
+		f.ids = append(f.ids, id)
+	}
+	f.epochs[id] = max(f.epochs[id], 1)
+}
+
+// remove deletes a VM's control record. The caller holds mu.
+func (f *fakeRecords) remove(id string) {
+	f.ids = slices.DeleteFunc(f.ids, func(value string) bool { return value == id })
+}
+
+// exists reports whether a VM has a control record. The caller holds mu.
+func (f *fakeRecords) exists(id string) bool { return slices.Contains(f.ids, id) }
 
 // fakeHostClient is one host of the deployment. It records what the
 // orchestrator asked it, which is how the order of a migration is asserted.
@@ -149,9 +223,10 @@ type fakeHostClient struct {
 	// takes one, which is a destination that is briefly unable to.
 	refusesEveryReceive bool
 	refusedReceives     int
-	// loseAnswer takes the next receive in and then reports it failed, which is
-	// a receive whose answer was lost on its way back.
-	loseAnswer bool
+	// loseAnswer names the method whose next request this host carries out and
+	// then reports failed, which is a request whose answer was lost on its way
+	// back.
+	loseAnswer string
 	// quietAfterRefusal is how many surveys this host does not answer after it
 	// refuses a receive, which is a destination that failed because it went
 	// away for a while.
@@ -222,6 +297,21 @@ type fakeHostClient struct {
 	member   *host.Member
 	held     chan struct{}
 	heldOnce sync.Once
+	// bucket is the deployment's control records, which this host writes as
+	// it creates, takes in and deletes VMs.
+	bucket *fakeRecords
+	// killed is a host whose process ended with its pod, and lost, shared by
+	// every host of the fake deployment, the page addresses of such hosts: a
+	// receive whose pages are on one of them can never get them.
+	killed bool
+	lost   map[string]bool
+	// partitioned is when the pod network stops cutting this host off: until
+	// then nothing reaches it, though it goes on running its guests.
+	// onReplyLost runs, with mu held, as an answer of this host's is lost,
+	// which is where a campaign cuts the host off for a while: the answer was
+	// lost because the network broke.
+	partitioned time.Time
+	onReplyLost func(*fakeHostClient)
 }
 
 // release lets a held receive finish, which is the source's pages arriving
@@ -257,14 +347,70 @@ var errDown = errors.New("connection refused")
 // errOutstanding is what a host answers a release of a handover whose pages no
 // destination has fetched: the bytes exist nowhere else, so the release is
 // refused and the host goes on holding them.
-var errOutstanding = errors.New("unpublished pages are still outstanding")
+var errOutstanding = refusal("unpublished pages are still outstanding")
 
 // wedgeGuard bounds how long a wedged host's Status blocks when nothing else
 // bounds it, so a survey with no deadline of its own fails this test rather
 // than hanging it.
 const wedgeGuard = 6 * time.Second
 
+// unanswered is a request this host never acted on: one that did not reach it,
+// as a connection refused or a pod network that dropped it, or one it answered
+// with an error status. A host that was killed or is cut off answers nothing.
+// method names the call, so each fault of each method is a site of its own.
+func (f *fakeHostClient) unanswered(ctx context.Context, method string) error {
+	f.mu.Lock()
+	cut := f.killed || time.Now().Before(f.partitioned)
+	f.mu.Unlock()
+	if cut {
+		return errDown
+	}
+	if sim.Buggify(ctx, "orchestrator/host-unreachable/"+method, faultChance) {
+		return errDown
+	}
+	if sim.Buggify(ctx, "orchestrator/host-refuses/"+method, faultChance) {
+		return errRefused
+	}
+	return nil
+}
+
+// replyLost reports a request this host carried out whose answer is lost on
+// the way back. The caller holds mu.
+func (f *fakeHostClient) replyLost(ctx context.Context, method string) bool {
+	lost := f.loseAnswer == method || sim.Buggify(ctx, "orchestrator/host-reply-lost/"+method, faultChance)
+	if f.loseAnswer == method {
+		f.loseAnswer = ""
+	}
+	if lost && f.onReplyLost != nil {
+		f.onReplyLost(f)
+	}
+	return lost
+}
+
+// die is this host's process ending with its pod: every guest it ran, every
+// page it held for a handover and every receive it had under way go with it,
+// and it answers nothing again.
+func (f *fakeHostClient) die() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.killed = true
+	f.running, f.serving, f.receiving = nil, nil, nil
+	f.lost[f.page] = true
+}
+
+// runs refuses a request about a VM this host does not run, as a host does.
+// The caller holds mu.
+func (f *fakeHostClient) runs(id string) error {
+	if !slices.Contains(f.running, id) {
+		return jsonhttp.Error{Message: id + " is not running here", Status: http.StatusNotFound}
+	}
+	return nil
+}
+
 func (f *fakeHostClient) Status(ctx context.Context) (host.Status, error) {
+	if err := f.unanswered(ctx, "Status"); err != nil {
+		return host.Status{}, err
+	}
 	f.mu.Lock()
 	wedged, down := f.wedged, f.down
 	if f.quiet > 0 {
@@ -337,7 +483,10 @@ func (f *fakeHostClient) linger() {
 	f.receiving = nil
 }
 
-func (f *fakeHostClient) Create(_ context.Context, request host.CreateRequest) (host.CreateResult, error) {
+func (f *fakeHostClient) Create(ctx context.Context, request host.CreateRequest) (host.CreateResult, error) {
+	if err := f.unanswered(ctx, "Create"); err != nil {
+		return host.CreateResult{}, err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	switch {
@@ -359,11 +508,18 @@ func (f *fakeHostClient) Create(_ context.Context, request host.CreateRequest) (
 	f.running = append(f.running, request.ID)
 	f.pulling[request.ID] = request.Pull
 	f.nested[request.ID] = request.Nested
+	f.bucket.write(request.ID)
+	if f.replyLost(ctx, "Create") {
+		return host.CreateResult{}, errReplyLost
+	}
 	return host.CreateResult{VM: host.VM{ID: request.ID, Template: request.Template, Host: f.name}}, nil
 }
 
-func (f *fakeHostClient) ImportTemplate(_ context.Context, image io.Reader,
+func (f *fakeHostClient) ImportTemplate(ctx context.Context, image io.Reader,
 	request host.ImportTemplateRequest) (host.ImportTemplateResult, error) {
+	if err := f.unanswered(ctx, "ImportTemplate"); err != nil {
+		return host.ImportTemplateResult{}, err
+	}
 	read, err := io.ReadAll(image)
 	if err != nil {
 		return host.ImportTemplateResult{}, err
@@ -371,21 +527,32 @@ func (f *fakeHostClient) ImportTemplate(_ context.Context, image io.Reader,
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("import template %q memory=%d", read, request.Memory)
+	if f.replyLost(ctx, "ImportTemplate") {
+		return host.ImportTemplateResult{}, errReplyLost
+	}
 	return host.ImportTemplateResult{Template: host.Template{Name: "template-ab", ID: "template-ab",
 		MemoryBytes: request.Memory, Imported: true}, Checkpoint: 3}, nil
 }
 
-func (f *fakeHostClient) Open(_ context.Context, id string, request host.OpenRequest) (host.OpenResult, error) {
+func (f *fakeHostClient) Open(ctx context.Context, id string, request host.OpenRequest) (host.OpenResult, error) {
+	if err := f.unanswered(ctx, "Open"); err != nil {
+		return host.OpenResult{}, err
+	}
 	if f.onOpen != nil {
 		f.onOpen()
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if !f.bucket.exists(id) {
+		f.record("open %s refused with no record", id)
+		return host.OpenResult{}, jsonhttp.Error{Message: id + " has no control record", Status: http.StatusNotFound}
+	}
 	if request.Epoch != 0 && request.Epoch != f.epochs[id] {
 		// Something opened the VM since the caller read its epoch, and the
 		// open is refused, as control.Client.OpenAfter refuses it.
 		f.record("open %s refused at epoch %d", id, f.epochs[id])
-		return host.OpenResult{}, errors.New("the record moved past the epoch the caller read")
+		return host.OpenResult{}, jsonhttp.Error{Message: "the record moved past the epoch the caller read",
+			Status: http.StatusConflict}
 	}
 	f.epochs[id]++
 	switch {
@@ -400,19 +567,28 @@ func (f *fakeHostClient) Open(_ context.Context, id string, request host.OpenReq
 	}
 	f.running = append(f.running, id)
 	f.pulling[id] = request.Pull
+	if f.replyLost(ctx, "Open") {
+		return host.OpenResult{}, errReplyLost
+	}
 	return host.OpenResult{VM: host.VM{ID: id, Host: f.name, Checkpoint: 7}, Cold: request.Cold}, nil
 }
 
-func (f *fakeHostClient) Fork(_ context.Context, parent string, request host.ForkRequest) (host.ForkResult, error) {
+func (f *fakeHostClient) Fork(ctx context.Context, parent string, request host.ForkRequest) (host.ForkResult, error) {
+	if err := f.unanswered(ctx, "Fork"); err != nil {
+		return host.ForkResult{}, err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("fork %s %s", parent, strings.Join(request.IDs, ","))
+	if err := f.runs(parent); err != nil {
+		return host.ForkResult{}, err
+	}
 	result := host.ForkResult{Capture: 0.01, Hold: f.hold}
 	for index, id := range request.IDs {
 		if f.forks > 0 && index >= f.forks {
 			// Some of them were handed over and the rest never will be, which is
 			// what a host that died partway through a fan-out leaves behind.
-			return host.ForkResult{}, errors.New("the host could not hand it over")
+			return host.ForkResult{}, jsonhttp.Error{Message: "the host could not hand it over", Status: http.StatusInternalServerError}
 		}
 		source := f.page
 		if request.Destination == "" {
@@ -436,52 +612,93 @@ func (f *fakeHostClient) Fork(_ context.Context, parent string, request host.For
 		result.Handoffs = append(result.Handoffs, host.Handoff{VMID: id, Parent: parent, Source: source,
 			Pull: request.Pull})
 	}
+	if f.replyLost(ctx, "Fork") {
+		return host.ForkResult{}, errReplyLost
+	}
 	return result, nil
 }
 
-func (f *fakeHostClient) Capture(_ context.Context, id string, request host.CaptureRequest) (host.CaptureResult, error) {
+func (f *fakeHostClient) Capture(ctx context.Context, id string, request host.CaptureRequest) (host.CaptureResult, error) {
+	if err := f.unanswered(ctx, "Capture"); err != nil {
+		return host.CaptureResult{}, err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if request.Into != "" {
+	result := host.CaptureResult{VM: id, Checkpoint: 11}
+	switch {
+	case request.Into != "":
 		f.record("capture %s into %s", id, request.Into)
-		return host.CaptureResult{VM: request.Into, Checkpoint: 12}, nil
-	}
-	if request.Keep {
+		result = host.CaptureResult{VM: request.Into, Checkpoint: 12}
+	case request.Keep:
 		f.record("capture %s kept", id)
-	} else {
+	default:
 		f.record("capture %s", id)
 	}
-	return host.CaptureResult{VM: id, Checkpoint: 11}, nil
+	if err := f.runs(id); err != nil {
+		return host.CaptureResult{}, err
+	}
+	if request.Into != "" {
+		// The copy is a VM of its own from here, stopped at the checkpoint.
+		f.bucket.write(request.Into)
+	}
+	if f.replyLost(ctx, "Capture") {
+		return host.CaptureResult{}, errReplyLost
+	}
+	return result, nil
 }
 
-func (f *fakeHostClient) Console(_ context.Context, id string, since int64) (host.Console, error) {
+func (f *fakeHostClient) Console(ctx context.Context, id string, since int64) (host.Console, error) {
+	if err := f.unanswered(ctx, "Console"); err != nil {
+		return host.Console{}, err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("console %s %d", id, since)
 	return host.Console{VM: id, Offset: since, Next: since + 3, Data: "hi\n"}, nil
 }
 
-func (f *fakeHostClient) WriteConsole(_ context.Context, id string, data string) error {
+func (f *fakeHostClient) WriteConsole(ctx context.Context, id string, data string) error {
+	if err := f.unanswered(ctx, "WriteConsole"); err != nil {
+		return err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("write %s %q", id, data)
+	if f.replyLost(ctx, "WriteConsole") {
+		return errReplyLost
+	}
 	return nil
 }
 
-func (f *fakeHostClient) Exec(_ context.Context, id string, request host.ExecRequest) (host.ExecResult, error) {
+func (f *fakeHostClient) Exec(ctx context.Context, id string, request host.ExecRequest) (host.ExecResult, error) {
+	if err := f.unanswered(ctx, "Exec"); err != nil {
+		return host.ExecResult{}, err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("exec %s %q", id, request.Cmd)
 	if f.down {
 		return host.ExecResult{}, errDown
 	}
+	if f.replyLost(ctx, "Exec") {
+		return host.ExecResult{}, errReplyLost
+	}
 	return host.ExecResult{Exit: 0, Stdout: f.name + " ran " + request.Cmd + "\n"}, nil
 }
 
-func (f *fakeHostClient) Migrate(_ context.Context, id string, request host.MigrateRequest) (host.MigrateResult, error) {
+// Migrate stops the guest and hands the VM over. The handoff's checkpoint is
+// the record's epoch, which in this fake moves exactly when a checkpoint would:
+// a receive refuses a handoff the record has moved past.
+func (f *fakeHostClient) Migrate(ctx context.Context, id string, request host.MigrateRequest) (host.MigrateResult, error) {
+	if err := f.unanswered(ctx, "Migrate"); err != nil {
+		return host.MigrateResult{}, err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("migrate %s %s", id, request.Destination)
+	if err := f.runs(id); err != nil {
+		return host.MigrateResult{}, err
+	}
 	f.running = slices.DeleteFunc(f.running, func(value string) bool { return value == id })
 	f.serving = append(f.serving, id)
 	if f.hold > 0 {
@@ -493,18 +710,24 @@ func (f *fakeHostClient) Migrate(_ context.Context, id string, request host.Migr
 			f.serving = slices.DeleteFunc(f.serving, func(value string) bool { return value == id })
 		})
 	}
-	result := host.MigrateResult{Handoff: host.Handoff{VMID: id,
+	result := host.MigrateResult{Handoff: host.Handoff{VMID: id, Checkpoint: f.epochs[id],
 		Source: f.page, PageSize: 2 << 20, Pull: f.pulling[id]}, Hold: f.hold}
 	if f.handed == nil {
 		f.handed = make(map[string]host.MigrateResult)
 	}
 	f.handed[id] = result
+	if f.replyLost(ctx, "Migrate") {
+		return host.MigrateResult{}, errReplyLost
+	}
 	return result, nil
 }
 
 // Handed hands out again the handoff of a VM this host migrated away, for as
 // long as it still serves that VM's pages.
-func (f *fakeHostClient) Handed(_ context.Context, id string) (host.MigrateResult, bool, error) {
+func (f *fakeHostClient) Handed(ctx context.Context, id string) (host.MigrateResult, bool, error) {
+	if err := f.unanswered(ctx, "Handed"); err != nil {
+		return host.MigrateResult{}, false, err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if !slices.Contains(f.serving, id) {
@@ -515,6 +738,9 @@ func (f *fakeHostClient) Handed(_ context.Context, id string) (host.MigrateResul
 }
 
 func (f *fakeHostClient) Receive(ctx context.Context, handoff host.Handoff) (host.ReceiveResult, error) {
+	if err := f.unanswered(ctx, "Receive"); err != nil {
+		return host.ReceiveResult{}, err
+	}
 	f.mu.Lock()
 	if handoff.Pull {
 		f.record("receive %s %s pull", handoff.VMID, handoff.Source)
@@ -523,12 +749,28 @@ func (f *fakeHostClient) Receive(ctx context.Context, handoff host.Handoff) (hos
 	}
 	if handoff.Parent != "" && f.retired[handoff.VMID] {
 		f.mu.Unlock()
-		return host.ReceiveResult{}, errors.New("the fork point the child inherits is retired")
+		return host.ReceiveResult{}, refusal("the fork point the child inherits is retired")
+	}
+	if handoff.Parent != "" && f.fetched[handoff.VMID] {
+		// The child was taken in once, and its hold claimed.
+		f.mu.Unlock()
+		return host.ReceiveResult{}, refusal("the child's hold is already claimed")
+	}
+	if handoff.Parent == "" && handoff.Checkpoint != 0 && handoff.Checkpoint != f.epochs[handoff.VMID] {
+		// Something opened the VM since it was handed over, so the record no
+		// longer selects what the handoff carries.
+		f.mu.Unlock()
+		return host.ReceiveResult{}, refusal("the record moved past the handoff")
+	}
+	if handoff.Source != "" && f.lost[handoff.Source] {
+		// The pages no checkpoint has were on a host that is gone.
+		f.mu.Unlock()
+		return host.ReceiveResult{}, refusal("the source of the pages is gone")
 	}
 	if slices.Contains(f.receiving, handoff.VMID) {
 		// A host admits one receive of a VM at a time.
 		f.mu.Unlock()
-		return host.ReceiveResult{}, errors.New("that VM is already being received here")
+		return host.ReceiveResult{}, refusal("that VM is already being received here")
 	}
 	if f.outlives > 0 {
 		f.receiving = append(f.receiving, handoff.VMID)
@@ -544,7 +786,7 @@ func (f *fakeHostClient) Receive(ctx context.Context, handoff host.Handoff) (hos
 		if refused != nil {
 			refused()
 		}
-		return host.ReceiveResult{}, errors.New("the destination could not start it")
+		return host.ReceiveResult{}, refusal("the destination could not start it")
 	}
 	hold, began := f.holdReceive, f.onReceive
 	if f.discardLingers > 0 {
@@ -575,20 +817,25 @@ func (f *fakeHostClient) Receive(ctx context.Context, handoff host.Handoff) (hos
 	defer f.mu.Unlock()
 	f.received = append(f.received, handoff.VMID)
 	f.running = append(f.running, handoff.VMID)
+	// A fork's child is published as its receive ends, and a migrated VM's
+	// record moves to its new writer.
+	f.bucket.write(handoff.VMID)
 	f.epochs[handoff.VMID]++
 	f.pulling[handoff.VMID] = handoff.Pull
 	// The child holds every page it inherited, which is what lets the source
 	// release the hold it kept for it.
 	f.fetched[handoff.VMID] = true
-	if f.loseAnswer {
-		f.loseAnswer = false
-		return host.ReceiveResult{}, errors.New("the connection was reset")
+	if f.replyLost(ctx, "Receive") {
+		return host.ReceiveResult{}, errReplyLost
 	}
 	return host.ReceiveResult{VM: host.VM{ID: handoff.VMID, Host: f.name},
 		Pause: 0.09, Stream: 1.5, PeerPages: 24, Unpublished: 6}, nil
 }
 
-func (f *fakeHostClient) Released(_ context.Context, id string) error {
+func (f *fakeHostClient) Released(ctx context.Context, id string) error {
+	if err := f.unanswered(ctx, "Released"); err != nil {
+		return err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("released %s", id)
@@ -599,6 +846,9 @@ func (f *fakeHostClient) Released(_ context.Context, id string) error {
 		return errOutstanding
 	}
 	f.serving = slices.DeleteFunc(f.serving, func(value string) bool { return value == id })
+	if f.replyLost(ctx, "Released") {
+		return errReplyLost
+	}
 	return nil
 }
 
@@ -611,6 +861,9 @@ func (f *fakeHostClient) Abandoned(ctx context.Context, id string) (host.Abandon
 	if err := ctx.Err(); err != nil {
 		return host.AbandonedResult{}, err
 	}
+	if err := f.unanswered(ctx, "Abandoned"); err != nil {
+		return host.AbandonedResult{}, err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	claimed := f.fetched[id] && !f.retired[id]
@@ -620,6 +873,9 @@ func (f *fakeHostClient) Abandoned(ctx context.Context, id string) (host.Abandon
 		f.record("abandoned %s", id)
 	}
 	f.retire(id)
+	if f.replyLost(ctx, "Abandoned") {
+		return host.AbandonedResult{}, errReplyLost
+	}
 	return host.AbandonedResult{Claimed: claimed}, nil
 }
 
@@ -633,7 +889,10 @@ func (f *fakeHostClient) retire(id string) {
 
 // Stop closes the guest and leaves the VM: this host stops running it, and
 // nothing else about it changes.
-func (f *fakeHostClient) Stop(_ context.Context, id string, request host.StopRequest) (host.StopResult, error) {
+func (f *fakeHostClient) Stop(ctx context.Context, id string, request host.StopRequest) (host.StopResult, error) {
+	if err := f.unanswered(ctx, "Stop"); err != nil {
+		return host.StopResult{}, err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	switch {
@@ -649,12 +908,23 @@ func (f *fakeHostClient) Stop(_ context.Context, id string, request host.StopReq
 	if f.refuse != nil {
 		return host.StopResult{}, f.refuse
 	}
+	if err := f.runs(id); err != nil {
+		return host.StopResult{}, err
+	}
 	f.running = slices.DeleteFunc(f.running, func(value string) bool { return value == id })
+	if f.replyLost(ctx, "Stop") {
+		return host.StopResult{}, errReplyLost
+	}
 	return host.StopResult{VM: id, Checkpoint: 13}, nil
 }
 
+// Delete closes the VM if this host runs it, and removes its control record,
+// which any host can do.
 func (f *fakeHostClient) Delete(ctx context.Context, id string) error {
 	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := f.unanswered(ctx, "Delete"); err != nil {
 		return err
 	}
 	f.mu.Lock()
@@ -664,22 +934,38 @@ func (f *fakeHostClient) Delete(ctx context.Context, id string) error {
 		return f.refuse
 	}
 	f.running = slices.DeleteFunc(f.running, func(value string) bool { return value == id })
+	f.bucket.remove(id)
+	if f.replyLost(ctx, "Delete") {
+		return errReplyLost
+	}
 	return nil
 }
 
 // Kept answers from the one kept checkpoint every VM of this fake has.
-func (f *fakeHostClient) Kept(_ context.Context, id string) (host.KeptResult, error) {
+func (f *fakeHostClient) Kept(ctx context.Context, id string) (host.KeptResult, error) {
+	if err := f.unanswered(ctx, "Kept"); err != nil {
+		return host.KeptResult{}, err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("kept %s", id)
 	return host.KeptResult{VM: id, Kept: []host.Kept{{Checkpoint: 7, State: true}}}, nil
 }
 
-func (f *fakeHostClient) Release(_ context.Context, id string, checkpoint uint64) error {
+func (f *fakeHostClient) Release(ctx context.Context, id string, checkpoint uint64) error {
+	if err := f.unanswered(ctx, "Release"); err != nil {
+		return err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("release %s@%d", id, checkpoint)
-	return f.refuse
+	if f.refuse != nil {
+		return f.refuse
+	}
+	if f.replyLost(ctx, "Release") {
+		return errReplyLost
+	}
+	return nil
 }
 
 // deployment is an orchestrator over fakes: the pods, the bucket and the hosts.
@@ -690,6 +976,13 @@ type deployment struct {
 	hosts        map[string]*fakeHostClient
 	log          []string
 	next         int
+	// mu is the whole fake deployment's lock, and fetched, retired and lost
+	// what its hosts share: what one host holds for a handover is released by
+	// what another host fetched, a child whose hold one host gave up cannot be
+	// taken in by another, and a host that died took the pages it served with
+	// it.
+	mu                     *sync.Mutex
+	fetched, retired, lost map[string]bool
 }
 
 // newDeployment builds one orchestrator over the named hosts, each running the
@@ -697,22 +990,11 @@ type deployment struct {
 func newDeployment(t *testing.T, running map[string][]string) *deployment {
 	t.Helper()
 	mu := new(sync.Mutex)
-	// fetched is the deployment's own: what one host holds for a handover is
-	// released by what another host fetched. So is retired: a child whose hold
-	// one host gave up cannot be taken in by another.
-	fetched, retired := map[string]bool{}, map[string]bool{}
-	epochs := map[string]uint64{}
-	d := &deployment{pods: &fakePods{mu: mu}, records: &fakeRecords{epochs: epochs, mu: mu},
-		hosts: map[string]*fakeHostClient{}}
+	d := &deployment{pods: &fakePods{mu: mu}, records: &fakeRecords{epochs: map[string]uint64{}, mu: mu},
+		hosts: map[string]*fakeHostClient{}, mu: mu,
+		fetched: map[string]bool{}, retired: map[string]bool{}, lost: map[string]bool{}}
 	for _, name := range slices.Sorted(maps.Keys(running)) {
-		address := "10.0.0." + strconv.Itoa(len(d.hosts)+1)
-		d.pods.pods = append(d.pods.pods, pod{Name: name, IP: address, Ready: true})
-		d.hosts[name] = &fakeHostClient{mu: mu, name: name, running: slices.Clone(running[name]),
-			serving: []string{}, page: address + ":8081", log: &d.log, held: make(chan struct{}),
-			outstanding: map[string]bool{}, fetched: fetched, retired: retired, epochs: epochs,
-			unseen:  map[string]bool{},
-			pulling: map[string]bool{}, nested: map[string]bool{}}
-		d.records.ids = append(d.records.ids, running[name]...)
+		d.addHost(name, running[name])
 	}
 	d.orchestrator = &orchestrator{pods: d.pods, records: d.records,
 		dial: func(p pod) hostClient { return d.hosts[p.Name] },
@@ -728,6 +1010,24 @@ func newDeployment(t *testing.T, running map[string][]string) *deployment {
 		sourceWatch: 10 * time.Millisecond,
 		handover:    handover.Policy{Pause: time.Millisecond, MaxPause: 4 * time.Millisecond, PerDestination: 2}}
 	return d
+}
+
+// addHost lists one more ready host pod, running the VMs it is given, each of
+// which has a control record. The caller holds no lock: a survey may be
+// listing the pods.
+func (d *deployment) addHost(name string, running []string) *fakeHostClient {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	address := "10.0.0." + strconv.Itoa(len(d.hosts)+1)
+	d.pods.pods = append(d.pods.pods, pod{Name: name, IP: address, Ready: true})
+	h := &fakeHostClient{mu: d.mu, name: name, running: slices.Clone(running),
+		serving: []string{}, page: address + ":8081", log: &d.log, held: make(chan struct{}),
+		outstanding: map[string]bool{}, fetched: d.fetched, retired: d.retired, epochs: d.records.epochs,
+		unseen:  map[string]bool{},
+		pulling: map[string]bool{}, nested: map[string]bool{}, bucket: d.records, lost: d.lost}
+	d.hosts[name] = h
+	d.records.ids = append(d.records.ids, running...)
+	return h
 }
 
 // testTable is a VM table in a file of this test's own, which is the same

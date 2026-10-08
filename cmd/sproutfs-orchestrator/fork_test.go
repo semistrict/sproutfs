@@ -141,7 +141,7 @@ func TestAForkWhoseFirstChildIsRefusedGivesUpTheRestOnTheSource(t *testing.T) {
 func TestAForkChildWhoseAnswerWasLostIsDeleted(t *testing.T) {
 	d := newDeployment(t, map[string][]string{"host-0": {"vm-a"}, "host-1": {}})
 	d.hosts["host-1"].arena(1024, 100)
-	d.hosts["host-1"].loseAnswer = true
+	d.hosts["host-1"].loseAnswer = "Receive"
 	if _, err := d.orchestrator.Fork(t.Context(), "vm-a", orch.ForkRequest{Count: 2, To: "host-1"}); err == nil {
 		t.Fatal("a fan-out whose first child's answer was lost reported success")
 	}

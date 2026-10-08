@@ -150,27 +150,28 @@ func TestObserveLeavesAVMThatIsBeingCreated(t *testing.T) {
 
 // TestReconcileTellsADeletedVMFromOneWhoseHostIsGone. Only the bucket can:
 // a VM with a control record and no host is stopped, and one with neither was
-// deleted.
+// deleted. host-0 is gone: the cluster no longer lists it.
 func TestReconcileTellsADeletedVMFromOneWhoseHostIsGone(t *testing.T) {
+	ctx := simulated(t)
 	catalog := testTable(t)
 	for _, id := range []string{"vm-stopped", "vm-deleted"} {
-		if err := catalog.Record(t.Context(), vmRecord{ID: id, Host: "host-0", State: stateRunning}); err != nil {
+		if err := catalog.Record(ctx, vmRecord{ID: id, Host: "host-0", State: stateRunning}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	err := catalog.Reconcile(t.Context(), surveyed{listed: []string{"host-0", "host-1"},
+	err := catalog.Reconcile(ctx, surveyed{listed: []string{"host-1"},
 		answered: []string{"host-1"}, running: map[string]string{}}, []string{"vm-stopped"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	row, found, err := catalog.VM(t.Context(), "vm-stopped")
+	row, found, err := catalog.VM(ctx, "vm-stopped")
 	if err != nil || !found {
 		t.Fatalf("vm-stopped found %t: %v", found, err)
 	}
 	if row.State != stateStopped {
 		t.Fatalf("vm-stopped is %s, want stopped", row.State)
 	}
-	if _, found, err := catalog.VM(t.Context(), "vm-deleted"); err != nil || found {
+	if _, found, err := catalog.VM(ctx, "vm-deleted"); err != nil || found {
 		t.Fatalf("vm-deleted is still in the table: found %t, %v", found, err)
 	}
 }

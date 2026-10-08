@@ -281,3 +281,29 @@ func TestDeletingAVMNoHostRunsGoesToAReadyHost(t *testing.T) {
 		t.Fatalf("deleting with no host to ask = %v, want errNoHost", err)
 	}
 }
+
+// TestADeleteWaitsForTheQuietHostThatMayRunTheVM: no answering host running a
+// VM is no evidence that none does while a host is quiet. Deleting its record
+// through another host left the guest running on the quiet one with no record,
+// where nothing would ever close it. The orchestrator's fault campaign found
+// this when a host's status request failed during a delete.
+func TestADeleteWaitsForTheQuietHostThatMayRunTheVM(t *testing.T) {
+	ctx := simulated(t)
+	d := newDeployment(t, map[string][]string{"host-0": {"vm-a"}, "host-1": {}})
+	d.orchestrator.note(ctx, vmRecord{ID: "vm-a", Host: "host-0", State: stateRunning})
+	d.hosts["host-0"].down = true
+	if err := d.orchestrator.Delete(ctx, "vm-a"); !errors.Is(err, errRunning) {
+		t.Fatalf("deleting a VM whose host is quiet = %v, want errRunning", err)
+	}
+	if len(d.log) != 0 {
+		t.Fatalf("the refused delete did %v", d.log)
+	}
+	// Once the host answers, the delete goes to it.
+	d.hosts["host-0"].down = false
+	if err := d.orchestrator.Delete(ctx, "vm-a"); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"host-0 delete vm-a"}; !slices.Equal(d.log, want) {
+		t.Fatalf("the deployment did %v, want %v", d.log, want)
+	}
+}

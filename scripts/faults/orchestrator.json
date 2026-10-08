@@ -1,0 +1,532 @@
+{
+ "comment": "The orchestrator's boundaries: each host's API (hostClient, which *host.Client is), the Kubernetes API (pods) and the bucket's control records (records). The fakes in cmd/sproutfs-orchestrator/orchestrator_test.go fail each request at random: a request that never reached the far side, one it refused, and one it carried out whose answer was lost, which for a request that changes nothing is the first. A host is also cut off the pod network for minutes, half the times it loses an answer, and the campaign restarts the orchestrator in the middle of a migration. See scripts/check-faults.py.",
+ "interfaces": [
+  {
+   "package": "cmd/sproutfs-orchestrator",
+   "name": "hostClient"
+  },
+  {
+   "package": "cmd/sproutfs-orchestrator",
+   "name": "pods"
+  },
+  {
+   "package": "cmd/sproutfs-orchestrator",
+   "name": "records"
+  }
+ ],
+ "faults": [
+  {
+   "interface": "cmd/sproutfs-orchestrator.hostClient",
+   "method": "Status",
+   "error": "unreachable",
+   "site": "orchestrator/host-unreachable/Status",
+   "package": "cmd/sproutfs-orchestrator",
+   "run": "^TestTheOrchestratorUnderBoundaryFaults$",
+   "purpose": "a host that did not answer is reported with its failure, and nothing is opened, deleted or recovered past it on the evidence that no answering host runs a VM"
+  },
+  {
+   "interface": "cmd/sproutfs-orchestrator.hostClient",
+   "method": "Status",
+   "error": "refused",
+   "site": "orchestrator/host-refuses/Status",
+   "package": "cmd/sproutfs-orchestrator",
+   "run": "^TestTheOrchestratorUnderBoundaryFaults$",
+   "purpose": "a host that answered its status with an error is quiet to the survey, as one that did not answer"
+  },
+  {
+   "interface": "cmd/sproutfs-orchestrator.hostClient",
+   "method": "Create",
+   "error": "unreachable",
+   "site": "orchestrator/host-unreachable/Create",
+   "package": "cmd/sproutfs-orchestrator",
+   "run": "^TestTheOrchestratorUnderBoundaryFaults$",
+   "purpose": "the create never reached the host: the identity is forgotten and nothing runs"
+  },
+  {
+   "interface": "cmd/sproutfs-orchestrator.hostClient",
+   "method": "Create",
+   "error": "refused",
+   "site": "orchestrator/host-refuses/Create",
+   "package": "cmd/sproutfs-orchestrator",
+   "run": "^TestTheOrchestratorUnderBoundaryFaults$",
+   "purpose": "the host refused the create and created nothing: the identity is forgotten"
+  },
+  {
+   "interface": "cmd/sproutfs-orchestrator.hostClient",
+   "method": "Create",
+   "error": "reply lost",
+   "site": "orchestrator/host-reply-lost/Create",
+   "package": "cmd/sproutfs-orchestrator",
+   "run": "^TestTheOrchestratorUnderBoundaryFaults$",
+   "purpose": "the host created the VM and the answer was lost: the caller is told it failed, and the VM runs with its record under an identity the next survey writes down"
+  },
+  {
+   "interface": "cmd/sproutfs-orchestrator.hostClient",
+   "method": "ImportTemplate",
+   "error": "unreachable",
+   "site": "orchestrator/host-unreachable/ImportTemplate",
+   "package": "cmd/sproutfs-orchestrator",
+   "run": "^TestTheOrchestratorUnderBoundaryFaults$",
+   "purpose": "the import never reached the host and is reported failed"
+  },
+  {
+   "interface": "cmd/sproutfs-orchestrator.hostClient",
+   "method": "ImportTemplate",
+   "error": "refused",
+   "site": "orchestrator/host-refuses/ImportTemplate",
+   "package": "cmd/sproutfs-orchestrator",
+   "run": "^TestTheOrchestratorUnderBoundaryFaults$",
+   "purpose": "the host refused the import and imported nothing"
+  },
+  {
+   "interface": "cmd/sproutfs-orchestrator.hostClient",
+   "method": "ImportTemplate",
+   "error": "reply lost",
+   "site": "orchestrator/host-reply-lost/ImportTemplate",
+   "package": "cmd/sproutfs-orchestrator",
+   "run": "^TestTheOrchestratorUnderBoundaryFaults$",
+   "purpose": "the host imported the template and the answer was lost: importing the image again names the same template"
+  },
+  {
+   "interface": "cmd/sproutfs-orchestrator.hostClient",
+   "method": "Open",
+   "error": "unreachable",
+   "site": "orchestrator/host-unreachable/Open",
+   "package": "cmd/sproutfs-orchestrator",
+   "run": "^TestTheOrchestratorUnderBoundaryFaults$",
+   "purpose": "the open never reached the host, which the orchestrator cannot tell from an answer lost: the row stays in flight on that host until a survey hears from it or the row ages out"
+  },
+  {
+   "interface": "cmd/sproutfs-orchestrator.hostClient",
+   "method": "Open",
+   "error": "refused",
+   "site": "orchestrator/host-refuses/Open",
+   "package": "cmd/sproutfs-orchestrator",
+   "run": "^TestTheOrchestratorUnderBoundaryFaults$",
+   "purpose": "the host refused the open and runs nothing: the row says stopped, and the VM may start elsewhere at once"
+  },
+  {
+   "interface": "cmd/sproutfs-orchestrator.hostClient",
+   "method": "Open",
+   "error": "reply lost",
+   "site": "orchestrator/host-reply-lost/Open",
+   "package": "cmd/sproutfs-orchestrator",
+   "run": "^TestTheOrchestratorUnderBoundaryFaults$",
+   "purpose": "the host opened the VM and the answer was lost: the row stays in flight on that host, so no start goes past it while it is quiet (TestAStartWhoseAnswerWasLostIsNotTakenForAStop)"
+  },
+  {
+   "interface": "cmd/sproutfs-orchestrator.hostClient",
+   "method": "Fork",
+   "error": "unreachable",
+   "site": "orchestrator/host-unreachable/Fork",
+   "package": "cmd/sproutfs-orchestrator",
+   "run": "^TestTheOrchestratorUnderBoundaryFaults$",
+   "purpose": "the fork never reached the parent's host: no child exists, and their identities are forgotten"
+  },
+  {
+   "interface": "cmd/sproutfs-orchestrator.hostClient",
+   "method": "Fork",
+   "error": "refused",
+   "site": "orchestrator/host-refuses/Fork",
+   "package": "cmd/sproutfs-orchestrator",
+   "run": "^TestTheOrchestratorUnderBoundaryFaults$",
+   "purpose": "the parent's host refused the fork: the children the request named are discarded and forgotten"
+  },
+  {
+   "interface": "cmd/sproutfs-orchestrator.hostClient",
+   "method": "Fork",
+   "error": "reply lost",
+   "site": "orchestrator/host-reply-lost/Fork",
+   "package": "cmd/sproutfs-orchestrator",
+   "run": "^TestTheOrchestratorUnderBoundaryFaults$",
+   "purpose": "the parent's host handed every child over and the answer was lost: the children are forgotten, and the next survey gives up the holds kept for them, which unseals the parent"
+  },
+  {
+   "interface": "cmd/sproutfs-orchestrator.hostClient",
+   "method": "Capture",
+   "error": "unreachable",
+   "site": "orchestrator/host-unreachable/Capture",
+   "package": "cmd/sproutfs-orchestrator",
+   "run": "^TestTheOrchestratorUnderBoundaryFaults$",
+   "purpose": "the capture never reached the host: a capture into a new VM forgets its identity"
+  },
+  {
+   "interface": "cmd/sproutfs-orchestrator.hostClient",
+   "method": "Capture",
+   "error": "refused",
+   "site": "orchestrator/host-refuses/Capture",
+   "package": "cmd/sproutfs-orchestrator",
+   "run": "^TestTheOrchestratorUnderBoundaryFaults$",
+   "purpose": "the host refused the capture and took no checkpoint"
+  },
+  {
+   "interface": "cmd/sproutfs-orchestrator.hostClient",
+   "method": "Capture",
+   "error": "reply lost",
+   "site": "orchestrator/host-reply-lost/Capture",
+   "package": "cmd/sproutfs-orchestrator",
+   "run": "^TestTheOrchestratorUnderBoundaryFaults$",
+   "purpose": "the host took the checkpoint, or wrote the new VM's record, and the answer was lost: a copy whose identity was forgotten is a stopped VM with a record"
+  },
+  {
+   "interface": "cmd/sproutfs-orchestrator.hostClient",
+   "method": "Console",
+   "error": "unreachable",
+   "site": "orchestrator/host-unreachable/Console",
+   "package": "cmd/sproutfs-orchestrator",
+   "run": "^TestTheOrchestratorUnderBoundaryFaults$",
+   "purpose": "the console read never reached the host and is reported failed"
+  },
+  {
+   "interface": "cmd/sproutfs-orchestrator.hostClient",
+   "method": "Console",
+   "error": "refused",
+   "site": "orchestrator/host-refuses/Console",
+   "package": "cmd/sproutfs-orchestrator",
+   "run": "^TestTheOrchestratorUnderBoundaryFaults$",
+   "purpose": "the host refused the console read"
+  },
+  {
+   "interface": "cmd/sproutfs-orchestrator.hostClient",
+   "method": "WriteConsole",
+   "error": "unreachable",
+   "site": "orchestrator/host-unreachable/WriteConsole",
+   "package": "cmd/sproutfs-orchestrator",
+   "run": "^TestTheOrchestratorUnderBoundaryFaults$",
+   "purpose": "the console write never reached the host and is reported failed"
+  },
+  {
+   "interface": "cmd/sproutfs-orchestrator.hostClient",
+   "method": "WriteConsole",
+   "error": "refused",
+   "site": "orchestrator/host-refuses/WriteConsole",
+   "package": "cmd/sproutfs-orchestrator",
+   "run": "^TestTheOrchestratorUnderBoundaryFaults$",
+   "purpose": "the host refused the console write"
+  },
+  {
+   "interface": "cmd/sproutfs-orchestrator.hostClient",
+   "method": "WriteConsole",
+   "error": "reply lost",
+   "site": "orchestrator/host-reply-lost/WriteConsole",
+   "package": "cmd/sproutfs-orchestrator",
+   "run": "^TestTheOrchestratorUnderBoundaryFaults$",
+   "purpose": "the host wrote to the console and the answer was lost: the caller is told it failed"
+  },
+  {
+   "interface": "cmd/sproutfs-orchestrator.hostClient",
+   "method": "Exec",
+   "error": "unreachable",
+   "site": "orchestrator/host-unreachable/Exec",
+   "package": "cmd/sproutfs-orchestrator",
+   "run": "^TestTheOrchestratorUnderBoundaryFaults$",
+   "purpose": "the command never reached the host and is reported failed"
+  },
+  {
+   "interface": "cmd/sproutfs-orchestrator.hostClient",
+   "method": "Exec",
+   "error": "refused",
+   "site": "orchestrator/host-refuses/Exec",
+   "package": "cmd/sproutfs-orchestrator",
+   "run": "^TestTheOrchestratorUnderBoundaryFaults$",
+   "purpose": "the host refused the command"
+  },
+  {
+   "interface": "cmd/sproutfs-orchestrator.hostClient",
+   "method": "Exec",
+   "error": "reply lost",
+   "site": "orchestrator/host-reply-lost/Exec",
+   "package": "cmd/sproutfs-orchestrator",
+   "run": "^TestTheOrchestratorUnderBoundaryFaults$",
+   "purpose": "the command ran and its answer was lost: the caller is told it failed"
+  },
+  {
+   "interface": "cmd/sproutfs-orchestrator.hostClient",
+   "method": "Migrate",
+   "error": "unreachable",
+   "site": "orchestrator/host-unreachable/Migrate",
+   "package": "cmd/sproutfs-orchestrator",
+   "run": "^TestTheOrchestratorUnderBoundaryFaults$",
+   "purpose": "the stop never reached the source: the guest runs on where it was, and the row says so"
+  },
+  {
+   "interface": "cmd/sproutfs-orchestrator.hostClient",
+   "method": "Migrate",
+   "error": "refused",
+   "site": "orchestrator/host-refuses/Migrate",
+   "package": "cmd/sproutfs-orchestrator",
+   "run": "^TestTheOrchestratorUnderBoundaryFaults$",
+   "purpose": "the source refused to stop the guest: it runs on where it was, and the row says so"
+  },
+  {
+   "interface": "cmd/sproutfs-orchestrator.hostClient",
+   "method": "Migrate",
+   "error": "reply lost",
+   "site": "orchestrator/host-reply-lost/Migrate",
+   "package": "cmd/sproutfs-orchestrator",
+   "run": "^TestTheOrchestratorUnderBoundaryFaults$",
+   "purpose": "the source stopped the guest and holds its handoff, and the answer was lost: a survey finds the VM served and run nowhere, and takes the handover up with the handoff the source still holds"
+  },
+  {
+   "interface": "cmd/sproutfs-orchestrator.hostClient",
+   "method": "Receive",
+   "error": "unreachable",
+   "site": "orchestrator/host-unreachable/Receive",
+   "package": "cmd/sproutfs-orchestrator",
+   "run": "^TestTheOrchestratorUnderBoundaryFaults$",
+   "purpose": "the receive never reached the destination: it is tried again under the handover policy for as long as the source holds the pages"
+  },
+  {
+   "interface": "cmd/sproutfs-orchestrator.hostClient",
+   "method": "Receive",
+   "error": "refused",
+   "site": "orchestrator/host-refuses/Receive",
+   "package": "cmd/sproutfs-orchestrator",
+   "run": "^TestTheOrchestratorUnderBoundaryFaults$",
+   "purpose": "the destination refused the receive and took nothing: it is tried again, there or on another host with room"
+  },
+  {
+   "interface": "cmd/sproutfs-orchestrator.hostClient",
+   "method": "Receive",
+   "error": "reply lost",
+   "site": "orchestrator/host-reply-lost/Receive",
+   "package": "cmd/sproutfs-orchestrator",
+   "run": "^TestTheOrchestratorUnderBoundaryFaults$",
+   "purpose": "the destination took the VM in and the answer was lost: the next look finds it running there and ends the handover there, and a destination that fell silent leaves the handover unsettled rather than stopped (TestAHandoverEndedWhileItsDestinationIsQuietIsNotTakenForAStop)"
+  },
+  {
+   "interface": "cmd/sproutfs-orchestrator.hostClient",
+   "method": "Released",
+   "error": "unreachable",
+   "site": "orchestrator/host-unreachable/Released",
+   "package": "cmd/sproutfs-orchestrator",
+   "run": "^TestTheOrchestratorUnderBoundaryFaults$",
+   "purpose": "the release never reached the source, which goes on serving pages its destination has: a survey releases them"
+  },
+  {
+   "interface": "cmd/sproutfs-orchestrator.hostClient",
+   "method": "Released",
+   "error": "refused",
+   "site": "orchestrator/host-refuses/Released",
+   "package": "cmd/sproutfs-orchestrator",
+   "run": "^TestTheOrchestratorUnderBoundaryFaults$",
+   "purpose": "the source refused the release: a fork's parent stays sealed until its child has every page, and a survey asks again"
+  },
+  {
+   "interface": "cmd/sproutfs-orchestrator.hostClient",
+   "method": "Released",
+   "error": "reply lost",
+   "site": "orchestrator/host-reply-lost/Released",
+   "package": "cmd/sproutfs-orchestrator",
+   "run": "^TestTheOrchestratorUnderBoundaryFaults$",
+   "purpose": "the source let the pages go and the answer was lost: nothing else changes"
+  },
+  {
+   "interface": "cmd/sproutfs-orchestrator.hostClient",
+   "method": "Handed",
+   "error": "unreachable",
+   "site": "orchestrator/host-unreachable/Handed",
+   "package": "cmd/sproutfs-orchestrator",
+   "run": "^TestTheOrchestratorUnderBoundaryFaults$",
+   "purpose": "a survey taking up a handover nothing drives could not ask the source for its handoff: nothing is released, and the next survey asks again"
+  },
+  {
+   "interface": "cmd/sproutfs-orchestrator.hostClient",
+   "method": "Handed",
+   "error": "refused",
+   "site": "orchestrator/host-refuses/Handed",
+   "package": "cmd/sproutfs-orchestrator",
+   "run": "^TestTheOrchestratorUnderBoundaryFaults$",
+   "purpose": "the source refused to hand the handoff out again: nothing is released, and the next survey asks again"
+  },
+  {
+   "interface": "cmd/sproutfs-orchestrator.hostClient",
+   "method": "Abandoned",
+   "error": "unreachable",
+   "site": "orchestrator/host-unreachable/Abandoned",
+   "package": "cmd/sproutfs-orchestrator",
+   "run": "^TestTheOrchestratorUnderBoundaryFaults$",
+   "purpose": "the give-up of a fork's child never reached the parent's host: the next survey gives the hold up again, and the host's own deadline ends it in any case"
+  },
+  {
+   "interface": "cmd/sproutfs-orchestrator.hostClient",
+   "method": "Abandoned",
+   "error": "refused",
+   "site": "orchestrator/host-refuses/Abandoned",
+   "package": "cmd/sproutfs-orchestrator",
+   "run": "^TestTheOrchestratorUnderBoundaryFaults$",
+   "purpose": "the parent's host refused the give-up: the next survey gives the hold up again"
+  },
+  {
+   "interface": "cmd/sproutfs-orchestrator.hostClient",
+   "method": "Abandoned",
+   "error": "reply lost",
+   "site": "orchestrator/host-reply-lost/Abandoned",
+   "package": "cmd/sproutfs-orchestrator",
+   "run": "^TestTheOrchestratorUnderBoundaryFaults$",
+   "purpose": "the parent's host gave the hold up and the answer was lost: a child its destination had claimed is not deleted with the failed fork, and runs with its record"
+  },
+  {
+   "interface": "cmd/sproutfs-orchestrator.hostClient",
+   "method": "Stop",
+   "error": "unreachable",
+   "site": "orchestrator/host-unreachable/Stop",
+   "package": "cmd/sproutfs-orchestrator",
+   "run": "^TestTheOrchestratorUnderBoundaryFaults$",
+   "purpose": "the stop never reached the host: the VM runs on where it was"
+  },
+  {
+   "interface": "cmd/sproutfs-orchestrator.hostClient",
+   "method": "Stop",
+   "error": "refused",
+   "site": "orchestrator/host-refuses/Stop",
+   "package": "cmd/sproutfs-orchestrator",
+   "run": "^TestTheOrchestratorUnderBoundaryFaults$",
+   "purpose": "the host refused the stop: the VM runs on where it was"
+  },
+  {
+   "interface": "cmd/sproutfs-orchestrator.hostClient",
+   "method": "Stop",
+   "error": "reply lost",
+   "site": "orchestrator/host-reply-lost/Stop",
+   "package": "cmd/sproutfs-orchestrator",
+   "run": "^TestTheOrchestratorUnderBoundaryFaults$",
+   "purpose": "the host stopped the VM and the answer was lost: the row still says running, so nothing starts or deletes the VM past that host while it is quiet, and a survey that hears from it writes it stopped"
+  },
+  {
+   "interface": "cmd/sproutfs-orchestrator.hostClient",
+   "method": "Delete",
+   "error": "unreachable",
+   "site": "orchestrator/host-unreachable/Delete",
+   "package": "cmd/sproutfs-orchestrator",
+   "run": "^TestTheOrchestratorUnderBoundaryFaults$",
+   "purpose": "the delete never reached the host: the VM is not deleted, and the delete is reported failed"
+  },
+  {
+   "interface": "cmd/sproutfs-orchestrator.hostClient",
+   "method": "Delete",
+   "error": "refused",
+   "site": "orchestrator/host-refuses/Delete",
+   "package": "cmd/sproutfs-orchestrator",
+   "run": "^TestTheOrchestratorUnderBoundaryFaults$",
+   "purpose": "the host refused the delete: the VM is not deleted"
+  },
+  {
+   "interface": "cmd/sproutfs-orchestrator.hostClient",
+   "method": "Delete",
+   "error": "reply lost",
+   "site": "orchestrator/host-reply-lost/Delete",
+   "package": "cmd/sproutfs-orchestrator",
+   "run": "^TestTheOrchestratorUnderBoundaryFaults$",
+   "purpose": "the host deleted the VM and the answer was lost: the next reconcile drops the row, which the bucket no longer lists"
+  },
+  {
+   "interface": "cmd/sproutfs-orchestrator.hostClient",
+   "method": "Kept",
+   "error": "unreachable",
+   "site": "orchestrator/host-unreachable/Kept",
+   "package": "cmd/sproutfs-orchestrator",
+   "run": "^TestTheOrchestratorUnderBoundaryFaults$",
+   "purpose": "the listing of kept checkpoints never reached the host and is reported failed"
+  },
+  {
+   "interface": "cmd/sproutfs-orchestrator.hostClient",
+   "method": "Kept",
+   "error": "refused",
+   "site": "orchestrator/host-refuses/Kept",
+   "package": "cmd/sproutfs-orchestrator",
+   "run": "^TestTheOrchestratorUnderBoundaryFaults$",
+   "purpose": "the host refused the listing"
+  },
+  {
+   "interface": "cmd/sproutfs-orchestrator.hostClient",
+   "method": "Release",
+   "error": "unreachable",
+   "site": "orchestrator/host-unreachable/Release",
+   "package": "cmd/sproutfs-orchestrator",
+   "run": "^TestTheOrchestratorUnderBoundaryFaults$",
+   "purpose": "the release of a kept checkpoint never reached the host and is reported failed"
+  },
+  {
+   "interface": "cmd/sproutfs-orchestrator.hostClient",
+   "method": "Release",
+   "error": "refused",
+   "site": "orchestrator/host-refuses/Release",
+   "package": "cmd/sproutfs-orchestrator",
+   "run": "^TestTheOrchestratorUnderBoundaryFaults$",
+   "purpose": "the host refused the release and kept the checkpoint"
+  },
+  {
+   "interface": "cmd/sproutfs-orchestrator.hostClient",
+   "method": "Release",
+   "error": "reply lost",
+   "site": "orchestrator/host-reply-lost/Release",
+   "package": "cmd/sproutfs-orchestrator",
+   "run": "^TestTheOrchestratorUnderBoundaryFaults$",
+   "purpose": "the host released the checkpoint and the answer was lost: releasing it again is refused, as one nothing keeps"
+  },
+  {
+   "interface": "cmd/sproutfs-orchestrator.pods",
+   "method": "List",
+   "error": "unavailable",
+   "site": "orchestrator/pods-unavailable/List",
+   "package": "cmd/sproutfs-orchestrator",
+   "run": "^TestTheOrchestratorUnderBoundaryFaults$",
+   "purpose": "no survey can be taken, so every request that needs one fails and nothing is decided without one"
+  },
+  {
+   "interface": "cmd/sproutfs-orchestrator.pods",
+   "method": "Delete",
+   "error": "unavailable",
+   "site": "orchestrator/pods-unavailable/Delete",
+   "package": "cmd/sproutfs-orchestrator",
+   "run": "^TestTheOrchestratorUnderBoundaryFaults$",
+   "purpose": "the kill is reported failed and the host lives on"
+  },
+  {
+   "interface": "cmd/sproutfs-orchestrator.pods",
+   "method": "Delete",
+   "error": "reply lost",
+   "site": "orchestrator/pods-reply-lost/Delete",
+   "package": "cmd/sproutfs-orchestrator",
+   "run": "^TestTheOrchestratorUnderBoundaryFaults$",
+   "purpose": "the pod was deleted and the kill reported failed: the host is gone with its VMs, which are recovered from their checkpoints once the API no longer lists it"
+  },
+  {
+   "interface": "cmd/sproutfs-orchestrator.records",
+   "method": "List",
+   "error": "unavailable",
+   "site": "orchestrator/records-unavailable/List",
+   "package": "cmd/sproutfs-orchestrator",
+   "run": "^TestTheOrchestratorUnderBoundaryFaults$",
+   "purpose": "the listing and the reconcile fail and change nothing"
+  },
+  {
+   "interface": "cmd/sproutfs-orchestrator.records",
+   "method": "Pending",
+   "error": "unavailable",
+   "site": "orchestrator/records-unavailable/Pending",
+   "package": "cmd/sproutfs-orchestrator",
+   "run": "^TestTheOrchestratorUnderBoundaryFaults$",
+   "purpose": "a start or a recovery fails before it opens anything"
+  },
+  {
+   "interface": "cmd/sproutfs-orchestrator.records",
+   "method": "Epoch",
+   "error": "unavailable",
+   "site": "orchestrator/records-unavailable/Epoch",
+   "package": "cmd/sproutfs-orchestrator",
+   "run": "^TestTheOrchestratorUnderBoundaryFaults$",
+   "purpose": "a start or a recovery fails before it surveys the hosts"
+  },
+  {
+   "interface": "cmd/sproutfs-orchestrator.records",
+   "method": "Journals",
+   "error": "unavailable",
+   "site": "orchestrator/records-unavailable/Journals",
+   "package": "cmd/sproutfs-orchestrator",
+   "run": "^TestTheOrchestratorUnderBoundaryFaults$",
+   "purpose": "a start or a recovery fails before it opens anything"
+  }
+ ]
+}

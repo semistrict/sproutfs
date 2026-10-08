@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -211,7 +212,7 @@ func TestRetriesStopWhenTheSourceNoLongerServesTheVM(t *testing.T) {
 func TestAReceiveWhoseAnswerWasLostEndsWhereItLanded(t *testing.T) {
 	d := newDeployment(t, map[string][]string{"host-0": {"vm-a"}, "host-1": {}, "host-2": {}})
 	d.hosts["host-0"].hold = holdForAMinute
-	d.hosts["host-1"].loseAnswer = true
+	d.hosts["host-1"].loseAnswer = "Receive"
 	result, err := d.orchestrator.Migrate(t.Context(), "vm-a", "host-1")
 	if err != nil {
 		t.Fatal(err)
@@ -231,6 +232,43 @@ func TestAReceiveWhoseAnswerWasLostEndsWhereItLanded(t *testing.T) {
 	}
 	if !slices.Equal(d.log, want) {
 		t.Fatalf("the deployment did %v, want %v", d.log, want)
+	}
+}
+
+// A receive whose answer was lost may have taken the VM, and a destination
+// that then fell off the network says nothing either way until it is back. A
+// handover that ends meanwhile, at the source's hold, cannot say the VM
+// stopped: the row stays on the quiet destination, and nothing starts the VM
+// elsewhere until that host answers, which would leave it on two hosts.
+func TestAHandoverEndedWhileItsDestinationIsQuietIsNotTakenForAStop(t *testing.T) {
+	ctx := simulated(t)
+	d := newDeployment(t, map[string][]string{"host-0": {"vm-a"}, "host-1": {}, "host-2": {}})
+	d.hosts["host-0"].hold = 0.2
+	d.hosts["host-1"].loseAnswer = "Receive"
+	d.hosts["host-1"].onReplyLost = func(h *fakeHostClient) { h.down = true }
+	if _, err := d.orchestrator.Migrate(ctx, "vm-a", "host-1"); err == nil {
+		t.Fatal("a migration whose destination fell silent succeeded")
+	}
+	if row := d.orchestrator.rowOf(ctx, "vm-a"); row.State == stateStopped {
+		t.Fatalf("the table says %+v, want vm-a not taken for stopped", row)
+	}
+	if _, err := d.orchestrator.Start(ctx, "vm-a", orch.StartRequest{To: "host-2"}); !errors.Is(err, errRunning) {
+		t.Fatalf("starting vm-a while host-1 is quiet = %v, want errRunning", err)
+	}
+	for _, line := range d.log {
+		if strings.HasSuffix(line, " open vm-a") {
+			t.Fatalf("vm-a was opened while host-1 may run it: %v", d.log)
+		}
+	}
+	// Once host-1 answers, it is seen running the VM.
+	d.mu.Lock()
+	d.hosts["host-1"].down = false
+	d.mu.Unlock()
+	if err := d.orchestrator.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if row := d.orchestrator.rowOf(ctx, "vm-a"); row.State != stateRunning || row.Host != "host-1" {
+		t.Fatalf("the table says %+v, want vm-a running on host-1", row)
 	}
 }
 

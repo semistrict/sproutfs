@@ -75,8 +75,15 @@ func newMembershipFixture(t *testing.T, running map[string][]string) *membership
 // store is a store of the fixture's membership, its nonces drawn from name.
 func (f *membershipFixture) store(t *testing.T, name string) *membership.Store {
 	t.Helper()
-	store, err := membership.NewStore(membership.Config{ObjectStore: f.runtime.ObjectStore(),
-		Entropy: f.runtime.NewEntropy(name)})
+	return newMembershipStore(t, f.runtime, name)
+}
+
+// newMembershipStore is a store of a membership in runtime's bucket, its nonces
+// drawn from name.
+func newMembershipStore(t *testing.T, runtime *sim.Runtime, name string) *membership.Store {
+	t.Helper()
+	store, err := membership.NewStore(membership.Config{ObjectStore: runtime.ObjectStore(),
+		Entropy: runtime.NewEntropy(name)})
 	if err != nil {
 		t.Fatal(err)
 	}

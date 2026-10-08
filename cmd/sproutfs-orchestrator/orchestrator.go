@@ -19,6 +19,7 @@ import (
 	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/internal/ctxsync"
 	"github.com/semistrict/sproutfs/internal/handover"
+	"github.com/semistrict/sproutfs/internal/jsonhttp"
 	"github.com/semistrict/sproutfs/membership"
 	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/rank"
@@ -136,6 +137,11 @@ var (
 	// still serves: it handed the VM over and has not let them go. It is an
 	// errRunning: the VM is between hosts, not lost.
 	errServing = fmt.Errorf("%w: a host still serves the pages of it that no checkpoint has", errRunning)
+	// errUnsettled reports a handover that ended with its last receive
+	// unanswered and the host it went to quiet since: that host may have
+	// taken the VM in, and nothing can say so until it answers. It is an
+	// errRunning: the VM may be running there.
+	errUnsettled = fmt.Errorf("%w: the host its last receive went to has not answered since", errRunning)
 )
 
 // journalPatience bounds how long a recovery waits for the journal disks a
@@ -1405,6 +1411,14 @@ func (o *orchestrator) Migrate(ctx context.Context, id, to string) (orch.Migrate
 func (o *orchestrator) carry(ctx context.Context, began time.Time, source, target liveHost, id string,
 	need uint64, handed host.MigrateResult) (orch.MigrateResult, error) {
 	target, received, err := o.handOver(ctx, source, target, id, need, handed)
+	if errors.Is(err, errUnsettled) && !sim.Bug(ctx, "orchestrator-stop-an-unsettled-handover") {
+		// The quiet host may run the VM, so it is not stopped: the row stays
+		// in flight to that host, and the survey that hears from it again says
+		// where the VM is.
+		o.note(ctx, vmRecord{ID: id, Host: source.report.Name, State: stateMigrating,
+			From: source.report.Name, To: target.report.Name})
+		return orch.MigrateResult{}, err
+	}
 	if err != nil {
 		// No destination took the VM while the source held its pages. Nothing
 		// here can resume it: its memory regions have given their volumes up,
@@ -1443,7 +1457,8 @@ func (o *orchestrator) carry(ctx context.Context, began time.Time, source, targe
 // waits for. Losing the source ends it, as it ends a receive.
 //
 // The source's hold is counted from here, where its handoff arrived: the
-// source armed its deadline before it answered.
+// source armed its deadline before it answered. A handover that fails reports
+// the host its last receive went to.
 func (o *orchestrator) handOver(ctx context.Context, source, target liveHost, id string, need uint64,
 	handed host.MigrateResult) (liveHost, host.ReceiveResult, error) {
 	hold := handover.Held(time.Now(), handed.Hold.Duration())
@@ -1457,12 +1472,12 @@ func (o *orchestrator) handOver(ctx context.Context, source, target liveHost, id
 		}
 		err = fmt.Errorf("receiving %s on %s: %w", id, target.report.Name, err)
 		if errors.Is(err, errLostSource) {
-			return liveHost{}, host.ReceiveResult{}, err
+			return target, host.ReceiveResult{}, err
 		}
 		attempts.Failed()
 		next, landed, err := o.retry(ctx, attempts, hold, source, target.report.Name, id, need, err)
 		if err != nil {
-			return liveHost{}, host.ReceiveResult{}, err
+			return target, host.ReceiveResult{}, err
 		}
 		if landed {
 			return next, host.ReceiveResult{}, nil
@@ -1492,11 +1507,29 @@ func (o *orchestrator) handOver(ctx context.Context, source, target liveHost, id
 // The last look comes as the source's hold ends, and what it finds then is the
 // pages gone by that same rule. A source that promised no hold has one look
 // and no retry, and when that look shows nothing the handoff is given up with
-// the VM left stopped.
+// the VM left stopped. Where the last receive's answer never came and the host
+// it went to is quiet at the last look, that host may run the VM, and the
+// handover ends unsettled (errUnsettled) rather than stopped.
 func (o *orchestrator) retry(ctx context.Context, attempts *handover.Attempts, hold handover.Hold,
 	source liveHost, failed, id string, need uint64, cause error) (next liveHost, landed bool, err error) {
 	givenUp := func() error {
 		return fmt.Errorf("%w; no destination took it while %s held its pages", cause, source.report.Name)
+	}
+	// unsettled is what a look that ends the handover says of the host that
+	// failed, nil where the survey failed: a receive it refused took nothing,
+	// and one whose answer never came took the VM or not as that host says,
+	// which a quiet host does not.
+	unsettled := func(hosts []liveHost) error {
+		var refused jsonhttp.Error
+		if errors.As(cause, &refused) && refused.Status != 0 {
+			return nil
+		}
+		if hosts != nil {
+			if h, err := named(hosts, failed); err != nil || h.report.Error == "" {
+				return nil
+			}
+		}
+		return fmt.Errorf("%w: %s", errUnsettled, failed)
 	}
 	for {
 		wait, more := attempts.Wait(ctx, time.Now())
@@ -1513,7 +1546,7 @@ func (o *orchestrator) retry(ctx context.Context, attempts *handover.Attempts, h
 			slog.WarnContext(ctx, "sproutfs-orchestrator: surveying for a handoff's next receive failed",
 				"vm", id, "error", err)
 			if !more {
-				return liveHost{}, false, givenUp()
+				return liveHost{}, false, errors.Join(givenUp(), unsettled(nil))
 			}
 			continue
 		}
@@ -1527,10 +1560,10 @@ func (o *orchestrator) retry(ctx context.Context, attempts *handover.Attempts, h
 			return liveHost{}, false, errors.Join(cause, err)
 		}
 		if evidence := hold.Gone(ctx, look(hosts, source.report.Name, id), time.Now()); evidence != nil {
-			return liveHost{}, false, errors.Join(cause, lost(source.report.Name, id, evidence))
+			return liveHost{}, false, errors.Join(cause, lost(source.report.Name, id, evidence), unsettled(hosts))
 		}
 		if !more {
-			return liveHost{}, false, givenUp()
+			return liveHost{}, false, errors.Join(givenUp(), unsettled(hosts))
 		}
 		if quiet, err := named(hosts, failed); err == nil && quiet.report.Error != "" {
 			continue
@@ -1937,6 +1970,13 @@ func (o *orchestrator) reopen(ctx context.Context, id string, terms reopening) (
 			"%w: %s did not answer, so %s may still be running there; %s",
 			errRunning, strings.Join(quiet, ", "), id, terms.quietAdvice)
 	}
+	// A start needs no evidence of a loss, but it does need evidence that the
+	// VM stopped: a quiet host may be running it, and the open would fence that
+	// guest.
+	if err := seenStopped(quiet, row, id); err != nil && !terms.force &&
+		!sim.Bug(ctx, "orchestrator-start-past-a-quiet-host") {
+		return orch.RecoverResult{}, err
+	}
 	// A fork's child whose root has not landed exists only on the host running
 	// it, so one no host runs was lost with its host and there is nothing to
 	// open. Freeing its identity destroys it, which needs the same evidence a
@@ -1997,7 +2037,15 @@ func (o *orchestrator) reopen(ctx context.Context, id string, terms reopening) (
 		Memory: open.Memory, Pull: open.Pull})
 	result, err := target.client.Open(ctx, id, open)
 	if err != nil {
-		o.note(ctx, vmRecord{ID: id, State: stateStopped})
+		// A host that answered with a refusal runs nothing, so the VM is as
+		// stopped as it was. One whose answer never came may have opened it,
+		// and a row saying stopped would let a start go past that host while
+		// it is quiet: the row stays in flight on it until a survey finds the
+		// VM there or the row ages out.
+		var refused jsonhttp.Error
+		if (errors.As(err, &refused) && refused.Status != 0) || sim.Bug(ctx, "orchestrator-take-a-lost-open-for-a-refusal") {
+			o.note(ctx, vmRecord{ID: id, State: stateStopped})
+		}
 		return orch.RecoverResult{}, fmt.Errorf("opening %s on %s: %w", id, target.report.Name, err)
 	}
 	o.note(ctx, vmRecord{ID: id, Host: target.report.Name, State: stateRunning,
@@ -2060,6 +2108,19 @@ func (o *orchestrator) forgetLost(ctx context.Context, hosts []liveHost, id stri
 		"so nothing of it was durable; its identity is free again", errLost, id)
 }
 
+// seenStopped refuses to act on a VM no answering host runs while a host that
+// did not answer may be running it, unless this orchestrator saw the VM stop:
+// row is the VM's table row, empty for a VM the table has none for. A row says
+// stopped on a host's word that it no longer runs the VM, which is the
+// evidence a survey with a quiet host lacks.
+func seenStopped(quiet []string, row vmRecord, id string) error {
+	if len(quiet) == 0 || row.State == stateStopped {
+		return nil
+	}
+	return fmt.Errorf("%w: %s did not answer, and nothing here saw %s stop, so it may still be running there",
+		errRunning, strings.Join(quiet, ", "), id)
+}
+
 // holding reports the host that still serves one VM's pages, empty for a VM no
 // host holds pages of. A host serves a VM from the moment it hands it over
 // until the orchestrator says the destination has its pages, so a VM that is
@@ -2116,7 +2177,8 @@ func (o *orchestrator) Kill(ctx context.Context, name string) (orch.KillResult, 
 }
 
 // Delete closes and deletes a VM on the host that runs it, and on any ready
-// host when no host runs it.
+// host when no host runs it: every host answered, or this orchestrator saw the
+// VM stop.
 //
 // A VM's authority is its control record and its data the objects that record
 // selects, both of them in the bucket, so removing them is work any host can do;
@@ -2132,6 +2194,12 @@ func (o *orchestrator) Delete(ctx context.Context, id string) error {
 	}
 	source, err := runner(hosts, id)
 	if errors.Is(err, errNotFound) {
+		// Removing the record under a guest a quiet host runs would leave
+		// that guest running with nothing to close it.
+		if err := seenStopped(unanswered(hosts), o.rowOf(ctx, id), id); err != nil &&
+			!sim.Bug(ctx, "orchestrator-delete-past-a-quiet-host") {
+			return err
+		}
 		// Nothing needs room for this: no guest starts.
 		source, err = place(hosts, "", 0)
 	}
