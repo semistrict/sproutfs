@@ -26,6 +26,12 @@ const (
 	// soakVCPUs is how many vCPUs each guest of a prefetch or rules world
 	// runs.
 	soakVCPUs = 2
+	// soakWorldBound is how long one world may run before the soak takes it
+	// for hung. A world takes well under a second, and seconds under -race on
+	// a loaded machine. A hung world cannot be cancelled, so the soak ends the
+	// process with every goroutine's stack: a deadlock on 2026-10-08 held a
+	// GCE soak silent for an hour until it was sent SIGQUIT by hand.
+	soakWorldBound = 5 * time.Minute
 )
 
 // The pager's campaigns soak without a scheduler: the same worlds the seeded
@@ -69,6 +75,10 @@ func TestThePagersCampaignsSoakWithoutAScheduler(t *testing.T) {
 		runtime.GOMAXPROCS(0))
 	deadline := time.Now().Add(length)
 	var next, prefetches, forks, rules atomic.Uint64
+	var running sync.Map // seed -> when its world began
+	stopped := make(chan struct{})
+	defer close(stopped)
+	go watchSoak(&running, stopped)
 	var wg sync.WaitGroup
 	for range workers {
 		wg.Go(func() {
@@ -79,6 +89,7 @@ func TestThePagersCampaignsSoakWithoutAScheduler(t *testing.T) {
 				if !soaking(seed % 3) {
 					continue
 				}
+				running.Store(seed, time.Now())
 				switch seed % 3 {
 				case 0:
 					t.Run(fmt.Sprintf("prefetch-seed-%d", seed), func(t *testing.T) {
@@ -96,9 +107,32 @@ func TestThePagersCampaignsSoakWithoutAScheduler(t *testing.T) {
 					})
 					rules.Add(1)
 				}
+				running.Delete(seed)
 			}
 		})
 	}
 	wg.Wait()
 	t.Logf("soaked %d prefetch, %d fork and %d rules worlds", prefetches.Load(), forks.Load(), rules.Load())
+}
+
+// watchSoak ends the process, with every goroutine's stack, once a world of
+// running has run for longer than soakWorldBound, until stopped is closed.
+func watchSoak(running *sync.Map, stopped <-chan struct{}) {
+	ticker := time.NewTicker(soakWorldBound / 10)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-stopped:
+			return
+		case <-ticker.C:
+		}
+		running.Range(func(seed, began any) bool {
+			if took := time.Since(began.(time.Time)); took > soakWorldBound {
+				stacks := make([]byte, 64<<20)
+				stacks = stacks[:runtime.Stack(stacks, true)]
+				panic(fmt.Sprintf("the soak's world of seed %d has run for %s, which is a hang:\n%s", seed, took, stacks))
+			}
+			return true
+		})
+	}
 }

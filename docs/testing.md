@@ -1576,6 +1576,10 @@ SPROUTFS_PAGER_SOAK=30m go test -race ./vmmemory -run '^TestThePagersCampaignsSo
 
 `SPROUTFS_PAGER_SOAK_SEED` sets the first seed; it is the clock's otherwise.
 Run it on a machine with many cores, not on a laptop that runs anything else.
+A world that runs for five minutes is taken for hung: the soak ends the process
+with every goroutine's stack, which names the seed and the locks each waits
+for. A deadlock held a GCE soak silent for an hour before it did
+(`TestACaptureNeverWaitsForTheLockOfThePageItsCopyWasMadeFrom`).
 
 **The mapping audit.** A failure that needs two rare events to meet is rarer
 still than either. Every `vmmemory` test keeps what each mapping command
