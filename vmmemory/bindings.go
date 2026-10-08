@@ -213,78 +213,6 @@ func (r *MemoryRegion) mapped(index uint64) bool {
 	return zero || b != nil && b.mapped
 }
 
-// setMapped records whether the pages of [first, last) are mapped. A page
-// recorded mapped is retained across an ambiguous answer.
-func (r *MemoryRegion) setMapped(first, last uint64, mapped bool) {
-	r.bindingsMu.Lock()
-	defer r.bindingsMu.Unlock()
-	for page := first; page < last; page++ {
-		b := r.bindingLocked(page)
-		b.mapped = mapped
-		r.noteSealableLocked(b)
-	}
-	r.recordedMapped(first, last, mapped, "set")
-}
-
-// mapZeros records that a plan mapped every page of [start, end) to zero, as
-// MemoryRegion.mapZeros does.
-func (r *MemoryRegion) mapZeros(start, end uint64) {
-	r.bindingsMu.Lock()
-	defer r.bindingsMu.Unlock()
-	ps := r.host.pageSize
-	var gaps [][2]uint64
-	if err := r.beside.ForEveryPageAndGapInRange(func(slot *zirconvm.PageOrMarker[binding], _ uint64) error {
-		if slot.IsPage() {
-			slot.Page().inZeroRun = true
-		}
-		return nil
-	}, func(start, end uint64) error {
-		gaps = append(gaps, [2]uint64{start, end})
-		return nil
-	}, start*ps, end*ps); err != nil {
-		panic("vmmemory: walking the bindings beside a layer: " + err.Error())
-	}
-	for _, gap := range gaps {
-		if err := r.beside.AddZeroInterval(gap[0], gap[1], zirconvm.IntervalUntracked); err != nil {
-			panic("vmmemory: adding a zero run: " + err.Error())
-		}
-	}
-}
-
-// unmapRuns takes back the record that the runs of one refused command are
-// mapped, as MemoryRegion.unmapRuns does.
-func (r *MemoryRegion) unmapRuns(runs []MapRun) {
-	r.bindingsMu.Lock()
-	defer r.bindingsMu.Unlock()
-	ps := r.host.pageSize
-	for _, run := range runs {
-		first, last := run.Page, run.Page+uint64(run.Count)
-		if run.Zero {
-			r.eachBoundLocked(first, last, func(b *binding) { b.inZeroRun = false })
-			start, end := first*ps, last*ps
-			if r.beside.IsOffsetInZeroInterval(start) {
-				r.beside.LookupOrAllocate(start, zirconvm.SplitInterval)
-			}
-			if lastPage := end - ps; lastPage > start && r.beside.IsOffsetInZeroInterval(lastPage) {
-				r.beside.LookupOrAllocate(lastPage, zirconvm.SplitInterval)
-			}
-			if err := r.beside.RemovePages(func(slot *zirconvm.PageOrMarker[binding], _ uint64) error {
-				if slot.IsInterval() {
-					slot.Take()
-				}
-				return nil
-			}, start, end); err != nil {
-				panic("vmmemory: walking the bindings beside a layer: " + err.Error())
-			}
-			continue
-		}
-		r.eachBoundLocked(first, last, func(b *binding) {
-			b.mapped = false
-			r.noteSealableLocked(b)
-		})
-	}
-}
-
 // noteDirtyLocked puts b in the dirty set, Dirty and writable where it is,
 // and starts the region's loss window where it held none. Caller holds r.bindingsMu.
 func (r *MemoryRegion) noteDirtyLocked(b *binding) {
@@ -327,15 +255,6 @@ func (r *MemoryRegion) isMapped(b *binding) bool {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
 	return b.mapped
-}
-
-// setBindingMapped records whether b's mapping is installed.
-func (r *MemoryRegion) setBindingMapped(b *binding, mapped bool) {
-	r.bindingsMu.Lock()
-	defer r.bindingsMu.Unlock()
-	b.mapped = mapped
-	r.noteSealableLocked(b)
-	r.recordedMapped(b.index, b.index+1, mapped, "set one")
 }
 
 // harvestedReadOnly reports whether the page at index is one the guest may
