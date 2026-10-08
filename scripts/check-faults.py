@@ -40,6 +40,11 @@ BUGGIFY = re.compile(r'(?:Buggify|BuggifyDelay|buggifyHere)\(\s*[^,]*?,?\s*"([^"
 # sim.Buggify(ctx, "client-command-lost/"+command, p), names the prefix here,
 # and each of its sites is the prefix and a string literal of the same file.
 BUGGIFY_PREFIX = re.compile(r'(?:Buggify|BuggifyDelay|buggifyHere)\(\s*[^,]*?,?\s*"([^"]+/)"\s*\+')
+# A site named by a constant, as sim.Buggify(ctx, buggifyShardOpenFails, p) or
+# r.buggifyHere(SiteRandomClose, p), names the constant's value: a string
+# constant of the same package.
+BUGGIFY_NAMED = re.compile(r'(?:Buggify|BuggifyDelay|buggifyHere)\(\s*(?:[^,()"]*,\s*)?([A-Za-z_]\w*)\s*,')
+CONSTANT = re.compile(r'^\s*([A-Za-z_]\w*)\s*=\s*"([^"]+)"', re.M)
 
 
 def interface_methods(package, name):
@@ -65,9 +70,12 @@ def interface_methods(package, name):
 
 
 def sites_in_tree():
-    """Every site id that is a string literal in a Buggify call, or a literal
-    prefix of one followed by a string literal of the same file."""
+    """Every site id that is a string literal in a Buggify call, a literal
+    prefix of one followed by a string literal of the same file, or the value
+    of a string constant of the same package the call names."""
     sites = set()
+    constants = {}
+    named = []
     for path in ROOT.rglob("*.go"):
         parts = path.relative_to(ROOT).parts
         if "third_party" in parts or ".claude" in parts:
@@ -77,6 +85,12 @@ def sites_in_tree():
         literals = set(re.findall(r'"([A-Za-z0-9_./-]+)"', text))
         for prefix in BUGGIFY_PREFIX.findall(text):
             sites.update(prefix + name for name in literals)
+        if not path.name.endswith("_test.go"):
+            constants.setdefault(path.parent, {}).update(CONSTANT.findall(text))
+            named.extend((path.parent, name) for name in BUGGIFY_NAMED.findall(text))
+    for package, name in named:
+        if name in constants.get(package, {}):
+            sites.add(constants[package][name])
     return sites
 
 

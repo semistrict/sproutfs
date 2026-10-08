@@ -2,6 +2,7 @@ package resource_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -139,7 +140,11 @@ func (c *diskCache) Shrink(target int64) {
 	c.targets = append(c.targets, target)
 	freed := 0
 	for int64(len(c.regions))*unit > target {
-		if err := c.file.(platform.SparseFile).PunchHole(c.ctx, c.regions[0], unit); err != nil {
+		// A punch the device fails gives the region back all the same, as the
+		// cache gives it back: the filesystem keeps its blocks until the slot
+		// is written again. Any other failure is the fixture's own.
+		if err := c.file.(platform.SparseFile).PunchHole(c.ctx, c.regions[0], unit); err != nil &&
+			!errors.Is(err, platform.ErrInjectedFault) {
 			c.errs = append(c.errs, err)
 			return
 		}

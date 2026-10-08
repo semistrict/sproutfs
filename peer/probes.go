@@ -55,6 +55,10 @@ const (
 // Sites is every fault-injection site this package registers.
 var Sites = []string{SiteBusy, SiteSlowAnswer, SiteStall}
 
+// BugStopAcceptingOnError is the in-tree bug of a server that stops
+// accepting at the first accept that fails, as one out of descriptors fails.
+const BugStopAcceptingOnError = "peer-stop-accepting-on-error"
+
 // probe marks name reached on the table's runtime, whoever's request reached
 // it, and bug reports an in-tree bug guard enabled there.
 func (t *Table) probe(name string)  { sim.Probe(t.ctx, name) }

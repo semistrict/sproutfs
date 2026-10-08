@@ -2,6 +2,7 @@ package sim_test
 
 import (
 	"bytes"
+	"errors"
 	"maps"
 	"testing"
 	"testing/synctest"
@@ -58,7 +59,8 @@ func TestDiskAllocateGrowsAFileThatReadsZeroes(t *testing.T) {
 // A disk that asks for read chaos lies to its reads, under Buggify, in the
 // three ways its sites name: a read that flips one bit, a read misdirected to
 // the start of another write, and a read held longer. A disk that does not ask
-// is never touched, and neither is anything while Buggify is off.
+// is never lied to, though its device fails a read now and then as every
+// disk's does under Buggify, and nothing is touched while Buggify is off.
 func TestDiskReadChaosLiesOnlyOnADiskThatAsks(t *testing.T) {
 	for _, test := range []struct {
 		name    string
@@ -68,8 +70,8 @@ func TestDiskReadChaosLiesOnlyOnADiskThatAsks(t *testing.T) {
 		fired   map[string]uint64
 	}{
 		{"chaos under buggify", true, true, 19, map[string]uint64{sim.BuggifyDiskReadBitFlip: 15,
-			sim.BuggifyDiskMisdirectsRead: 4, sim.BuggifyDiskSlowRead: 12}},
-		{"no chaos under buggify", false, true, 0, map[string]uint64{}},
+			sim.BuggifyDiskMisdirectsRead: 4, sim.BuggifyDiskSlowRead: 12, "sim/disk/io-error/read": 4}},
+		{"no chaos under buggify", false, true, 0, map[string]uint64{"sim/disk/io-error/read": 4}},
 		{"chaos without buggify", true, false, 0, map[string]uint64{}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -91,7 +93,12 @@ func TestDiskReadChaosLiesOnlyOnADiskThatAsks(t *testing.T) {
 				for read := range 200 {
 					block := read % 16
 					got := make([]byte, 512)
-					if _, err := file.ReadAt(t.Context(), got, int64(block*512)); err != nil {
+					// A read the device fails is honest, and is read again.
+					_, err := file.ReadAt(t.Context(), got, int64(block*512))
+					for errors.Is(err, platform.ErrInjectedFault) {
+						_, err = file.ReadAt(t.Context(), got, int64(block*512))
+					}
+					if err != nil {
 						t.Fatal(err)
 					}
 					if !bytes.Equal(got, bytes.Repeat([]byte{byte(block + 1)}, 512)) {

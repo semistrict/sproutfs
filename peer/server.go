@@ -2,6 +2,7 @@ package peer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -189,16 +190,37 @@ func (s *Server) Close() error {
 	return s.closeErr
 }
 
+// The wait after a failed accept, which doubles from the first to the last
+// while accepts go on failing. A process out of descriptors fails every
+// accept until a connection closes, and a server that stopped at the first
+// would serve none of its peers again.
+const (
+	acceptRetryFirst = 5 * time.Millisecond
+	acceptRetryLast  = time.Second
+)
+
 func (s *Server) accept() {
+	var wait time.Duration
 	for {
 		conn, err := s.listener.Accept(s.ctx)
-		if err != nil {
-			if context.Cause(s.ctx) == nil {
-				slog.WarnContext(s.ctx, "peer: the server stopped accepting", "address", s.config.Address, "error", err)
-			}
+		if err == nil {
+			wait = 0
+			s.wg.Go(func() { s.serveConn(conn) })
+			continue
+		}
+		if context.Cause(s.ctx) != nil {
 			return
 		}
-		s.wg.Go(func() { s.serveConn(conn) })
+		if errors.Is(err, platform.ErrClosed) || errors.Is(err, net.ErrClosed) || s.bug(BugStopAcceptingOnError) {
+			slog.WarnContext(s.ctx, "peer: the server stopped accepting", "address", s.config.Address, "error", err)
+			return
+		}
+		wait = min(max(2*wait, acceptRetryFirst), acceptRetryLast)
+		slog.WarnContext(s.ctx, "peer: an accept failed; accepting again", "address", s.config.Address,
+			"after", wait, "error", err)
+		if err := platform.ClockOr(s.config.Clock).Sleep(s.ctx, wait); err != nil {
+			return
+		}
 	}
 }
 

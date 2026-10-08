@@ -2135,6 +2135,18 @@ switched off (`simulateTerminalFaults`) until a seed that injects one replays
 gone and requires every other guest, a fork point's children above all, to
 read exactly what it holds.
 
+The platform's own ports (`scripts/faults/platform.json`) are the disk, the
+object store, the network and the cloud's network disks. Under Buggify every
+simulated disk fails each operation at random, as EIO and ENOSPC do, and leaves
+what a real failure leaves; the network refuses listens, dials and accepts and
+times connections out; the cloud loses the replies to what it did. The store
+refuses requests, loses the replies to writes it applied and resets bodies only
+where `RequestChaos` is on, until every campaign's callers handle that
+(TASK-113), and a network disk's device fails no reads until a host keeps its
+journal through one (TASK-114). An answer the simulation gives from the state
+it models, such as `ErrNotFound` for a file that is not there, needs no site.
+The clock and the entropy cannot fail.
+
 ## Negative tests in the tree
 
 Most of the fault catalogue is in the tree as `sim.Bug(ctx, id)` guards, at the

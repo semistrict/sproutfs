@@ -525,7 +525,7 @@ func start(ctx context.Context, config Config) (*World, error) {
 		}
 		w.hosts = append(w.hosts, h)
 		h.config = w.hostConfig(h)
-		if err := w.launch(h); err != nil {
+		if err := w.supervise(h); err != nil {
 			return nil, err
 		}
 	}
@@ -874,6 +874,25 @@ func (w *World) starter(h *hostState) host.StartFunc {
 	}
 }
 
+// hostStarts is how many times a host's supervisor starts it before it gives
+// up on it.
+const hostStarts = 10
+
+// supervise starts one host as its supervisor starts a host process: a start
+// that fails, for a listen the network refuses or a disk whose device fails a
+// read, ends that process, and the host is started again.
+func (w *World) supervise(h *hostState) error {
+	for start := 1; ; start++ {
+		err := w.launch(h)
+		if err == nil || start == hostStarts {
+			return err
+		}
+		if stopped := h.process.Stop(w.ctx); stopped != nil && !errors.Is(stopped, platform.ErrProcessStopped) {
+			return errors.Join(err, stopped)
+		}
+	}
+}
+
 // launch starts one host inside its own simulated process. The process's
 // context is the host's, so a kill cancels every goroutine that host owns;
 // whatever else the incarnation owns — its pager, its arena, the spill file on
@@ -890,9 +909,16 @@ func (w *World) launch(h *hostState) error {
 		w.mu.Lock()
 		h.incarnation++
 		w.mu.Unlock()
+		// A start that fails ran nothing, so it is no incarnation of the host.
+		failed := func(err error) {
+			w.mu.Lock()
+			h.incarnation--
+			w.mu.Unlock()
+			ready <- err
+		}
 		pager, release, err := w.newPager(ctx, h)
 		if err != nil {
-			ready <- err
+			failed(err)
 			return
 		}
 		// The cache's file is the one thing on the host's disk that a
@@ -902,7 +928,7 @@ func (w *World) launch(h *hostState) error {
 			file, err := h.disk.Open(ctx, "cache", platform.OpenOptions{Create: true})
 			if err != nil {
 				release()
-				ready <- err
+				failed(err)
 				return
 			}
 			h.config.Cache.Disk = file
@@ -919,7 +945,11 @@ func (w *World) launch(h *hostState) error {
 		h.config.Pagers = pager.pagers
 		started, err := host.StartHost(ctx, h.config)
 		h.host, h.down = started, err != nil
-		ready <- err
+		if err != nil {
+			failed(err)
+		} else {
+			ready <- nil
+		}
 		if err == nil {
 			<-ctx.Done()
 			// A kill has already taken this host's store away, so the shutdown
@@ -3286,7 +3316,7 @@ func (w *World) Restart(ctx context.Context, index int) error {
 		return nil
 	}
 	h.dead.Store(false)
-	if err := w.launch(h); err != nil {
+	if err := w.supervise(h); err != nil {
 		return err
 	}
 	h.down = false

@@ -23,7 +23,8 @@ import (
 // The cloud's API has sites of its own, so a controller meets an attach or a
 // detach that is slow, that fails before the cloud does it, and that the
 // cloud did although its caller was told it failed: the attached-but-not-
-// recorded crash point. A create may be slow or fail, and so may a delete.
+// recorded crash point. A create may be slow, fail, or be done with its
+// caller told it failed, and so may a delete, and a list may fail.
 type NetworkDisks struct {
 	runtime *Runtime
 	config  NetworkDisksConfig
@@ -71,6 +72,14 @@ const (
 	BuggifyCreateFails = "sim/network-disk/create-fails"
 	// BuggifyDeleteFails fails a delete before the cloud removes the disk.
 	BuggifyDeleteFails = "sim/network-disk/delete-fails"
+	// BuggifyDetachReplyLost, BuggifyCreateReplyLost and
+	// BuggifyDeleteReplyLost have the cloud do the operation and tell its
+	// caller it failed, as an operation whose wait the API failed does.
+	BuggifyDetachReplyLost = "sim/network-disk/detach-reply-lost"
+	BuggifyCreateReplyLost = "sim/network-disk/create-reply-lost"
+	BuggifyDeleteReplyLost = "sim/network-disk/delete-reply-lost"
+	// BuggifyListFails fails a list of disks by label.
+	BuggifyListFails = "sim/network-disk/list-fails"
 )
 
 // NetworkDiskSites is every site of the cloud's network disks.
@@ -82,13 +91,14 @@ func NetworkDiskSites() []string {
 // that already exist: describe, attach and detach.
 func NetworkDiskAttachSites() []string {
 	return []string{BuggifyAttachSlow, BuggifyAttachFails, BuggifyAttachReplyLost, BuggifyDetachSlow,
-		BuggifyDetachFails, BuggifyDescribeFails}
+		BuggifyDetachFails, BuggifyDetachReplyLost, BuggifyDescribeFails}
 }
 
 // NetworkDiskLifecycleSites is the sites a controller meets when it creates
 // and deletes disks.
 func NetworkDiskLifecycleSites() []string {
-	return []string{BuggifyCreateSlow, BuggifyCreateFails, BuggifyDeleteFails}
+	return []string{BuggifyCreateSlow, BuggifyCreateFails, BuggifyCreateReplyLost, BuggifyDeleteFails,
+		BuggifyDeleteReplyLost, BuggifyListFails}
 }
 
 // networkDisk is one volume: its device, its labels, and the machine it is
@@ -113,11 +123,11 @@ func (r *Runtime) NewNetworkDisks(config NetworkDisksConfig) *NetworkDisks {
 // once, with no fault, attached to nothing and with no labels, every byte of
 // it zero and durable.
 func (n *NetworkDisks) Provision(ctx context.Context, volume string, bytes int64) error {
-	return n.make(ctx, platform.NetworkDiskSpec{Name: volume, Bytes: bytes})
+	return n.make(platform.NetworkDiskSpec{Name: volume, Bytes: bytes})
 }
 
 // make makes a disk, attached to nothing, every byte of it zero and durable.
-func (n *NetworkDisks) make(ctx context.Context, spec platform.NetworkDiskSpec) error {
+func (n *NetworkDisks) make(spec platform.NetworkDiskSpec) error {
 	volume, bytes := spec.Name, spec.Bytes
 	if volume == "" || bytes <= 0 {
 		return fmt.Errorf("%w: a network disk named %q of %d bytes", platform.ErrInvalidPath, volume, bytes)
@@ -129,6 +139,7 @@ func (n *NetworkDisks) make(ctx context.Context, spec platform.NetworkDiskSpec) 
 	}
 	config := n.config.Device
 	config.Space = SpaceConfig{TotalBytes: 2 * bytes}
+	config.ReadsNeverFail = true
 	id := "network-disk/" + volume
 	if made := n.made[volume]; made > 0 {
 		id = fmt.Sprintf("%s/%d", id, made)
@@ -138,18 +149,10 @@ func (n *NetworkDisks) make(ctx context.Context, spec platform.NetworkDiskSpec) 
 	disk := &networkDisk{name: volume, bytes: bytes, labels: maps.Clone(spec.Labels), backing: backing}
 	n.disks[volume] = disk
 	n.mu.Unlock()
-	file, err := backing.Open(ctx, deviceName, platform.OpenOptions{Create: true})
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	if err := file.Truncate(ctx, bytes); err != nil {
-		return err
-	}
-	if err := file.Sync(ctx); err != nil {
-		return err
-	}
-	return backing.SyncNamespace(ctx)
+	// The cloud makes the device, not a machine's process, so none of a
+	// machine's disk faults touch it.
+	backing.provision(deviceName, bytes)
+	return nil
 }
 
 // Disk is the simulated disk a volume's device is on, which a test damages
@@ -214,6 +217,10 @@ func (n *NetworkDisks) List(ctx context.Context, key, value string) ([]platform.
 	if err := n.runtime.sleep(ctx, n.config.ListLatency); err != nil {
 		return nil, err
 	}
+	if n.runtime.buggifyHere(BuggifyListFails, 0.1) {
+		n.trace("list", key+"="+value, "failed")
+		return nil, fmt.Errorf("%w: listing network disks labelled %s=%s", platform.ErrUnavailable, key, value)
+	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	var listed []platform.ListedDisk
@@ -241,9 +248,13 @@ func (n *NetworkDisks) Create(ctx context.Context, spec platform.NetworkDiskSpec
 		n.trace("create", spec.Name, "failed")
 		return fmt.Errorf("%w: creating network disk %q", platform.ErrUnavailable, spec.Name)
 	}
-	if err := n.make(ctx, spec); err != nil {
+	if err := n.make(spec); err != nil {
 		n.trace("create", spec.Name, "refused")
 		return err
+	}
+	if n.runtime.buggifyHere(BuggifyCreateReplyLost, 0.1) {
+		n.trace("create", spec.Name, "reply lost")
+		return fmt.Errorf("%w: the reply to creating network disk %q was lost", platform.ErrUnavailable, spec.Name)
 	}
 	n.trace("create", spec.Name, "ok")
 	return nil
@@ -273,6 +284,10 @@ func (n *NetworkDisks) Delete(ctx context.Context, volume string) error {
 	}
 	delete(n.disks, volume)
 	n.mu.Unlock()
+	if n.runtime.buggifyHere(BuggifyDeleteReplyLost, 0.1) {
+		n.trace("delete", volume, "reply lost")
+		return fmt.Errorf("%w: the reply to deleting network disk %q was lost", platform.ErrUnavailable, volume)
+	}
 	n.trace("delete", volume, "ok")
 	return nil
 }
@@ -343,6 +358,10 @@ func (n *NetworkDisks) Detach(ctx context.Context, volume, machine string) error
 	// The machine loses the device under whatever it had in flight.
 	if err := disk.backing.PowerLoss(context.WithoutCancel(ctx)); err != nil {
 		return err
+	}
+	if n.runtime.buggifyHere(BuggifyDetachReplyLost, 0.1) {
+		n.trace("detach", volume, "reply lost")
+		return fmt.Errorf("%w: the reply to detaching %q from %s was lost", platform.ErrUnavailable, volume, machine)
 	}
 	n.trace("detach", volume, "ok")
 	return nil

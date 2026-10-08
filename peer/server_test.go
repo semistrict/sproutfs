@@ -3,7 +3,9 @@ package peer_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -295,6 +297,55 @@ func TestALateReplyGivesBackWhatItsRequestHeld(t *testing.T) {
 		answer, err := disk(t.Context(), destination, 0, 4)
 		if err != nil || answer.Busy != nil || len(answer.Payload) != 4*pageSize {
 			t.Fatalf("after a late reply: busy %+v, %d bytes, %v", answer.Busy, len(answer.Payload), err)
+		}
+	})
+}
+
+// failingAccepts is a listener whose next accepts fail, as those of a process
+// out of descriptors do, with the connection left waiting for a later one.
+type failingAccepts struct {
+	platform.Listener
+	failures atomic.Int32
+}
+
+func (l *failingAccepts) Accept(ctx context.Context) (platform.Conn, error) {
+	if l.failures.Add(-1) >= 0 {
+		return nil, fmt.Errorf("%w: accept: too many open files", platform.ErrUnavailable)
+	}
+	return l.Listener.Accept(ctx)
+}
+
+// A server whose accepts fail accepts again: an accept that fails is the
+// process short of something for a moment, not the listener closing, and a
+// server that stopped at it would serve no peer again.
+func TestAServerAcceptsAgainAfterAFailedAccept(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		runtime := sim.New(sim.Config{Seed: 1})
+		listener, err := runtime.Network().Listen("source")
+		if err != nil {
+			t.Fatal(err)
+		}
+		failing := &failingAccepts{Listener: listener}
+		failing.failures.Store(5)
+		ctx := sim.WithRuntime(t.Context(), runtime)
+		server, err := peer.NewServer(ctx, peer.ServerConfig{Listener: failing, Address: "source", PageSize: pageSize})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer server.Close()
+		server.Serve("vm", map[string]peer.Pages{"ram0": memoryPages{count: 64, pageSize: pageSize}})
+		table, err := peer.NewTable(ctx, peer.TableConfig{Dial: func(ctx context.Context, to platform.Address) (platform.Conn, error) {
+			return runtime.Network().Dial(ctx, "destination", to)
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer table.Close()
+		asked, cancel := context.WithTimeout(ctx, time.Minute)
+		defer cancel()
+		answer, err := askPages(asked, table.Peer("source"), 0, 2)
+		if err != nil || answer.Busy != nil || len(answer.Payload) != 2*pageSize {
+			t.Fatalf("a request after five failed accepts: busy %+v, %d bytes, %v", answer.Busy, len(answer.Payload), err)
 		}
 	})
 }

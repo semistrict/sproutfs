@@ -217,26 +217,38 @@ func TestNetworkSendCancelsUnderInboxBackpressure(t *testing.T) {
 	})
 }
 
+// connectedPair connects a client to a server. A listen, a dial or an accept
+// the network fails at random is made again, as a caller makes one again.
 func connectedPair(t *testing.T, runtime *sim.Runtime) (platform.Listener, platform.Conn, platform.Conn) {
 	t.Helper()
-	listener, err := runtime.Network().Listen("server")
+	listener, err := retried(func() (platform.Listener, error) { return runtime.Network().Listen("server") })
 	if err != nil {
 		t.Fatal(err)
 	}
-	client, err := runtime.Network().Dial(t.Context(), "client", "server")
+	client, err := retried(func() (platform.Conn, error) { return runtime.Network().Dial(t.Context(), "client", "server") })
 	if err != nil {
 		_ = listener.Close()
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 	defer cancel()
-	server, err := listener.Accept(ctx)
+	server, err := retried(func() (platform.Conn, error) { return listener.Accept(ctx) })
 	if err != nil {
 		_ = client.Close()
 		_ = listener.Close()
 		t.Fatal(err)
 	}
 	return listener, client, server
+}
+
+// retried makes a call again while it fails as unavailable.
+func retried[T any](call func() (T, error)) (T, error) {
+	for {
+		value, err := call()
+		if !errors.Is(err, platform.ErrUnavailable) {
+			return value, err
+		}
+	}
 }
 
 func assertReceivedHeader(t *testing.T, conn platform.Conn, want string) {

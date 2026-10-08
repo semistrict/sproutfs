@@ -37,7 +37,9 @@ type Clock interface {
 }
 
 // Stopper disarms a pending timer and reports whether it got there first.
-type Stopper interface{ Stop() bool }
+type Stopper interface {
+	Stop() bool
+}
 
 // Timer delivers one tick on C after the duration it was created with. It is
 // the stdlib's timer as an interface, so a select on a deadline reads the same

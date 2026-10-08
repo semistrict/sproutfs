@@ -172,7 +172,8 @@ func TestAMachineThatCrashesKeepsItsDisksAndLosesTheirHandles(t *testing.T) {
 
 // Every site of the cloud fires over a few seeds, and whatever they do, an
 // attach that succeeds leaves the disk where it asked, and one refused as in
-// use was refused for a disk attached to another machine.
+// use was refused for a disk attached to another machine. The machine a disk
+// is on opens its device, which fails only as a device fails.
 func TestTheCloudsSitesFireAndNeverAttachADiskTwice(t *testing.T) {
 	fired := make(map[string]bool)
 	for seed := uint64(1); seed <= 24; seed++ {
@@ -199,6 +200,19 @@ func TestTheCloudsSitesFireAndNeverAttachADiskTwice(t *testing.T) {
 				}
 				if _, err := cloud.Describe(ctx, "shard-0"); err != nil && !errors.Is(err, platform.ErrUnavailable) {
 					t.Fatalf("seed %d: describe: %v", seed, err)
+				}
+				// The machine the disk is on opens its device, which the
+				// device may fail as any disk's.
+				if on := cloud.Attached("shard-0"); on != "" {
+					for range 3 {
+						device, err := cloud.Devices(on).Open(ctx, "shard-0")
+						switch {
+						case err == nil:
+							_ = device.Close()
+						case !errors.Is(err, platform.ErrInjectedFault):
+							t.Fatalf("seed %d: opening the device on %s: %v", seed, on, err)
+						}
+					}
 				}
 				if step%3 == 2 {
 					if err := cloud.Detach(ctx, "shard-0", cloud.Attached("shard-0")); err != nil &&
@@ -362,9 +376,10 @@ func TestTheCloudDeletesOnlyADiskAttachedToNothing(t *testing.T) {
 	})
 }
 
-// Every create and delete site fires over a few seeds, and whatever they do, a
-// create or a delete that fails leaves the cloud as it was, and one that
-// succeeds did what it asked.
+// Every create, delete and list site fires over a few seeds, and whatever they
+// do, a create or a delete that fails leaves the cloud as it was, unless its
+// reply was lost, and one that succeeds or whose reply was lost did what it
+// asked.
 func TestTheCloudsCreateAndDeleteSitesFire(t *testing.T) {
 	fired := make(map[string]bool)
 	for seed := uint64(1); seed <= 24; seed++ {
@@ -376,6 +391,7 @@ func TestTheCloudsCreateAndDeleteSitesFire(t *testing.T) {
 			spec := platform.NetworkDiskSpec{Name: "journal-a", Bytes: networkDiskBytes}
 			for step := range 40 {
 				had := cloud.Disk("journal-a") != nil
+				lost := replyLost(runtime)
 				var err error
 				if step%2 == 0 {
 					err = cloud.Create(ctx, spec)
@@ -383,10 +399,15 @@ func TestTheCloudsCreateAndDeleteSitesFire(t *testing.T) {
 					err = cloud.Delete(ctx, "journal-a")
 				}
 				has := cloud.Disk("journal-a") != nil
+				done := err == nil || replyLost(runtime) > lost
+				if _, err := cloud.List(ctx, "sproutfs-journal", "east"); err != nil &&
+					!errors.Is(err, platform.ErrUnavailable) {
+					t.Fatalf("seed %d step %d: listing: %v", seed, step, err)
+				}
 				switch {
-				case err == nil && has == had:
+				case done && has == had:
 					t.Fatalf("seed %d step %d: succeeded and left the disk there: %v", seed, step, has)
-				case err != nil && has != had:
+				case !done && has != had:
 					t.Fatalf("seed %d step %d: failed with %v and changed whether the disk is there", seed, step, err)
 				case err == nil, errors.Is(err, platform.ErrUnavailable):
 				case errors.Is(err, platform.ErrAlreadyExists) && had, errors.Is(err, platform.ErrNotFound) && !had:
@@ -409,4 +430,10 @@ func TestTheCloudsCreateAndDeleteSitesFire(t *testing.T) {
 	if t.Failed() {
 		t.Log(fmt.Sprint(fired))
 	}
+}
+
+// replyLost is how many replies to a create or a delete the cloud has lost.
+func replyLost(runtime *sim.Runtime) uint64 {
+	fired := runtime.FiredSites()
+	return fired[sim.BuggifyCreateReplyLost] + fired[sim.BuggifyDeleteReplyLost]
 }

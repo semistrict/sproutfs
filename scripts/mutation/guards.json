@@ -718,6 +718,12 @@
     "purpose": "End a request's receive context before its payload is read, so a socket's read deadline fails every keep."
   },
   {
+    "id": "peer-stop-accepting-on-error",
+    "package": "peer",
+    "run": "^TestAServerAcceptsAgainAfterAFailedAccept$",
+    "purpose": "Stop accepting at the first accept that fails, as one out of descriptors fails, so the host serves no peer again."
+  },
+  {
     "id": "fill-before-durable",
     "package": "checkpoint",
     "run": "^TestAPublicationFillsNothingBeforeItsPartIsDurable$",

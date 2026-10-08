@@ -141,6 +141,10 @@ func (n *Network) Listen(address platform.Address) (platform.Listener, error) {
 	if address == "" {
 		return nil, platform.ErrInvalidPath
 	}
+	if n.runtime.buggifyHere(SiteListenFails, listenFailsProbability) {
+		n.runtime.trace.record(Event{Kind: "network", Resource: string(address), Operation: "listen", Outcome: "refused"})
+		return nil, errListenFails
+	}
 	l := &listener{
 		network:  n,
 		address:  address,
@@ -206,6 +210,10 @@ func (n *Network) Dial(ctx context.Context, from, to platform.Address) (platform
 	if err := n.runtime.ioDelay(ctx, fmt.Sprintf("network/dial/%q/%q/%d", from, to, dialID), n.config.ConnectLatency); err != nil {
 		n.traceNetwork(key, "dial", "canceled", 0, dialID)
 		return nil, err
+	}
+	if n.runtime.buggifyHere(SiteDialRefused, dialRefusedProbability) {
+		n.traceNetwork(key, "dial", "refused", 0, dialID)
+		return nil, errDialRefused
 	}
 
 	pipe := &connectionPipe{done: make(chan struct{})}
@@ -629,9 +637,20 @@ type listener struct {
 	// pending is guarded by network.mu; accepted connections belong to their
 	// caller and are deliberately not closed with the listener.
 	pending map[platform.Conn]struct{}
+	// held is a connection an accept failed with waiting, which the next
+	// accept takes first. It is guarded by network.mu and closed with the
+	// listener.
+	held platform.Conn
 }
 
 func (l *listener) Accept(ctx context.Context) (platform.Conn, error) {
+	l.network.mu.Lock()
+	held := l.held
+	l.held = nil
+	l.network.mu.Unlock()
+	if held != nil {
+		return held, nil
+	}
 	select {
 	case <-ctx.Done():
 		return nil, context.Cause(ctx)
@@ -654,6 +673,20 @@ func (l *listener) Accept(ctx context.Context) (platform.Conn, error) {
 				return nil, err
 			}
 		}
+		if l.network.runtime.buggifyHere(SiteAcceptFails, acceptFailsProbability) {
+			// The connection waits for the next accept, as one left in the
+			// backlog does.
+			l.network.mu.Lock()
+			select {
+			case <-l.done:
+				_ = accepted.Close()
+			default:
+				l.held = accepted
+			}
+			l.network.mu.Unlock()
+			l.network.runtime.trace.record(Event{Kind: "network", Resource: string(l.address), Operation: "accept", Outcome: "failed"})
+			return nil, errAcceptFails
+		}
 		return accepted, nil
 	}
 }
@@ -671,6 +704,10 @@ func (l *listener) Close() error {
 			_ = conn.Close()
 		}
 		clear(l.pending)
+		if l.held != nil {
+			_ = l.held.Close()
+			l.held = nil
+		}
 		l.network.mu.Unlock()
 		l.network.runtime.trace.record(Event{Kind: "network", Resource: string(l.address), Operation: "close_listener", Outcome: "ok"})
 	})
@@ -839,6 +876,12 @@ func (c *conn) Send(ctx context.Context, frame platform.Frame) error {
 		c.network.traceNetwork(key, "send", "dropped", totalBytes, plan.sequence)
 		return nil
 	}
+	if c.network.runtime.buggifyHere(SiteSendTimedOut, timedOutProbability) {
+		// The kernel gave up on the frame's bytes and ended the connection.
+		c.network.traceNetwork(key, "send", "timed_out", totalBytes, plan.sequence)
+		_ = c.Close()
+		return errConnTimedOut
+	}
 	if c.network.runtime.buggifyHere(SiteRandomClose, 0.01) {
 		// A connection closes under a frame, as FoundationDB's do at random:
 		// half the time once the frame has arrived, half the time before.
@@ -926,6 +969,13 @@ func connectionOutcome(err error) string {
 }
 
 func (c *conn) Receive(ctx context.Context) (platform.ReceivedFrame, error) {
+	if c.network.runtime.buggifyHere(SiteReceiveTimedOut, timedOutProbability) {
+		// The keepalive probes went unanswered and the kernel ended the
+		// connection.
+		c.network.traceNetwork(linkKey{from: c.remote, to: c.local}, "receive", "timed_out", 0, 0)
+		_ = c.Close()
+		return platform.ReceivedFrame{}, errConnTimedOut
+	}
 	select {
 	case <-ctx.Done():
 		return platform.ReceivedFrame{}, context.Cause(ctx)

@@ -117,7 +117,9 @@ func diskCampaign(t *testing.T, seed uint64) *sim.Runtime {
 			cache.next += unit
 			cache.mu.Unlock()
 			if _, err := cache.file.WriteAt(f.ctx, region, at); err != nil {
-				if !errors.Is(err, platform.ErrNoSpace) {
+				// A write the disk refuses or fails leaves the region
+				// unwritten, as the cache leaves it: the store serves it.
+				if !errors.Is(err, platform.ErrNoSpace) && !errors.Is(err, platform.ErrInjectedFault) {
 					t.Fatal(err)
 				}
 				break
@@ -127,11 +129,11 @@ func diskCampaign(t *testing.T, seed uint64) *sim.Runtime {
 			cache.mu.Unlock()
 		}
 		// A guest spills a page now and then. The disk may be full of other
-		// writers' bytes, which no limiter can help.
+		// writers' bytes, which no limiter can help, and its device may fail.
 		if file := random.Intn(key+"/spill", 4); file < campaignSpillFiles && spilled[file] < campaignSpill {
 			if _, err := spills[file].WriteAt(f.ctx, region, spilled[file]); err == nil {
 				spilled[file] += unit
-			} else if !errors.Is(err, platform.ErrNoSpace) {
+			} else if !errors.Is(err, platform.ErrNoSpace) && !errors.Is(err, platform.ErrInjectedFault) {
 				t.Fatal(err)
 			}
 		}
