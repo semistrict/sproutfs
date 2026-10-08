@@ -3,6 +3,7 @@ package vmmemory
 import (
 	"context"
 	"errors"
+	"slices"
 
 	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/platform/sim"
@@ -1071,6 +1072,15 @@ func (p *plan) install(ctx context.Context) (bool, error) {
 		h.mu.Unlock()
 		page += run
 	}
+	// Every run above is recorded mapped before any command is sent, so a
+	// refusal takes back every run it left unsent: the read-only and zero runs
+	// from the one refused, and every writable run, which go after them.
+	unsent := func(from []MapRun) []MapRun {
+		if sim.Bug(ctx, "pager-refusal-keeps-the-writable-runs-recorded") {
+			return from
+		}
+		return slices.Concat(from, writable)
+	}
 	if len(runs) > 0 {
 		commands := len(runs)
 		mappingRuns := len(runs)
@@ -1078,7 +1088,7 @@ func (p *plan) install(ctx context.Context) (bool, error) {
 			var err error
 			commands, mappingRuns, err = r.mapBatch(ctx, batch, runs)
 			if err != nil {
-				return false, r.mappingFailed(err, func() { r.unmapRuns(runs) })
+				return false, r.mappingFailed(err, func() { r.unmapRuns(unsent(runs)) })
 			}
 		} else {
 			for i, run := range runs {
@@ -1089,7 +1099,7 @@ func (p *plan) install(ctx context.Context) (bool, error) {
 					err = r.mapPages(ctx, run, false)
 				}
 				if err != nil {
-					return false, r.mappingFailed(err, func() { r.unmapRuns(runs[i:]) })
+					return false, r.mappingFailed(err, func() { r.unmapRuns(unsent(runs[i:])) })
 				}
 			}
 		}
@@ -1099,9 +1109,9 @@ func (p *plan) install(ctx context.Context) (bool, error) {
 		h.mu.Unlock()
 		p.installed.add(installedRuns{commands: uint64(commands), runs: uint64(mappingRuns), pages: pagesOf(runs)})
 	}
-	for _, run := range writable {
+	for i, run := range writable {
 		if err := r.mapPages(ctx, run, true); err != nil {
-			return false, r.mappingFailed(err, func() { r.unmapRuns([]MapRun{run}) })
+			return false, r.mappingFailed(err, func() { r.unmapRuns(writable[i:]) })
 		}
 		h.mu.Lock()
 		h.stats.Mappings++

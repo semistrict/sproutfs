@@ -5,6 +5,7 @@ import (
 	"testing"
 	"testing/synctest"
 
+	"github.com/semistrict/sproutfs/checkpoint"
 	"github.com/semistrict/sproutfs/vmmemory"
 )
 
@@ -157,6 +158,43 @@ func TestARefusedZeroRunIsNotRecordedAsMapped(t *testing.T) {
 			if !vmmemory.Repeated(r, page, false) {
 				t.Fatalf("page %d is not recorded as mapped after its zero run was", page)
 			}
+		}
+	})
+}
+
+// A fault records every run of its window mapped before it sends their
+// commands: the pages it maps read-only and the region's own dirty pages it
+// maps writable. A refusal of the read-only command takes back the record of
+// the writable runs too, which were never sent. It used to take back only the
+// read-only ones, which left a dirty page recorded mapped with nothing behind
+// it, and the guest's next store into the page resolved writable over nothing:
+// at 4 KiB, where a client refuses for want of VMAs, that was UFFDIO_CONTINUE:
+// invalid argument, and the VM was gone.
+func TestARefusedReadOnlyRunTakesBackTheWritableRunsOfItsFault(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := newConfiguredFixture(t, vmmemory.Config{PageSize: checkpoint.PageSize4KiB, ResidentPages: 48,
+			LogicalPages: 64, DirtyPages: 64, ReadAheadPages: 16})
+		r, m, b := f.memoryRegion(64)
+		// Page 2 is the region's own dirty page, made from zeros, resident and
+		// not mapped, and page 3 is zeros, which a fault maps without reading:
+		// one fault on page 2 maps page 3 to zero and page 2 writable, by two
+		// commands, the read-only one first.
+		b.zero[2], b.zero[3] = true, true
+		access(t, r, m, 2, true)[0] = 7
+		if harvested, err := vmmemory.HarvestPage(f.ctx, r, 2); err != nil || !harvested {
+			t.Fatalf("harvesting page 2 = %t, %v; want it harvested", harvested, err)
+		}
+		if _, mapped := m.mappedPage(3); mapped {
+			t.Fatal("page 3 is mapped before the fault, so the fault would not map it")
+		}
+		m.refuseMap = true
+		if err := r.Fault(f.ctx, 2, false); !errors.Is(err, vmmemory.ErrMappingRefused) {
+			t.Fatalf("a fault whose first mapping command was refused = %v, want the refusal", err)
+		}
+		m.refuseMap = false
+		access(t, r, m, 2, true)[0] = 8
+		if got := access(t, r, m, 2, false)[0]; got != 8 {
+			t.Fatalf("page 2 reads %d after the store, want 8", got)
 		}
 	})
 }

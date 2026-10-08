@@ -46,7 +46,7 @@ func (i installed) String() string {
 }
 
 // auditHistory is how many of a page's latest commands a finding names.
-const auditHistory = 4
+const auditHistory = 8
 
 type mappingAudit struct {
 	mu sync.Mutex
@@ -100,6 +100,22 @@ func (a *mappingAudit) refused(first uint64, count int, what string) {
 	}
 }
 
+// recordedMapped names, in the histories of [first, last), a change to what
+// the bindings say is mapped, which changes nothing installed: a binding that
+// says mapped where nothing is installed is what a resolve or a protect then
+// fails on, and its history says who set it. Caller may hold bindingsMu.
+func (r *MemoryRegion) recordedMapped(first, last uint64, mapped bool, what string) {
+	a := r.audit
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for page := first; page < last; page++ {
+		a.recordLocked(page, a.stateLocked(page), fmt.Sprintf("%s: binding mapped=%t", what, mapped))
+	}
+}
+
 // madeOwn names, in a page's history, a transition that made it the
 // region's own dirty state, which changes nothing it has installed.
 func (r *MemoryRegion) madeOwn(page uint64, what string) {
@@ -134,6 +150,25 @@ func (a *mappingAudit) resolved(first uint64, count int, writable bool) {
 		}
 		if writable {
 			a.recordLocked(page, installedWritable, "resolve writable")
+		}
+	}
+}
+
+// protecting checks a write-protection of [first, first+count) before it is
+// issued: a page is protected only where it is installed, since the pager
+// protects what its bindings say the guest maps.
+func (a *mappingAudit) protecting(first uint64, count int) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.broken {
+		return
+	}
+	for page := first; page < first+uint64(count); page++ {
+		if a.stateLocked(page) == notInstalled {
+			panic(a.findingLocked(page, "write-protected over a page not installed"))
 		}
 	}
 }

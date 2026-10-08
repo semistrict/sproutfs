@@ -553,6 +553,7 @@ func (r *MemoryRegion) resolvePages(ctx context.Context, page uint64, count int,
 }
 
 func (r *MemoryRegion) protectPages(ctx context.Context, page uint64, count int) error {
+	r.audit.protecting(page, count)
 	start := r.host.clock.Now()
 	err := r.mapping.Protect(ctx, page, count)
 	r.host.protectLatency.Observe(r.host.clock.Since(start))

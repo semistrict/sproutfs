@@ -94,6 +94,7 @@ func (r *MemoryRegion) bindingLocked(index uint64) *binding {
 		if b.inZeroRun {
 			b.inZeroRun = false
 			b.zero, b.mapped = true, true
+			r.recordedMapped(index, index+1, true, "left a zero run")
 		}
 		return b
 	}
@@ -101,6 +102,7 @@ func (r *MemoryRegion) bindingLocked(index uint64) *binding {
 	b := &binding{region: r, index: index}
 	if inRun {
 		b.zero, b.mapped = true, true
+		r.recordedMapped(index, index+1, true, "made in a zero run")
 	}
 	slot.Set(zirconvm.Page(b))
 	return b
@@ -221,6 +223,7 @@ func (r *MemoryRegion) setMapped(first, last uint64, mapped bool) {
 		b.mapped = mapped
 		r.noteSealableLocked(b)
 	}
+	r.recordedMapped(first, last, mapped, "set")
 }
 
 // mapZeros records that a plan mapped every page of [start, end) to zero, as
@@ -332,6 +335,7 @@ func (r *MemoryRegion) setBindingMapped(b *binding, mapped bool) {
 	defer r.bindingsMu.Unlock()
 	b.mapped = mapped
 	r.noteSealableLocked(b)
+	r.recordedMapped(b.index, b.index+1, mapped, "set one")
 }
 
 // harvestedReadOnly reports whether the page at index is one the guest may

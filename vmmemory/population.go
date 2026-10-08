@@ -2,10 +2,12 @@ package vmmemory
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"strings"
 
 	"github.com/semistrict/sproutfs/control"
+	"github.com/semistrict/sproutfs/platform/sim"
 )
 
 // populationRuns bounds the mapping runs one Populate installs before the guest
@@ -143,6 +145,12 @@ func (r *MemoryRegion) Populate(ctx context.Context) error {
 			installed.add(plan.installed)
 			return err
 		}()
+		if errors.Is(err, ErrMappingRefused) && !sim.Bug(ctx, "pager-population-refused-fails-the-attach") {
+			// The client has no mapping budget left for population, which only
+			// saves faults: the install took back the record of what it did
+			// not map, and the guest faults those pages in.
+			return nil
+		}
 		if err != nil {
 			return err
 		}

@@ -621,3 +621,41 @@ func TestPopulationInstallsNoMorePagesThanItsBudgetHoweverLongTheRuns(t *testing
 		}
 	})
 }
+
+// A client that refuses a population's mapping command, for want of mapping
+// budget, costs the machine only the faults population would have saved: the
+// attach goes on, the pages it did not map are faulted in, and none of them is
+// recorded mapped. A refusal used to fail the attach, so a fork whose inherited
+// pages a 4 KiB client could not map at once did not start.
+func TestARefusedPopulationLeavesItsPagesToFaults(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := newFixture(t, 4, 8, 4)
+		source, sm, _ := f.memoryRegion(2)
+		access(t, source, sm, 0, false)
+		access(t, source, sm, 1, false)
+		m := newMapping(f.a)
+		m.refuseMap = true
+		f.a.mu.Lock()
+		f.a.mappings = append(f.a.mappings, m)
+		f.a.mu.Unlock()
+		r, err := f.h.Attach(f.ctx, ram(f.newBacking(2)), m)
+		if err != nil {
+			t.Fatalf("attaching beside a client that refuses every mapping = %v, want it attached", err)
+		}
+		t.Cleanup(func() {
+			clear(m.pages)
+			if err := r.Detach(context.Background()); err != nil {
+				t.Error(err)
+			}
+		})
+		if len(m.pages) != 0 {
+			t.Fatalf("the refused population left %d pages mapped, want none", len(m.pages))
+		}
+		m.refuseMap = false
+		for page := range uint64(2) {
+			if got, want := access(t, r, m, page, false)[0], byte(page+1); got != want {
+				t.Fatalf("page %d reads %d after a refused population, want %d", page, got, want)
+			}
+		}
+	})
+}

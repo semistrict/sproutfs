@@ -238,9 +238,9 @@ func (r *MemoryRegion) storeZeros(ctx context.Context, index, first, last uint64
 	h.stats.CopyOnWrites++
 	h.stats.WriteAheadPages += uint64(count - 1)
 	h.mu.Unlock()
-	for _, run := range runs {
+	for i, run := range runs {
 		if err := r.mapPages(ctx, run, true); err != nil {
-			return r.mappingFailed(err, func() { r.setMapped(first, first+uint64(count), false) })
+			return r.mappingFailed(err, func() { r.unmapRuns(runs[i:]) })
 		}
 	}
 	for _, run := range runs {
@@ -480,6 +480,7 @@ func (r *MemoryRegion) bindDirtyRun(first uint64, frames []*zirconvm.VmPage, res
 	// A run of fresh pages no checkpoint holds is one sealable run: one
 	// change to the runs a seal reads rather than one per page.
 	r.dirtyRuns.add(first, first+uint64(len(frames)))
+	r.recordedMapped(first, first+uint64(len(frames)), true, "bound dirty")
 	r.bindingsMu.Unlock()
 	for k, b := range bindings {
 		h.probe.granted(b, frameOf(frames[k]), nil)

@@ -281,6 +281,9 @@ func TestFragmentedPrivatePagesSplitCompressedZeroMappings(t *testing.T) {
 // this replaced held 21,828 bytes a touched page here, a block of 256 bindings
 // for each, and the page list 389.
 func TestARegionTouchingOnePageIn512HoldsMetadataForThosePagesAlone(t *testing.T) {
+	// The audit is the tests' own record of every page's commands, which
+	// production does not keep.
+	vmmemory.WithoutMappingAudit(t)
 	synctest.Test(t, func(t *testing.T) {
 		const touched, stride = 1024, 512
 		pages := uint64(touched * stride)

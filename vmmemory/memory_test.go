@@ -398,7 +398,7 @@ func (m *mapping) DropFile(_ context.Context, number int) error {
 // client's mremap does. A slot must hold contents: Linux cannot install a
 // punched one. The file must be one this mapping was given, and only its
 // private file may be mapped writable.
-func (m *mapping) Map(_ context.Context, page uint64, file, slot, count int, writable bool) error {
+func (m *mapping) Map(ctx context.Context, page uint64, file, slot, count int, writable bool) error {
 	if m.onMap != nil {
 		m.onMap(page, count)
 	}
@@ -408,7 +408,7 @@ func (m *mapping) Map(_ context.Context, page uint64, file, slot, count int, wri
 	if f == nil || (writable && file != 0) {
 		return fmt.Errorf("map of file %d writable=%t, which this memory region may not map so", file, writable)
 	}
-	if m.refuseMap {
+	if m.refuseMap || outOfMappings(ctx) {
 		return vmmemory.ErrMappingRefused
 	}
 	m.arena.mu.Lock()
@@ -427,8 +427,8 @@ func (m *mapping) Map(_ context.Context, page uint64, file, slot, count int, wri
 	}
 	return nil
 }
-func (m *mapping) MapZero(_ context.Context, page uint64, count int) error {
-	if m.refuseMap {
+func (m *mapping) MapZero(ctx context.Context, page uint64, count int) error {
+	if m.refuseMap || outOfMappings(ctx) {
 		return vmmemory.ErrMappingRefused
 	}
 	m.arena.mu.Lock()
@@ -441,6 +441,15 @@ func (m *mapping) MapZero(_ context.Context, page uint64, count int) error {
 		return errInjected
 	}
 	return nil
+}
+
+// outOfMappings is a client that has run out of mapping budget, which refuses
+// a command before it touches anything. A real client refuses whenever its
+// process nears its VMA limit, which a 4 KiB disk written in scattered places
+// reaches in minutes; in a controlled run any command may be refused, so the
+// campaigns take every path a refusal leads down.
+func outOfMappings(ctx context.Context) bool {
+	return sim.Buggify(ctx, "vmmemory-test/client-out-of-mappings", 0.05)
 }
 
 // Protect models the range write-protect a seal issues: the page and its
@@ -1275,7 +1284,9 @@ func memoryByte(ctx context.Context, r *vmmemory.MemoryRegion, m *mapping, page 
 			return result, nil
 		}
 		m.arena.mu.Unlock()
-		if err := r.Fault(ctx, page, value != nil); err != nil {
+		// A fault refused for want of mapping budget is served again, as the
+		// connection serves it again once a revocation lands (deferFault).
+		if err := r.Fault(ctx, page, value != nil); err != nil && !errors.Is(err, vmmemory.ErrMappingRefused) {
 			return 0, err
 		}
 	}
