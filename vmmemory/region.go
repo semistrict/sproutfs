@@ -434,6 +434,7 @@ func inAttachOrder[V any](m map[*MemoryRegion]V) []*MemoryRegion {
 // heldPages for the part of it nothing else reports.
 func (r *MemoryRegion) fail(err error) error {
 	if r.terminal.CompareAndSwap(nil, &failure{fmt.Errorf("managed mapping terminal: %w", err)}) {
+		r.audit.fail()
 		close(r.ended)
 	}
 	return r.terminal.Load().err

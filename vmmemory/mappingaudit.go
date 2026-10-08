@@ -53,9 +53,10 @@ type mappingAudit struct {
 	// pages is every page a command has touched; one never touched is not
 	// installed. Sparse, as a region's metadata is.
 	pages map[uint64]*auditedPage
-	// broken marks a region a mapping command failed ambiguously in: what it
-	// installed is unknown, and the region is terminal, so nothing is
-	// checked from there.
+	// broken marks a region a mapping command failed ambiguously in, whose
+	// installed pages are unknown, or any terminal region, whose guest no
+	// fault serves again, so that no store of it is lost to a mapping the
+	// bindings disagree with: nothing is checked from there.
 	broken bool
 }
 
@@ -297,7 +298,8 @@ func (r *MemoryRegion) auditBind(index uint64, dirty bool, p *zirconvm.VmPage) {
 	}
 }
 
-// fail marks the region's mapping unknown after an ambiguous failure.
+// fail marks the region's mapping unknown after an ambiguous failure, or
+// unchecked once the region is terminal.
 func (a *mappingAudit) fail() {
 	if a == nil {
 		return
