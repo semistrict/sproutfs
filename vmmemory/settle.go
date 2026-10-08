@@ -42,7 +42,7 @@ import (
 func (c *MemoryRegionCheckpoint) Settle(ctx context.Context) (int, error) {
 	r := c.memoryRegion
 	h := r.host
-	if err := r.live.RLock(ctx); err != nil {
+	if err := rlockAdmitted(ctx, "vmmemory/live", r.live); err != nil {
 		return 0, err
 	}
 	defer r.live.RUnlock()
@@ -221,7 +221,7 @@ func (r *MemoryRegion) reshare(ctx context.Context, c *MemoryRegionCheckpoint, c
 	for len(pending) > 0 {
 		count := min(len(pending), revokeBatchPages)
 		batch := pending[:count]
-		if err := r.mu.Lock(ctx); err != nil {
+		if err := wlockAdmitted(ctx, "vmmemory/region", r.mu); err != nil {
 			return err
 		}
 		err := func() error {

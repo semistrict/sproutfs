@@ -1,6 +1,7 @@
 package vmmemory
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -209,7 +210,7 @@ func (c *MemoryRegionCheckpoint) Hold() { c.held.Store(true) }
 func (r *MemoryRegion) Seal(ctx context.Context) error {
 	h := r.host
 	defer func(start time.Time) { h.sealLatency.Observe(h.clock.Since(start)) }(h.clock.Now())
-	if err := r.mu.Lock(ctx); err != nil {
+	if err := wlockAdmitted(ctx, "vmmemory/region", r.mu); err != nil {
 		return err
 	}
 	held := false
@@ -350,11 +351,11 @@ func (c *MemoryRegionCheckpoint) Share(ctx context.Context, ref control.Ref, vol
 	// child reads what it inherited through its own backing. Without this a
 	// Share after the end registered a root no end would ever take back.
 	if !sim.Bug(ctx, "pager-share-an-ended-seal") {
-		if err := r.live.RLock(ctx); err != nil {
+		if err := rlockAdmitted(ctx, "vmmemory/live", r.live); err != nil {
 			return err
 		}
 		defer r.live.RUnlock()
-		if err := r.endMu.Lock(ctx); err != nil {
+		if err := lockAdmitted(ctx, "vmmemory/end", r.endMu.TryLock, r.endMu.WaitFree); err != nil {
 			return err
 		}
 		defer r.endMu.Unlock()
@@ -405,7 +406,7 @@ func (c *MemoryRegionCheckpoint) ReadDirty(ctx context.Context, page uint64, dst
 	// detach finds the seal over. Nothing here waits for what a detach holds
 	// first: it takes the region live before anything else.
 	if !sim.Bug(ctx, "pager-read-dirty-beside-a-detach") {
-		if err := r.live.RLock(ctx); err != nil {
+		if err := rlockAdmitted(ctx, "vmmemory/live", r.live); err != nil {
 			return err
 		}
 		defer r.live.RUnlock()
@@ -495,11 +496,11 @@ func (r *MemoryRegion) Unseal(ctx context.Context) error {
 // mapped the bytes the seal froze, which dropSharers then takes from it where
 // the guest will store into them again.
 func (r *MemoryRegion) endSeal(ctx context.Context, checkpoint *MemoryRegionCheckpoint, published bool) error {
-	if err := r.live.RLock(ctx); err != nil {
+	if err := rlockAdmitted(ctx, "vmmemory/live", r.live); err != nil {
 		return err
 	}
 	defer r.live.RUnlock()
-	if err := r.endMu.Lock(ctx); err != nil {
+	if err := lockAdmitted(ctx, "vmmemory/end", r.endMu.TryLock, r.endMu.WaitFree); err != nil {
 		return err
 	}
 	defer r.endMu.Unlock()
@@ -516,7 +517,7 @@ func (r *MemoryRegion) endSeal(ctx context.Context, checkpoint *MemoryRegionChec
 				return err
 			}
 		}
-		if err := r.mu.Lock(ctx); err != nil {
+		if err := wlockAdmitted(ctx, "vmmemory/region", r.mu); err != nil {
 			return err
 		}
 		err := func() error {
@@ -541,7 +542,7 @@ func (r *MemoryRegion) endSeal(ctx context.Context, checkpoint *MemoryRegionChec
 			return err
 		}
 	}
-	if err := r.mu.Lock(ctx); err != nil {
+	if err := wlockAdmitted(ctx, "vmmemory/region", r.mu); err != nil {
 		return err
 	}
 	defer r.unlock()
@@ -588,7 +589,7 @@ func allZero(data []byte) bool {
 // write-protected, with the region's protection held exclusively, so no
 // revocation runs beside it.
 func (r *MemoryRegion) protectDirtyRuns(ctx context.Context) ([]PageRun, error) {
-	if err := r.protectMu.Lock(ctx); err != nil {
+	if err := wlockAdmitted(ctx, "vmmemory/protection", r.protectMu); err != nil {
 		return nil, err
 	}
 	defer r.protectMu.Unlock()
@@ -1571,6 +1572,11 @@ func (h *Host) dropSharers(ctx context.Context, page *zirconvm.VmPage, keep ...*
 		}
 	}
 	h.mu.Unlock()
+	// Revoked in the order the sharers' regions attached, as every step that
+	// commands several regions does (MemoryRegion.serial).
+	slices.SortFunc(sharers, func(a, b *binding) int {
+		return cmp.Or(cmp.Compare(a.region.serial, b.region.serial), cmp.Compare(a.index, b.index))
+	})
 	// The sharers stay the page's until each is taken off below: a binding
 	// gains or changes its page only with that page's lock held, which the
 	// caller holds. The one change without it is a sharer's own detach, which
@@ -1620,7 +1626,7 @@ var endForkFileSeam func()
 // own lock guards.
 func (h *Host) dropFork(ctx context.Context, q *MemoryRegion, f *arenaFile, number int, early bool) error {
 	if !early {
-		if err := q.filesMu.Lock(ctx); err != nil {
+		if err := lockAdmitted(ctx, "vmmemory/files", q.filesMu.TryLock, q.filesMu.WaitFree); err != nil {
 			// The file stays given under its number until q detaches.
 			return err
 		}
@@ -1677,8 +1683,8 @@ func (r *MemoryRegion) endForkFile(ctx context.Context, c *MemoryRegionCheckpoin
 		endForkFileSeam()
 	}
 	cancelled := sim.Admit(ctx, "vmmemory/end-fork-file")
-	for q, number := range holders {
-		cancelled = errors.Join(cancelled, r.host.dropFork(ctx, q, f, number, early))
+	for _, q := range inAttachOrder(holders) {
+		cancelled = errors.Join(cancelled, r.host.dropFork(ctx, q, f, holders[q], early))
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()

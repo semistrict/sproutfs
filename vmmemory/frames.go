@@ -189,7 +189,7 @@ func makeFrame(at fileSlot, kind MemoryRegionKind, layer *MemoryRegion) *frame {
 // controlled run chooses (lockAdmitted).
 func (h *Host) lockPage(ctx context.Context, p *zirconvm.VmPage) error {
 	f := frameOf(p)
-	return lockAdmitted(ctx, "vmmemory/page-lock", f.mu.TryLock, f.mu.Lock, func() { h.unlockPage(p) })
+	return lockAdmitted(ctx, "vmmemory/page-lock", f.mu.TryLock, f.mu.WaitFree)
 }
 
 // unlockPage gives a page's lock back and wakes whatever waits for a page to

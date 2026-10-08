@@ -264,11 +264,11 @@ func (r *MemoryRegion) Capture(ctx context.Context, pages []uint64) (*Captured, 
 	if r.kind != Pmem || r.Ephemeral() {
 		return nil, ErrNotJournaled
 	}
-	if err := r.live.RLock(ctx); err != nil {
+	if err := rlockAdmitted(ctx, "vmmemory/live", r.live); err != nil {
 		return nil, err
 	}
 	defer r.live.RUnlock()
-	if err := r.mu.Lock(ctx); err != nil {
+	if err := wlockAdmitted(ctx, "vmmemory/region", r.mu); err != nil {
 		return nil, err
 	}
 	defer r.unlock()
@@ -356,7 +356,7 @@ func (r *MemoryRegion) protectForCapture(ctx context.Context, taken []uint64, wr
 	protected, err := r.protectCaptureRuns(ctx, taken, writable)
 	if err != nil && sim.Bug(ctx, "journal-unprotect-under-the-protection") {
 		// The bug takes the mappings away still holding the protection.
-		if err := r.protectMu.Lock(ctx); err != nil {
+		if err := wlockAdmitted(ctx, "vmmemory/protection", r.protectMu); err != nil {
 			return err
 		}
 		defer r.protectMu.Unlock()
@@ -370,7 +370,7 @@ func (r *MemoryRegion) protectForCapture(ctx context.Context, taken []uint64, wr
 // protectCaptureRuns is protectForCapture's write-protection, with the
 // region's protection held exclusively, and the runs it protected.
 func (r *MemoryRegion) protectCaptureRuns(ctx context.Context, taken []uint64, writable []PageRun) ([]PageRun, error) {
-	if err := r.protectMu.Lock(ctx); err != nil {
+	if err := wlockAdmitted(ctx, "vmmemory/protection", r.protectMu); err != nil {
 		return nil, err
 	}
 	defer r.protectMu.Unlock()

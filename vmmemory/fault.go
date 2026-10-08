@@ -122,14 +122,14 @@ func (r *MemoryRegion) end(index uint64) uint64 {
 // noReservation.
 func (r *MemoryRegion) faultOnce(ctx context.Context, index uint64, write bool, spill *reservation) (retry bool, err error) {
 	started := r.host.clock.Now()
-	if err := lockAdmitted(ctx, "vmmemory/live", r.live.TryRLock, r.live.RLock, r.live.RUnlock); err != nil {
+	if err := rlockAdmitted(ctx, "vmmemory/live", r.live); err != nil {
 		return false, err
 	}
 	defer r.live.RUnlock()
 	// The window's stripe comes before the memory region: a fault gives the
 	// region up across its backing read and takes it again.
 	stripe := r.stripe(index)
-	if err := lockAdmitted(ctx, "vmmemory/stripe", stripe.TryLock, stripe.Lock, stripe.Unlock); err != nil {
+	if err := lockStripe(ctx, stripe); err != nil {
 		return false, err
 	}
 	defer r.stripe(index).Unlock()

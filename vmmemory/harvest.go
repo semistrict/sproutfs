@@ -111,8 +111,8 @@ func (h *Host) harvestPages(ctx context.Context, locked []*zirconvm.VmPage) erro
 	}()
 	held := make(map[*MemoryRegion]bool)
 	if !sim.Bug(ctx, "pager-harvest-without-revoking") {
-		for q, bindings := range byRegion {
-			if err := q.revokeBindings(ctx, bindings); err != nil {
+		for _, q := range inAttachOrder(byRegion) {
+			if err := q.revokeBindings(ctx, byRegion[q]); err != nil {
 				// A region that cannot take the mapping away is terminal from
 				// here, and the pages it maps are no victims: they stay where
 				// they are.

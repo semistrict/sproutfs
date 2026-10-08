@@ -102,7 +102,7 @@ func (r *MemoryRegion) Populate(ctx context.Context) error {
 		r.populated.Store(&PopulateStats{Commands: installed.commands, Runs: installed.runs,
 			Pages: installed.pages, DurationNS: h.clock.Since(started).Nanoseconds()})
 	}()
-	if err := r.mu.Lock(ctx); err != nil {
+	if err := wlockAdmitted(ctx, "vmmemory/region", r.mu); err != nil {
 		return err
 	}
 	if err := r.ready(); err != nil {
@@ -122,7 +122,7 @@ func (r *MemoryRegion) Populate(ctx context.Context) error {
 	for start := uint64(0); start < uint64(r.pageCount) && budget.left(); {
 		end := min(start+max(populationWindowBytes/h.pageSize, 1), uint64(r.pageCount))
 		err := func() error {
-			if err := r.mu.Lock(ctx); err != nil {
+			if err := wlockAdmitted(ctx, "vmmemory/region", r.mu); err != nil {
 				return err
 			}
 			defer r.unlock()

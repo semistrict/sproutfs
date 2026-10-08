@@ -77,6 +77,9 @@ type Host struct {
 	// pressure is measured and acted on across: the budget is the host's, so
 	// the checkpoint that relieves it need not be the waiting memory region's.
 	memoryRegions map[*MemoryRegion]struct{}
+	// attached counts the memory regions ever attached, which numbers each
+	// one's serial. Guarded by mu.
+	attached uint64
 	// pressure is who to ask for that checkpoint, highWater the dirty occupancy
 	// at which the host asks without waiting to be empty, and asked whether it
 	// has already asked since the budget last fell below that mark.

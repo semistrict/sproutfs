@@ -65,7 +65,7 @@ func (r *MemoryRegion) liftProtection(ctx context.Context, index uint64) error {
 // givingBack is one give-back pass over the pages that pages lists, which it
 // calls once the memory region is known to be live.
 func (r *MemoryRegion) givingBack(ctx context.Context, pages func() []uint64) (int, error) {
-	if err := r.live.RLock(ctx); err != nil {
+	if err := rlockAdmitted(ctx, "vmmemory/live", r.live); err != nil {
 		return 0, err
 	}
 	defer r.live.RUnlock()
@@ -91,7 +91,7 @@ func (r *MemoryRegion) givingBack(ctx context.Context, pages func() []uint64) (i
 // reports whether the copy went back.
 func (r *MemoryRegion) giveBack(ctx context.Context, index uint64, buffers *settler) (bool, error) {
 	h := r.host
-	if err := r.stripe(index).Lock(ctx); err != nil {
+	if err := lockStripe(ctx, r.stripe(index)); err != nil {
 		return false, err
 	}
 	defer r.stripe(index).Unlock()

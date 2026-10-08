@@ -417,7 +417,7 @@ func (r *MemoryRegion) stillOrigins(ctx context.Context, b *binding, buffers *se
 // region's protection held exclusively, as MemoryRegion.unprotectMapped does.
 // Caller holds the region exclusively.
 func (r *MemoryRegion) unprotectMapped(ctx context.Context, bindings []*binding) error {
-	if err := r.protectMu.Lock(ctx); err != nil {
+	if err := wlockAdmitted(ctx, "vmmemory/protection", r.protectMu); err != nil {
 		return err
 	}
 	defer r.protectMu.Unlock()

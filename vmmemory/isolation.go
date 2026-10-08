@@ -258,7 +258,7 @@ func (r *MemoryRegion) mapsLocked(f *arenaFile) bool {
 // giveFork hands this memory region's process a fork point's file, once,
 // before anything is mapped from it.
 func (r *MemoryRegion) giveFork(ctx context.Context, f *arenaFile) error {
-	if err := r.filesMu.Lock(ctx); err != nil {
+	if err := lockAdmitted(ctx, "vmmemory/files", r.filesMu.TryLock, r.filesMu.WaitFree); err != nil {
 		return err
 	}
 	defer r.filesMu.Unlock()
@@ -751,7 +751,8 @@ func (h *Host) rebind(ctx context.Context, from, to *zirconvm.VmPage) error {
 	// fault binds it again and nothing but a detach takes a binding off it;
 	// each region's bindings are looked at again under the hold that rebinds
 	// them, and from's aliases under the one that decides it is idle.
-	for q, bindings := range byRegion {
+	for _, q := range inAttachOrder(byRegion) {
+		bindings := byRegion[q]
 		admitGoingOn(ctx, "vmmemory/rebind")
 		if err := q.remap(ctx, bindings, to); err != nil {
 			q.heldPages(ctx, err)
