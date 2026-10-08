@@ -182,7 +182,7 @@ type templateFork struct {
 // The template is a guest that filled half its RAM with words that name their
 // page, published by a stop. The forks land on one fresh pager, nothing of the
 // template resident, with a host's read-ahead and prefetch, an arena smaller
-// than what they hold between them and a dirty budget that holds their stores:
+// than what they hold between them and dirty budgets that hold their stores:
 // so they share the template's pages, prefetch them, and evict them from each
 // other. Every fork is restored, and then one barrier releases them all. Each
 // reads every page of the pattern, stores its own mark over an eighth of it,
@@ -244,14 +244,17 @@ func TestForksOfOneColdTemplateStartAtOnceAndReadEveryPage(t *testing.T) {
 
 	// One host's pagers, cold. The RAM arena holds the pattern and half of
 	// what the forks' stores make private, which is less than they hold between
-	// them, so they evict each other's pages; its dirty budget holds all their
-	// stores, since a host never checkpoints RAM to relieve it.
+	// them, so they evict each other's pages. The dirty budgets hold every page
+	// each fork may store into, its whole RAM and its whole root, since nothing
+	// here checkpoints either to relieve them: a guest kernel's own writes touch
+	// many more 2 MiB pages than its stamps, and a budget sized to the stamps
+	// stalled every fork's first verify on GCE (2026-10-08).
 	ramArena := templatePatternMiB<<20 + forks*templateStampBytes/2
 	pagers := newConfiguredHostPagers(t, ctx, hostPagersConfig{
 		RAM: hostPagerBudgets{Arena: uint64(ramArena), Logical: uint64(forks*templateRAM + 64<<20),
-			Dirty: uint64(forks * (templateStampBytes + 32<<20))},
+			Dirty: uint64(forks * templateRAM)},
 		PMEM: hostPagerBudgets{Arena: 128 << 20, Logical: uint64(forks*guestRootBytes + 64<<20),
-			Dirty: uint64(forks * 16 << 20)},
+			Dirty: uint64(forks * guestRootBytes)},
 		HostReadAhead: true,
 	})
 
