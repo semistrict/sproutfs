@@ -955,3 +955,41 @@ func TestAQueueIsValidBetweenTheLRUAndMRUQueuesAcrossTheWrap(t *testing.T) {
 		}
 	}
 }
+
+// The evictor harvests the oldest isolated pages, never the active queues'.
+// A harvested page is peeked before an isolated page not harvested yet, and
+// one a fault marks accessed leaves the isolate queues, which counts as a
+// second chance.
+func TestAHarvestedPageIsPeekedFirstAndLeavesWhenAccessed(t *testing.T) {
+	forEachPageSize(t, func(t *testing.T, ps uint64) {
+		pq := newTestQueues(ps)
+		pages := makePages(12)
+		for i, p := range pages {
+			pq.SetReclaim(p, pagerVmo, uint64(i)*ps)
+			pq.AgeOnAccess()
+		}
+		var harvested []*queuedPage
+		for _, link := range pq.PeekUnharvestedWhere(4, func(p *queuedPage) bool { return p.id != 2 }) {
+			harvested = append(harvested, link.Page)
+		}
+		if got, want := ids(harvested), []int{1, 3, 4, 5}; !slices.Equal(got, want) {
+			t.Fatalf("offered pages %v to harvest, want %v", got, want)
+		}
+		for _, p := range harvested {
+			if !pq.MoveToHarvested(p) {
+				t.Fatalf("page %d did not move to the harvested queue", p.id)
+			}
+		}
+		if got := pq.HarvestedCount(); got != 4 {
+			t.Fatalf("the harvested queue holds %d pages, want 4", got)
+		}
+		pq.MarkAccessed(pages[2])
+		if pq.IsHarvested(pages[2]) || pq.MoveToHarvested(pages[2]) {
+			t.Fatal("page 3, accessed since its harvest, is still harvested")
+		}
+		if got := pq.SecondChances(); got != 1 {
+			t.Fatalf("counted %d second chances, want the one", got)
+		}
+		expectPeeks(t, "the reclaim queues", reclaimable(pq), 1, 4, 5, 2, 6, 7, 8, 9, 10, 11, 12, 3)
+	})
+}

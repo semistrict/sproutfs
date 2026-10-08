@@ -1002,9 +1002,11 @@ and a seal that reads those pages under the memory region do not otherwise
 exclude each other.
 
 Reclaim uses fault and read-ahead recency. Accesses through page tables that are
-already present do not update it, so eagerly mapped pages can be reclaimed while
-they are hot. An ambiguous mapping acknowledgement keeps its possibly live slots
-allocated until the process exits.
+already present do not update it, so the evictor harvests a page before it takes
+it: it takes the page's mappings away and keeps the page, and the guest's next
+access faults and marks it accessed ([Choosing the victim](#choosing-the-victim)).
+An ambiguous mapping acknowledgement keeps its possibly live slots allocated until
+the process exits.
 
 ## Seal, checkpoint and verification
 
@@ -1964,27 +1966,40 @@ detaching first so the next look passes over the region's own pages.
 
 ### Choosing the victim
 
-The victim is the least recently faulted page that leaves every protected memory
+The victim is the least recently used page that leaves every protected memory
 region its pages. The pager sees a guest's faults and none of its other
-accesses, so fault order is its only recency. Alone, that order lets a guest that
-cycles through more memory than the arena holds evict its neighbours' working
-sets on every fault.
+accesses. Alone, that order lets a guest that cycles through more memory than the
+arena holds evict its neighbours' working sets on every fault.
 
 The order is kept by Zircon's page queues, ported in `internal/zirconvm`. A
-resident page, clean or dirty, is in a reclaim queue by age, or in the isolate
-queue once it has aged out of them. The queues age one generation for each page a
-fault creates or touches; Zircon ages them on a timer and by page-table accessed
-bits, which a userfaultfd pager cannot read. An idle page is in the don't-need
-queue, which is taken first. A page a cold copy will be compared with is in the
-zero-fork queue, which is taken last.
+resident page, clean or dirty, is in a reclaim queue by age, or in an isolate
+queue once it has aged out of them. The queues age one generation for each fault
+served. An idle page is in the don't-need queue, which is taken first. A page a
+cold copy will be compared with is in the zero-fork queue, which is taken last.
+
+Zircon also ages pages by the accessed bits of their page tables, which a
+userfaultfd pager cannot read. A guest reads a page it maps without a fault, so
+fault order alone ranks a page it reads all the time, as a DAX root's reads are,
+below every page written once since. The evictor harvests instead
+(`vmmemory/harvest.go`). Each step first takes the mappings of a few of the
+oldest isolated pages away, keeps the pages, and moves them to the harvested
+isolate queue. It keeps a quarter of the arena harvested ahead of its victims,
+at most 64 pages a step. The guest's next access to a harvested page faults; the
+fault maps the page again from its frame, with no read, and marks it accessed,
+which moves it out of the isolate queues. A harvested page the evictor reaches
+was not touched while a quarter of the arena was evicted ahead of it. A store
+trap on a page the guest read until a harvest is served as a load: the page is
+mapped read-only again, and a real store traps on that mapping and copies, so a
+read KVM's worker asks for writable makes no cold copy.
 
 An allocation short of a slot evicts one page by the synchronous path of
 Zircon's evictor (`internal/zirconvm/evictor.go`), which calls the pager's
 reclaim step (`vmmemory/evict.go`) until a page is freed or the step finds
 nothing. Each step takes, in order: the oldest idle page; the slots of running
-prefetches, by cancelling them; the least recently faulted page the fair share
-lets it take; the least recently faulted page of all; and last a page a cold
-copy will be compared with. It then gives a cold copy back to its origin, drops a
+prefetches, by cancelling them; then, after it harvests, the oldest harvested
+page the fair share lets it take, or the oldest isolated page it has not
+harvested; the oldest page of all; and last a page a cold copy will be compared
+with. It then gives a cold copy back to its origin, drops a
 published page, or spills a memory region's own page. A page the fair share
 protects, or whose lock another holds, is left where it is rather than moved to
 the newest queue as Zircon's evictor does. A step that finds nothing older ages
@@ -1996,11 +2011,11 @@ memory regions attached. A memory region is protected while it holds no more tha
 its share and has asked for a page within the last turnover, which is as many
 evictions of mapped pages as the arena has pages. An eviction for one memory
 region takes no page another protected region maps. Where every candidate is
-protected, it takes the least recently faulted page of all, so an allocation
+protected, it takes the least recently used page of all, so an allocation
 never waits on the rule.
 
 A guest whose working set is resident asks for nothing, so it loses its
-protection after a turnover, gives up its least recently faulted page, and is
+protection after a turnover, gives up its least recently used page, and is
 protected again at its next fault. So a hog evicts its own pages, and costs a
 neighbour within its share about one refault a turnover. An idle guest's pages
 are anyone's to take.

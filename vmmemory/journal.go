@@ -197,6 +197,10 @@ func (r *MemoryRegion) unprotectForStore(ctx context.Context, index uint64) (ret
 		return !resolved && err == nil, err
 	}
 	defer r.host.unlockPage(page)
+	// The page may not be mapped at all: a harvest or a failed capture took
+	// its mapping away and kept it. Either way it is mapped from here, and an
+	// eviction has to revoke it.
+	r.setMapped(index, index+1, true)
 	if err := r.mapPages(ctx, r.runAt(index, frameOf(page).fileSlot, 1), true); err != nil {
 		return false, r.mappingFailed(err, func() { r.setMapped(index, index+1, false) })
 	}

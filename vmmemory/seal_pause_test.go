@@ -25,10 +25,11 @@ func TestASealsPauseIsItsWriteProtectCommandsAndNotItsPages(t *testing.T) {
 		const pages = 1024
 		f, r, m, b := placedMemoryRegion(t, 2*rangePages)
 		held(t, r, m, 0, pages)
-		// Every page of this backing holds its own number plus one, so a zero is
-		// a byte none of them had and the settle finds every one of them changed.
+		// Every page of this backing holds its own number plus one in every
+		// byte, so its complement is a byte the page did not hold, and the
+		// settle finds every one of them changed.
 		for page := range uint64(pages) {
-			access(t, r, m, page, true)[0] = 0
+			access(t, r, m, page, true)[0] = ^byte(page + 1)
 		}
 		// The walk is held where it has taken nothing, so what is counted below
 		// is the pause alone.
@@ -57,8 +58,8 @@ func TestASealsPauseIsItsWriteProtectCommandsAndNotItsPages(t *testing.T) {
 		}
 		f.finishCheckpoint(r, b)
 		for page := range uint64(pages) {
-			if got := access(t, r, m, page, false)[0]; got != 0 {
-				t.Fatalf("page %d reads %d after its checkpoint, want the 0 the guest stored", page, got)
+			if got, want := access(t, r, m, page, false)[0], ^byte(page+1); got != want {
+				t.Fatalf("page %d reads %d after its checkpoint, want the %d the guest stored", page, got, want)
 			}
 		}
 	})

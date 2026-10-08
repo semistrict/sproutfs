@@ -247,10 +247,11 @@ func (f *arenaFile) Release(_ context.Context, slot int) error {
 	if err != nil {
 		return err
 	}
-	for _, m := range a.mappings {
-		for _, p := range m.pages {
+	for i, m := range a.mappings {
+		for page, p := range m.pages {
 			if p.place == at {
-				return fmt.Errorf("release of mapped slot %d of file %d", slot, f.id)
+				return fmt.Errorf("release of mapped slot %d of file %d, which mapping %d maps at page %d",
+					slot, f.id, i, page)
 			}
 		}
 	}
@@ -917,18 +918,27 @@ func access(t *testing.T, r *vmmemory.MemoryRegion, m *mapping, page uint64, wri
 // runtime whose guards the fault's path consults. The guest it models reads
 // on only once the rest of the fault's run is in: it waits for the prefetch
 // the fault started. The tests of prefetch itself fault without waiting.
+// accessFaults is how many faults one access may take: a store trap a fault
+// served read-only, and the protect trap that follows it.
+const accessFaults = 2
+
 func accessUnder(ctx context.Context, t *testing.T, r *vmmemory.MemoryRegion, m *mapping, page uint64,
 	write bool) []byte {
 	t.Helper()
 	p, ok := m.mappedPage(page)
-	if !ok || (write && !p.writable) {
+	// The access retries after each fault, as a vCPU does: a store trap served
+	// read-only traps again on the read-only mapping.
+	for faults := 0; !ok || (write && !p.writable); faults++ {
+		if faults == accessFaults {
+			t.Fatalf("page %d is still not mapped for its access after %d faults", page, faults)
+		}
 		if err := r.Fault(ctx, page, write); err != nil {
 			t.Fatal(err)
 		}
 		if err := r.SettlePrefetches(ctx); err != nil {
 			t.Fatal(err)
 		}
-		p, _ = m.mappedPage(page)
+		p, ok = m.mappedPage(page)
 	}
 	if p.slot == -1 {
 		return make([]byte, m.arena.pageSize)

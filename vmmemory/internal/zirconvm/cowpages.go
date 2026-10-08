@@ -175,7 +175,9 @@ const (
 	UnmapZeroPage
 	// UnmapAndHarvest removes the mappings and harvests their accessed
 	// bits. A userfaultfd pager cannot read the VMM's accessed bits
-	// (decision 4), so a mapping harvests nothing.
+	// (decision 4), so a mapping harvests nothing here: the pager's evictor
+	// harvests by removing the mappings of a page it keeps, and the fault
+	// after is the bit (PageQueues.PeekUnharvestedWhere).
 	UnmapAndHarvest
 	// RemoveWrite makes the mappings read-only.
 	RemoveWrite

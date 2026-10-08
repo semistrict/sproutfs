@@ -46,6 +46,13 @@ type Stats struct {
 	PrivateExtents                                         int
 	PeakResidentPages, PeakDirtyPages                      int
 	Faults, CopyOnWrites, Evictions, Spills, SpillRefaults uint64
+	// HarvestedPages counts the pages the evictor harvested ahead of taking
+	// any: their mappings taken away and their bytes kept, so that the guest's
+	// next touch of one faults and marks it accessed (harvest.go).
+	// SecondChances counts the harvested pages a fault took back before an
+	// eviction took them: pages the guest touched through a mapping, which
+	// the pager sees no other way.
+	HarvestedPages, SecondChances uint64
 	// WriteAheadPages counts the pages stores into fresh zero pages mapped
 	// writable beyond the one each store faulted on. The pager cannot see a
 	// store into one, so each is published like a stored page, and
@@ -273,6 +280,7 @@ func (h *Host) snapshot() (Stats, error) {
 	stats.PrivateExtents = len(h.extents)
 	stats.DirtyPages = h.dirty
 	stats.LogicalPages = h.logical
+	stats.SecondChances = h.node.PageQueues().SecondChances()
 	stats.UFFDReads = h.uffdReads.Load()
 	stats.RemapEvents = h.remapEvents.Load()
 	stats.ReadTraps = h.traps[readTrap].Load()

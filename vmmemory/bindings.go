@@ -333,3 +333,24 @@ func (r *MemoryRegion) setBindingMapped(b *binding, mapped bool) {
 	b.mapped = mapped
 	r.noteSealableLocked(b)
 }
+
+// harvestedReadOnly reports whether the page at index is one the guest may
+// only read, bound and not mapped, because a harvest took its mapping away and
+// no fault has marked it accessed since (harvest.go). A store trap on it may be
+// a read KVM's worker asked for writable, so it is served as a load: the page
+// is mapped read-only again, and a real store traps on that mapping and copies
+// as a store into a page the guest maps does, not as a cold copy.
+func (r *MemoryRegion) harvestedReadOnly(index uint64) bool {
+	r.bindingsMu.Lock()
+	b, _ := r.lookupLocked(index)
+	readOnly := b != nil && !b.mapped && !b.writable()
+	r.bindingsMu.Unlock()
+	if !readOnly {
+		return false
+	}
+	h := r.host
+	h.mu.Lock()
+	page := b.page
+	h.mu.Unlock()
+	return page != nil && h.node.PageQueues().IsHarvested(page)
+}

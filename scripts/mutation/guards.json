@@ -1370,5 +1370,11 @@
     "package": "vmmemory",
     "run": "^TestTheEndOfASealLeavesACopyAChildsStoreStillReplaces$",
     "purpose": "Let go of the page a store's copy replaces before the store's command lands, so the end of a fork point's seal drops the copy the guest still maps, which has no alias left to revoke: its slot is given back and its file dropped under the guest's mapping."
+  },
+  {
+    "id": "pager-harvest-without-revoking",
+    "package": "vmmemory",
+    "run": "^TestAnEvictionKeepsAPageTheGuestReadsThroughItsMapping$",
+    "purpose": "Move a page to the harvested queue without taking its mappings away, so the guest reads on through them without a fault, nothing marks the page accessed, and the evictor takes a page the guest keeps reading."
   }
 ]

@@ -51,7 +51,7 @@ func (r *MemoryRegion) holdsOwn(index uint64) bool {
 // of its own, and with it take a dirty reservation. It takes no region lock:
 // a store decides this before it competes for one, and decides again after.
 func (r *MemoryRegion) needsPrivatePage(index uint64) bool {
-	return !r.writable(index) && !r.journalProtected(index)
+	return !r.writable(index) && !r.journalProtected(index) && !r.harvestedReadOnly(index)
 }
 
 // fresh reports what a store may assume about a page whose lock it does not

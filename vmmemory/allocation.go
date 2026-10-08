@@ -405,7 +405,7 @@ var allocateSeam func()
 // The pager sees a guest's faults and not its other accesses, so asking for a
 // page is the only sign it has that a guest is using its memory. A guest whose
 // working set is resident asks for nothing. It loses its protection after a
-// turnover, gives up its least recently faulted page, and is protected again as
+// turnover, gives up its least recently used page, and is protected again as
 // soon as it faults on that page. So a guest that cycles through more memory
 // than the arena holds evicts its own pages, and costs a neighbour within its
 // share one refault a turnover rather than its working set. An idle guest's

@@ -32,7 +32,12 @@ import (
 //     queue, the caller does the work: AgeOnAccess and RotateReclaimQueues make
 //     room for themselves, and PeekIsolate processes what it needs.
 //   - The scanner's accessed-bit harvest that TryAgingLocked waits for, for the
-//     same reason.
+//     same reason. What stands in for it is the harvested isolate queue, which
+//     is not Zircon's: the evictor harvests an isolated page by taking its
+//     mappings away and keeping its bytes, and a fault that maps it again marks
+//     it accessed, which moves it out of the isolate queues as an accessed bit
+//     would have before the LRU processing isolated it (see
+//     PeekUnharvestedWhere).
 //   - Loaned pages and the sweep that replaces pages with them
 //     (GetCowForLoanedPage, the LruIsolate list's loan replacements): the arena
 //     is a set of memfds, and no page is lent.
@@ -67,10 +72,13 @@ const (
 	NumActiveQueues = 2
 	// numOldestQueues is kNumOldestQueues, for the counts Zircon reports.
 	numOldestQueues = 2
-	// The isolate queues: don't-need pages first, then standard aged pages.
-	isolateQueueDontNeed = 0
-	isolateQueueStandard = 1
-	numIsolateQueues     = 2
+	// The isolate queues: don't-need pages first, then aged pages the evictor
+	// has harvested, then standard aged pages. The harvested queue is not
+	// Zircon's (see PeekUnharvestedWhere).
+	isolateQueueDontNeed  = 0
+	isolateQueueHarvested = 1
+	isolateQueueStandard  = 2
+	numIsolateQueues      = 3
 	// opBatchSize is kOpBatchSize.
 	opBatchSize = 64
 	// noIsolateLimit is ProcessLruQueue's limit when Zircon passes
@@ -89,7 +97,8 @@ const (
 	_ = uint(pageQueueReclaimBase - pageQueueReclaimIsolate - 1) // isolate is just before the LRU queues...
 	_ = uint(pageQueueReclaimIsolate + 1 - pageQueueReclaimBase) // ...exactly
 	_ = uint(pageQueueReclaimIsolate - pageQueuePagerBackedDirty - 1)
-	_ = uint(isolateQueueStandard - isolateQueueDontNeed - 1) // don't-need comes first
+	_ = uint(isolateQueueHarvested - isolateQueueDontNeed - 1) // don't-need comes first
+	_ = uint(isolateQueueStandard - isolateQueueHarvested - 1) // then harvested
 	_ = uint(numIsolateQueues - isolateQueueStandard - 1)
 )
 
@@ -132,9 +141,11 @@ type QueuedPage[P any, O QueueObject] interface {
 }
 
 // pageQueueList is Zircon's VmPageDoublyLinkedList for one queue: nodes linked
-// through their prev and next, with a sentinel.
+// through their prev and next, with a sentinel, and how many nodes it links,
+// which Zircon does not count.
 type pageQueueList[P any, O QueueObject] struct {
-	head PageQueueNode[P, O]
+	head   PageQueueNode[P, O]
+	length int
 }
 
 func (l *pageQueueList[P, O]) init() {
@@ -157,6 +168,7 @@ func (l *pageQueueList[P, O]) insertAfter(n, at *PageQueueNode[P, O]) {
 	at.next.prev = n
 	at.next = n
 	n.queue = l
+	l.length++
 }
 
 // popBack takes the page at the tail.
@@ -184,6 +196,7 @@ func removeFromQueueList[P any, O QueueObject](n *PageQueueNode[P, O]) {
 	assert(n.queue != nil, "the page is in a queue list")
 	n.prev.next = n.next
 	n.next.prev = n.prev
+	n.queue.length--
 	n.prev, n.next, n.queue = nil, nil, nil
 }
 
@@ -266,6 +279,10 @@ type PageQueues[P QueuedPage[P, O], O QueueObject] struct {
 
 	// activeRatioMultiplier is active_ratio_multiplier_. Guarded by lock.
 	activeRatioMultiplier int
+
+	// secondChances counts the harvested pages MarkAccessed moved out of the
+	// isolate queues. It is not Zircon's. Guarded by listLock.
+	secondChances uint64
 }
 
 // NewPageQueues is a set of empty page queues for pages of pageSize bytes, a
@@ -470,10 +487,10 @@ func (pq *PageQueues[P, O]) RotateReclaimQueues() { pq.rotate(AgeReasonManual) }
 
 // AgeOnAccess is not Zircon's. It is the aging Zircon's MRU thread does, done
 // by the pager at each fault instead of by a thread on a timer (decision 4 of
-// the plan). The pager ages the queues by one generation after each page a
-// fault makes or marks accessed, so its pages are ordered by when a fault last
-// touched them. Like the MRU thread it respects DisableAging, and like
-// RotateReclaimQueues it makes room for itself, since there is no LRU thread.
+// the plan). The pager ages the queues by one generation after each fault it
+// serves, so its pages are ordered by when a fault last touched them. Like the
+// MRU thread it respects DisableAging, and like RotateReclaimQueues it makes
+// room for itself, since there is no LRU thread.
 func (pq *PageQueues[P, O]) AgeOnAccess() {
 	pq.lock.Lock()
 	defer pq.lock.Unlock()
@@ -611,6 +628,9 @@ func (pq *PageQueues[P, O]) MarkAccessed(page P) {
 	// which Zircon does in MarkAccessedMaybeIsolate after taking the list
 	// lock. It is held already.
 	if oldGen == pageQueueReclaimIsolate {
+		if node.queue == &pq.isolateQueues[isolateQueueHarvested] {
+			pq.secondChances++
+		}
 		pq.moveToQueueLockedList(node, target)
 		pq.listLock.Unlock()
 		pq.maybeCheckActiveRatioAging(1)
@@ -1320,6 +1340,81 @@ func (pq *PageQueues[P, O]) isolateOlderThanLocked(lowestQueue uint64) {
 	// The limit is one larger than the lowest queue, since evicting queue X
 	// is done by making X+1 the LRU queue.
 	pq.processLruQueueLocked(pq.mruGen.Load()-(lowestQueue-1), noIsolateLimit)
+}
+
+// PeekUnharvestedWhere is not Zircon's. It is up to n pages of the standard
+// isolate queue that accept takes, the oldest first, for the evictor to
+// harvest: it takes their mappings away, keeps their bytes, and moves each one
+// still isolated to the harvested queue with MoveToHarvested. The inactive
+// pages of the LRU queues are isolated first, as a peek isolates them, so the
+// active queues' pages, which faults touched last, are never harvested. The
+// pages stay where they are.
+//
+// It stands in for the accessed-bit harvest that Zircon's aging waits for.
+// Zircon reads the accessed bits of a page's mappings and moves an accessed
+// page out of the LRU queue before the page is isolated. The pager cannot read
+// them, so it takes the mappings away instead, and the fault the guest's next
+// touch takes is the accessed bit: the fault marks the page accessed, which
+// moves it out of the isolate queues. A harvested page the evictor reaches
+// still isolated was not touched since, as a page whose bit was clear.
+func (pq *PageQueues[P, O]) PeekUnharvestedWhere(n int, accept func(P) bool) []VmoBacklink[P, O] {
+	pq.synchronizeWithAging()
+	standard := &pq.isolateQueues[isolateQueueStandard]
+	pq.lock.Lock()
+	pq.isolateOlderThanLocked(NumActiveQueues)
+	pq.lock.Unlock()
+	pq.listLock.Lock()
+	defer pq.listLock.Unlock()
+	var found []VmoBacklink[P, O]
+	for node := standard.head.next; node != &standard.head && len(found) < n; node = node.next {
+		if accept(node.page) {
+			found = append(found, backlink(node))
+		}
+	}
+	return found
+}
+
+// MoveToHarvested is not Zircon's. It moves a page PeekUnharvestedWhere
+// returned to the tail of the harvested isolate queue, once the evictor has
+// harvested it, and reports whether it did: a page that left the standard
+// isolate queue since, because a fault marked it accessed, stays where it is.
+func (pq *PageQueues[P, O]) MoveToHarvested(page P) bool {
+	pq.listLock.Lock()
+	defer pq.listLock.Unlock()
+	node := page.QueueNode()
+	if node.queue != &pq.isolateQueues[isolateQueueStandard] {
+		return false
+	}
+	removeFromQueueList(node)
+	pq.isolateQueues[isolateQueueHarvested].pushBack(node)
+	return true
+}
+
+// IsHarvested reports whether a page is in the harvested isolate queue: the
+// evictor harvested it, and nothing has marked it accessed since. It is not
+// Zircon's.
+func (pq *PageQueues[P, O]) IsHarvested(page P) bool {
+	pq.listLock.Lock()
+	defer pq.listLock.Unlock()
+	return page.QueueNode().queue == &pq.isolateQueues[isolateQueueHarvested]
+}
+
+// HarvestedCount is how many pages the harvested isolate queue holds: pages
+// harvested and not touched since, which the evictor takes before any page it
+// has not harvested. It is not Zircon's.
+func (pq *PageQueues[P, O]) HarvestedCount() int {
+	pq.listLock.Lock()
+	defer pq.listLock.Unlock()
+	return pq.isolateQueues[isolateQueueHarvested].length
+}
+
+// SecondChances is how many harvested pages a fault marked accessed, and so
+// moved out of the isolate queues before the evictor took them. It is not
+// Zircon's.
+func (pq *PageQueues[P, O]) SecondChances() uint64 {
+	pq.listLock.Lock()
+	defer pq.listLock.Unlock()
+	return pq.secondChances
 }
 
 // peekIsolateListWhere is the first isolated page accept takes, if any.

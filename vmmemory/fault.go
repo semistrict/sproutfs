@@ -59,6 +59,12 @@ func (r *MemoryRegion) Fault(ctx context.Context, index uint64, write bool) erro
 			continue
 		}
 		if !retry {
+			if err == nil {
+				// The queues age one generation for each fault served, so
+				// that the pages it touched are newer than every page touched
+				// before it (evict.go).
+				r.host.node.PageQueues().AgeOnAccess()
+			}
 			return err
 		}
 		decisions++
@@ -145,7 +151,7 @@ func (r *MemoryRegion) faultOnce(ctx context.Context, index uint64, write bool, 
 	h.stats.Faults++
 	h.mu.Unlock()
 	defer func() { h.faultLatency.Observe(h.clock.Since(started)) }()
-	if !write || r.writable(index) {
+	if !write || r.writable(index) || r.harvestedReadOnly(index) {
 		return false, r.load(ctx, index, spill)
 	}
 	if r.journalProtected(index) {

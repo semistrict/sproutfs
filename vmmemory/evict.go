@@ -19,9 +19,11 @@ import (
 //     revocation and no spill and nothing a guest is using;
 //   - none while prefetches hold slots: they are cancelled, and the slots come
 //     back as their reads end;
-//   - the least recently faulted page that leaves every protected memory region
-//     its pages, which is the fair share;
-//   - the least recently faulted page of all;
+//   - after the step harvests (harvest.go), the least recently used page that
+//     leaves every protected memory region its pages, which is the fair
+//     share: a harvested page the guest has not touched since, before an
+//     isolated page not harvested yet;
+//   - the least recently used page of all;
 //   - a page a cold copy will be compared with, last.
 //
 // A cold copy the guest did not change goes back to its origin rather than be
@@ -47,12 +49,12 @@ import (
 // The pages are ordered for reclaim by Zircon's page queues
 // (internal/zirconvm/pagequeues.go):
 //
-//   - Every page a memory region may map is in a reclaim queue, or in the
-//     standard isolate queue once it has aged out of them. The queues age one
-//     generation for each page a fault creates or touches (AgeOnAccess), so an
-//     eviction walks them in the order a fault last touched each page. Fault
-//     order is the only recency the pager has: it sees no access through a
-//     page table it has filled.
+//   - Every page a memory region may map is in a reclaim queue, or in an
+//     isolate queue once it has aged out of them. The queues age one
+//     generation for each fault served (AgeOnAccess), so an eviction walks
+//     them in the order a fault last touched each page. The pager sees no
+//     access through a page table it has filled, so the evictor harvests a
+//     page before it takes it, and the access after faults (harvest.go).
 //   - An idle page, which no memory region maps, is in the don't-need queue,
 //     which Zircon's peek takes first. The evictor takes its victims by
 //     peeking these queues.
@@ -171,11 +173,19 @@ func (h *Host) reclaimStep(ctx context.Context, req *evictionRequest, _ bool, _ 
 			return zirconvm.ReclaimAttempt{}, false, nil
 		}
 	}
-	// A slot that came free after the allocation looked, as a cancelled
-	// prefetch's do when it settles, is taken rather than a page a guest maps.
-	if !req.preferEviction && req.file != nil && h.freeLocked(req.file) > 0 &&
-		!sim.Bug(ctx, "pager-evict-past-a-freed-slot") {
-		req.freed = true
+	if h.freedLocked(ctx, req) {
+		h.mu.Unlock()
+		return zirconvm.ReclaimAttempt{}, false, nil
+	}
+	// The step takes a page a guest maps from here, so it harvests first, with
+	// h.mu given up: what it reads after is read afresh, a slot that came free
+	// meanwhile too. See harvest.go.
+	h.mu.Unlock()
+	if err := h.harvest(ctx); err != nil {
+		return zirconvm.ReclaimAttempt{}, false, err
+	}
+	h.mu.Lock()
+	if h.freedLocked(ctx, req) {
 		h.mu.Unlock()
 		return zirconvm.ReclaimAttempt{}, false, nil
 	}
@@ -191,6 +201,18 @@ func (h *Host) reclaimStep(ctx context.Context, req *evictionRequest, _ bool, _ 
 	}
 	req.preferEviction = false
 	return h.reclaimVictim(ctx, page)
+}
+
+// freedLocked reports a slot that came free after the allocation looked, as a
+// cancelled prefetch's do when it settles, and marks req to take it rather
+// than a page a guest maps. Caller holds h.mu.
+func (h *Host) freedLocked(ctx context.Context, req *evictionRequest) bool {
+	if req.preferEviction || req.file == nil || h.freeLocked(req.file) == 0 ||
+		sim.Bug(ctx, "pager-evict-past-a-freed-slot") {
+		return false
+	}
+	req.freed = true
+	return true
 }
 
 // evictionSeam runs in a reclaim between reading one victim's aliases and
@@ -209,8 +231,9 @@ func (h *Host) queuedLocked() int {
 }
 
 // peekVictimLocked is the victim the node's queues give: the least recently
-// faulted page that leaves every protected region its pages, then the least
-// recently faulted of all, then a page a cold copy pins, each returned locked.
+// used page that leaves every protected region its pages, then the least
+// recently used of all, then a page a cold copy pins, each returned locked.
+// The isolate queues give a harvested page before one not harvested yet.
 // Caller holds h.mu.
 func (h *Host) peekVictimLocked(req *evictionRequest) *zirconvm.VmPage {
 	share := h.cfg.ResidentPages / max(len(h.memoryRegions), 1)
