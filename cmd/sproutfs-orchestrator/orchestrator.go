@@ -1858,10 +1858,11 @@ func (o *orchestrator) Stop(ctx context.Context, id string, request orch.StopReq
 // host is gone, because opening takes the control record's epoch and would fence
 // a guest that is running perfectly well; a stopped VM has no such host — the
 // last one to run it published its state and closed it — so a host that did not
-// answer this survey is not a reason to refuse. Everything that says the VM is
-// between hosts rather than stopped still refuses: a host that runs it, two
-// hosts that claim it, a host still serving the pages no checkpoint has, and an
-// operation of this orchestrator's own still in flight.
+// answer this survey is not a reason to refuse a VM this orchestrator saw stop.
+// For any other VM it is: the quiet host may be running it. Everything that
+// says the VM is between hosts rather than stopped still refuses: a host that
+// runs it, two hosts that claim it, a host still serving the pages no
+// checkpoint has, and an operation of this orchestrator's own still in flight.
 func (o *orchestrator) Start(ctx context.Context, id string, request orch.StartRequest) (orch.StartResult, error) {
 	// A VM that comes back where it was comes back at the shape its memory
 	// describes, so there is nothing to resize; asking is a mistake rather than
@@ -1892,7 +1893,8 @@ type reopening struct {
 	// about a host that did not answer.
 	state, what, quietAdvice string
 	// requireAnswers refuses while any listed pod is quiet, which is what a
-	// recovery's evidence of a loss is and what a stopped VM does not need.
+	// recovery's evidence of a loss is and what a VM this orchestrator saw
+	// stop does not need (seenStopped).
 	// force is the operator's word that every quiet pod's process is gone.
 	requireAnswers, force bool
 	// handedOver is the host a migration took the VM from, empty for every

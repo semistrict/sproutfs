@@ -2185,8 +2185,32 @@ each of which may lose its reply after the peer carried it out
 and a view of it. `TestSeededTopologyUnderBoundaryFaults` runs the seeds that
 between them fire the simulated VMM's and the peers' sites. The control store
 calls nothing but `platform.ObjectStore`, which is the platform's manifest.
-The orchestrator's hosts, pods and records (TASK-119) and the guest agent's
-exec (TASK-116) have no manifest yet.
+The guest agent's exec (TASK-116) has no manifest yet.
+
+`orchestrator.json` lists the orchestrator's boundaries: each host's API
+(`hostClient`), the Kubernetes API (`pods`) and the bucket's control records
+(`records`). The fakes in `cmd/sproutfs-orchestrator` fail every request at
+random: one that never reached the far side, one it refused, and one it carried
+out whose answer was lost (`orchestrator/host-reply-lost/<method>`). Half the
+times a host loses an answer, it is also cut off the pod network for up to two
+holds. `TestTheOrchestratorUnderBoundaryFaults` drives creates, forks,
+migrations, drains, stops, starts, recoveries, kills, deletes and orchestrator
+restarts through them on 128 seeds, with the reconcile timer running. Once the
+faults stop and the deployment settles, every VM with a record runs on exactly
+one host or starts, every VM the orchestrator said it made still has its
+record, and no host runs a VM without one or still holds a handover.
+`SPROUTFS_ORCHESTRATOR_SEEDS` selects another seed count; 500 pass.
+
+Its first runs found that a start or a delete went past a quiet host: no
+answering host ran the VM, so a start opened it on a second host and a delete
+removed its record under a running guest. Each now needs every host to answer,
+or a table row that says the VM stopped, and a row says stopped only on a
+host's word. Three places wrote it without one: an open whose answer was lost,
+a reconcile while the VM's host was quiet, and a handover that ended while its
+destination was quiet after a lost answer (`errUnsettled`). The orchestrator
+surveys its hosts at once and reconciles on its own timer, so a seed is not
+replayed exactly; a failing one prints what the deployment did and what the
+orchestrator logged.
 
 ## Negative tests in the tree
 
