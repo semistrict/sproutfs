@@ -9,6 +9,8 @@
 # managed and on plain Firecracker; with SPROUTFS_GCE_SMOKE=1 as well, everything
 # but the build, in minutes, which is what to run first on a host `create` made.
 # `create`, `run` and `delete` expose the same steps for interrupted runs.
+# A worktree whose Firecracker submodule is not checked out names a clone of
+# the fork in SPROUTFS_FIRECRACKER_TREE (scripts/lib/stage-source.py).
 #
 # SPROUTFS_FIRECRACKER_RUN narrows the qualification to the Firecracker tests
 # its -test.run pattern selects and skips every other suite, which is what a
@@ -202,26 +204,11 @@ run() {
     local staging
     staging=$(mktemp -d /tmp/sproutfs-gce-source.XXXXXX)
     # Transfer only versioned and non-ignored source, including the Firecracker
-    # submodule, with no credentials, Git internals or build caches.
-    python3 - "$repo" "$staging/source.tar.gz" <<'PY'
-import io, pathlib, subprocess, sys, tarfile
-root = pathlib.Path(sys.argv[1])
-def files(directory):
-    return subprocess.check_output(['git', '-C', str(directory), 'ls-files', '--cached', '--others', '--exclude-standard', '-z']).split(b'\0')
-names = {name.decode() for name in files(root) if name}
-submodule = 'third_party/firecracker'
-names.update(submodule + '/' + name.decode() for name in files(root / submodule) if name)
-revision = subprocess.check_output(['git', '-C', str(root), 'rev-parse', 'HEAD']).decode().strip() + '-working-tree'
-with tarfile.open(sys.argv[2], 'w:gz') as archive:
-    for name in sorted(names):
-        path = root / name
-        if path.is_file() or path.is_symlink():
-            archive.add(path, arcname=name, recursive=False)
-    data = (revision + '\n').encode()
-    entry = tarfile.TarInfo('source-revision.txt')
-    entry.size = len(data)
-    archive.addfile(entry, io.BytesIO(data))
-PY
+    # submodule or SPROUTFS_FIRECRACKER_TREE, with no credentials, Git
+    # internals or build caches (scripts/lib/stage-source.py).
+    python3 "$repo/scripts/lib/stage-source.py" "$repo" "$staging/source.tar.gz"
+    local revision
+    revision="$(git -C "$repo" rev-parse HEAD)-working-tree"
     (cd "$staging" && shasum -a 256 source.tar.gz) > "$results/source-archive.sha256"
     "${cloud[@]}" compute instances describe "$instance" --zone="$zone" \
         --format='json(name,zone,machineType,cpuPlatform,scheduling,advancedMachineFeatures,disks[].autoDelete)' \
@@ -245,7 +232,8 @@ PY
         sudo /usr/local/sbin/sproutfs-bench-expire --check-only
         sudo systemctl is-active sproutfs-bench-expire.timer
         mkdir -p '"$run"'/source '"$run"'/results
-        tar -xzf source.tar.gz -C '"$run"'/source
+        tar -xzf source.tar.gz -C '"$run"'/source --strip-components=1
+        echo '"$revision"' > '"$run"'/source/source-revision.txt
         sudo env SPROUTFS_GCE_BUILD_ONLY='"${SPROUTFS_GCE_BUILD_ONLY:-0}"' SPROUTFS_GCE_FANOUT='"${SPROUTFS_GCE_FANOUT:-0}"' SPROUTFS_GCE_BOOTSURVEY='"${SPROUTFS_GCE_BOOTSURVEY:-0}"' SPROUTFS_GCE_QUALIFY='"${SPROUTFS_GCE_QUALIFY:-0}"' SPROUTFS_GCE_WORKLOAD='"${SPROUTFS_GCE_WORKLOAD:-0}"' SPROUTFS_GCE_SMOKE='"${SPROUTFS_GCE_SMOKE:-0}"' SPROUTFS_BENCH_SCENARIOS='"${SPROUTFS_BENCH_SCENARIOS:-}"' SPROUTFS_BENCH_FORKS='"${SPROUTFS_BENCH_FORKS:-}"' SPROUTFS_BENCH_RAM_BYTES='"${SPROUTFS_BENCH_RAM_BYTES:-}"' SPROUTFS_BENCH_ROOT_BYTES='"${SPROUTFS_BENCH_ROOT_BYTES:-}"' SPROUTFS_BENCH_RAM_RESIDENT_BYTES='"${SPROUTFS_BENCH_RAM_RESIDENT_BYTES:-}"' SPROUTFS_BENCH_PMEM_RESIDENT_BYTES='"${SPROUTFS_BENCH_PMEM_RESIDENT_BYTES:-}"' SPROUTFS_RAM_PAGE_BYTES='"${SPROUTFS_RAM_PAGE_BYTES:-}"' SPROUTFS_PMEM_PAGE_BYTES='"${SPROUTFS_PMEM_PAGE_BYTES:-}"' SPROUTFS_ARENA='"${SPROUTFS_ARENA:-}"' SPROUTFS_KVM_TRACE='"${SPROUTFS_KVM_TRACE:-0}"' SPROUTFS_FIRECRACKER_RUN='"'${SPROUTFS_FIRECRACKER_RUN:-}'"' SPROUTFS_VMTEST_RUN='"'${SPROUTFS_VMTEST_RUN:-}'"' SPROUTFS_VMTEST_COUNT='"${SPROUTFS_VMTEST_COUNT:-1}"' SPROUTFS_FIRECRACKER_COUNT='"${SPROUTFS_FIRECRACKER_COUNT:-1}"' SPROUTFS_FIRECRACKER_JAIL='"${SPROUTFS_FIRECRACKER_JAIL:-0}"' SPROUTFS_BENCH_PLAIN_HUGE_PAGES='"${SPROUTFS_BENCH_PLAIN_HUGE_PAGES:-}"' SPROUTFS_GCS_BUCKET='"${SPROUTFS_GCE_BUCKET:-}"' SPROUTFS_GCS_PREFIX='"$prefix"' timeout --signal=TERM --kill-after=30s '"$limit"' bash '"$run"'/source/scripts/lib/bench-memory-linux.sh "$PWD/'"$run"'/source" "$PWD/'"$run"'/results"' \
         > "$results/remote.log" 2>&1 || status=$?
     "${cloud[@]}" compute scp --recurse --zone="$zone" "$instance:$run/results/." "$results/" || status=$?
