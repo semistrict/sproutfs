@@ -59,3 +59,12 @@ func SetPrefetchCheckedSeam(t *testing.T, seam func(start uint64)) {
 	prefetchCheckedSeam = seam
 	t.Cleanup(func() { prefetchCheckedSeam = previous })
 }
+
+// SetLoadUnboundSeam installs what a fault runs once it found its page bound
+// and not mapped and gave the page's lock back, before it looks the page up.
+// It is restored when the test ends.
+func SetLoadUnboundSeam(t *testing.T, seam func(index uint64)) {
+	previous := loadUnboundSeam
+	loadUnboundSeam = seam
+	t.Cleanup(func() { loadUnboundSeam = previous })
+}

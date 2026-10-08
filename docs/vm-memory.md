@@ -1349,6 +1349,24 @@ The give-back leaves a range the rules made whole alone; the seal still leaves
 its unchanged cold copies out. The pages the rules copy beside a store are not
 cold.
 
+### A fault refaults its own page that was spilled before its lookup
+
+A page that is the region's own state, its dirty page or the checkpoint's it
+shares, is a page of its layer or, once spilled, only its reservation. A fault
+that finds such a page bound and not mapped, as an unseal leaves it, has
+nothing to complete, gives the page's lock back, and looks the page up. An
+eviction in between spills the page out of the layer. The lookup then went on
+past the layer, to a root's page or a read of the volume, and bound those
+bytes: the guest read what it had stored over, and its store was lost. The
+lookup now asks, under the layer's lock, which an eviction takes to remove the
+page, whether the page is the region's own state; where it finds anything but
+the layer's page, it fails any request it sent, and the fault decides again
+from the top and refaults the page from its reservation
+(`TestAFaultRefaultsItsOwnPageAnEvictionSpilledBeforeItsLookup`, guard
+`pager-look-a-spilled-page-up-past-its-layer`). The unscheduled soak found it
+as an invalid resolution about once in seventy runs; the mapping audit
+(docs/testing.md) named it.
+
 ### A refault decides again after its reclaim
 
 A reclaim for a private page releases the memory region while it looks for an

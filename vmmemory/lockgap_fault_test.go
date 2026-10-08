@@ -180,6 +180,53 @@ func TestAStoreGivesUpNoOwnPlaceASettleHandedBackWhileItLocked(t *testing.T) {
 	})
 }
 
+// A fault on a page that is the region's own state, bound and not mapped, as
+// an unseal leaves it, gives the page's lock back once it has found nothing
+// to complete, and looks the page up. An eviction in between spills the
+// page: the layer holds nothing there, and only the page's reservation holds
+// its bytes. The lookup must send the fault back to refault it. Going on to
+// the volume, the fault read the bytes the guest had stored over, and the
+// store was lost (the unscheduled soak, as an invalid resolution).
+func TestAFaultRefaultsItsOwnPageAnEvictionSpilledBeforeItsLookup(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 8, LogicalPages: 16, DirtyPages: 8,
+			ReadAheadPages: 1})
+		r, m, _ := f.memoryRegion(4)
+		stored := byte(77)
+		if _, err := memoryByte(f.ctx, r, m, 0, &stored); err != nil {
+			t.Fatal(err)
+		}
+		// An unseal gives the guest its page back as dirty state, unmapped.
+		if err := r.Seal(f.ctx); err != nil {
+			t.Fatal(err)
+		}
+		if err := r.Unseal(f.ctx); err != nil {
+			t.Fatal(err)
+		}
+		if _, mapped := m.pages[0]; mapped {
+			t.Fatal("page 0 is mapped after the unseal, want it revoked")
+		}
+		evicted := false
+		vmmemory.SetLoadUnboundSeam(t, func(index uint64) {
+			if index != 0 || evicted {
+				return
+			}
+			evicted = true
+			went, err := vmmemory.EvictPage(f.ctx, r, 0)
+			if err != nil || !went {
+				t.Errorf("evicting page 0 before the fault's lookup = %t, %v; want it spilled", went, err)
+			}
+		})
+		got, err := memoryByte(f.ctx, r, m, 0, nil)
+		if err != nil || got != stored {
+			t.Fatalf("page 0 reads %d after its eviction, want the %d the guest stored: %v", got, stored, err)
+		}
+		if !evicted {
+			t.Fatal("the fault never looked its unmapped page up")
+		}
+	})
+}
+
 // A refault of a spilled page looks for a place of its own in an isolated
 // arena. One place holds the checkpoint's copy, and the other the page an
 // eviction is taking: its aliases are off but its slot is not back yet.

@@ -1222,6 +1222,12 @@
     "purpose": "Give up the idle page allocateOwn chose under h.mu once its lock is taken, without asking again whether it is idle. A page a settle handed back to the region meanwhile, and an eviction's look aged, is freed while the region names it: the pager panics."
   },
   {
+    "id": "pager-look-a-spilled-page-up-past-its-layer",
+    "package": "vmmemory",
+    "run": "^TestAFaultRefaultsItsOwnPageAnEvictionSpilledBeforeItsLookup$",
+    "purpose": "Let a lookup of a page that is the region's own state go on past its layer, to a root's page or the volume, once an eviction spilled the page after the fault looked at it. The guest reads bytes it had stored over: its store is lost."
+  },
+  {
     "id": "pager-drop-lent-copies-before-their-lent-pages",
     "package": "vmmemory",
     "run": "^TestTheEndOfASealWaitsForAChildsCopyOfAPageTheRetirePublishedElsewhere$",

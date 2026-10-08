@@ -1577,6 +1577,27 @@ SPROUTFS_PAGER_SOAK=30m go test -race ./vmmemory -run '^TestThePagersCampaignsSo
 `SPROUTFS_PAGER_SOAK_SEED` sets the first seed; it is the clock's otherwise.
 Run it on a machine with many cores, not on a laptop that runs anything else.
 
+**The mapping audit.** A failure that needs two rare events to meet is rarer
+still than either. Every `vmmemory` test keeps what each mapping command
+installed for each page (`vmmemory/mappingaudit.go`; nil in production) and
+checks the pager against it:
+
+- a resolve is valid for what the page is mapped as: writable for a page
+  mapped writable, read-only for one mapped read-only or write-protected;
+- when the region is let go, at the end of a seal, retire, unseal, handoff or
+  detach for every page and at the end of a fault for its window, no page its
+  binding says is writable is mapped read-only, because the next fault on it
+  resolves it writable;
+- a page that is the region's own dirty state is never bound to a root's page.
+
+A finding names the page's latest commands with their callers, and the
+binding's state. The audit turned a lost store that the soak found about once
+in seventy runs, as an invalid resolution with no cause, into a finding in
+five, then into its cause: a fault that let its own unmapped page's lock go
+before its lookup, where an eviction spilled the page and the lookup read the
+volume (`TestAFaultRefaultsItsOwnPageAnEvictionSpilledBeforeItsLookup`). Tests
+that measure the pager's own heap attach without it (`WithoutMappingAudit`).
+
 **A fork point's children while its seal ends.**
 `TestAForkPointsChildrenReadWhatItLentWhileItsSealEnds` runs twelve seeds of a
 parent that seals a fork point, stores and ends the seal by retire, unseal or
@@ -1586,6 +1607,8 @@ retired batch and page, an abandon, a hand-back, an adoption, a sharer's drop, a
 lent root's drop and a fork file's end pass `sim.Admit`.
 `TestForkCampaignReplaysItsSeeds` runs seeds twice and requires the same order.
 The campaign finds `pager-lend-a-page-past-its-checkpoint` in both arenas.
+`SPROUTFS_FORK_CAMPAIGN_SEEDS=n` runs seeds 1 to n instead, to sweep the
+scheduler's interleavings; a failing seed replays alone by its subtest's name.
 
 **The disk's stripes** mark five: a write that kept several indices of one
 envelope, a read that rebuilt an envelope from a parity stripe, a read that

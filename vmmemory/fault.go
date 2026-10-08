@@ -205,6 +205,9 @@ func (r *MemoryRegion) loadOnce(ctx context.Context, index uint64, spill *reserv
 			// reservation.
 			return r.refault(ctx, b)
 		}
+		if loadUnboundSeam != nil {
+			loadUnboundSeam(index)
+		}
 	}
 	plan, err := r.planFault(ctx, index, index)
 	if err != nil {
@@ -242,6 +245,11 @@ func (r *MemoryRegion) loadOnce(ctx context.Context, index uint64, spill *reserv
 	}
 	return plan.install(ctx)
 }
+
+// loadUnboundSeam runs in a fault that found its page bound and not mapped,
+// once it has given the page's lock back and before it looks the page up.
+// Production leaves it nil.
+var loadUnboundSeam func(index uint64)
 
 // loadBound completes a fault on a page the region maps already: a refault
 // after a failed ACK, or a page a prefetch or a populate mapped since the
@@ -485,6 +493,10 @@ func (p *plan) takeFaulting(ctx context.Context, index uint64) (again bool, err 
 		return false, nil
 	}
 	found, request, err := r.lookup(ctx, index, p.locationsOf(index))
+	if errors.Is(err, errOwnPageSpilled) {
+		// The fault decides again from the top, and refaults the page.
+		return true, nil
+	}
 	if errors.Is(err, errPageBusy) {
 		// Something holds the page, an eviction most likely: the fault waits
 		// for it with nothing held, and looks again.
@@ -654,6 +666,19 @@ func (r *MemoryRegion) lookup(ctx context.Context, page uint64, loc *locations) 
 		// No request was made, so the request goes back as it came.
 		r.host.multis.Put(multi)
 	}
+	// The region's own state is a page of its layer or, spilled, only its
+	// reservation: never a zero, a root's page or the volume's bytes. The
+	// fault looked at the page with its lock held and gave it back before
+	// this lookup, so an eviction may have spilled it in between; under the
+	// layer's lock, which an eviction takes to remove the page, a lookup
+	// that finds anything else finds it spilled, and the fault refaults it.
+	if (err == nil || errors.Is(err, zirconvm.ErrShouldWait)) && r.holdsState(page) &&
+		!r.ownPage(err == nil, result.Page) && !sim.Bug(ctx, "pager-look-a-spilled-page-up-past-its-layer") {
+		if errors.Is(err, zirconvm.ErrShouldWait) {
+			r.requestOf(multi).fail()
+		}
+		return nil, nil, errOwnPageSpilled
+	}
 	switch {
 	case err == nil && result.Page == r.host.pmm.zero:
 		return nil, nil, nil
@@ -674,6 +699,30 @@ func (r *MemoryRegion) lookup(ctx context.Context, page uint64, loc *locations) 
 		return nil, r.requestOf(multi), nil
 	}
 	return nil, nil, err
+}
+
+// errOwnPageSpilled reports a lookup of a page that is the region's own
+// state, which its layer no longer holds: an eviction spilled it after the
+// fault looked. It never leaves a fault, which refaults the page from its
+// reservation.
+var errOwnPageSpilled = errors.New("managed-memory page spilled before its lookup")
+
+// holdsState reports whether the page at index is the region's own state:
+// its dirty page, or the checkpoint's it shares.
+func (r *MemoryRegion) holdsState(index uint64) bool {
+	b := r.lookupBinding(index)
+	return b != nil && r.isPrivate(b)
+}
+
+// ownPage reports whether a lookup found a page of the region's own layer.
+func (r *MemoryRegion) ownPage(found bool, page *zirconvm.VmPage) bool {
+	if !found || page == r.host.pmm.zero {
+		return false
+	}
+	h := r.host
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return frameOf(page).layer == r
 }
 
 // lookupSentSeam runs in a lookup that sent a READ request, before the request
