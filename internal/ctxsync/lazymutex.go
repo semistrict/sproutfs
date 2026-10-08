@@ -35,16 +35,42 @@ func (m *LazyMutex) Lock(ctx context.Context) error {
 			m.mu.Unlock()
 			return nil
 		}
-		if m.changed == nil {
-			m.changed = make(chan struct{})
+		if err := m.wait(ctx); err != nil {
+			return err
 		}
-		changed := m.changed
+	}
+}
+
+// WaitFree returns once m is unlocked, without taking it, or with the
+// cancellation cause of ctx. It may return after an Unlock that another
+// caller's Lock or TryLock has already followed. It is for a caller that
+// takes m by TryLock when it chooses, rather than as whichever of the waiters
+// an Unlock wakes runs first.
+func (m *LazyMutex) WaitFree(ctx context.Context) error {
+	if err := context.Cause(ctx); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	if !m.locked {
 		m.mu.Unlock()
-		select {
-		case <-ctx.Done():
-			return context.Cause(ctx)
-		case <-changed:
-		}
+		return nil
+	}
+	return m.wait(ctx)
+}
+
+// wait blocks until the next Unlock or the end of ctx. It must be called with
+// mu held and returns with mu released.
+func (m *LazyMutex) wait(ctx context.Context) error {
+	if m.changed == nil {
+		m.changed = make(chan struct{})
+	}
+	changed := m.changed
+	m.mu.Unlock()
+	select {
+	case <-ctx.Done():
+		return context.Cause(ctx)
+	case <-changed:
+		return nil
 	}
 }
 
