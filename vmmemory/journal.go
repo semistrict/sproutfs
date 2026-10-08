@@ -348,9 +348,31 @@ func (r *MemoryRegion) writableRunsLocked(pages []uint64) []PageRun {
 // ended after the capture took its pages left a page the guest no longer maps,
 // and a write-protect of an unmapped page is refused. writable is the runs as
 // the pages were taken.
+//
+// The protection is given back before a failure's mappings are taken away, as
+// a seal gives it back (protectDirtyRuns): the revocation takes it shared, and
+// it waited for itself while the capture held it, with the region held, so
+// the guest's flush never ended and its machine never detached.
 func (r *MemoryRegion) protectForCapture(ctx context.Context, taken []uint64, writable []PageRun) error {
+	protected, err := r.protectCaptureRuns(ctx, taken, writable)
+	if err != nil && sim.Bug(ctx, "journal-unprotect-under-the-protection") {
+		// The bug takes the mappings away still holding the protection.
+		if err := r.protectMu.Lock(ctx); err != nil {
+			return err
+		}
+		defer r.protectMu.Unlock()
+	}
+	if err != nil {
+		return errors.Join(err, r.unprotect(context.WithoutCancel(ctx), protected))
+	}
+	return nil
+}
+
+// protectCaptureRuns is protectForCapture's write-protection, with the
+// region's protection held exclusively, and the runs it protected.
+func (r *MemoryRegion) protectCaptureRuns(ctx context.Context, taken []uint64, writable []PageRun) ([]PageRun, error) {
 	if err := r.protectMu.Lock(ctx); err != nil {
-		return err
+		return nil, err
 	}
 	defer r.protectMu.Unlock()
 	runs := writable
@@ -360,13 +382,9 @@ func (r *MemoryRegion) protectForCapture(ctx context.Context, taken []uint64, wr
 		r.bindingsMu.Unlock()
 	}
 	if len(runs) == 0 {
-		return nil
+		return nil, nil
 	}
-	protected, err := r.protect(ctx, runs)
-	if err != nil {
-		return errors.Join(err, r.unprotect(context.WithoutCancel(ctx), protected))
-	}
-	return nil
+	return r.protect(ctx, runs)
 }
 
 // markCaptured records that a capture took pages: each is no longer

@@ -1388,5 +1388,11 @@
     "package": "vmmemory",
     "run": "^TestARefusedPopulationLeavesItsPagesToFaults$",
     "purpose": "Fail an attach whose population a client refused for want of mapping budget, so a fork whose inherited pages a 4 KiB client cannot map at once does not start, although population only saves faults."
+  },
+  {
+    "id": "journal-unprotect-under-the-protection",
+    "package": "vmmemory",
+    "run": "^TestACaptureWhoseProtectFailsEndsWithTheFailure$",
+    "purpose": "Take a failed capture's protected mappings away still holding the region's protection, which the revocation takes shared: the capture waits for itself with the region held, the guest's flush never ends and its machine never detaches."
   }
 ]

@@ -311,3 +311,26 @@ func TestAPageStoredIntoUnderTheSealIsWrittenWhole(t *testing.T) {
 		f.finishCheckpoint(r, b)
 	})
 }
+
+// A capture whose write-protect fails takes away the mappings of the pages it
+// did protect, and gives the region's protection back before it does, as a
+// seal does: the revocation takes the protection shared. It used to take the
+// mappings away still holding it, and waited for itself with the region held,
+// so the guest's flush never ended and its machine never detached.
+func TestACaptureWhoseProtectFailsEndsWithTheFailure(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := newFixture(t, 8, 8, 8)
+		r, m, _ := f.pmemRegion(4)
+		// Two runs, so the capture protects the first and fails on the second.
+		f.storeAt(r, m, 0, 0, 0xee)
+		f.storeAt(r, m, 2, 0, 0xef)
+		protects := 0
+		m.onProtect = func(uint64, int) { protects++; m.failProtect = protects == 2 }
+		if _, err := r.Capture(f.ctx, r.Unjournaled()); !errors.Is(err, errInjected) {
+			t.Fatalf("a capture whose second write-protect failed = %v, want the failure", err)
+		}
+		if p, mapped := m.mappedPage(0); mapped {
+			t.Fatalf("page 0 is still mapped as %+v after the failed capture protected it, want its mapping taken away", p)
+		}
+	})
+}
