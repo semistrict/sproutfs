@@ -28,7 +28,7 @@ func TestAChildWhoseMappingCannotBeTakenFailsNotItsParentsUnseal(t *testing.T) {
 			b.data[page*f.pageSize] = value
 		}
 		r, m := f.attach(b)
-		child := &forkGuest{name: "child", region: r, m: m, want: bytes.Clone(parent.lent)}
+		child := &forkGuest{machine: machine{name: "child", region: r, m: m}, want: bytes.Clone(parent.lent)}
 		for page := range uint64(forkCampaignPages) {
 			if err := child.step(f.ctx, page, nil); err != nil {
 				t.Fatal(err)
@@ -53,8 +53,7 @@ func TestAChildWhoseMappingCannotBeTakenFailsNotItsParentsUnseal(t *testing.T) {
 			}
 		}
 		for _, g := range []*forkGuest{child, &parent.forkGuest} {
-			clear(g.m.pages)
-			if err := g.region.Detach(f.ctx); err != nil {
+			if err := g.detach(f.ctx); err != nil {
 				t.Fatalf("%s detaching: %v", g.name, err)
 			}
 		}

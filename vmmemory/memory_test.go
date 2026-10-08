@@ -538,9 +538,6 @@ func (m batchedMapping) RevokeBatch(ctx context.Context, runs []vmmemory.PageRun
 // counts it as a fault it injected (injected).
 func (m *mapping) outOfMappings(ctx context.Context, command string) bool {
 	revocation := command == "revoke" || command == "revoke-batch"
-	if revocation && !simulateTerminalFaults {
-		return false
-	}
 	// A fault maps zeros a few times a run, so its refusal has the larger
 	// chance, as the commands a run issues rarely have for a lost answer.
 	p := 0.05
@@ -556,13 +553,6 @@ func (m *mapping) outOfMappings(ctx context.Context, command string) bool {
 	return true
 }
 
-// simulateTerminalFaults turns on the client's faults a region cannot survive:
-// a lost command (commandLost) and a refused revocation (outOfMappings). They
-// are off until a seed that injects one replays (TASK-111): the region's
-// failure, and the detach a host makes of a dead machine, go on beside the
-// other guests in Go-scheduler order.
-const simulateTerminalFaults = false
-
 // commandLost is a client command whose answer never came: the pager cannot
 // tell whether the client applied it, so the region is terminal from here, as
 // a session that times out on a command is. A map or a file given is applied
@@ -570,14 +560,16 @@ const simulateTerminalFaults = false
 // dropped is not, which is the way round each can do harm: a page mapped that
 // the pager may think is not, and one it may think is gone. Each command has a
 // site of its own (scripts/faults/vmmemory.json), and the ones a run issues a
-// few times have the larger chance, so a campaign reaches every one.
+// few times have the larger chance, so a campaign reaches every one: a file
+// given, or zeros mapped, a few times a run, and a file dropped only as a fork
+// point's seal ends.
 func (m *mapping) commandLost(ctx context.Context, command string) bool {
-	if !simulateTerminalFaults {
-		return false
-	}
 	p := 0.002
-	if command == "give-file" || command == "drop-file" {
+	switch command {
+	case "give-file", "map-zero":
 		p = 0.05
+	case "drop-file":
+		p = 0.5
 	}
 	if !sim.Buggify(ctx, "vmmemory-test/client-command-lost/"+command, p) {
 		return false

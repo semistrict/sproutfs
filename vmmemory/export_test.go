@@ -217,3 +217,7 @@ func WithoutMappingAudit(t *testing.T) {
 	auditMappings = false
 	t.Cleanup(func() { auditMappings = true })
 }
+
+// Ended is closed once r is terminal, which is how its session learns of an
+// end another memory region's step found (Connection.verify).
+func Ended(r *MemoryRegion) <-chan struct{} { return r.ended }

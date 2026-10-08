@@ -482,16 +482,11 @@ var forkCampaignSeeds = []uint64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}
 // forkCampaignPages is the parent's memory, and each child's, in pages.
 const forkCampaignPages = 8
 
-// forkGuest is one guest of the fork campaign: its memory region, what it
-// maps, and the byte it must read at each page.
+// forkGuest is one guest of the fork campaign: its machine, and the byte it
+// must read at each page.
 type forkGuest struct {
-	name   string
-	region *vmmemory.MemoryRegion
-	m      *mapping
-	want   []byte
-	// lost is set once the guest's client lost a command and its region
-	// failed of it: the machine is gone, and nothing of it is checked again.
-	lost bool
+	machine
+	want []byte
 }
 
 // step is one access of a guest, a store where value is set, which must read
@@ -542,39 +537,15 @@ func TestAForkPointsChildrenReadWhatItLentWhileItsSealEnds(t *testing.T) {
 	}
 }
 
-// A seed of the fork campaign replays: run twice, it releases every operation
-// in the same order.
+// A seed of the fork campaign replays (testReplays).
 func TestForkCampaignReplaysItsSeeds(t *testing.T) {
 	vmmemory.SetCheckpointBatchPages(t, 2)
-	for _, seed := range []uint64{2, 9} {
-		t.Run(fmt.Sprintf("seed-%d", seed), func(t *testing.T) {
-			var runs [2]sim.Recording
-			for run := range 2 {
-				synctest.Test(t, func(t *testing.T) { runs[run] = forkCampaign(t, seed) })
-			}
-			requireReplay(t, seed, runs)
-		})
-	}
+	testReplays(t, []uint64{2, 5, 10}, forkCampaign)
 }
 
-// forkCampaign runs one seed and reports the order its scheduler released
-// every operation in.
-func forkCampaign(t *testing.T, seed uint64) sim.Recording {
-	scheduler := sim.NewScheduler(seed)
-	runtime := sim.New(sim.Config{Seed: seed, Wait: scheduler.Wait, Buggify: true})
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		forkWorld(t, sim.WithRuntime(t.Context(), runtime), seed, scheduledSpillDisk(seed, scheduler, done), 2)
-	}()
-	if err := scheduler.Run(done); err != nil {
-		t.Fatal(err)
-	}
-	recording, err := scheduler.Recording(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return recording
+// forkCampaign runs one seed of the fork campaign.
+func forkCampaign(t *testing.T, seed uint64) campaignRun {
+	return runCampaign(t, seed, func(ctx context.Context, disk *sim.Disk) { forkWorld(t, ctx, seed, disk, 2) })
 }
 
 // forkWorld is the fork campaign's world on one seed: a parent that seals a
@@ -596,13 +567,17 @@ func forkWorld(t *testing.T, ctx context.Context, seed uint64, disk *sim.Disk, c
 	if err != nil {
 		// A parent whose client lost a command before its point was made, or
 		// as it attached, has no children to check.
-		lost := errors.Is(err, errInjected) || (parent != nil && lostToItsClient(parent.region, parent.m))
-		if !lost {
+		if parent != nil {
+			if !parent.gone() {
+				t.Error(err)
+			}
+			parent.close(ctx, t)
+		} else if !errors.Is(err, errInjected) {
 			t.Error(err)
 		}
 		return
 	}
-	var guests []*forkGuest
+	guests := []*forkGuest{&parent.forkGuest}
 	for child := range children {
 		b := f.newBacking(forkCampaignPages)
 		b.source = parent.point
@@ -619,57 +594,53 @@ func forkWorld(t *testing.T, ctx context.Context, seed uint64, disk *sim.Disk, c
 			t.Error(err)
 			return
 		}
-		guests = append(guests, &forkGuest{name: "child-" + string(rune('a'+child)), region: r, m: m,
+		guests = append(guests, &forkGuest{machine: machine{name: "child-" + string(rune('a'+child)), region: r, m: m},
 			want: bytes.Clone(parent.lent)})
 	}
+	machines := make([]*machine, len(guests))
+	for at, g := range guests {
+		g.boot(ctx)
+		machines[at] = &g.machine
+	}
+	// A guest whose client lost a command is gone, and its host closes it;
+	// the others, the point's children above all, must still read what they
+	// hold.
+	stopHosts := hostMachines(ctx, t, machines)
 	end := random.IntN(3)
 	var wg sync.WaitGroup
-	// A guest whose client lost a command is gone; the others, the point's
-	// children above all, must still read what they hold.
-	wg.Go(func() {
-		if err := parent.run(sim.WithTask(ctx, "parent"), rand.New(rand.NewPCG(seed, 1)), end); err != nil {
-			parent.lost = lostToItsClient(parent.region, parent.m)
-			if !parent.lost {
-				t.Error(err)
-			}
+	parentRandom := rand.New(rand.NewPCG(seed, 1))
+	parent.run(&wg, "parent", func(ctx context.Context) {
+		if err := parent.runParent(ctx, parentRandom, end); err != nil && !parent.lose(err) {
+			t.Error(err)
 		}
 	})
-	for at, child := range guests {
-		wg.Go(func() {
-			if err := runForkChild(sim.WithTask(ctx, child.name), child,
-				rand.New(rand.NewPCG(seed, uint64(2+at)))); err != nil {
-				child.lost = lostToItsClient(child.region, child.m)
-				if !child.lost {
-					t.Error(err)
-				}
+	for at, child := range guests[1:] {
+		childRandom := rand.New(rand.NewPCG(seed, uint64(2+at)))
+		child.run(&wg, child.name, func(ctx context.Context) {
+			if err := runForkChild(ctx, child, childRandom); err != nil && !child.lose(err) {
+				t.Error(err)
 			}
 		})
 	}
 	wg.Wait()
-	if end != forkEndDetach {
-		guests = append(guests, &parent.forkGuest)
-	}
 	for _, g := range guests {
-		if g.lost || lostToItsClient(g.region, g.m) {
-			continue
-		}
-		for page := range uint64(forkCampaignPages) {
-			if err := g.step(sim.WithTask(ctx, g.name+"-check"), page, nil); err != nil {
-				if lostToItsClient(g.region, g.m) {
-					break
+		var look sync.WaitGroup
+		g.run(&look, g.name+"-check", func(ctx context.Context) {
+			for page := range uint64(forkCampaignPages) {
+				if g.gone() || g.closed {
+					return
 				}
-				t.Errorf("at the end: %v", err)
+				if err := g.step(ctx, page, nil); err != nil && !g.lose(err) {
+					t.Errorf("at the end: %v", err)
+				}
 			}
-		}
+		})
+		look.Wait()
 	}
 	// The guests stop and detach while the scheduler still runs.
+	stopHosts()
 	for _, g := range guests {
-		g.m.arena.mu.Lock()
-		clear(g.m.pages)
-		g.m.arena.mu.Unlock()
-		if err := g.region.Detach(ctx); err != nil {
-			t.Error(err)
-		}
+		g.close(ctx, t)
 	}
 }
 
@@ -698,7 +669,8 @@ func forkParent(ctx context.Context, f *fixture) (*forkingParent, error) {
 	if err != nil {
 		return nil, err
 	}
-	p := &forkingParent{forkGuest: forkGuest{name: "parent", region: r, m: m, want: initialBytes(forkCampaignPages)},
+	p := &forkingParent{forkGuest: forkGuest{machine: machine{name: "parent", region: r, m: m},
+		want: initialBytes(forkCampaignPages)},
 		f: f, backing: b, point: control.Ref{VM: f.source.VM + "-point", Sequence: 7}}
 	for page := range uint64(forkCampaignPages) {
 		value := byte(0x40 + page)
@@ -713,10 +685,10 @@ func forkParent(ctx context.Context, f *fixture) (*forkingParent, error) {
 	return p, r.Checkpoint().Share(ctx, p.point, "v")
 }
 
-// run stores into and reads the parent's pages, so the checkpoint keeps the
-// pages it lent where the guest copies away from them, and then ends the
+// runParent stores into and reads the parent's pages, so the checkpoint keeps
+// the pages it lent where the guest copies away from them, and then ends the
 // seal as end says, and goes on.
-func (p *forkingParent) run(ctx context.Context, random *rand.Rand, end int) error {
+func (p *forkingParent) runParent(ctx context.Context, random *rand.Rand, end int) error {
 	steps := func(count int, from byte) error {
 		for op := range count {
 			if err := sim.Admit(ctx, "campaign/access"); err != nil {
@@ -755,10 +727,7 @@ func (p *forkingParent) run(ctx context.Context, random *rand.Rand, end int) err
 			return err
 		}
 	case forkEndDetach:
-		p.m.arena.mu.Lock()
-		clear(p.m.pages)
-		p.m.arena.mu.Unlock()
-		return p.region.Detach(ctx)
+		return p.detach(ctx)
 	}
 	if err := steps(6, 0xc0); err != nil {
 		return fmt.Errorf("after the seal's end by %s: %w", []string{"retire", "unseal", "detach"}[end], err)
