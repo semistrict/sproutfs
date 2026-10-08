@@ -2,11 +2,14 @@ package sim
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"maps"
 	"os"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -191,10 +194,43 @@ func (r *Runtime) buggifySite(task, id string, p float64) bool {
 			r.fired = make(map[string]uint64)
 		}
 		r.fired[id]++
+		first := r.fired[id] == 1
 		r.mu.Unlock()
+		if first {
+			noteFired(id)
+		}
 	}
 	r.trace.record(Event{Kind: "buggify", Resource: id, Operation: "fire", Outcome: onOff(fires)})
 	return fires
+}
+
+// firedSites is the file SPROUTFS_FIRED_SITES names, which every runtime of
+// the process appends the sites it fires to, one line each the first time it
+// fires one. scripts/check-faults.py reads it to prove a campaign reaches every
+// fault an interface can return (scripts/faults). It records nothing that a
+// run's trace or recording sees.
+var firedSites = struct {
+	sync.Mutex
+	path string
+}{path: os.Getenv("SPROUTFS_FIRED_SITES")}
+
+// noteFired appends id to the fired-sites file, where one is named. A write
+// that fails is reported on standard error rather than failing the run, whose
+// outcome it is not part of; the checker then misses the site and says so.
+func noteFired(id string) {
+	if firedSites.path == "" {
+		return
+	}
+	firedSites.Lock()
+	defer firedSites.Unlock()
+	file, err := os.OpenFile(firedSites.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err == nil {
+		_, err = file.WriteString(id + "\n")
+		err = errors.Join(err, file.Close())
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "sim: recording fired site %s: %v\n", id, err)
+	}
 }
 
 // occurrenceOf numbers task's calls of one site so repeated calls draw

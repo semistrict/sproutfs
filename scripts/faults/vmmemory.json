@@ -1,0 +1,156 @@
+{
+ "comment": "The pager's client: the VMM process that maps a memory region (vmmemory.Mapping), as connection_linux.go speaks to it. The test client is mapping and batchedMapping in vmmemory/memory_test.go; the campaigns attach with batchedMapping on odd seeds. See scripts/check-faults.py.",
+ "interfaces": [
+  {
+   "package": "vmmemory",
+   "name": "Mapping"
+  },
+  {
+   "package": "vmmemory",
+   "name": "BatchMapping"
+  },
+  {
+   "package": "vmmemory",
+   "name": "BatchRevocation"
+  }
+ ],
+ "faults": [
+  {
+   "interface": "vmmemory.Mapping",
+   "method": "GiveFile",
+   "error": "lost",
+   "site": "vmmemory-test/client-command-lost/give-file",
+   "package": "vmmemory",
+   "run": "^(TestPrefetchSurvivesItsFaultsAndReachesItsProbes|TestTheMappingRulesSurviveTheirCampaign|TestAForkPointsChildrenReadWhatItLentWhileItsSealEnds)$",
+   "purpose": "a command whose answer never came, so the pager cannot tell whether the client applied it: the region is terminal from here; the file is given before the answer is lost",
+   "deferred": "TASK-111: a seed whose region fails of it does not replay yet"
+  },
+  {
+   "interface": "vmmemory.Mapping",
+   "method": "DropFile",
+   "error": "lost",
+   "site": "vmmemory-test/client-command-lost/drop-file",
+   "package": "vmmemory",
+   "run": "^(TestPrefetchSurvivesItsFaultsAndReachesItsProbes|TestTheMappingRulesSurviveTheirCampaign|TestAForkPointsChildrenReadWhatItLentWhileItsSealEnds)$",
+   "purpose": "a command whose answer never came, so the pager cannot tell whether the client applied it: the region is terminal from here; the file is not dropped",
+   "deferred": "TASK-111: a seed whose region fails of it does not replay yet"
+  },
+  {
+   "interface": "vmmemory.Mapping",
+   "method": "Map",
+   "error": "ErrMappingRefused",
+   "site": "vmmemory-test/client-out-of-mappings/map",
+   "package": "vmmemory",
+   "run": "^(TestPrefetchSurvivesItsFaultsAndReachesItsProbes|TestTheMappingRulesSurviveTheirCampaign|TestAForkPointsChildrenReadWhatItLentWhileItsSealEnds)$",
+   "purpose": "the client out of VMAs refuses before it touches anything; the fault is served again once a revocation lands"
+  },
+  {
+   "interface": "vmmemory.Mapping",
+   "method": "Map",
+   "error": "lost",
+   "site": "vmmemory-test/client-command-lost/map",
+   "package": "vmmemory",
+   "run": "^(TestPrefetchSurvivesItsFaultsAndReachesItsProbes|TestTheMappingRulesSurviveTheirCampaign|TestAForkPointsChildrenReadWhatItLentWhileItsSealEnds)$",
+   "purpose": "a command whose answer never came, so the pager cannot tell whether the client applied it: the region is terminal from here; the pages are mapped before the answer is lost",
+   "deferred": "TASK-111: a seed whose region fails of it does not replay yet"
+  },
+  {
+   "interface": "vmmemory.Mapping",
+   "method": "MapZero",
+   "error": "ErrMappingRefused",
+   "site": "vmmemory-test/client-out-of-mappings/map-zero",
+   "package": "vmmemory",
+   "run": "^(TestPrefetchSurvivesItsFaultsAndReachesItsProbes|TestTheMappingRulesSurviveTheirCampaign|TestAForkPointsChildrenReadWhatItLentWhileItsSealEnds)$",
+   "purpose": "as Map's refusal, for zeros"
+  },
+  {
+   "interface": "vmmemory.Mapping",
+   "method": "MapZero",
+   "error": "lost",
+   "site": "vmmemory-test/client-command-lost/map-zero",
+   "package": "vmmemory",
+   "run": "^(TestPrefetchSurvivesItsFaultsAndReachesItsProbes|TestTheMappingRulesSurviveTheirCampaign|TestAForkPointsChildrenReadWhatItLentWhileItsSealEnds)$",
+   "purpose": "a command whose answer never came, so the pager cannot tell whether the client applied it: the region is terminal from here; the zeros are mapped",
+   "deferred": "TASK-111: a seed whose region fails of it does not replay yet"
+  },
+  {
+   "interface": "vmmemory.Mapping",
+   "method": "Revoke",
+   "error": "ErrMappingRefused",
+   "site": "vmmemory-test/client-out-of-mappings/revoke",
+   "package": "vmmemory",
+   "run": "^(TestPrefetchSurvivesItsFaultsAndReachesItsProbes|TestTheMappingRulesSurviveTheirCampaign|TestAForkPointsChildrenReadWhatItLentWhileItsSealEnds)$",
+   "purpose": "a revocation the client out of VMAs refuses, which no fault can serve again: terminal for the region",
+   "deferred": "TASK-111: a seed whose region fails of it does not replay yet"
+  },
+  {
+   "interface": "vmmemory.Mapping",
+   "method": "Revoke",
+   "error": "lost",
+   "site": "vmmemory-test/client-command-lost/revoke",
+   "package": "vmmemory",
+   "run": "^(TestPrefetchSurvivesItsFaultsAndReachesItsProbes|TestTheMappingRulesSurviveTheirCampaign|TestAForkPointsChildrenReadWhatItLentWhileItsSealEnds)$",
+   "purpose": "a command whose answer never came, so the pager cannot tell whether the client applied it: the region is terminal from here; the page stays mapped",
+   "deferred": "TASK-111: a seed whose region fails of it does not replay yet"
+  },
+  {
+   "interface": "vmmemory.Mapping",
+   "method": "Resolve",
+   "error": "lost",
+   "site": "vmmemory-test/client-command-lost/resolve",
+   "package": "vmmemory",
+   "run": "^(TestPrefetchSurvivesItsFaultsAndReachesItsProbes|TestTheMappingRulesSurviveTheirCampaign|TestAForkPointsChildrenReadWhatItLentWhileItsSealEnds)$",
+   "purpose": "a command whose answer never came, so the pager cannot tell whether the client applied it: the region is terminal from here; the access is not completed",
+   "deferred": "TASK-111: a seed whose region fails of it does not replay yet"
+  },
+  {
+   "interface": "vmmemory.Mapping",
+   "method": "Protect",
+   "error": "lost",
+   "site": "vmmemory-test/client-command-lost/protect",
+   "package": "vmmemory",
+   "run": "^(TestPrefetchSurvivesItsFaultsAndReachesItsProbes|TestTheMappingRulesSurviveTheirCampaign|TestAForkPointsChildrenReadWhatItLentWhileItsSealEnds)$",
+   "purpose": "a command whose answer never came, so the pager cannot tell whether the client applied it: the region is terminal from here; the pages stay writable",
+   "deferred": "TASK-111: a seed whose region fails of it does not replay yet"
+  },
+  {
+   "interface": "vmmemory.BatchMapping",
+   "method": "MapBatch",
+   "error": "ErrMappingRefused",
+   "site": "vmmemory-test/client-out-of-mappings/map-batch",
+   "package": "vmmemory",
+   "run": "^(TestPrefetchSurvivesItsFaultsAndReachesItsProbes|TestTheMappingRulesSurviveTheirCampaign|TestAForkPointsChildrenReadWhatItLentWhileItsSealEnds)$",
+   "purpose": "a batch the client out of VMAs refuses before any of its commands lands"
+  },
+  {
+   "interface": "vmmemory.BatchMapping",
+   "method": "MapBatch",
+   "error": "lost",
+   "site": "vmmemory-test/client-command-lost/map-batch",
+   "package": "vmmemory",
+   "run": "^(TestPrefetchSurvivesItsFaultsAndReachesItsProbes|TestTheMappingRulesSurviveTheirCampaign|TestAForkPointsChildrenReadWhatItLentWhileItsSealEnds)$",
+   "purpose": "a command whose answer never came, so the pager cannot tell whether the client applied it: the region is terminal from here; every run of the batch is mapped",
+   "deferred": "TASK-111: a seed whose region fails of it does not replay yet"
+  },
+  {
+   "interface": "vmmemory.BatchRevocation",
+   "method": "RevokeBatch",
+   "error": "ErrMappingRefused",
+   "site": "vmmemory-test/client-out-of-mappings/revoke-batch",
+   "package": "vmmemory",
+   "run": "^(TestPrefetchSurvivesItsFaultsAndReachesItsProbes|TestTheMappingRulesSurviveTheirCampaign|TestAForkPointsChildrenReadWhatItLentWhileItsSealEnds)$",
+   "purpose": "as Revoke's refusal, for a batch",
+   "deferred": "TASK-111: a seed whose region fails of it does not replay yet"
+  },
+  {
+   "interface": "vmmemory.BatchRevocation",
+   "method": "RevokeBatch",
+   "error": "lost",
+   "site": "vmmemory-test/client-command-lost/revoke-batch",
+   "package": "vmmemory",
+   "run": "^(TestPrefetchSurvivesItsFaultsAndReachesItsProbes|TestTheMappingRulesSurviveTheirCampaign|TestAForkPointsChildrenReadWhatItLentWhileItsSealEnds)$",
+   "purpose": "a command whose answer never came, so the pager cannot tell whether the client applied it: the region is terminal from here; no run of the batch is revoked",
+   "deferred": "TASK-111: a seed whose region fails of it does not replay yet"
+  }
+ ]
+}

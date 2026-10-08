@@ -68,6 +68,8 @@ func rulesWorld(t *testing.T, ctx context.Context, seed uint64, disk *sim.Disk, 
 		t.Error(err)
 		return vmmemory.Stats{}
 	}
+	// Production's client takes runs in batches; odd seeds take that path.
+	f.batched = seed%2 == 1
 	var guests []*campaignGuest
 	for fork := range forks {
 		b := f.slowBacking(rulesPages)

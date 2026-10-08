@@ -3,6 +3,7 @@ package vmmemory_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"os"
@@ -488,6 +489,9 @@ type forkGuest struct {
 	region *vmmemory.MemoryRegion
 	m      *mapping
 	want   []byte
+	// lost is set once the guest's client lost a command and its region
+	// failed of it: the machine is gone, and nothing of it is checked again.
+	lost bool
 }
 
 // step is one access of a guest, a store where value is set, which must read
@@ -587,10 +591,17 @@ func forkWorld(t *testing.T, ctx context.Context, seed uint64, disk *sim.Disk, c
 		t.Error(err)
 		return
 	}
+	// Production's client takes runs in batches; odd seeds take that path.
+	f.batched = seed%2 == 1
 	random := rand.New(rand.NewPCG(seed, 0))
 	parent, err := forkParent(sim.WithTask(ctx, "parent"), f)
 	if err != nil {
-		t.Error(err)
+		// A parent whose client lost a command before its point was made, or
+		// as it attached, has no children to check.
+		lost := errors.Is(err, errInjected) || (parent != nil && lostToItsClient(parent.region, parent.m))
+		if !lost {
+			t.Error(err)
+		}
 		return
 	}
 	var guests []*forkGuest
@@ -600,22 +611,39 @@ func forkWorld(t *testing.T, ctx context.Context, seed uint64, disk *sim.Disk, c
 		for page, value := range parent.lent {
 			b.data[page*f.pageSize] = value
 		}
-		r, m := f.attach(b)
+		r, m, err := f.tryAttachBacking(vmmemory.MemoryRegionBacking{Kind: vmmemory.Ram, Backing: b})
+		if errors.Is(err, errInjected) {
+			// The child's client lost a command as it attached: a machine
+			// that never started.
+			continue
+		}
+		if err != nil {
+			t.Error(err)
+			return
+		}
 		guests = append(guests, &forkGuest{name: "child-" + string(rune('a'+child)), region: r, m: m,
 			want: bytes.Clone(parent.lent)})
 	}
 	end := random.IntN(3)
 	var wg sync.WaitGroup
+	// A guest whose client lost a command is gone; the others, the point's
+	// children above all, must still read what they hold.
 	wg.Go(func() {
 		if err := parent.run(sim.WithTask(ctx, "parent"), rand.New(rand.NewPCG(seed, 1)), end); err != nil {
-			t.Error(err)
+			parent.lost = lostToItsClient(parent.region, parent.m)
+			if !parent.lost {
+				t.Error(err)
+			}
 		}
 	})
 	for at, child := range guests {
 		wg.Go(func() {
 			if err := runForkChild(sim.WithTask(ctx, child.name), child,
 				rand.New(rand.NewPCG(seed, uint64(2+at)))); err != nil {
-				t.Error(err)
+				child.lost = lostToItsClient(child.region, child.m)
+				if !child.lost {
+					t.Error(err)
+				}
 			}
 		})
 	}
@@ -624,8 +652,14 @@ func forkWorld(t *testing.T, ctx context.Context, seed uint64, disk *sim.Disk, c
 		guests = append(guests, &parent.forkGuest)
 	}
 	for _, g := range guests {
+		if g.lost || lostToItsClient(g.region, g.m) {
+			continue
+		}
 		for page := range uint64(forkCampaignPages) {
 			if err := g.step(sim.WithTask(ctx, g.name+"-check"), page, nil); err != nil {
+				if lostToItsClient(g.region, g.m) {
+					break
+				}
 				t.Errorf("at the end: %v", err)
 			}
 		}
@@ -661,17 +695,21 @@ type forkingParent struct {
 // forkParent attaches the parent, stores into every page, seals and lends
 // the sealed pages under a fork point's name.
 func forkParent(ctx context.Context, f *fixture) (*forkingParent, error) {
-	r, m, b := f.memoryRegion(forkCampaignPages)
+	b := f.newBacking(forkCampaignPages)
+	r, m, err := f.tryAttachBacking(vmmemory.MemoryRegionBacking{Kind: vmmemory.Ram, Backing: b})
+	if err != nil {
+		return nil, err
+	}
 	p := &forkingParent{forkGuest: forkGuest{name: "parent", region: r, m: m, want: initialBytes(forkCampaignPages)},
 		f: f, backing: b, point: control.Ref{VM: f.source.VM + "-point", Sequence: 7}}
 	for page := range uint64(forkCampaignPages) {
 		value := byte(0x40 + page)
 		if err := p.step(ctx, page, &value); err != nil {
-			return nil, err
+			return p, err
 		}
 	}
 	if err := r.Seal(ctx); err != nil {
-		return nil, err
+		return p, err
 	}
 	p.lent = bytes.Clone(p.want)
 	return p, r.Checkpoint().Share(ctx, p.point, "v")

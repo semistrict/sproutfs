@@ -309,7 +309,10 @@ type mapping struct {
 	arena *arena
 	// tenant is the tenant of the memory region this is the mapping of.
 	tenant string
-	pages  map[uint64]mapped
+	// injected is set once this client injected a fault its region cannot
+	// survive: a command whose answer it lost, or a revocation it refused.
+	injected atomic.Bool
+	pages    map[uint64]mapped
 	// files is every file this mapping was given, by the number its maps name
 	// it by.
 	files                            map[int]*arenaFile
@@ -343,7 +346,7 @@ func (m *mapping) mappedPage(page uint64) (mapped, bool) {
 // one memory region's own, as its file 0, and nobody else's in any way, and a
 // file given read-only is given to one tenant's memory regions only, except
 // the public file, which is every region's file 2 and nothing else.
-func (m *mapping) GiveFile(_ context.Context, number int, file vmmemory.ArenaFile, writable bool) error {
+func (m *mapping) GiveFile(ctx context.Context, number int, file vmmemory.ArenaFile, writable bool) error {
 	m.arena.mu.Lock()
 	defer m.arena.mu.Unlock()
 	fixture, ok := file.(interface{ fixture() *arenaFile })
@@ -375,10 +378,16 @@ func (m *mapping) GiveFile(_ context.Context, number int, file vmmemory.ArenaFil
 		f.public = number == publicFile
 	}
 	m.files[number] = f
+	if m.commandLost(ctx, "give-file") {
+		return errInjected
+	}
 	return nil
 }
 
-func (m *mapping) DropFile(_ context.Context, number int) error {
+func (m *mapping) DropFile(ctx context.Context, number int) error {
+	if m.commandLost(ctx, "drop-file") {
+		return errInjected
+	}
 	m.arena.mu.Lock()
 	defer m.arena.mu.Unlock()
 	f := m.files[number]
@@ -402,17 +411,48 @@ func (m *mapping) Map(ctx context.Context, page uint64, file, slot, count int, w
 	if m.onMap != nil {
 		m.onMap(page, count)
 	}
-	m.arena.mu.Lock()
-	f := m.files[file]
-	m.arena.mu.Unlock()
-	if f == nil || (writable && file != 0) {
-		return fmt.Errorf("map of file %d writable=%t, which this memory region may not map so", file, writable)
+	if err := m.mappable(file, writable); err != nil {
+		return err
 	}
-	if m.refuseMap || outOfMappings(ctx) {
+	if m.refuseMap || m.outOfMappings(ctx, "map") {
 		return vmmemory.ErrMappingRefused
 	}
+	if err := m.applyMap(page, file, slot, count, writable); err != nil {
+		return err
+	}
+	if m.failMap || m.commandLost(ctx, "map") {
+		return errInjected
+	}
+	return nil
+}
+func (m *mapping) MapZero(ctx context.Context, page uint64, count int) error {
+	if m.refuseMap || m.outOfMappings(ctx, "map-zero") {
+		return vmmemory.ErrMappingRefused
+	}
+	m.applyZero(page, count)
+	if m.failMap || m.commandLost(ctx, "map-zero") {
+		return errInjected
+	}
+	return nil
+}
+
+// mappable refuses a map of a file this mapping was not given, or a writable
+// map of any file but its private one.
+func (m *mapping) mappable(file int, writable bool) error {
 	m.arena.mu.Lock()
 	defer m.arena.mu.Unlock()
+	if m.files[file] == nil || (writable && file != 0) {
+		return fmt.Errorf("map of file %d writable=%t, which this memory region may not map so", file, writable)
+	}
+	return nil
+}
+
+// applyMap installs count slots of a file this mapping was given from page,
+// which every one of them must hold contents for.
+func (m *mapping) applyMap(page uint64, file, slot, count int, writable bool) error {
+	m.arena.mu.Lock()
+	defer m.arena.mu.Unlock()
+	f := m.files[file]
 	for i := range count {
 		if f.slots[slot+i] == nil {
 			return fmt.Errorf("map of punched slot %d of file %d", slot+i, f.id)
@@ -422,34 +462,128 @@ func (m *mapping) Map(ctx context.Context, page uint64, file, slot, count int, w
 		m.pages[page+uint64(i)] = mapped{place{f.id, slot + i}, writable, writable}
 	}
 	m.maps++
-	if m.failMap {
-		return errInjected
-	}
 	return nil
 }
-func (m *mapping) MapZero(ctx context.Context, page uint64, count int) error {
-	if m.refuseMap || outOfMappings(ctx) {
-		return vmmemory.ErrMappingRefused
-	}
+
+// applyZero installs count pages of zeros from page.
+func (m *mapping) applyZero(page uint64, count int) {
 	m.arena.mu.Lock()
 	defer m.arena.mu.Unlock()
 	for i := range count {
 		m.pages[page+uint64(i)] = mapped{place{-1, -1}, false, false}
 	}
 	m.maps++
-	if m.failMap {
-		return errInjected
+}
+
+// batchedMapping is the client production has: one that takes a fault's runs
+// and an eviction's revocations in batches, which is the path every fault and
+// every eviction of a real host takes. A batch is refused before it touches
+// anything, as a real one is while none of its commands has landed, and is
+// otherwise applied whole; one whose answer is lost is applied, and a lost
+// revocation is not.
+type batchedMapping struct{ *mapping }
+
+func (m batchedMapping) MapBatch(ctx context.Context, runs []vmmemory.MapRun) (int, int, error) {
+	for _, run := range runs {
+		if !run.Zero {
+			if err := m.mappable(run.File, false); err != nil {
+				return 0, 0, err
+			}
+		}
 	}
-	return nil
+	if m.refuseMap || m.outOfMappings(ctx, "map-batch") {
+		return 0, 0, vmmemory.ErrMappingRefused
+	}
+	for _, run := range runs {
+		if run.Zero {
+			m.applyZero(run.Page, run.Count)
+		} else if err := m.applyMap(run.Page, run.File, run.Slot, run.Count, false); err != nil {
+			return 0, 0, err
+		}
+	}
+	if m.failMap || m.commandLost(ctx, "map-batch") {
+		return 1, len(runs), errInjected
+	}
+	return 1, len(runs), nil
+}
+
+func (m batchedMapping) RevokeBatch(ctx context.Context, runs []vmmemory.PageRun) (int, int, error) {
+	if m.refuseRevoke || m.outOfMappings(ctx, "revoke-batch") {
+		return 0, 0, vmmemory.ErrMappingRefused
+	}
+	lost := m.failRevoke || m.commandLost(ctx, "revoke-batch")
+	m.arena.mu.Lock()
+	m.revokes++
+	if !lost {
+		for _, run := range runs {
+			for i := range run.Count {
+				delete(m.pages, run.Page+uint64(i))
+			}
+		}
+	}
+	m.arena.mu.Unlock()
+	if lost {
+		return 1, len(runs), errInjected
+	}
+	return 1, len(runs), nil
 }
 
 // outOfMappings is a client that has run out of mapping budget, which refuses
 // a command before it touches anything. A real client refuses whenever its
 // process nears its VMA limit, which a 4 KiB disk written in scattered places
 // reaches in minutes; in a controlled run any command may be refused, so the
-// campaigns take every path a refusal leads down.
-func outOfMappings(ctx context.Context) bool {
-	return sim.Buggify(ctx, "vmmemory-test/client-out-of-mappings", 0.05)
+// campaigns take every path a refusal leads down. Each command has a site of
+// its own (scripts/faults/vmmemory.json). A refused revocation is terminal
+// for the region, which no revocation can be served again, so the client
+// counts it as a fault it injected (injected).
+func (m *mapping) outOfMappings(ctx context.Context, command string) bool {
+	revocation := command == "revoke" || command == "revoke-batch"
+	if revocation && !simulateTerminalFaults {
+		return false
+	}
+	// A fault maps zeros a few times a run, so its refusal has the larger
+	// chance, as the commands a run issues rarely have for a lost answer.
+	p := 0.05
+	if command == "map-zero" {
+		p = 0.3
+	}
+	if !sim.Buggify(ctx, "vmmemory-test/client-out-of-mappings/"+command, p) {
+		return false
+	}
+	if revocation {
+		m.injected.Store(true)
+	}
+	return true
+}
+
+// simulateTerminalFaults turns on the client's faults a region cannot survive:
+// a lost command (commandLost) and a refused revocation (outOfMappings). They
+// are off until a seed that injects one replays (TASK-111): the region's
+// failure, and the detach a host makes of a dead machine, go on beside the
+// other guests in Go-scheduler order.
+const simulateTerminalFaults = false
+
+// commandLost is a client command whose answer never came: the pager cannot
+// tell whether the client applied it, so the region is terminal from here, as
+// a session that times out on a command is. A map or a file given is applied
+// before its answer is lost, and a revoke, a protect, a resolve or a file
+// dropped is not, which is the way round each can do harm: a page mapped that
+// the pager may think is not, and one it may think is gone. Each command has a
+// site of its own (scripts/faults/vmmemory.json), and the ones a run issues a
+// few times have the larger chance, so a campaign reaches every one.
+func (m *mapping) commandLost(ctx context.Context, command string) bool {
+	if !simulateTerminalFaults {
+		return false
+	}
+	p := 0.002
+	if command == "give-file" || command == "drop-file" {
+		p = 0.05
+	}
+	if !sim.Buggify(ctx, "vmmemory-test/client-command-lost/"+command, p) {
+		return false
+	}
+	m.injected.Store(true)
+	return true
 }
 
 // Protect models the range write-protect a seal issues: the page and its
@@ -466,7 +600,7 @@ func (m *mapping) Protect(ctx context.Context, page uint64, count int) error {
 	m.arena.mu.Lock()
 	defer m.arena.mu.Unlock()
 	m.protects++
-	if m.failProtect {
+	if m.failProtect || m.commandLost(ctx, "protect") {
 		return errInjected
 	}
 	for i := range count {
@@ -479,14 +613,14 @@ func (m *mapping) Protect(ctx context.Context, page uint64, count int) error {
 	}
 	return nil
 }
-func (m *mapping) Revoke(_ context.Context, page uint64) error {
-	if m.refuseRevoke {
+func (m *mapping) Revoke(ctx context.Context, page uint64) error {
+	if m.refuseRevoke || m.outOfMappings(ctx, "revoke") {
 		return vmmemory.ErrMappingRefused
 	}
 	m.arena.mu.Lock()
 	defer m.arena.mu.Unlock()
 	m.revokes++
-	if m.failRevoke {
+	if m.failRevoke || m.commandLost(ctx, "revoke") {
 		return errInjected
 	}
 	delete(m.pages, page)
@@ -497,9 +631,12 @@ func (m *mapping) Revoke(_ context.Context, page uint64) error {
 // write-protection, as the real one's UFFDIO_WRITEPROTECT does, which only a
 // page mapped writable can have; resolving read-only is only valid for a page
 // a store would trap on.
-func (m *mapping) Resolve(_ context.Context, page uint64, count int, writable bool) error {
+func (m *mapping) Resolve(ctx context.Context, page uint64, count int, writable bool) error {
 	if m.onResolve != nil {
 		m.onResolve(page)
+	}
+	if m.commandLost(ctx, "resolve") {
+		return errInjected
 	}
 	m.arena.mu.Lock()
 	defer m.arena.mu.Unlock()
@@ -690,6 +827,10 @@ type fixture struct {
 	pageSize int
 	source   control.Ref // the checkpoint every memory region of the fixture inherits
 	owners   int
+	// batched attaches every memory region with the client production has,
+	// which takes runs in batches (batchedMapping). A campaign sets it on
+	// half its seeds, so both of the pager's paths are taken.
+	batched bool
 }
 
 // spillBytes is the whole extent of this pager's spill file, which is its fixed
@@ -896,13 +1037,29 @@ func (f *fixture) attachKind(kind vmmemory.MemoryRegionKind, b vmmemory.Backing)
 // attachBacking maps one memory region as whoever attaches it states it.
 func (f *fixture) attachBacking(backing vmmemory.MemoryRegionBacking) (*vmmemory.MemoryRegion, *mapping) {
 	f.t.Helper()
-	m := newMapping(f.a)
-	m.tenant = backing.Tenant
-	f.a.mappings = append(f.a.mappings, m)
-	r, err := f.h.Attach(f.ctx, backing, m)
+	r, m, err := f.tryAttachBacking(backing)
 	if err != nil {
 		f.t.Fatal(err)
 	}
+	return r, m
+}
+
+// tryAttachBacking is attachBacking for a campaign, in which an attach may
+// fail of a fault it injected, as a machine that never started.
+func (f *fixture) tryAttachBacking(backing vmmemory.MemoryRegionBacking) (*vmmemory.MemoryRegion, *mapping, error) {
+	m := newMapping(f.a)
+	m.tenant = backing.Tenant
+	f.a.mappings = append(f.a.mappings, m)
+	var client vmmemory.Mapping = m
+	if f.batched {
+		client = batchedMapping{m}
+	}
+	r, err := f.h.Attach(f.ctx, backing, client)
+	if r == nil {
+		return nil, nil, err
+	}
+	// An attach that failed after its region was admitted returns it, and its
+	// owner detaches it, as a session that failed to connect does.
 	f.t.Cleanup(func() {
 		// A prefetch a failed test left running may still map and resolve
 		// pages until the detach waits for it, under the arena's lock.
@@ -913,7 +1070,10 @@ func (f *fixture) attachBacking(backing vmmemory.MemoryRegionBacking) (*vmmemory
 			f.t.Error(err)
 		}
 	})
-	return r, m
+	if err != nil {
+		return nil, nil, err
+	}
+	return r, m, nil
 }
 
 // access is what the guest sees of one page: the page it maps, faulted in

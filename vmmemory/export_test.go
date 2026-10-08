@@ -202,6 +202,14 @@ func (h *Host) Unreachable() []string {
 // has installed (mappingaudit.go).
 func init() { auditMappings = true }
 
+// Failed is why a memory region is terminal, nil while it is not.
+func Failed(r *MemoryRegion) error {
+	if failed := r.terminal.Load(); failed != nil {
+		return failed.err
+	}
+	return nil
+}
+
 // WithoutMappingAudit attaches the test's memory regions with no mapping
 // audit, for a test that measures what the pager itself costs. It is
 // restored when the test ends.

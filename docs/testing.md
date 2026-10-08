@@ -2098,6 +2098,43 @@ Seed 46 is there for an eviction during a publication, which none of seeds 1 to
 publication is reached by the two-writer campaign, whose takeover happens while
 the superseded host is still running.
 
+## Every boundary error is simulated
+
+A campaign finds only the faults it injects. On 2026-10-08 an embedder's VM
+died of a mapping refusal the pager mishandled, after weeks of campaigns: the
+test client refused only where one test switched refusal on, so no campaign
+took the paths a refusal leads down. The first campaign run with a random
+refusal found the bug, and the runs after it found two more.
+
+So every interface the system calls across a process or I/O boundary is listed
+in a manifest under `scripts/faults/`, one file per area. Each method has an
+entry for each error it can return: the `sim.Buggify` site that returns it at
+random in the simulated implementation, and the campaign that must fire it. A
+method that cannot fail has an entry saying `none` and why. `just check-faults`
+(`scripts/check-faults.py`) fails where an interface method has no entry, where
+a site is in no `Buggify` call, or where a campaign, run with
+`SPROUTFS_FIRED_SITES` naming a file, never fires a site its entries name:
+`platform/sim` appends every site a run fires to that file. An entry can be
+`deferred` to a backlog task that says why its site is not fired yet; the
+checker lists those, and they are debt.
+
+The rule is about the simulated implementation being as wide as the real one.
+A switch a test turns on is not enough: the paths behind a fault are taken
+only when a campaign, with every other fault going on, meets it at random.
+Writing the manifest is also where a missing path shows: the first run of the
+pager's found that no campaign mapped a zero, and that no campaign took the
+batch path production takes for every fault.
+
+The pager's client (`scripts/faults/vmmemory.json`) refuses any mapping
+command at random, as a client out of VMAs does, and the campaigns attach half
+their seeds with `batchedMapping`, which takes a fault's runs and an
+eviction's revocations in batches as production's client does. Its faults a
+region cannot survive, a lost command or a refused revocation, are written and
+switched off (`simulateTerminalFaults`) until a seed that injects one replays
+(TASK-111). With them on, a campaign takes the machine whose client ended as
+gone and requires every other guest, a fork point's children above all, to
+read exactly what it holds.
+
 ## Negative tests in the tree
 
 Most of the fault catalogue is in the tree as `sim.Bug(ctx, id)` guards, at the

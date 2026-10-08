@@ -17,7 +17,7 @@ test-race:
     go test -race ./...
 
 # Everything a push has to pass; .github/workflows/check.yml runs these recipes.
-check: determinism check-go check-guards check-proto check-shell test-shell check-rust check-spec
+check: determinism check-go check-guards check-faults check-proto check-shell test-shell check-rust check-spec
 
 # test-knobs runs the campaigns with a seed's own tunables rather than the
 # deployment's: part sizes, pager budgets, intervals and holds drawn per seed,
@@ -52,6 +52,14 @@ check-go:
 # binaries are built. See "Negative tests in the tree" in docs/testing.md.
 check-guards:
     python3 scripts/check-guards.py
+
+# check-faults checks that every error a boundary interface can return is
+# injected at random in the simulation and fired by a campaign, as the
+# manifests under scripts/faults list them: a fault no campaign injects is a
+# path no campaign has taken. See "Every boundary error is simulated" in
+# docs/testing.md.
+check-faults:
+    python3 scripts/check-faults.py
 
 check-proto:
     buf lint

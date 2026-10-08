@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"math/rand/v2"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -63,6 +65,36 @@ type campaignGuest struct {
 	// storeOdds is one in how many accesses is a store, four where it is
 	// zero.
 	storeOdds int
+	// lost is set once the guest's client lost a command and its region
+	// failed of it (commandLost): the machine is gone, and nothing of it is
+	// checked again.
+	lost atomic.Bool
+}
+
+// lose reports whether err ended the guest because its client lost a command:
+// its region failed of an injected fault. The guest stops, and its region is
+// detached with the others at the end, as a host closes a machine whose VMM
+// has ended: until then the pages it held are no one's, and the guests that go
+// on must still read every byte they stored. A detach beside the guests that
+// go on does not replay, since nothing of it is admitted to the run's
+// scheduler, so it waits for the end.
+func (g *campaignGuest) lose(err error) bool {
+	if g.lost.Load() {
+		return true
+	}
+	if err == nil || !lostToItsClient(g.region, g.m) {
+		return false
+	}
+	g.lost.Store(true)
+	return true
+}
+
+// lostToItsClient reports whether region is a machine its client ended: the
+// region failed after the client injected a fault it cannot survive (a lost
+// command or a refused revocation), which a campaign takes as a machine gone
+// rather than a failure of the pager.
+func lostToItsClient(region *vmmemory.MemoryRegion, m *mapping) bool {
+	return m.injected.Load() && vmmemory.Failed(region) != nil
 }
 
 // Prefetches survive every fault their sites inject — a read held back, a run
@@ -141,6 +173,8 @@ func prefetchWorld(t *testing.T, ctx context.Context, seed uint64, disk *sim.Dis
 		t.Error(err)
 		return
 	}
+	// Production's client takes runs in batches; odd seeds take that path.
+	f.batched = seed%2 == 1
 	guests := campaignGuests(f, forks)
 	for _, guest := range guests {
 		guest.vcpus = vcpus
@@ -177,18 +211,34 @@ func runCampaignWorld(t *testing.T, ctx context.Context, seed uint64, guests []*
 	wg.Wait()
 	close(stop)
 	flushers.Wait()
+	// A guest's region may have failed of a command another guest's eviction
+	// lost, with nothing of its own left to meet the failure: it is lost too.
 	for _, guest := range guests {
+		if failed := vmmemory.Failed(guest.region); failed != nil {
+			guest.lose(failed)
+		}
+	}
+	for _, guest := range guests {
+		if guest.lost.Load() {
+			continue
+		}
 		if err := unjournaledWritable(guest.region, guest.m); err != nil {
 			t.Errorf("%s once its vCPUs stopped: %v", guest.name, err)
 		}
 	}
 	for _, guest := range guests {
+		if guest.lost.Load() {
+			continue
+		}
 		if err := guest.region.SettlePrefetches(ctx); err != nil {
 			t.Error(err)
 			return
 		}
 		for page := range uint64(len(guest.want)) {
 			got, err := memoryByte(sim.WithTask(ctx, guest.name+"-check"), guest.region, guest.m, page, nil)
+			if err != nil && guest.lose(err) {
+				break
+			}
 			if err != nil || got != guest.want[page] {
 				t.Errorf("%s page %d reads %d at the end, want %d: %v", guest.name, page, got, guest.want[page], err)
 			}
@@ -257,28 +307,52 @@ func TestPrefetchCampaignReplaysItsSeeds(t *testing.T) {
 
 // campaignGuests attaches the campaign's guests: forks forks of one
 // checkpoint, whose loads race for the same identities, one whose migration
-// source serves two pages the volume names as its own, and a disk.
+// source serves two pages the volume names as its own, and a disk. A guest
+// whose client loses a command as it attaches is a machine that never started,
+// and is left out.
 func campaignGuests(f *fixture, forks int) []*campaignGuest {
 	var guests []*campaignGuest
+	attach := func(name string, kind vmmemory.MemoryRegionKind, b vmmemory.Backing, want []byte) {
+		r, m, err := f.tryAttachBacking(vmmemory.MemoryRegionBacking{Kind: kind, Backing: b})
+		if errors.Is(err, errInjected) {
+			return
+		}
+		if err != nil {
+			f.t.Fatal(err)
+		}
+		guests = append(guests, &campaignGuest{name: name, region: r, m: m, want: want})
+	}
 	for fork := range forks {
-		name := "fork-" + string(rune('a'+fork))
 		b := f.slowBacking(campaignPages)
 		b.admit = true
-		r, m := f.attach(b)
-		guests = append(guests, &campaignGuest{name: name, region: r, m: m, want: initialBytes(campaignPages)})
+		attach("fork-"+string(rune('a'+fork)), vmmemory.Ram, b, withZeros(b.backing, initialBytes(campaignPages)))
 	}
 	peer := &slowPeerBacking{&peerBacking{backing: f.newBacking(campaignPages),
 		hidden: map[uint64]byte{5: 0xa5, 11: 0xab}}}
 	peer.source = control.Ref{VM: peer.owner + "-migrated", Sequence: 1}
-	r, m := f.attach(peer)
-	want := initialBytes(campaignPages)
+	want := withZeros(peer.backing, initialBytes(campaignPages))
 	want[5], want[11] = 0xa5, 0xab
-	guests = append(guests, &campaignGuest{name: "migrated", region: r, m: m, want: want})
+	attach("migrated", vmmemory.Ram, peer, want)
 	// A disk whose guest flushes between its stores, so a journal capture
 	// write-protects pages the other steps then store into, read and spill.
-	disk, diskMapping := f.attachKind(vmmemory.Pmem, f.slowBacking(campaignPages))
-	guests = append(guests, &campaignGuest{name: "disk", region: disk, m: diskMapping, want: initialBytes(campaignPages)})
+	disk := f.slowBacking(campaignPages)
+	attach("disk", vmmemory.Pmem, disk, withZeros(disk.backing, initialBytes(campaignPages)))
 	return guests
+}
+
+// campaignZeros are the pages a campaign's volumes hold zeros at, which a
+// fault maps to zero without reading anything: without them no campaign maps
+// a zero, and no fault of a zero mapping is ever reached.
+var campaignZeros = []uint64{3, 12}
+
+// withZeros makes campaignZeros zeros in b, and in want, which it returns.
+func withZeros(b *backing, want []byte) []byte {
+	for _, page := range campaignZeros {
+		b.zero[page] = true
+		clear(b.data[page*uint64(b.pageSize) : (page+1)*uint64(b.pageSize)])
+		want[page] = 0
+	}
+	return want
 }
 
 // runCampaignFlusher flushes a disk guest's writes from a task of its own
@@ -297,7 +371,9 @@ func runCampaignFlusher(ctx context.Context, t *testing.T, g *campaignGuest, ran
 		}
 		captured, err := g.region.Capture(ctx, g.region.Unjournaled())
 		if err != nil {
-			t.Errorf("%s flusher capturing: %v", g.name, err)
+			if !g.lose(err) {
+				t.Errorf("%s flusher capturing: %v", g.name, err)
+			}
 			return
 		}
 		if random.IntN(4) == 0 {
@@ -340,14 +416,18 @@ func runCampaignGuest(ctx context.Context, t *testing.T, g *campaignGuest, rando
 		if random.IntN(cmp.Or(g.storeOdds, 4)) == 0 {
 			value := byte(0x40 + op)
 			if _, err := memoryByte(ctx, g.region, g.m, page, &value); err != nil {
-				t.Errorf("%s storing into page %d: %v", g.name, page, err)
+				if !g.lose(err) {
+					t.Errorf("%s storing into page %d: %v", g.name, page, err)
+				}
 				return
 			}
 			g.want[page] = value
 		} else {
 			got, err := memoryByte(ctx, g.region, g.m, page, nil)
 			if err != nil {
-				t.Errorf("%s reading page %d: %v", g.name, page, err)
+				if !g.lose(err) {
+					t.Errorf("%s reading page %d: %v", g.name, page, err)
+				}
 				return
 			}
 			if got != g.want[page] {
@@ -360,7 +440,9 @@ func runCampaignGuest(ctx context.Context, t *testing.T, g *campaignGuest, rando
 			// write fails one time in four.
 			captured, err := g.region.Capture(ctx, g.region.Unjournaled())
 			if err != nil {
-				t.Errorf("%s capturing: %v", g.name, err)
+				if !g.lose(err) {
+					t.Errorf("%s capturing: %v", g.name, err)
+				}
 				return
 			}
 			if random.IntN(4) == 0 {
@@ -372,7 +454,7 @@ func runCampaignGuest(ctx context.Context, t *testing.T, g *campaignGuest, rando
 		// one vCPU nothing else stores between the two looks this takes; with
 		// several, another vCPU's store, its write-ahead or a rule it set off
 		// may, so the rule is checked once they have all stopped.
-		if stride == 1 {
+		if stride == 1 && !g.lost.Load() {
 			if err := unjournaledWritable(g.region, g.m); err != nil {
 				t.Errorf("%s after step %d: %v", g.name, op, err)
 				return
