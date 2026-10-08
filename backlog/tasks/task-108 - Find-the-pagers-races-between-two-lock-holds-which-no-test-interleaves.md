@@ -4,7 +4,7 @@ title: 'Find the pager''s races between two lock holds, which no test interleave
 status: In Progress
 assignee: []
 created_date: '2026-10-07 19:19'
-updated_date: '2026-10-08 06:33'
+updated_date: '2026-10-08 07:31'
 labels:
   - vmmemory
   - testing
@@ -28,7 +28,7 @@ An embedder found TASK-105 (a prefetch's READ request met another and the pager 
 - [x] #1 Every place in vmmemory that releases a lock between a check and the act that depends on it is listed in the task; each is either made one hold or shown safe in its comment
 - [x] #2 Each lock release on a fault or prefetch path has a Buggify yield or an admission point, so seeded campaigns interleave there, and the prefetch campaign finds TASK-105's race with that fix reverted
 - [ ] #3 An unseeded stress arm runs the prefetch campaign with real parallelism under -race on many cores in a soak, and is documented in docs/testing.md
-- [ ] #4 A GCE test starts several forks of one cold template on one host at once and checks every page they read
+- [x] #4 A GCE test starts several forks of one cold template on one host at once and checks every page they read
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -41,4 +41,6 @@ Unscheduled soak fixes since: capture protection read before the protection, los
 18c8fe93 fixes the keepFork nil map: dropLentRoot now takes the lent pages out under their locks before the copies, since a retire that publishes a page under another name leaves its lent page (TestTheEndOfASealWaitsForAChildsCopyOfAPageTheRetirePublishedElsewhere, guard pager-drop-lent-copies-before-their-lent-pages).
 
 Mapping audit (7b8680ab, 86114c0e): every vmmemory test checks the pager's resolves and bindings against what each mapping command installed; it turned the lost store (about 1 in 70 soak runs, as an invalid resolution) into a finding in five runs and then into its cause, fixed in d17581af: a fault let its own unmapped page's lock go before its lookup, an eviction spilled the page, and the lookup bound a root's page or the volume's bytes over the guest's own (TestAFaultRefaultsItsOwnPageAnEvictionSpilledBeforeItsLookup, guard pager-look-a-spilled-page-up-past-its-layer). AC4: the cold-forks test (branch cold-forks-gce) ran on GCE and every fork stalled on a dirty budget sized to its stamps; budgets resized, rerunning.
+
+AC4 verified on GCE (n2-standard-8, nested KVM, 2026-10-08): TestForksOfOneColdTemplateStartAtOnceAndReadEveryPage passed with 2 forks (7.4 s; 1,045 evictions, 784 refaults, 249 identity hits) and with 4 forks (27 s phase; 15,380 evictions, 13,451 refaults, 3,671 identity hits), every page of every fork correct. Eight forks thrash that host until the guests stall, so four is the default. Its first runs found two test faults (a dirty budget sized to the stamps, and the console's carriage return), fixed in 93b133bf's series; the memory benchmark now stages source with stage-source.py (1effedf4).
 <!-- SECTION:NOTES:END -->
