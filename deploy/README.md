@@ -553,9 +553,10 @@ requires the guest to still hold it.
 
 The hosts are a Deployment because nothing durable is named after a pod. A
 guest image is imported into a template, an ordinary VM whose checkpoint holds
-the image, under `template-<sha256 of the image file>`. The first pod to want
-it imports it; every other pod finds it published. A changed image is a new
-template. No pod deletes a template, since another may be forking from it, so
+the image, under `template-<sha256 of the image file>-<pages>`, the pages being
+its RAM volume's and its root's (`2m-2m`, `2m-4k`). The first pod to want it
+imports it; every other pod of the same pages finds it published. A changed
+image, or a pod configured with other pages, is a new template. No pod deletes a template, since another may be forking from it, so
 templates no longer used are left for a collector like other pinned
 checkpoints.
 

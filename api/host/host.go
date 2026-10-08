@@ -11,6 +11,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/semistrict/sproutfs/api/guest"
@@ -517,8 +519,11 @@ type Resources struct {
 // allocates are ULIDs under "vm-", so the two namespaces cannot collide.
 const TemplatePrefix = control.TemplatePrefix
 
-// TemplateID is the identity of the template one guest image is imported into:
-// the sha256 of the image file, hex.
+// TemplateID is the identity of the template one guest image is imported into,
+// in volumes of the given pages: the sha256 of the image file, hex, and then
+// each volume's page in the order the import states its volumes, as 4k or 2m.
+// A host importing a RAM volume of 2 MiB pages and a root of 4 KiB names
+// template-<digest>-2m-4k.
 //
 // A template is not a VM that lives on a host. It is an imported image, and an
 // image's identity is its bytes: every host configured with one image names one
@@ -528,17 +533,41 @@ const TemplatePrefix = control.TemplatePrefix
 // bytes. Nothing about the host is in it, which is what lets the host pods be a
 // Deployment with names nothing depends on.
 //
+// The pages are in it because a template's volumes are published in the pages
+// of the pagers that map them, and a pager maps only a volume of its own page.
+// Hosts of different pages sharing a store would otherwise find each other's
+// template under one name, and the second would be refused at its first fork.
+//
 // It is the one identity in the deployment named by content. It names the
 // template and nothing below it: pages are still shared by their identity, and
 // the checkpoints under this identity are its own like any other VM's.
-func TemplateID(digest [sha256.Size]byte) string {
-	return TemplatePrefix + hex.EncodeToString(digest[:])
+func TemplateID(digest [sha256.Size]byte, pages []uint64) string {
+	var name strings.Builder
+	name.WriteString(TemplatePrefix)
+	name.WriteString(hex.EncodeToString(digest[:]))
+	for _, page := range pages {
+		name.WriteString("-")
+		name.WriteString(pageName(page))
+	}
+	return name.String()
+}
+
+// pageName is a page as a template's identity spells it: 4k, 2m, or its bytes
+// where it is neither a whole number of KiB nor of MiB.
+func pageName(page uint64) string {
+	switch {
+	case page >= 1<<20 && page%(1<<20) == 0:
+		return strconv.FormatUint(page>>20, 10) + "m"
+	case page >= 1<<10 && page%(1<<10) == 0:
+		return strconv.FormatUint(page>>10, 10) + "k"
+	}
+	return strconv.FormatUint(page, 10)
 }
 
 // IsTemplate reports an identity in the template namespace, which is what a
 // listing of the deployment's VMs leaves out.
 //
-// A tenant's template is <tenant>/template-<digest>, and a VM of that tenant
+// A tenant's template is <tenant>/template-<digest>-<pages>, and a VM of that tenant
 // alone is created from it. A template of no tenant is public: a VM of any
 // tenant is created from it (control.Public).
 func IsTemplate(id string) bool { return control.IsTemplate(id) }
@@ -1105,7 +1134,7 @@ type Stored struct {
 }
 
 // CreateRequest creates one VM from a guest image. Template is a configured
-// image's name, or any template's identity (template-<digest>), which is how a
+// image's name, or any template's identity (template-<digest>-<pages>), which is how a
 // VM is created from an image imported on request, on any host. An empty
 // Template selects the host's only configured one.
 //

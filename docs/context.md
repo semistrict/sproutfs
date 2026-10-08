@@ -13,7 +13,7 @@ No page crosses between tenants, except a public template's: a fork's child
 belongs to its parent's tenant, and a tenant's templates are its own. A VM of
 no tenant has its keys at the top of the deployment prefix.
 
-**Public template**: A template of no tenant, `template-<digest>`. A VM of any
+**Public template**: A template of no tenant, `template-<digest>-<pages>`. A VM of any
 tenant can be created from it and shares its pages. A host imports its
 configured images as public templates.
 

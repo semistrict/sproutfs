@@ -282,9 +282,13 @@ published checkpoint without copying bytes. A template is an ordinary VM with
 an ordinary control record, under a reserved identity namespace that keeps it
 out of the deployment's list of VMs.
 
-A template's identity is `template-<sha256 of the image file>`, so every host
-configured with the same image names the same template. A starting host acts
-on the template's state in the deployment:
+A template's identity is `template-<sha256 of the image file>-<pages>`, where
+the pages are its RAM volume's and its root's, as `2m` or `4k`: a host of 2 MiB
+RAM pages and 4 KiB disk pages names `template-<digest>-2m-4k`. So every host
+configured with the same image and the same pages names the same template, and
+hosts of different pages sharing a store import the image once for each
+geometry, because a pager maps only a volume published in its own page. A
+starting host acts on the template's state in the deployment:
 
 - **published**: its control record pins the checkpoint it selects. The host
   reads that checkpoint and remembers it for `create`, and writes nothing.
@@ -319,7 +323,8 @@ An image can also be imported on request (`ImportTemplate`, `POST /templates`,
 with the image as the body). The host stages an image that is not a seekable
 file under its scratch directory, because an import reads it twice: once for
 the digest, once for its bytes. It reports the template's identity, and any
-host creates from `template-<digest>` without the image. An identity nothing
+host of the same pages creates from `template-<digest>-<pages>` without the
+image. An identity nothing
 imported is refused, as is one whose import has not published. A host with
 `SPROUTFS_TEMPLATES=none` has no images of its own, is ready at once, and
 creates only from templates imported on request.

@@ -33,10 +33,10 @@ func templateImport(image string, value byte) host.TemplateImport {
 		Source: bytes.NewReader(guestImage(value))}
 }
 
-// templateIDOf is the identity a guest image's bytes name.
+// templateIDOf is the identity a guest image's bytes name in templateVolumes'
+// pages.
 func templateIDOf(image []byte) string {
-	sum := sha256.Sum256(image)
-	return hostapi.TemplateID(sum)
+	return hostapi.TemplateID(sha256.Sum256(image), []uint64{simtest.RAMPage, simtest.PMEMPage})
 }
 
 // TestAHostKilledMidImportImportsItAgainWhenItComesBack: the rollout that

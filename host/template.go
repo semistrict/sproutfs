@@ -78,8 +78,8 @@ type ImportedTemplate struct {
 	Point *volume.ForkPoint
 }
 
-// ID is the identity this image is the template of, which is the image's own
-// sha256.
+// ID is the identity this image is the template of: the image's own sha256
+// and the pages its volumes are published in.
 func (t *ImportedTemplate) ID() string { return t.id }
 
 // TemplateOf returns the fork point every VM of one guest image is forked at,
@@ -125,7 +125,11 @@ func (h *Host) TemplateOf(ctx context.Context, request TemplateImport) (*Importe
 	if request.Tenant != "" && !control.ValidTenant(request.Tenant) {
 		return nil, fmt.Errorf("%w: %q is not a tenant", ErrRequest, request.Tenant)
 	}
-	id := control.InTenant(request.Tenant, hostapi.TemplateID(digest))
+	pages := make([]uint64, len(request.Volumes))
+	for index, spec := range request.Volumes {
+		pages[index] = spec.PageSize
+	}
+	id := control.InTenant(request.Tenant, hostapi.TemplateID(digest, pages))
 	wait := request.Wait
 	if wait == 0 {
 		wait = DefaultTemplateWait

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	hostapi "github.com/semistrict/sproutfs/api/host"
+	"github.com/semistrict/sproutfs/checkpoint"
 	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/host"
 	"github.com/semistrict/sproutfs/platform"
@@ -37,12 +38,18 @@ func templateImport(image string, value byte) host.TemplateImport {
 		Source: bytes.NewReader(guestImage(value))}
 }
 
-// templateIDOf is the identity a guest image's bytes name, computed the way a
-// reader of the deployment would: the sha256 of the image, hex, under the
-// template prefix.
-func templateIDOf(image []byte) string {
-	sum := sha256.Sum256(image)
-	return hostapi.TemplateID(sum)
+// templateIDOf is the identity a guest image's bytes name in templateVolumes'
+// pages, computed the way a reader of the deployment would: the sha256 of the
+// image, hex, and each volume's page, under the template prefix.
+func templateIDOf(image []byte) string { return templateIDIn(image, templateVolumes) }
+
+// templateIDIn is the identity a guest image names in the given volumes.
+func templateIDIn(image []byte, volumes []volume.VolumeSpec) string {
+	pages := make([]uint64, len(volumes))
+	for index, spec := range volumes {
+		pages[index] = spec.PageSize
+	}
+	return hostapi.TemplateID(sha256.Sum256(image), pages)
 }
 
 // templateObjects is every object key of one identity's checkpoint namespace, in
@@ -158,6 +165,48 @@ func TestTwoHostsImportOneImageOnce(t *testing.T) {
 	for index, template := range []*host.ImportedTemplate{first, second} {
 		if got := forkReads(t, h, index, fmt.Sprintf("vm-%d", index), template); !bytes.Equal(got, image) {
 			t.Fatalf("a VM created on host %d reads %#x..., want the image it forked", index, got[:8])
+		}
+	}
+}
+
+// TestHostsOfTwoPagesImportOneImageEachInItsOwnPages: a template is the image
+// as its volumes are published, and a volume is published in the page of the
+// pager that maps it. So a host of 4 KiB disk pages and a host of 2 MiB ones
+// sharing a store each import the image under a name that says its pages, and
+// each forks what its pagers can map. Named by the image alone, the second host
+// found the first's template, and its first fork was refused: the volume is
+// published in 2097152-byte pages.
+func TestHostsOfTwoPagesImportOneImageEachInItsOwnPages(t *testing.T) {
+	h := newSizedHostHarness(t, 2)
+	h.start(t)
+	image := guestImage(0xa5)
+	small := templateImport("alpine", 0xa5)
+	small.Volumes = []volume.VolumeSpec{templateVolumes[0],
+		{Name: "root", Size: 8192, PageSize: checkpoint.PageSize4KiB}}
+
+	large := templateOn(t, h, 0, templateImport("alpine", 0xa5))
+	fine := templateOn(t, h, 1, small)
+	if want := hostapi.TemplatePrefix + fmt.Sprintf("%x-2m-2m", sha256.Sum256(image)); large.ID() != want {
+		t.Fatalf("the 2 MiB host's template is %s, want %s", large.ID(), want)
+	}
+	if want := hostapi.TemplatePrefix + fmt.Sprintf("%x-2m-4k", sha256.Sum256(image)); fine.ID() != want {
+		t.Fatalf("the 4 KiB host's template is %s, want %s", fine.ID(), want)
+	}
+	for index, fork := range []struct {
+		template *host.ImportedTemplate
+		page     uint64
+	}{{large, migrationPageSize}, {fine, checkpoint.PageSize4KiB}} {
+		vm, err := h.hosts[index].Volumes().Fork(t.Context(), fmt.Sprintf("vm-%d", index), fork.template.Point)
+		if err != nil {
+			t.Fatal(err)
+		}
+		page := vm.Volume("root").PageSize()
+		if err := vm.Close(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if page != fork.page {
+			t.Fatalf("a VM created on host %d from %s has a root of %d-byte pages, want %d",
+				index, fork.template.ID(), page, fork.page)
 		}
 	}
 }

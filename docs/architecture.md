@@ -23,9 +23,9 @@ parent's pages and their names. VMs that have a page with the same name share
 it: in the store, in a host's memory and on the network. A page that no
 checkpoint has written reads as zeros.
 
-A template's VM is named by its image instead:
-`template-<sha256 of the guest image file>`, so the hosts import each image
-once between them (see [hosting](hosting.md)). VMs of any tenant can be created
+A template's VM is named by its image and its pages instead:
+`template-<sha256 of the guest image file>-<pages>`, so the hosts of one page
+geometry import each image once between them (see [hosting](hosting.md)). VMs of any tenant can be created
 from a public template and share its pages. Nothing else is shared between
 tenants.
 

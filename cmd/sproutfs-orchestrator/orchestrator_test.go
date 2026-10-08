@@ -1625,7 +1625,8 @@ func TestAPartialCrossHostForkTakesBackTheChildrenItStarted(t *testing.T) {
 func TestTemplatesAreNotVMsOfTheDeployment(t *testing.T) {
 	d := newDeployment(t, map[string][]string{"host-0": {"vm-a"}})
 	d.records.ids = append(d.records.ids,
-		host.TemplateID(sha256.Sum256([]byte("alpine"))), host.TemplateID(sha256.Sum256([]byte("workload"))))
+		host.TemplateID(sha256.Sum256([]byte("alpine")), []uint64{2 << 20, 2 << 20}),
+		host.TemplateID(sha256.Sum256([]byte("workload")), []uint64{2 << 20, 4 << 10}))
 	vms, err := d.orchestrator.VMs(t.Context())
 	if err != nil {
 		t.Fatal(err)
