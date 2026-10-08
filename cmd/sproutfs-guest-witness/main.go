@@ -47,6 +47,10 @@
 //	    measure what a flush costs: each thread writes 4 KiB into a file of
 //	    its own and flushes it, and the command prints the writes, their rate
 //	    and their latency as JSON. See flush.go.
+//	witness reads --file /var/read --dir /var/fresh --size 64M --write-bytes 1G
+//	    measure what reads of one file cost while the guest writes others:
+//	    random reads of the file during the writes and after them, each checked,
+//	    and the command prints their latency as JSON. See reads.go.
 //
 // The pattern is a pure function of the seed, the step and the page, so the
 // expectation lives in the script that drives the soak and not in the guest:
@@ -87,6 +91,8 @@ const usage = `sproutfs-guest-witness says whether a guest's memory and disk are
   witness kvm count [--file PATH]
   witness kvm controls
   witness flush --dir DIR [--threads 1] [--block 4096] [--file 4M] [--seconds 10s] [--no-sync]
+  witness reads --file PATH --dir DIR [--size 64M] [--write-bytes 1G] [--block 4096]
+                [--interval 2ms] [--idle 5s] [--buffered]
   witness version
 
 The pattern is a pure function of (seed, step, page), so what a guest must hold
@@ -161,9 +167,12 @@ func run(args []string) error {
 	if command == "kvm" {
 		return kvm(rest)
 	}
-	// So is the flush measurement; see flush.go.
+	// So are the flush and read measurements; see flush.go and reads.go.
 	if command == "flush" {
 		return flush(rest)
+	}
+	if command == "reads" {
+		return reads(rest)
 	}
 	parsed, err := parse(rest)
 	if err != nil {
