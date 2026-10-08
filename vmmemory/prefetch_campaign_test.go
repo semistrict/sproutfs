@@ -1,7 +1,6 @@
 package vmmemory_test
 
 import (
-	"bytes"
 	"cmp"
 	"context"
 	"errors"
@@ -139,7 +138,7 @@ func addCounts(into, from map[string]uint64) map[string]uint64 {
 
 // prefetchCampaign runs one seed and reports the probes it reached, the sites
 // it fired, and the order its scheduler released every operation in.
-func prefetchCampaign(t *testing.T, seed uint64) (map[string]uint64, map[string]uint64, []byte) {
+func prefetchCampaign(t *testing.T, seed uint64) (map[string]uint64, map[string]uint64, sim.Recording) {
 	scheduler := sim.NewScheduler(seed)
 	runtime := sim.New(sim.Config{Seed: seed, Wait: scheduler.Wait, Buggify: true})
 	done := make(chan struct{})
@@ -154,7 +153,7 @@ func prefetchCampaign(t *testing.T, seed uint64) (map[string]uint64, map[string]
 	if err != nil {
 		t.Fatal(err)
 	}
-	return runtime.Probes(), runtime.FiredSites(), recording.Execution
+	return runtime.Probes(), runtime.FiredSites(), recording
 }
 
 // prefetchWorld is the campaign's world on one seed: forks forks of one
@@ -289,17 +288,15 @@ func TestPrefetchCampaignReplaysItsSeeds(t *testing.T) {
 	for _, seed := range []uint64{1, 5, 7} {
 		t.Run(fmt.Sprintf("seed-%d", seed), func(t *testing.T) {
 			var probes [2]map[string]uint64
-			var orders [2][]byte
+			var runs [2]sim.Recording
 			for run := range 2 {
 				synctest.Test(t, func(t *testing.T) {
-					probes[run], _, orders[run] = prefetchCampaign(t, seed)
+					probes[run], _, runs[run] = prefetchCampaign(t, seed)
 				})
 			}
+			requireReplay(t, seed, runs)
 			if !maps.Equal(probes[0], probes[1]) {
 				t.Fatalf("seed %d reached %v, then %v", seed, probes[0], probes[1])
-			}
-			if !bytes.Equal(orders[0], orders[1]) {
-				t.Fatalf("seed %d released its operations in another order on its second run", seed)
 			}
 		})
 	}

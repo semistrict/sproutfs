@@ -548,20 +548,18 @@ func TestForkCampaignReplaysItsSeeds(t *testing.T) {
 	vmmemory.SetCheckpointBatchPages(t, 2)
 	for _, seed := range []uint64{2, 9} {
 		t.Run(fmt.Sprintf("seed-%d", seed), func(t *testing.T) {
-			var orders [2][]byte
+			var runs [2]sim.Recording
 			for run := range 2 {
-				synctest.Test(t, func(t *testing.T) { orders[run] = forkCampaign(t, seed) })
+				synctest.Test(t, func(t *testing.T) { runs[run] = forkCampaign(t, seed) })
 			}
-			if !bytes.Equal(orders[0], orders[1]) {
-				t.Fatalf("seed %d released its operations in another order on its second run", seed)
-			}
+			requireReplay(t, seed, runs)
 		})
 	}
 }
 
 // forkCampaign runs one seed and reports the order its scheduler released
 // every operation in.
-func forkCampaign(t *testing.T, seed uint64) []byte {
+func forkCampaign(t *testing.T, seed uint64) sim.Recording {
 	scheduler := sim.NewScheduler(seed)
 	runtime := sim.New(sim.Config{Seed: seed, Wait: scheduler.Wait, Buggify: true})
 	done := make(chan struct{})
@@ -576,7 +574,7 @@ func forkCampaign(t *testing.T, seed uint64) []byte {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return recording.Execution
+	return recording
 }
 
 // forkWorld is the fork campaign's world on one seed: a parent that seals a
