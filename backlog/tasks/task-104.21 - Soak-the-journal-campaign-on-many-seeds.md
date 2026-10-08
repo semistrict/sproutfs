@@ -4,6 +4,7 @@ title: Soak the journal campaign on many seeds
 status: To Do
 assignee: []
 created_date: '2026-10-08 02:34'
+updated_date: '2026-10-08 02:36'
 labels:
   - durability
   - testing
@@ -25,7 +26,8 @@ The journal campaign runs 16 seeds in just check. Its rare interleavings show up
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 One command runs the journal campaign on thousands of seeds across a disposable GCE VM and deletes the VM whatever happens
-- [ ] #2 A failing seed is printed so that one go test replays it on the Mac
-- [ ] #3 docs/testing.md documents the soak and its last result
+- [ ] #1 A failing seed is printed so that one go test replays it on the Mac
+- [ ] #2 docs/testing.md documents the soak and its last result
+- [ ] #3 One command runs the simulated journal campaign over thousands of seeds in parallel on one machine
+- [ ] #4 It runs only in the deterministic simulation (platform/sim and internal/simtest): every fault is a seeded choice, a failing run replays from its seed, and nothing touches a real disk, network or cloud
 <!-- AC:END -->

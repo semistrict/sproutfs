@@ -4,6 +4,7 @@ title: Clog and partition the network in the journal campaign
 status: To Do
 assignee: []
 created_date: '2026-10-08 02:34'
+updated_date: '2026-10-08 02:36'
 labels:
   - durability
   - testing
@@ -28,4 +29,5 @@ The simulator has Clog, Partition and CorruptNext, but the journal campaign neve
 - [ ] #1 Campaign events clog, partition and swizzle links between hosts, the membership, the orchestrator and the object store, for seeded durations
 - [ ] #2 A host cut off from the membership answers no flush it cannot journal under its current assignment, and every answered flush survives
 - [ ] #3 Every seed ends with all links healed and every guest reading back what it wrote
+- [ ] #4 It runs only in the deterministic simulation (platform/sim and internal/simtest): every fault is a seeded choice, a failing run replays from its seed, and nothing touches a real disk, network or cloud
 <!-- AC:END -->

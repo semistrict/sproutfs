@@ -4,6 +4,7 @@ title: Corrupt and stall synced data on journal disks
 status: To Do
 assignee: []
 created_date: '2026-10-08 02:34'
+updated_date: '2026-10-08 02:36'
 labels:
   - durability
   - testing
@@ -27,4 +28,5 @@ The sim disk damages only writes made since the last sync, at a power loss. Noth
 - [ ] #1 A seeded site flips bits in synced journal entries and in the header, and a recovery reading one writes none of its bytes and reports the corruption
 - [ ] #2 A seeded site stalls a journal disk for longer than a batch interval, and flushes wait or fail with EIO, never answering early
 - [ ] #3 docs/architecture.md says what a corrupted journal entry costs the VM
+- [ ] #4 It runs only in the deterministic simulation (platform/sim and internal/simtest): every fault is a seeded choice, a failing run replays from its seed, and nothing touches a real disk, network or cloud
 <!-- AC:END -->
