@@ -410,8 +410,8 @@ func (h *Host) evictPage(ctx context.Context, page *zirconvm.VmPage) error {
 			spills = append(spills, spill)
 		}
 	}
-	for q, bindings := range byRegion {
-		if err := q.revokeBindings(ctx, bindings); err != nil {
+	for _, q := range inAttachOrder(byRegion) {
+		if err := q.revokeBindings(ctx, byRegion[q]); err != nil {
 			// A region that cannot take the mapping away is terminal from
 			// here, and this page is excluded from every later step by it.
 			q.heldPages(ctx, err)

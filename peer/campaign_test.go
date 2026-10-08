@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -91,6 +92,32 @@ func TestThePeerServerCampaignNeverAnswersWrong(t *testing.T) {
 	}
 }
 
+// untilListening starts a server again while its listen fails, as a host's
+// supervisor starts again a host that could not listen, up to ten times.
+func untilListening[T any](start func() (T, error)) (T, error) {
+	for attempt := 1; ; attempt++ {
+		started, err := start()
+		if err == nil || attempt == 10 {
+			return started, err
+		}
+	}
+}
+
+// acceptingAgain accepts again where an accept fails and the listener is
+// open. The previous release stops serving at the first accept that fails, as
+// one out of descriptors fails: that release is frozen, and what this
+// campaign tests is this release speaking to it.
+type acceptingAgain struct{ platform.Listener }
+
+func (l acceptingAgain) Accept(ctx context.Context) (platform.Conn, error) {
+	for {
+		conn, err := l.Listener.Accept(ctx)
+		if err == nil || ctx.Err() != nil || errors.Is(err, platform.ErrClosed) || errors.Is(err, net.ErrClosed) {
+			return conn, err
+		}
+	}
+}
+
 // campaign is one seed's world.
 type campaign struct {
 	t       *testing.T
@@ -128,9 +155,13 @@ func runPeerCampaign(t *testing.T, seed uint64) *sim.Runtime {
 	ctx := sim.WithRuntime(t.Context(), runtime)
 	c := &campaign{t: t, runtime: runtime, random: runtime.Random("peer-campaign"),
 		pages: memoryPages{count: campaignPages, pageSize: pageSize}, cache: newMemoryCache(7)}
-	source, err := peer.NewServer(ctx, peer.ServerConfig{Network: network, Address: "source", PageSize: pageSize,
-		MaxPagesPerRequest: 64, Cache: c.cache, Membership: c.cache.source, Member: c.cache.member,
-		Budgets: peer.Budgets{Fault: 8 * pageSize, BulkRead: 128 * pageSize, BulkWrite: 64 << 10}})
+	// A listen the network refuses is a host that does not start, which its
+	// supervisor starts again.
+	source, err := untilListening(func() (*peer.Server, error) {
+		return peer.NewServer(ctx, peer.ServerConfig{Network: network, Address: "source", PageSize: pageSize,
+			MaxPagesPerRequest: 64, Cache: c.cache, Membership: c.cache.source, Member: c.cache.member,
+			Budgets: peer.Budgets{Fault: 8 * pageSize, BulkRead: 128 * pageSize, BulkWrite: 64 << 10}})
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,14 +169,14 @@ func runPeerCampaign(t *testing.T, seed uint64) *sim.Runtime {
 	source.Serve("vm", map[string]peer.Pages{"ram0": c.pages})
 	c.source = source
 
-	listener, err := network.Listen("previous")
+	listener, err := untilListening(func() (platform.Listener, error) { return network.Listen("previous") })
 	if err != nil {
 		t.Fatal(err)
 	}
 	old := &previous.Server{Served: map[string]map[string]previous.Pages{"vm": {"ram0": c.pages}}}
 	serving, stopPrevious := context.WithCancel(t.Context())
 	var previousDone sync.WaitGroup
-	previousDone.Go(func() { old.Serve(serving, listener) })
+	previousDone.Go(func() { old.Serve(serving, acceptingAgain{listener}) })
 	defer func() {
 		stopPrevious()
 		_ = listener.Close()

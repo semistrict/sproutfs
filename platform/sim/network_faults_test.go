@@ -281,8 +281,14 @@ func TestABoundedSendBufferStallsTheSender(t *testing.T) {
 	})
 }
 
+// connectionEnds is the sites that end a connection, each of which a test of
+// another site's effect on a connection must tell from its own.
+var connectionEnds = []string{sim.SiteRandomClose, sim.SiteSendTimedOut, sim.SiteReceiveTimedOut}
+
 // seedsWithSite runs the sends of one connection under each seed with buggify on
-// and reports, per seed, whether the site fired and what the run observed.
+// and reports, per seed, whether the site fired and what the run observed. A
+// seed in which another site ended the connection is not judged: what the run
+// saw may be that site's doing.
 func seedsWithSite(t *testing.T, site string, observe func(t *testing.T, runtime *sim.Runtime) bool) {
 	t.Helper()
 	fired, observed := 0, 0
@@ -290,6 +296,11 @@ func seedsWithSite(t *testing.T, site string, observe func(t *testing.T, runtime
 		synctest.Test(t, func(t *testing.T) {
 			runtime := sim.New(sim.Config{Seed: seed, Buggify: true, Network: quiet(sim.NetworkConfig{})})
 			saw := observe(t, runtime)
+			for _, other := range connectionEnds {
+				if other != site && runtime.FiredSites()[other] > 0 {
+					return
+				}
+			}
 			did := runtime.FiredSites()[site] > 0
 			if saw != did {
 				t.Fatalf("seed %d: the site fired %v and the run saw it %v", seed, did, saw)
@@ -327,7 +338,7 @@ func TestAConnectionClosesAtRandomUnderAFrame(t *testing.T) {
 		}()
 		for i := range 400 {
 			if err := client.Send(t.Context(), platform.Frame{Header: []byte(fmt.Sprint(i))}); err != nil {
-				if !errors.Is(err, platform.ErrDisconnected) {
+				if !errors.Is(err, platform.ErrDisconnected) && runtime.FiredSites()[sim.SiteSendTimedOut] == 0 {
 					t.Fatalf("a send closed under it = %v, want ErrDisconnected", err)
 				}
 				return true

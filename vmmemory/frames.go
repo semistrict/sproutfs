@@ -78,8 +78,8 @@ type frame struct {
 	// cold copy pins it. Changed with Host.mu and Host.pinMu held, and read
 	// with either.
 	idle bool
-	// dropped marks a page whose last mapping went while a store replaced it,
-	// which goes back once that store's command lands. Guarded by Host.mu.
+	// dropped marks a page out of every object that goes back once nothing
+	// maps it and no store replaces it (giveUp). Guarded by Host.mu.
 	dropped bool
 }
 
@@ -127,7 +127,7 @@ func (p *arenaPmm) FreePage(page *zirconvm.VmPage) {
 		// The parent's layer holds the frame, and gives it back itself.
 		return
 	}
-	p.host.releaseFrame(page)
+	p.host.giveUp(page)
 }
 
 func (p *arenaPmm) ZeroPage() *zirconvm.VmPage { return p.zero }
@@ -189,7 +189,7 @@ func makeFrame(at fileSlot, kind MemoryRegionKind, layer *MemoryRegion) *frame {
 // controlled run chooses (lockAdmitted).
 func (h *Host) lockPage(ctx context.Context, p *zirconvm.VmPage) error {
 	f := frameOf(p)
-	return lockAdmitted(ctx, "vmmemory/page-lock", f.mu.TryLock, f.mu.Lock, func() { h.unlockPage(p) })
+	return lockAdmitted(ctx, "vmmemory/page-lock", f.mu.TryLock, f.mu.WaitFree)
 }
 
 // unlockPage gives a page's lock back and wakes whatever waits for a page to
@@ -294,6 +294,46 @@ func (h *Host) releaseFrame(p *zirconvm.VmPage) {
 	f.slot = -1
 	h.signal()
 	h.mu.Unlock()
+}
+
+// giveUp gives back a page that has left every object: now where nothing maps
+// it and no store replaces it, and otherwise once the last of them goes. A
+// store's replacement ends when its command lands (replacement.done). A
+// mapping that stays is a terminal region's, whose revocation failed
+// (dropSharers), and goes when that region is closed (Detach): until then the
+// page is its alone, and nothing may reuse it. A mapping of a region that is
+// not terminal is the pager freeing a page a guest reads.
+func (h *Host) giveUp(p *zirconvm.VmPage) {
+	f := frameOf(p)
+	h.mu.Lock()
+	if f.slot < 0 {
+		h.mu.Unlock()
+		return
+	}
+	for b := range f.aliases.all() {
+		if b.region.terminal.Load() == nil {
+			h.mu.Unlock()
+			panic("vmmemory: the pager freed a page a memory region maps")
+		}
+	}
+	now := f.aliases.len() == 0 && f.replacing == 0
+	f.dropped = !now
+	h.mu.Unlock()
+	if now {
+		h.releaseFrame(p)
+	}
+}
+
+// droppedLocked reports a page giveUp left to its last mappings, which
+// none holds any more, and takes the mark off: the caller gives it back.
+// Caller holds h.mu.
+func droppedLocked(p *zirconvm.VmPage) bool {
+	f := frameOf(p)
+	if !f.dropped || f.aliases.len() != 0 || f.replacing != 0 {
+		return false
+	}
+	f.dropped = false
+	return true
 }
 
 // idleLocked makes a root's page nothing maps idle, at the end of the

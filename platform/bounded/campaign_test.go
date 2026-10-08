@@ -107,8 +107,10 @@ func runBoundsCampaign(t *testing.T, seed uint64) *sim.Runtime {
 		ctx := sim.WithRuntime(t.Context(), runtime)
 		for counter := range campaignCounters {
 			k := key(t, fmt.Sprintf("counter/%d", counter))
-			if _, err := store.Put(ctx, platform.PutRequest{Key: k, Body: strings.NewReader(""),
-				Conditions: platform.PutConditions{IfNoneMatch: true}}); err != nil && !errors.Is(err, platform.ErrPrecondition) {
+			if _, err := retried(func() (platform.PutResult, error) {
+				return store.Put(ctx, platform.PutRequest{Key: k, Body: strings.NewReader(""),
+					Conditions: platform.PutConditions{IfNoneMatch: true}})
+			}); err != nil && !errors.Is(err, platform.ErrPrecondition) {
 				t.Error(err)
 				return
 			}
@@ -161,12 +163,27 @@ func (c *boundsCampaign) work(t *testing.T, ctx context.Context, worker int) {
 	}
 }
 
-// create writes one immutable object create-if-absent. A refusal is the
-// object its own earlier attempt wrote, which must hold its bytes.
+// retried makes a request again while the store answers it unavailable, as
+// every caller of a store does. Only a request that is safe to make again is
+// made through it: a read, or a write under a condition.
+func retried[T any](call func() (T, error)) (T, error) {
+	for {
+		value, err := call()
+		if !errors.Is(err, platform.ErrUnavailable) {
+			return value, err
+		}
+	}
+}
+
+// create writes one immutable object create-if-absent, again while the store
+// answers unavailable. A refusal is the object its own earlier attempt wrote,
+// which must hold its bytes.
 func (c *boundsCampaign) create(t *testing.T, ctx context.Context, id string, k platform.ObjectKey) bool {
 	data := pattern(c.draw.Intn(id+"/size", 48<<10), byte(c.draw.Intn(id+"/seed", 256)))
-	_, err := c.store.Put(ctx, platform.PutRequest{Key: k, Body: bytes.NewReader(data), Size: int64(len(data)),
-		Conditions: platform.PutConditions{IfNoneMatch: true}})
+	_, err := retried(func() (platform.PutResult, error) {
+		return c.store.Put(ctx, platform.PutRequest{Key: k, Body: bytes.NewReader(data), Size: int64(len(data)),
+			Conditions: platform.PutConditions{IfNoneMatch: true}})
+	})
 	switch {
 	case errors.Is(err, platform.ErrPrecondition):
 		if got, err := c.whole(ctx, k); err != nil || !bytes.Equal(got, data) {
@@ -203,19 +220,21 @@ func (c *boundsCampaign) read(t *testing.T, ctx context.Context, id string, k pl
 			want = data[max(size-suffix, 0):]
 		}
 	}
-	result, err := c.store.Get(ctx, request)
-	if err != nil {
-		t.Errorf("reading %s: %v", k, err)
-		return
-	}
-	got, err := io.ReadAll(result.Body)
-	if closeErr := result.Body.Close(); closeErr != nil {
-		t.Errorf("closing %s: %v", k, closeErr)
-	}
+	got, err := retried(func() ([]byte, error) {
+		result, err := c.store.Get(ctx, request)
+		if err != nil {
+			return nil, err
+		}
+		got, err := io.ReadAll(result.Body)
+		if closeErr := result.Body.Close(); closeErr != nil {
+			t.Errorf("closing %s: %v", k, closeErr)
+		}
+		return got, err
+	})
 	if err != nil || !bytes.Equal(got, want) {
 		t.Errorf("reading %s %+v read %d other bytes (%v)", k, request.Range, len(got), err)
 	}
-	metadata, err := c.store.Head(ctx, k)
+	metadata, err := retried(func() (platform.ObjectMetadata, error) { return c.store.Head(ctx, k) })
 	if err != nil || metadata.Size != int64(len(data)) {
 		t.Errorf("heading %s: %d bytes (%v), want %d", k, metadata.Size, err, len(data))
 	}
@@ -227,11 +246,14 @@ func (c *boundsCampaign) list(t *testing.T, ctx context.Context, worker int, min
 	if err != nil {
 		t.Fatal(err)
 	}
-	var listed []platform.ObjectKey
-	if err := platform.ListAll(ctx, c.store, prefix, func(object platform.ObjectMetadata) error {
-		listed = append(listed, object.Key)
-		return nil
-	}); err != nil {
+	listed, err := retried(func() ([]platform.ObjectKey, error) {
+		var listed []platform.ObjectKey
+		return listed, platform.ListAll(ctx, c.store, prefix, func(object platform.ObjectMetadata) error {
+			listed = append(listed, object.Key)
+			return nil
+		})
+	})
+	if err != nil {
 		t.Errorf("listing %s: %v", prefix, err)
 		return
 	}
@@ -244,12 +266,16 @@ func (c *boundsCampaign) list(t *testing.T, ctx context.Context, worker int, min
 }
 
 // add appends this addition's name to a counter by compare-and-set. A
-// refusal whose counter already holds the name is its own landed write. A
-// read whose body stalled while another worker changed the counter is read
-// again, as any read the store did not answer is.
+// refusal whose counter already holds the name is its own landed write, and
+// so is a write whose reply was lost. A read whose body stalled while another
+// worker changed the counter is read again, as any read the store did not
+// answer is, and so is a write the store answered unavailable.
 func (c *boundsCampaign) add(t *testing.T, ctx context.Context, id string, k platform.ObjectKey) {
 	for {
 		result, err := c.store.Get(ctx, platform.GetRequest{Key: k})
+		if errors.Is(err, platform.ErrUnavailable) {
+			continue
+		}
 		if err != nil {
 			t.Errorf("reading %s: %v", k, err)
 			return
@@ -259,7 +285,7 @@ func (c *boundsCampaign) add(t *testing.T, ctx context.Context, id string, k pla
 			t.Errorf("closing %s: %v", k, closeErr)
 			return
 		}
-		if errors.Is(err, bounded.ErrChanged) {
+		if errors.Is(err, platform.ErrUnavailable) {
 			continue
 		}
 		if err != nil {
@@ -275,7 +301,7 @@ func (c *boundsCampaign) add(t *testing.T, ctx context.Context, id string, k pla
 		if err == nil {
 			break
 		}
-		if !errors.Is(err, platform.ErrPrecondition) {
+		if !errors.Is(err, platform.ErrPrecondition) && !errors.Is(err, platform.ErrUnavailable) {
 			t.Errorf("adding %s to %s: %v", id, k, err)
 			return
 		}
@@ -293,7 +319,8 @@ func names(counter []byte) []string {
 }
 
 // write writes or deletes the worker's own object without a condition. One
-// that timed out may or may not have landed.
+// that timed out, or that the store answered unavailable, may or may not have
+// landed.
 func (c *boundsCampaign) write(t *testing.T, ctx context.Context, id string, own *scratch) {
 	var next []byte
 	var err error
@@ -307,7 +334,7 @@ func (c *boundsCampaign) write(t *testing.T, ctx context.Context, id string, own
 	switch {
 	case err == nil:
 		own.possible = [][]byte{next}
-	case errors.Is(err, bounded.ErrTimedOut):
+	case errors.Is(err, platform.ErrUnavailable):
 		own.possible = append(own.possible, next)
 	default:
 		t.Errorf("writing %s: %v", own.key, err)
@@ -333,8 +360,10 @@ func (c *boundsCampaign) readScratch(t *testing.T, ctx context.Context, own *scr
 }
 
 func (c *boundsCampaign) whole(ctx context.Context, k platform.ObjectKey) ([]byte, error) {
-	data, _, err := platform.ReadObject(ctx, c.store, k, 0, 1<<30, errors.New("corrupt"))
-	return data, err
+	return retried(func() ([]byte, error) {
+		data, _, err := platform.ReadObject(ctx, c.store, k, 0, 1<<30, errors.New("corrupt"))
+		return data, err
+	})
 }
 
 // check reads everything back once the workers are done, and holds the

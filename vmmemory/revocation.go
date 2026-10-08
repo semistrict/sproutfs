@@ -37,7 +37,7 @@ func (r *MemoryRegion) revocationFailed(err error) error {
 // takes away cannot overlap. It is never nested and never waits for the memory region
 // or for a page while it holds it.
 func (r *MemoryRegion) underProtection(ctx context.Context, revoke func() error) error {
-	if err := r.protectMu.RLock(ctx); err != nil {
+	if err := rlockAdmitted(ctx, "vmmemory/protection", r.protectMu); err != nil {
 		return err
 	}
 	defer r.protectMu.RUnlock()

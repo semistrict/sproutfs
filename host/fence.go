@@ -72,7 +72,7 @@ func (h *Host) fence(ctx context.Context, vmID string, cause error) {
 	delete(h.machines.running, vmID)
 	h.machines.mu.Unlock()
 	if entry != nil {
-		entry.end()
+		entry.leave()
 	}
 	if !h.claimFence(vmID) {
 		return

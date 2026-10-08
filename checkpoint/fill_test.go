@@ -109,10 +109,12 @@ func newFillCluster(t *testing.T, config fillConfig) *fillCluster {
 		if config.diskOf != nil {
 			disk = config.diskOf(index)
 		}
-		file, err := c.runtime.NewDisk(name, disk).Open(ctx, "cache", platform.OpenOptions{Create: true})
-		if err != nil {
-			t.Fatal(err)
-		}
+		simDisk := c.runtime.NewDisk(name, disk)
+		var file platform.File
+		startedAgain(t, func() (err error) {
+			file, err = simDisk.Open(ctx, "cache", platform.OpenOptions{Create: true})
+			return err
+		})
 		h.file = file
 		c.open(t, index, h)
 		c.hosts = append(c.hosts, h)
@@ -127,9 +129,31 @@ func newFillCluster(t *testing.T, config fillConfig) *fillCluster {
 }
 
 // open opens a host's table of peers, its cache over its file, its peer
-// server and its store, and has its cache follow the list the host holds.
+// server and its store, and has its cache follow the list the host holds. A
+// start that fails, for a disk whose device fails a read or a listen the
+// network refuses, is made again, as a host's supervisor starts it again.
 func (c *fillCluster) open(t *testing.T, index int, h *fillHost) {
 	t.Helper()
+	startedAgain(t, func() error { return c.start(t, index, h) })
+}
+
+// startedAgain makes a host's start again while it fails, up to ten times, as
+// a host's supervisor starts again a host that could not start.
+func startedAgain(t *testing.T, start func() error) {
+	t.Helper()
+	for attempt := 1; ; attempt++ {
+		err := start()
+		if err == nil {
+			return
+		}
+		if attempt == 10 {
+			t.Fatal(err)
+		}
+	}
+}
+
+// start is one attempt of open. One that fails closes what it opened.
+func (c *fillCluster) start(t *testing.T, index int, h *fillHost) error {
 	ctx := c.ctx(t)
 	tableConfig := peer.TableConfig{Dial: func(ctx context.Context, to platform.Address) (platform.Conn, error) {
 		return c.runtime.Network().Dial(ctx, platform.Address(h.name), to)
@@ -137,47 +161,53 @@ func (c *fillCluster) open(t *testing.T, index int, h *fillHost) {
 	if c.config.table != nil {
 		c.config.table(&tableConfig)
 	}
-	var err error
-	h.table, err = peer.NewTable(ctx, tableConfig)
+	table, err := peer.NewTable(ctx, tableConfig)
 	if err != nil {
-		t.Fatal(err)
+		return err
 	}
 	// By default the memory tier keeps nothing, not even a segment's page
 	// table, so every read is of the disks or the store.
-	h.budget, err = resource.New(c.config.memory)
+	budget, err := resource.New(c.config.memory)
 	if err != nil {
-		t.Fatal(err)
+		_ = table.Close()
+		return err
 	}
 	// The cache's identity is drawn from the seed: it is what ranks the
 	// caches for every window, so drawn from the operating system it would
 	// place a seed's stripes on other hosts on every run.
 	cacheConfig := checkpoint.CacheConfig{Disk: h.file, DiskBytes: 256 << 20, DiskRegionBytes: pullRegionBytes,
-		ClusterPercent: c.config.share, Peers: h.table, Clock: h.clock, Entropy: c.runtime.NewEntropy(h.name)}
+		ClusterPercent: c.config.share, Peers: table, Clock: h.clock, Entropy: c.runtime.NewEntropy(h.name)}
 	if c.config.cache != nil {
 		c.config.cache(index, &cacheConfig)
 	}
-	h.cache, err = checkpoint.NewCache(ctx, h.budget, cacheConfig)
+	cache, err := checkpoint.NewCache(ctx, budget, cacheConfig)
 	if err != nil {
-		t.Fatal(err)
+		_ = table.Close()
+		return err
 	}
 	// A host reads the membership as it opens, and holds it until it is told
 	// to read it again or a peer names a newer generation. A read that fails
 	// leaves it with none until then.
-	h.view = membership.NewView(ctx, membership.ViewConfig{Store: c.members, Initial: membership.Empty(),
+	view := membership.NewView(ctx, membership.ViewConfig{Store: c.members, Initial: membership.Empty(),
 		Interval: -1})
-	_, _ = h.view.Refresh(ctx)
+	_, _ = view.Refresh(ctx)
 	serverConfig := peer.ServerConfig{Network: c.runtime.Network(), Address: h.address,
-		PageSize: checkpoint.PageSize2MiB, Cache: h.cache, Membership: h.view, Member: h.cache.Identity()}
+		PageSize: checkpoint.PageSize2MiB, Cache: cache, Membership: view, Member: cache.Identity()}
 	if c.config.server != nil {
 		c.config.server(index, &serverConfig)
 	}
-	h.server, err = peer.NewServer(ctx, serverConfig)
+	server, err := peer.NewServer(ctx, serverConfig)
 	if err != nil {
-		t.Fatal(err)
+		view.Close()
+		cache.Close()
+		_ = table.Close()
+		return err
 	}
+	h.table, h.budget, h.cache, h.view, h.server = table, budget, cache, view, server
 	h.store = mustStore(t, checkpoint.Config{ObjectStore: h.objects, Cache: h.cache})
 	h.cache.FollowMembership(h.view, h.cache.Identity())
 	h.up = true
+	return nil
 }
 
 // shut closes a host as a host closes: its peer server, then its table of

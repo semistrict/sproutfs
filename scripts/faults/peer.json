@@ -1,0 +1,303 @@
+{
+ "comment": "Requests one host makes of another host's peer server (peer.Peer): pages and the pages resident of a VM it migrated or forked, a fork child's claim, the cluster cache's stripes, and journal entries. Every request may lose its reply after the peer carried it out (peer/reply-lost/<request> in Peer.call), the server answers busy at random (peer/busy), stalls a connection until the peer is marked down (peer/stall), and the simulated network damages bytes (sim/network/stream-bit-flip). See scripts/check-faults.py.",
+ "interfaces": [
+  {
+   "package": "peer",
+   "name": "Peer"
+  }
+ ],
+ "faults": [
+  {
+   "interface": "peer.Peer",
+   "method": "Address",
+   "none": "the address the peer was named by"
+  },
+  {
+   "interface": "peer.Peer",
+   "method": "Claim",
+   "error": "reply lost",
+   "site": "peer/reply-lost/claim",
+   "package": "internal/simtest",
+   "run": "^TestSeededTopologyUnderBoundaryFaults$",
+   "purpose": "the peer carried the request out and the connection broke before its reply was read: the hold is claimed at the source and the destination asks again, which a claimed hold answers the same"
+  },
+  {
+   "interface": "peer.Peer",
+   "method": "Claim",
+   "error": "busy",
+   "site": "peer/busy",
+   "package": "internal/simtest",
+   "run": "^TestSeededTopologyUnderBoundaryFaults$",
+   "purpose": "the source at its budget for this host: the destination waits and asks again"
+  },
+  {
+   "interface": "peer.Peer",
+   "method": "Claim",
+   "error": "ErrNotServed",
+   "purpose": "the source no longer holds the child: it was given up, released or ran out, and the destination discards the child",
+   "deferred": "TASK-118: a peer answers it only from its own state, which the campaigns change by their schedules; no site answers it at random, as a peer that restarted or moved on does"
+  },
+  {
+   "interface": "peer.Peer",
+   "method": "Down",
+   "none": "whether this host marked the peer down, held in this process"
+  },
+  {
+   "interface": "peer.Peer",
+   "method": "Drop",
+   "error": "reply lost",
+   "site": "peer/reply-lost/drop",
+   "package": "checkpoint",
+   "run": "^TestClusterReadsSurviveTheirFaultsAndReachTheirProbes$",
+   "purpose": "the peer carried the request out and the connection broke before its reply was read: a stripe forgotten or not, which the next read of it finds either way"
+  },
+  {
+   "interface": "peer.Peer",
+   "method": "Drop",
+   "error": "busy",
+   "site": "peer/busy",
+   "package": "checkpoint",
+   "run": "^TestClusterReadsSurviveTheirFaultsAndReachTheirProbes$",
+   "purpose": "the cache at its budget did not forget the stripe, which its next read finds wrong and drops again"
+  },
+  {
+   "interface": "peer.Peer",
+   "method": "Drop",
+   "error": "ErrStale or ErrNotMe",
+   "purpose": "the cache answered under another generation of the membership or does not serve the disk",
+   "deferred": "TASK-118: a peer answers it only from its own state, which the campaigns change by their schedules; no site answers it at random, as a peer that restarted or moved on does"
+  },
+  {
+   "interface": "peer.Peer",
+   "method": "Keep",
+   "error": "reply lost",
+   "site": "peer/reply-lost/keep",
+   "package": "checkpoint",
+   "run": "^TestFillsSurviveTheirFaultsAndReachTheirProbes$",
+   "purpose": "the peer carried the request out and the connection broke before its reply was read: the stripes may be kept, and a keep is best effort either way"
+  },
+  {
+   "interface": "peer.Peer",
+   "method": "Keep",
+   "error": "dropped",
+   "site": "checkpoint/keep-drop",
+   "package": "checkpoint",
+   "run": "^TestFillsSurviveTheirFaultsAndReachTheirProbes$",
+   "purpose": "the cache dropped the keep, as one whose write budget is spent does: the store still holds every page"
+  },
+  {
+   "interface": "peer.Peer",
+   "method": "Keep",
+   "error": "ErrDown",
+   "site": "peer/stall",
+   "package": "checkpoint",
+   "run": "^TestClusterReadsSurviveTheirFaultsAndReachTheirProbes$",
+   "purpose": "a peer marked down after a stalled connection is not asked: the keep is dropped"
+  },
+  {
+   "interface": "peer.Peer",
+   "method": "Keep",
+   "error": "ErrStale or ErrNotMe",
+   "purpose": "the cache answered under another generation of the membership or does not serve the disk",
+   "deferred": "TASK-118: a peer answers it only from its own state, which the campaigns change by their schedules; no site answers it at random, as a peer that restarted or moved on does"
+  },
+  {
+   "interface": "peer.Peer",
+   "method": "KeepAdmitted",
+   "error": "reply lost",
+   "site": "peer/reply-lost/keep",
+   "package": "checkpoint",
+   "run": "^TestFillsSurviveTheirFaultsAndReachTheirProbes$",
+   "purpose": "the peer carried the request out and the connection broke before its reply was read: as for Keep"
+  },
+  {
+   "interface": "peer.Peer",
+   "method": "KeepAdmitted",
+   "error": "dropped",
+   "site": "checkpoint/keep-drop",
+   "package": "checkpoint",
+   "run": "^TestFillsSurviveTheirFaultsAndReachTheirProbes$",
+   "purpose": "as for Keep"
+  },
+  {
+   "interface": "peer.Peer",
+   "method": "KeepAdmitted",
+   "error": "ErrDown",
+   "site": "peer/stall",
+   "package": "checkpoint",
+   "run": "^TestClusterReadsSurviveTheirFaultsAndReachTheirProbes$",
+   "purpose": "as for Keep"
+  },
+  {
+   "interface": "peer.Peer",
+   "method": "KeepAdmitted",
+   "error": "ErrStale or ErrNotMe",
+   "purpose": "as for Keep",
+   "deferred": "TASK-118: a peer answers it only from its own state, which the campaigns change by their schedules; no site answers it at random, as a peer that restarted or moved on does"
+  },
+  {
+   "interface": "peer.Peer",
+   "method": "Pages",
+   "error": "reply lost",
+   "site": "peer/reply-lost/pages",
+   "package": "internal/simtest",
+   "run": "^TestSeededTopologyUnderBoundaryFaults$",
+   "purpose": "the peer carried the request out and the connection broke before its reply was read: a fault or the stream asks again, or reads the volume where the page has been published"
+  },
+  {
+   "interface": "peer.Peer",
+   "method": "Pages",
+   "error": "reply damaged",
+   "site": "sim/network/stream-bit-flip",
+   "package": "peer",
+   "run": "^TestThePeerServerCampaignNeverAnswersWrong$",
+   "purpose": "a reply whose bytes fail their checksum is refused and asked again: no wrong byte reaches a guest"
+  },
+  {
+   "interface": "peer.Peer",
+   "method": "Pages",
+   "error": "ErrNotServed",
+   "purpose": "the source no longer serves the VM: what it held that no checkpoint has is gone with it",
+   "deferred": "TASK-118: a peer answers it only from its own state, which the campaigns change by their schedules; no site answers it at random, as a peer that restarted or moved on does"
+  },
+  {
+   "interface": "peer.Peer",
+   "method": "Presence",
+   "error": "reply lost",
+   "site": "peer/reply-lost/presence",
+   "package": "checkpoint",
+   "run": "^TestPullsSurviveTheirFaultsAndReachTheirProbes$",
+   "purpose": "the peer carried the request out and the connection broke before its reply was read: the pull asks another holder or reads the store"
+  },
+  {
+   "interface": "peer.Peer",
+   "method": "Presence",
+   "error": "busy",
+   "site": "peer/busy",
+   "package": "checkpoint",
+   "run": "^TestPullsSurviveTheirFaultsAndReachTheirProbes$",
+   "purpose": "as a lost reply"
+  },
+  {
+   "interface": "peer.Peer",
+   "method": "Presence",
+   "error": "ErrStale or ErrNotMe",
+   "purpose": "the cache answered under another generation of the membership or does not serve the disk",
+   "deferred": "TASK-118: a peer answers it only from its own state, which the campaigns change by their schedules; no site answers it at random, as a peer that restarted or moved on does"
+  },
+  {
+   "interface": "peer.Peer",
+   "method": "Probe",
+   "error": "reply lost",
+   "site": "peer/reply-lost/probe",
+   "package": "internal/simtest",
+   "run": "^TestSeededTopologyUnderBoundaryFaults$",
+   "purpose": "the peer carried the request out and the connection broke before its reply was read: the peer stays marked down until a later probe is answered"
+  },
+  {
+   "interface": "peer.Peer",
+   "method": "Probe",
+   "error": "ErrNotMe",
+   "purpose": "another cache answers at the address",
+   "deferred": "TASK-118: a peer answers it only from its own state, which the campaigns change by their schedules; no site answers it at random, as a peer that restarted or moved on does"
+  },
+  {
+   "interface": "peer.Peer",
+   "method": "ReadJournal",
+   "error": "reply lost",
+   "site": "peer/reply-lost/read-journal",
+   "package": "internal/simtest",
+   "run": "^TestJournalsSurviveTheirFaultsAndReachTheirProbes$",
+   "purpose": "the peer carried the request out and the connection broke before its reply was read: the open is refused as pending and asked again, and nothing read is published"
+  },
+  {
+   "interface": "peer.Peer",
+   "method": "ReadJournal",
+   "error": "busy",
+   "site": "peer/busy",
+   "package": "internal/simtest",
+   "run": "^TestJournalsSurviveTheirFaultsAndReachTheirProbes$",
+   "purpose": "the holder at its budget: the open is refused as pending and asked again"
+  },
+  {
+   "interface": "peer.Peer",
+   "method": "ReadJournal",
+   "error": "ErrNoJournal or journal.ErrGeneration",
+   "purpose": "the holder no longer serves the journal disk, or the disk was formatted again",
+   "deferred": "TASK-118: a peer answers it only from its own state, which the campaigns change by their schedules; no site answers it at random, as a peer that restarted or moved on does"
+  },
+  {
+   "interface": "peer.Peer",
+   "method": "ReadStripes",
+   "error": "reply lost",
+   "site": "peer/reply-lost/read-stripes",
+   "package": "checkpoint",
+   "run": "^TestClusterReadsSurviveTheirFaultsAndReachTheirProbes$",
+   "purpose": "the peer carried the request out and the connection broke before its reply was read: the read asks another holder or the store"
+  },
+  {
+   "interface": "peer.Peer",
+   "method": "ReadStripes",
+   "error": "busy",
+   "site": "peer/busy",
+   "package": "checkpoint",
+   "run": "^TestClusterReadsSurviveTheirFaultsAndReachTheirProbes$",
+   "purpose": "as a lost reply"
+  },
+  {
+   "interface": "peer.Peer",
+   "method": "ReadStripes",
+   "error": "ErrDown",
+   "site": "peer/stall",
+   "package": "checkpoint",
+   "run": "^TestClusterReadsSurviveTheirFaultsAndReachTheirProbes$",
+   "purpose": "a peer marked down after a stalled connection is not asked"
+  },
+  {
+   "interface": "peer.Peer",
+   "method": "ReadStripes",
+   "error": "reply damaged",
+   "site": "sim/network/stream-bit-flip",
+   "package": "peer",
+   "run": "^TestThePeerServerCampaignNeverAnswersWrong$",
+   "purpose": "refused by its checksum: no wrong byte reaches a reader"
+  },
+  {
+   "interface": "peer.Peer",
+   "method": "ReadStripes",
+   "error": "ErrStale or ErrNotMe",
+   "purpose": "the cache answered under another generation of the membership or does not serve the disk",
+   "deferred": "TASK-118: a peer answers it only from its own state, which the campaigns change by their schedules; no site answers it at random, as a peer that restarted or moved on does"
+  },
+  {
+   "interface": "peer.Peer",
+   "method": "Resident",
+   "error": "reply lost",
+   "site": "peer/reply-lost/resident",
+   "package": "internal/simtest",
+   "run": "^TestSeededTopologyUnderBoundaryFaults$",
+   "purpose": "the peer carried the request out and the connection broke before its reply was read: the bulk stream ends early and the pages are read from the volume"
+  },
+  {
+   "interface": "peer.Peer",
+   "method": "Resident",
+   "error": "busy",
+   "site": "peer/busy",
+   "package": "internal/simtest",
+   "run": "^TestSeededTopologyUnderBoundaryFaults$",
+   "purpose": "as a lost reply"
+  },
+  {
+   "interface": "peer.Peer",
+   "method": "Resident",
+   "error": "ErrNotServed",
+   "purpose": "the source no longer serves the VM",
+   "deferred": "TASK-118: a peer answers it only from its own state, which the campaigns change by their schedules; no site answers it at random, as a peer that restarted or moved on does"
+  },
+  {
+   "interface": "peer.Peer",
+   "method": "Status",
+   "none": "what this host knows of the peer, held in this process"
+  }
+ ]
+}

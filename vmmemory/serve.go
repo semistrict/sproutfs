@@ -46,7 +46,7 @@ func (r *MemoryRegion) ReadResident(ctx context.Context, page uint64, dst []byte
 	if uint64(len(dst)) != h.pageSize {
 		return false, false, ErrRange
 	}
-	if err := r.live.RLock(ctx); err != nil {
+	if err := rlockAdmitted(ctx, "vmmemory/live", r.live); err != nil {
 		return false, false, err
 	}
 	defer r.live.RUnlock()
@@ -55,11 +55,11 @@ func (r *MemoryRegion) ReadResident(ctx context.Context, page uint64, dst []byte
 	}
 	// The stripe orders this against the faults that change who owns a
 	// page's bytes, and comes before the region, as in a fault.
-	if err := r.stripe(page).Lock(ctx); err != nil {
+	if err := lockStripe(ctx, r.stripe(page)); err != nil {
 		return false, false, err
 	}
 	defer r.stripe(page).Unlock()
-	if err := r.mu.RLock(ctx); err != nil {
+	if err := rlockAdmitted(ctx, "vmmemory/region", r.mu); err != nil {
 		return false, false, err
 	}
 	defer r.mu.RUnlock()
@@ -153,7 +153,7 @@ func (r *MemoryRegion) Resident() ([]uint64, error) {
 // instead of starting a new one. It is read here, under the lock that makes the
 // volume another host's, because that is the moment the set stops changing.
 func (r *MemoryRegion) Handoff(ctx context.Context) (time.Duration, error) {
-	if err := r.mu.Lock(ctx); err != nil {
+	if err := wlockAdmitted(ctx, "vmmemory/region", r.mu); err != nil {
 		return 0, err
 	}
 	defer r.unlock()
@@ -226,7 +226,7 @@ func (s MemoryRegionStats) SharedBytes() uint64   { return uint64(s.SharedPages)
 // Stats reports this memory region's pages. It is a snapshot taken without stopping
 // the guest, exactly like Resident.
 func (r *MemoryRegion) Stats(ctx context.Context) (MemoryRegionStats, error) {
-	if err := r.mu.RLock(ctx); err != nil {
+	if err := rlockAdmitted(ctx, "vmmemory/region", r.mu); err != nil {
 		return MemoryRegionStats{}, err
 	}
 	defer r.mu.RUnlock()

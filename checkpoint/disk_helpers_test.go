@@ -462,7 +462,11 @@ func newDiskFixture(t *testing.T, config diskFixtureConfig) *diskFixture {
 // scheduler releases is opened from the workload's own goroutine.
 func openDiskFixture(ctx context.Context, runtime *sim.Runtime, config diskFixtureConfig) (*diskFixture, error) {
 	simDisk := runtime.NewDisk("host", config.disk)
-	file, err := newCheckedFile(ctx, simDisk, testRegionBytes)
+	var file *checkedFile
+	err := startAgain(func() (err error) {
+		file, err = newCheckedFile(ctx, simDisk, testRegionBytes)
+		return err
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -476,22 +480,41 @@ func openDiskFixture(ctx context.Context, runtime *sim.Runtime, config diskFixtu
 			deployment: testDeployment, entropy: runtime.NewEntropy("cache-disk"),
 			clusterPercent: config.clusterPercent},
 		model: make(map[diskKey][]byte), caches: config.caches}
-	if f.disk, err = openCacheDisk(ctx, file, budget, f.settings); err != nil {
+	if err := startAgain(func() (err error) {
+		f.disk, err = openCacheDisk(ctx, file, budget, f.settings)
+		return err
+	}); err != nil {
 		return nil, err
 	}
 	f.follow()
 	return f, nil
 }
 
+// startAgain makes a host's start again while its disk's device fails it, up
+// to ten times, as a host's supervisor starts again a host that could not
+// start.
+func startAgain(start func() error) error {
+	for attempt := 1; ; attempt++ {
+		err := start()
+		if !errors.Is(err, platform.ErrInjectedFault) || attempt == 10 {
+			return err
+		}
+	}
+}
+
 // restart opens a new cache disk over the fixture's file, as a host that
 // restarts does, and leaves the old one behind without closing it. What it
 // wrote stays the model.
 func (f *diskFixture) restart(ctx context.Context) error {
-	if err := f.file.reopen(ctx); err != nil {
+	var disk *cacheDisk
+	if err := startAgain(func() error {
+		if err := f.file.reopen(ctx); err != nil {
+			return err
+		}
+		var err error
+		disk, err = openCacheDisk(ctx, f.file, f.budget, f.settings)
 		return err
-	}
-	disk, err := openCacheDisk(ctx, f.file, f.budget, f.settings)
-	if err != nil {
+	}); err != nil {
 		return err
 	}
 	f.disk = disk

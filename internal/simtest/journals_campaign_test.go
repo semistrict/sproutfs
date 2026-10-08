@@ -163,8 +163,11 @@ func (c *journalCampaign) storeInto(id string, pages []uint64) {
 
 // maximumFlushWait is the most a flush may wait for its answer while its
 // host runs: a full ring holds it until the trim's turn, which the world's
-// clocks reach as the wait goes on.
-const maximumFlushWait = 10 * time.Minute
+// clocks reach as the wait goes on, and a flush waiting for a checkpoint
+// whose attempts failed, because its VMM refused the pause or its seal could
+// not be read, waits for the loop's backoff, which doubles up to the
+// interval. Four attempts fit in an interval.
+const maximumFlushWait = journalInterval
 
 // answered waits for a flush's answer, moving the hosts' clocks on while it
 // has none: a flush that waits for room on its ring may wait for its host to
@@ -173,6 +176,16 @@ const maximumFlushWait = 10 * time.Minute
 // answered with success is checked at every recovery, and one answered with
 // an error promised nothing.
 func (c *journalCampaign) answered(id string, answer <-chan error) bool {
+	err, ok := c.wait(answer)
+	if ok && err != nil {
+		c.t.Logf("step %d: a flush of %s failed: %v", c.step, id, err)
+	}
+	return ok
+}
+
+// wait is the answer of a flush, moving the hosts' clocks on while it has
+// none, and whether it came within maximumFlushWait.
+func (c *journalCampaign) wait(answer <-chan error) (error, bool) {
 	for waited := time.Duration(0); waited < maximumFlushWait; waited += time.Minute {
 		// The bubble's time is the simulation's: a minute of it is the
 		// disks', the network's and the store's, and then the hosts'.
@@ -180,15 +193,12 @@ func (c *journalCampaign) answered(id string, answer <-chan error) bool {
 		select {
 		case err := <-answer:
 			minute.Stop()
-			if err != nil {
-				c.t.Logf("step %d: a flush of %s failed: %v", c.step, id, err)
-			}
-			return true
+			return err, true
 		case <-minute.C:
 		}
 		c.world.Advance(time.Minute)
 	}
-	return false
+	return nil, false
 }
 
 // await is answered for a flush of a VM its host runs on: one left
@@ -323,7 +333,12 @@ func (c *journalCampaign) killSynced() {
 	c.store(id)
 	at := c.world.HostOf(id)
 	held := c.world.HoldFlush(id, simtest.DiskVolume)
-	err := <-held.Answered()
+	// A ring the failed checkpoints left full holds the answer until the
+	// checkpoint loop's turn, which the hosts' clocks reach.
+	err, ok := c.wait(held.Answered())
+	if !ok {
+		c.t.Fatalf("step %d: a flush of %s on host-%d went unanswered for %s", c.step, id, at, maximumFlushWait)
+	}
 	c.killed(at)
 	if held.Deliver() {
 		c.t.Fatalf("step %d: the guest of %s took an answer from host-%d after it died: %v", c.step, id, at, err)

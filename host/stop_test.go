@@ -2,12 +2,14 @@ package host_test
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"testing"
 
 	hostapi "github.com/semistrict/sproutfs/api/host"
 	"github.com/semistrict/sproutfs/checkpoint"
 	"github.com/semistrict/sproutfs/host"
+	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/volume"
 )
 
@@ -191,4 +193,134 @@ func TestStoppingAVMThisHostDoesNotRunIsNotFound(t *testing.T) {
 	if _, err := h.hosts[0].Stop(t.Context(), "vm-nobody-runs", hostapi.StopRequest{Suspend: true}); !errors.Is(err, host.ErrNotRunning) {
 		t.Fatalf("stopping a VM this host does not run = %v, want ErrNotRunning", err)
 	}
+}
+
+// TestAStopWhoseVMMFailsToCloseStillReportsTheStop: once the stop's checkpoint
+// has landed and the host has given the VM up, the VM is stopped. A VMM
+// process that then fails to close cleanly, as one that cannot remove a
+// staging file does, is the host's to clean up. Reporting it as a failed stop
+// would have the deployment believe the VM still runs on a host that no longer
+// runs it, and never start it again.
+func TestAStopWhoseVMMFailsToCloseStillReportsTheStop(t *testing.T) {
+	ctx := sim.WithRuntime(t.Context(), sim.New(sim.Config{}))
+	h := newHostHarness(t)
+	pagers := newPager(t, h.configs[0].Resources)
+	h.configs[0].Pagers = pagers.pagers
+	h.start(t)
+
+	vm, err := h.hosts[0].Volumes().Create(ctx, "vm-1", migrationVolumes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	guest, err := newMachine(t, pagers, vm, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	guest.store("ram0", 1, 9)
+	if err := h.hosts[0].AddMachine("vm-1", closeFailing{guest}); err != nil {
+		t.Fatal(err)
+	}
+
+	stopped, err := h.hosts[0].Stop(ctx, "vm-1", hostapi.StopRequest{Suspend: true})
+	if err != nil {
+		t.Fatalf("a stop whose VMM failed to close = %v, want the checkpoint it published", err)
+	}
+	if stopped.VM != "vm-1" || stopped.Sequence == 0 {
+		t.Fatalf("the stop published %s, want a checkpoint of the VM it stopped", stopped)
+	}
+	if running := h.hosts[0].Machines(); len(running) != 0 {
+		t.Fatalf("the host still runs %v after stopping it", running)
+	}
+	reopened, err := h.hosts[1].Volumes().Open(ctx, "vm-1")
+	if err != nil {
+		t.Fatalf("opening the stopped VM elsewhere: %v", err)
+	}
+	page := make([]byte, migrationPageSize)
+	if err := reopened.Volume("ram0").Read(ctx, migrationPageSize, page); err != nil {
+		t.Fatal(err)
+	}
+	if want := bytes.Repeat([]byte{9}, migrationPageSize); !bytes.Equal(page, want) {
+		t.Fatalf("the stopped VM came back holding %d..., want the byte its guest wrote before the stop", page[0])
+	}
+	if err := reopened.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// closeFailing is a VMM process that closes and then reports that something
+// of it could not be given back.
+type closeFailing struct{ *machine }
+
+func (m closeFailing) Close() error {
+	return errors.Join(m.machine.Close(), errors.New("a staging file of the VMM could not be removed"))
+}
+
+// TestAStopWhoseLastCheckpointLandedReportsTheStopWhenItsSealStays: the
+// stop's checkpoint landed and the record selects it, and the pager could not
+// end its seal. The VM is stopped at that checkpoint: a stop that reported a
+// failure kept running a VM the deployment believed it could start again
+// elsewhere at the checkpoint it already selected.
+func TestAStopWhoseLastCheckpointLandedReportsTheStopWhenItsSealStays(t *testing.T) {
+	ctx := sim.WithRuntime(t.Context(), sim.New(sim.Config{}))
+	h := newHostHarness(t)
+	pagers := newPager(t, h.configs[0].Resources)
+	h.configs[0].Pagers = pagers.pagers
+	h.start(t)
+
+	vm, err := h.hosts[0].Volumes().Create(ctx, "vm-1", migrationVolumes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	guest, err := newMachine(t, pagers, vm, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	guest.store("ram0", 1, 9)
+	if err := h.hosts[0].AddMachine("vm-1", unretiring{guest}); err != nil {
+		t.Fatal(err)
+	}
+
+	stopped, err := h.hosts[0].Stop(ctx, "vm-1", hostapi.StopRequest{Suspend: true})
+	if err != nil {
+		t.Fatalf("a stop whose checkpoint landed and whose seal stayed = %v, want the checkpoint it published", err)
+	}
+	if running := h.hosts[0].Machines(); len(running) != 0 {
+		t.Fatalf("the host still runs %v after stopping it", running)
+	}
+	reopened, err := h.hosts[1].Volumes().Open(ctx, "vm-1")
+	if err != nil {
+		t.Fatalf("opening the stopped VM elsewhere: %v", err)
+	}
+	if got := reopened.Status().Checkpoint; got != stopped {
+		t.Fatalf("the stopped VM opens at %s, want the stop's %s", got, stopped)
+	}
+	page := make([]byte, migrationPageSize)
+	if err := reopened.Volume("ram0").Read(ctx, migrationPageSize, page); err != nil {
+		t.Fatal(err)
+	}
+	if want := bytes.Repeat([]byte{9}, migrationPageSize); !bytes.Equal(page, want) {
+		t.Fatalf("the stopped VM came back holding %d..., want the byte its guest wrote before the stop", page[0])
+	}
+	if err := reopened.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// unretiring is a VMM process whose sealed checkpoints cannot end, as a
+// pager's whose look-up of its pages' identities failed cannot.
+type unretiring struct{ *machine }
+
+func (m unretiring) Prepare(ctx context.Context) ([]byte, map[string]volume.DirtySource, error) {
+	state, sources, err := m.machine.Prepare(ctx)
+	for name, source := range sources {
+		sources[name] = stuckSeal{source}
+	}
+	return state, sources, err
+}
+
+// stuckSeal is a sealed checkpoint whose retire fails.
+type stuckSeal struct{ volume.DirtySource }
+
+func (stuckSeal) Retire(context.Context, bool) error {
+	return errors.New("the pager could not look its pages up")
 }

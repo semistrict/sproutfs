@@ -1,10 +1,13 @@
 package vmmemory
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -31,7 +34,7 @@ type MemoryRegion struct {
 	// page-table work and never for bytes. stripes serialize faults within one
 	// read-ahead window, and go on owning a window while its read runs.
 	mu             *ctxsync.RWMutex
-	stripes        []*ctxsync.Mutex
+	stripes        []ctxsync.LazyMutex
 	readAheadPages int
 	// prefetchRunning counts this memory region's prefetches whose goroutines
 	// have not ended. It is guarded by Host.mu; a detach waits for it to reach
@@ -54,6 +57,13 @@ type MemoryRegion struct {
 	// whether a fault has to reserve against the dirty budget before it loads.
 	peer    bool
 	mapping Mapping
+	// serial orders the host's memory regions by when they attached. A step
+	// that commands several regions' clients, an eviction revoking a page
+	// from each region that maps it, commands them in this order
+	// (inAttachOrder): in a map's order, which of them meets a client that
+	// refuses or loses a command would be the Go runtime's choice, and a
+	// controlled run would not replay.
+	serial uint64
 	// tenant is the tenant the memory region's VM belongs to, as its host
 	// stated it. Every identity its backing reports names it.
 	tenant string
@@ -69,7 +79,7 @@ type MemoryRegion struct {
 	forks   map[*arenaFile]int
 	// filesMu admits one fork point's file at a time to the process, so that no
 	// map names a file before the process holds it.
-	filesMu *ctxsync.Mutex
+	filesMu ctxsync.LazyMutex
 	// ended is closed when the memory region becomes terminal, which is how
 	// its session learns of an end another memory region's fault found.
 	ended     chan struct{}
@@ -163,7 +173,7 @@ type MemoryRegion struct {
 	// endMu admits one retire or unseal at a time. The walk gives the memory region up
 	// between batches, so the exclusive memory region lock is no longer what keeps two
 	// of them apart.
-	endMu *ctxsync.Mutex
+	endMu ctxsync.LazyMutex
 	// protectMu keeps a seal's write-protect commands apart from the one thing
 	// that can take a mapping away while the seal holds the memory region: a reclaim,
 	// which revokes its victim's pages under that page's lock alone. The seal no
@@ -254,6 +264,8 @@ func (h *Host) admit(ctx context.Context, memoryRegion MemoryRegionBacking, mapp
 		return nil, ErrCapacity
 	}
 	h.logical += int(count)
+	h.attached++
+	serial := h.attached
 	h.mu.Unlock()
 	// The logical pages are taken under that hold, and each later hold gives
 	// them back or adds the region; nothing else read under it is relied on.
@@ -268,7 +280,7 @@ func (h *Host) admit(ctx context.Context, memoryRegion MemoryRegionBacking, mapp
 		return nil, err
 	}
 	_, peer := backing.(UnpublishedLoader)
-	r := &MemoryRegion{live: ctxsync.NewRWMutex(), mu: ctxsync.NewRWMutex(), endMu: ctxsync.NewMutex(), protectMu: ctxsync.NewRWMutex(), filesMu: ctxsync.NewMutex(), ended: make(chan struct{}), coldCopied: make(chan struct{}, 1), host: h, backing: backing, kind: memoryRegion.Kind, peer: peer, mapping: mapping, tenant: memoryRegion.Tenant, pageCount: int(count), readAheadPages: h.cfg.ReadAheadPages}
+	r := &MemoryRegion{live: ctxsync.NewRWMutex(), mu: ctxsync.NewRWMutex(), protectMu: ctxsync.NewRWMutex(), ended: make(chan struct{}), coldCopied: make(chan struct{}, 1), host: h, backing: backing, kind: memoryRegion.Kind, peer: peer, mapping: mapping, tenant: memoryRegion.Tenant, pageCount: int(count), readAheadPages: h.cfg.ReadAheadPages, serial: serial}
 	if h.isolated() {
 		if err := h.newFiles(ctx, r); err != nil {
 			h.mu.Lock()
@@ -279,10 +291,7 @@ func (h *Host) admit(ctx context.Context, memoryRegion MemoryRegionBacking, mapp
 	}
 
 	windows := (r.pageCount + r.readAheadPages - 1) / r.readAheadPages
-	r.stripes = make([]*ctxsync.Mutex, min(windows, 1024))
-	for i := range r.stripes {
-		r.stripes[i] = ctxsync.NewMutex()
-	}
+	r.stripes = make([]ctxsync.LazyMutex, min(windows, 1024))
 	// A memory region's own pages are a region layer of its own, however it
 	// attaches: here, or a session's Connect.
 	if err := r.newLayer(); err != nil {
@@ -411,12 +420,21 @@ func (r *MemoryRegion) serving() error {
 	return r.host.err
 }
 
+// inAttachOrder is the regions of m in the order they attached, which is the
+// order a step commands several regions' clients in (MemoryRegion.serial).
+func inAttachOrder[V any](m map[*MemoryRegion]V) []*MemoryRegion {
+	regions := slices.Collect(maps.Keys(m))
+	slices.SortFunc(regions, func(a, b *MemoryRegion) int { return cmp.Compare(a.serial, b.serial) })
+	return regions
+}
+
 // fail makes this memory region terminal, which is the end of the machine that maps
 // it: nothing may take a mapping away from it again, so nothing may reuse the
 // pages it still holds. The session that ends with it is what says so — see
 // heldPages for the part of it nothing else reports.
 func (r *MemoryRegion) fail(err error) error {
 	if r.terminal.CompareAndSwap(nil, &failure{fmt.Errorf("managed mapping terminal: %w", err)}) {
+		r.audit.fail()
 		close(r.ended)
 	}
 	return r.terminal.Load().err
@@ -450,8 +468,8 @@ func (r *MemoryRegion) window(index uint64) (start, end uint64) {
 	return start, min(start+size, uint64(r.pageCount))
 }
 
-func (r *MemoryRegion) stripe(index uint64) *ctxsync.Mutex {
-	return r.stripes[int(index/uint64(r.readAheadPages))%len(r.stripes)]
+func (r *MemoryRegion) stripe(index uint64) *ctxsync.LazyMutex {
+	return &r.stripes[int(index/uint64(r.readAheadPages))%len(r.stripes)]
 }
 
 func (r *MemoryRegion) resolvePages(ctx context.Context, page uint64, count int, writable bool) error {
@@ -517,7 +535,7 @@ func (r *MemoryRegion) installedUnpublished(offset uint64, installed []bool) {
 // uploading, so the guest keeps faulting and storing for the whole of that
 // upload.
 func (r *MemoryRegion) lockPageAccess(ctx context.Context, index uint64, write bool) error {
-	if err := lockAdmitted(ctx, "vmmemory/region", r.mu.TryRLock, r.mu.RLock, r.mu.RUnlock); err != nil {
+	if err := rlockAdmitted(ctx, "vmmemory/region", r.mu); err != nil {
 		return err
 	}
 	if err := r.ready(); err != nil {
@@ -527,29 +545,64 @@ func (r *MemoryRegion) lockPageAccess(ctx context.Context, index uint64, write b
 	return nil
 }
 
-// lockAdmitted takes a lock, at once where try takes it and otherwise by
-// lock, which waits. A caller that waited was woken by whoever gave the lock
-// up, outside any turn of a controlled run, and that one goes on beside it:
-// the caller then goes on only when the run chooses, as resource, so the two
-// never race for what comes next (a free slot, a page's lock, a
-// fault-injection site's next draw) in an order no seed decides. Where the
-// run cancels it instead, the lock is given back.
-func lockAdmitted(ctx context.Context, resource string, try func() bool, lock func(context.Context) error,
-	unlock func()) error {
+// lockAdmitted takes a lock by try, at once where it is free, and otherwise
+// waits for it to come free by free, which takes nothing, and tries again
+// when a controlled run chooses, as resource. A caller that waited was woken
+// by whoever gave the lock up, outside any turn of the run, beside that one
+// and every other caller waiting for the lock: none of them takes it, or
+// anything after it (a free slot, a page's lock, a fault-injection site's
+// next draw), until the run says, so which of them has it is the seed's
+// choice and not the Go scheduler's. One that finds it taken again waits
+// again.
+func lockAdmitted(ctx context.Context, resource string, try func() bool, free func(context.Context) error) error {
 	if err := context.Cause(ctx); err != nil {
 		return err
 	}
-	if try() {
-		return nil
-	}
-	if err := lock(ctx); err != nil {
-		return err
-	}
-	if err := sim.Admit(ctx, resource); err != nil {
-		unlock()
-		return err
+	for !try() {
+		if err := free(ctx); err != nil {
+			return err
+		}
+		if err := sim.Admit(ctx, resource); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+// rlockAdmitted takes m shared, as lockAdmitted takes a lock.
+func rlockAdmitted(ctx context.Context, resource string, m *ctxsync.RWMutex) error {
+	return lockAdmitted(ctx, resource, m.TryRLock, m.WaitReadable)
+}
+
+// wlockAdmitted takes m exclusively, as lockAdmitted takes a lock, waiting
+// as a writer that new readers wait behind (ctxsync.Writer): a waiter that
+// gave its place up as it woke would let the reader that woke it take the
+// lock again, or not, as the Go scheduler ran the two.
+func wlockAdmitted(ctx context.Context, resource string, m *ctxsync.RWMutex) error {
+	if err := context.Cause(ctx); err != nil {
+		return err
+	}
+	if m.TryLock() {
+		return nil
+	}
+	w := m.Writer()
+	for !w.TryLock() {
+		if err := w.Wait(ctx); err != nil {
+			w.Leave()
+			return err
+		}
+		if err := sim.Admit(ctx, resource); err != nil {
+			w.Leave()
+			return err
+		}
+	}
+	return nil
+}
+
+// lockStripe takes a read-ahead window's stripe, as lockAdmitted takes a
+// lock.
+func lockStripe(ctx context.Context, stripe *ctxsync.LazyMutex) error {
+	return lockAdmitted(ctx, "vmmemory/stripe", stripe.TryLock, stripe.WaitFree)
 }
 
 // errMemoryRegionDropped reports a read whose memory region lock could not be retaken,
@@ -574,7 +627,7 @@ var errMemoryRegionDropped = errors.New("managed-memory fault gave the memory re
 func (r *MemoryRegion) withoutMemoryRegion(ctx context.Context, read func() error) error {
 	r.mu.RUnlock()
 	err := read()
-	if lockErr := lockAdmitted(ctx, "vmmemory/region", r.mu.TryRLock, r.mu.RLock, r.mu.RUnlock); lockErr != nil {
+	if lockErr := rlockAdmitted(ctx, "vmmemory/region", r.mu); lockErr != nil {
 		return errors.Join(err, lockErr, errMemoryRegionDropped)
 	}
 	if err != nil {
@@ -653,7 +706,7 @@ func (r *MemoryRegion) readRun(ctx context.Context, first uint64, wanted []bool,
 // Faults continue while it runs. A memory region that has handed its volume off has no
 // authority to observe and reports success without touching it.
 func (r *MemoryRegion) Verify(ctx context.Context) error {
-	if err := r.mu.RLock(ctx); err != nil {
+	if err := rlockAdmitted(ctx, "vmmemory/region", r.mu); err != nil {
 		return err
 	}
 	defer r.mu.RUnlock()
@@ -688,7 +741,7 @@ func (r *MemoryRegion) Detach(ctx context.Context) error {
 	// them, so the reservations and the layer given back below are given back
 	// only once no eviction is writing into them, and none starts after.
 	r.detaching.Store(true)
-	if err := r.live.Lock(ctx); err != nil {
+	if err := wlockAdmitted(ctx, "vmmemory/live", r.live); err != nil {
 		r.detaching.Store(false)
 		return err
 	}
@@ -696,7 +749,7 @@ func (r *MemoryRegion) Detach(ctx context.Context) error {
 	if err := r.cancelPrefetches(ctx); err != nil {
 		return err
 	}
-	if err := r.mu.Lock(ctx); err != nil {
+	if err := wlockAdmitted(ctx, "vmmemory/region", r.mu); err != nil {
 		return err
 	}
 	defer r.unlock()
@@ -734,13 +787,22 @@ func (r *MemoryRegion) Detach(ctx context.Context) error {
 	})
 	r.bindingsMu.Unlock()
 	r.releaseDirty()
+	// A page another region gave up while this one mapped it, which its
+	// mapping could not be taken from, goes back now (giveUp).
+	var dropped []*zirconvm.VmPage
 	h.mu.Lock()
 	for _, b := range bound {
-		if b.page != nil {
+		if page := b.page; page != nil {
 			r.host.unaliasLocked(b)
+			if droppedLocked(page) {
+				dropped = append(dropped, page)
+			}
 		}
 	}
 	h.mu.Unlock()
+	for _, page := range dropped {
+		h.releaseFrame(page)
+	}
 	// Between the hold above and the one below, a fault of another region
 	// may count this one among the attached: it holds nothing and maps
 	// nothing now, so it asks no checkpoint of it and is no victim's alias.

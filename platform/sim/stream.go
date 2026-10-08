@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/semistrict/sproutfs/platform"
@@ -23,6 +24,38 @@ const (
 	// SiteStreamBitFlip flips one bit of the leading bytes of a write to a
 	// byte stream, which is where a frame's prefix and header are.
 	SiteStreamBitFlip = "sim/network/stream-bit-flip"
+	// SiteListenFails refuses a listen, as an address another process holds
+	// or a process out of descriptors refuses one.
+	SiteListenFails = "sim/network/listen-fails"
+	// SiteDialRefused refuses a dial to a listening address, as a full
+	// backlog or a lost SYN refuses or times one out.
+	SiteDialRefused = "sim/network/dial-refused"
+	// SiteAcceptFails fails an accept with a connection waiting, as a process
+	// out of descriptors fails one: the connection waits for the next.
+	SiteAcceptFails = "sim/network/accept-fails"
+	// SiteSendTimedOut and SiteReceiveTimedOut end a connection as the kernel
+	// ends one whose peer stopped answering: the sent bytes went
+	// unacknowledged past the user timeout, or the keepalive probes did.
+	SiteSendTimedOut    = "sim/network/send-timed-out"
+	SiteReceiveTimedOut = "sim/network/receive-timed-out"
+)
+
+// The chance that each of the network's failure sites fires on one call, once
+// a seed has activated it.
+const (
+	listenFailsProbability = 0.05
+	dialRefusedProbability = 0.02
+	acceptFailsProbability = 0.02
+	timedOutProbability    = 0.005
+)
+
+// The errors the failure sites return. A stream's are the socket errors a real
+// one returns, which the framer turns into the platform's as it does those.
+var (
+	errListenFails  = fmt.Errorf("%w: listen: address already in use", platform.ErrUnavailable)
+	errDialRefused  = fmt.Errorf("%w: dial: connection refused", platform.ErrUnavailable)
+	errAcceptFails  = fmt.Errorf("%w: accept: too many open files", platform.ErrUnavailable)
+	errConnTimedOut = fmt.Errorf("%w: the connection timed out", platform.ErrUnavailable)
 )
 
 // streamFlipSpan is how far into a write the stream bit-flip site reaches: a
@@ -87,11 +120,21 @@ type streamListener struct {
 	incoming chan *streamConn
 	done     chan struct{}
 	once     sync.Once
+
+	mu sync.Mutex
+	// held is a connection an accept failed with waiting, which the next
+	// accept takes first, and closed says Close has run.
+	held   *streamConn
+	closed bool
 }
 
 func (n *Network) listenStream(address platform.Address) (*streamListener, error) {
 	if address == "" {
 		return nil, platform.ErrInvalidPath
+	}
+	if n.runtime.buggifyHere(SiteListenFails, listenFailsProbability) {
+		n.runtime.trace.record(Event{Kind: "network", Resource: string(address), Operation: "listen_stream", Outcome: "refused"})
+		return nil, &net.OpError{Op: "listen", Net: "sim", Err: syscall.EADDRINUSE}
 	}
 	l := &streamListener{network: n, address: address,
 		incoming: make(chan *streamConn, n.config.InboxSize), done: make(chan struct{})}
@@ -106,12 +149,32 @@ func (n *Network) listenStream(address platform.Address) (*streamListener, error
 }
 
 func (l *streamListener) accept(ctx context.Context) (*streamConn, error) {
+	l.mu.Lock()
+	held := l.held
+	l.held = nil
+	l.mu.Unlock()
+	if held != nil {
+		return held, nil
+	}
 	select {
 	case <-ctx.Done():
 		return nil, context.Cause(ctx)
 	case <-l.done:
 		return nil, platform.ErrClosed
 	case conn := <-l.incoming:
+		if l.network.runtime.buggifyHere(SiteAcceptFails, acceptFailsProbability) {
+			// The connection waits for the next accept, as one left in the
+			// backlog does.
+			l.mu.Lock()
+			l.held = conn
+			closed := l.closed
+			l.mu.Unlock()
+			if closed {
+				_ = conn.Close()
+			}
+			l.network.runtime.trace.record(Event{Kind: "network", Resource: string(l.address), Operation: "accept_stream", Outcome: "failed"})
+			return nil, &net.OpError{Op: "accept", Net: "sim", Err: syscall.EMFILE}
+		}
 		return conn, nil
 	}
 }
@@ -126,6 +189,13 @@ func (l *streamListener) Close() error {
 			delete(l.network.streams, l.address)
 		}
 		l.network.mu.Unlock()
+		l.mu.Lock()
+		l.closed = true
+		if l.held != nil {
+			_ = l.held.Close()
+			l.held = nil
+		}
+		l.mu.Unlock()
 		for {
 			select {
 			case conn := <-l.incoming:
@@ -175,6 +245,10 @@ func (n *Network) dialStream(ctx context.Context, from, to platform.Address) (*s
 	}
 	if err := n.runtime.sleep(ctx, n.config.ConnectLatency); err != nil {
 		return nil, err
+	}
+	if n.runtime.buggifyHere(SiteDialRefused, dialRefusedProbability) {
+		n.traceNetwork(key, "dial_stream", "refused", 0, dialID)
+		return nil, &net.OpError{Op: "dial", Net: "sim", Err: syscall.ECONNREFUSED}
 	}
 	pipe := &connectionPipe{done: make(chan struct{})}
 	id := fmt.Sprintf("%q/%q/%d", from, to, dialID)
@@ -265,6 +339,11 @@ func (c *streamConn) Read(b []byte) (int, error) {
 	if len(b) == 0 {
 		return 0, nil
 	}
+	if c.network.runtime.buggifyHere(SiteReceiveTimedOut, timedOutProbability) {
+		c.network.traceNetwork(linkKey{from: c.remote, to: c.local}, "read", "timed_out", 0, 0)
+		_ = c.Close()
+		return 0, &net.OpError{Op: "read", Net: "sim", Err: syscall.ETIMEDOUT}
+	}
 	for {
 		c.mu.Lock()
 		if len(c.arrived) > 0 {
@@ -303,6 +382,11 @@ func (c *streamConn) Write(b []byte) (int, error) {
 	defer func() { c.writes <- struct{}{} }()
 	c.written++
 	key := linkKey{from: c.local, to: c.remote}
+	if c.network.runtime.buggifyHere(SiteSendTimedOut, timedOutProbability) {
+		c.network.traceNetwork(key, "write", "timed_out", len(b), c.written)
+		_ = c.Close()
+		return 0, &net.OpError{Op: "write", Net: "sim", Err: syscall.ETIMEDOUT}
+	}
 	random := c.network.runtime.Random("network/stream-write")
 	sent := 0
 	for piece := 0; sent < len(b); piece++ {

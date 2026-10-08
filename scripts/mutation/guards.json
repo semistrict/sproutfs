@@ -718,6 +718,12 @@
     "purpose": "End a request's receive context before its payload is read, so a socket's read deadline fails every keep."
   },
   {
+    "id": "peer-stop-accepting-on-error",
+    "package": "peer",
+    "run": "^TestAServerAcceptsAgainAfterAFailedAccept$",
+    "purpose": "Stop accepting at the first accept that fails, as one out of descriptors fails, so the host serves no peer again."
+  },
+  {
     "id": "fill-before-durable",
     "package": "checkpoint",
     "run": "^TestAPublicationFillsNothingBeforeItsPartIsDurable$",
@@ -1186,6 +1192,12 @@
     "purpose": "Let an eviction of a region's own page go on without holding the region live, so a detach gives its reservations back and destroys its layer under it: the eviction reads a freed slot and writes into a reservation no longer the region's."
   },
   {
+    "id": "pager-end-a-step-with-its-sharer",
+    "package": "vmmemory",
+    "run": "^TestAChildWhoseMappingCannotBeTakenFailsNotItsParentsUnseal$",
+    "purpose": "Fail a step that takes a page from its sharers where one sharer's revocation fails, so a fork point's child whose client refuses ends its parent's unseal, retire or detach."
+  },
+  {
     "id": "pager-wait-on-a-supplied-prefetch",
     "package": "vmmemory",
     "run": "^TestAWaitOnAPrefetchItsSupplyAnsweredWaitsOnNothing$",
@@ -1430,5 +1442,29 @@
     "package": "vmmemory",
     "run": "^TestARefusedStoreTakesTheOldMappingAway$",
     "purpose": "Leave a store's old read-only mapping in place when the client refuses the writable one, the binding already the region's own writable page, so the next fault resolves writable over a read-only mapping."
+  },
+  {
+    "id": "host-stop-reports-a-failed-close",
+    "package": "host",
+    "run": "^TestAStopWhoseVMMFailsToCloseStillReportsTheStop$",
+    "purpose": "Report a stop whose checkpoint landed as failed because the VMM process did not close cleanly, so the deployment believes the VM still runs on a host that has given it up."
+  },
+  {
+    "id": "volume-report-a-landed-checkpoint-whose-seal-stayed",
+    "package": "volume",
+    "run": "^TestARootWhoseSealFailedToRetireStillLandsAndGivesThePointBack$",
+    "purpose": "Report a checkpoint that landed as failed because its seal did not end, so a fork root keeps its parent sealed for good and a stop keeps running a VM whose last checkpoint the record selects."
+  },
+  {
+    "id": "host-forget-a-requested-checkpoint-that-failed",
+    "package": "host",
+    "run": "^TestARequestedCheckpointThatFailedIsTriedAgainAfterTheBackoff$",
+    "purpose": "Forget a checkpoint asked for out of turn once its attempt failed, so a flush waiting for its journal to be named waits a whole interval after one refused pause."
+  },
+  {
+    "id": "host-drop-the-flushes-of-a-refused-handover",
+    "package": "internal/simtest",
+    "run": "^TestAFlushAfterAHandoverItsVMMRefusedIsAnswered$",
+    "purpose": "Mark a VM as gone from its host when a handover of it is refused, so every flush of it that waits for its journal to be named goes unanswered for good."
   }
 ]

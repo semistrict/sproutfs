@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -149,6 +150,10 @@ type DiskConfig struct {
 	// because most of what a host keeps on its disk carries no checksum of its
 	// own and is not meant to survive a lying device.
 	ReadChaos bool
+	// ReadsNeverFail spares this disk's reads its I/O errors. A network
+	// disk's device has it until a host keeps its journal through a failed
+	// read of the header (TASK-114).
+	ReadsNeverFail bool
 }
 
 // The read chaos sites a disk with ReadChaos consults.
@@ -157,6 +162,23 @@ const (
 	BuggifyDiskReadBitFlip    = "sim/disk-read-bit-flip"
 	BuggifyDiskMisdirectsRead = "sim/disk-misdirected-read"
 )
+
+// The honest failures of a disk, which every disk has under the runtime's
+// Buggify switch: an operation the device fails, as EIO fails it, and one the
+// filesystem refuses for want of space, as ENOSPC does. Each is a site per
+// operation, sim/disk/io-error/<operation> and sim/disk/no-space/<operation>,
+// so a campaign shows it took the path a failure of that operation leads down.
+// A failed write may leave a prefix of its bytes behind, and a failed create,
+// remove or rename may have happened, as one whose directory sync failed has.
+// A failed sync makes nothing durable. Unlike the read chaos, nothing here
+// lies about the bytes, so no consumer is spared it.
+const (
+	ioErrorProbability = 0.01
+	noSpaceProbability = 0.01
+)
+
+// errIO is what an operation the device failed returns.
+var errIO = fmt.Errorf("%w: input/output error", platform.ErrInjectedFault)
 
 // recentWrites is how many write offsets a file remembers for a misdirected
 // read to land on.
@@ -454,6 +476,14 @@ func (d *Disk) Open(ctx context.Context, name string, options platform.OpenOptio
 		return nil, err
 	}
 	defer release()
+	// A create whose directory sync fails has made the file, and truncated
+	// it, before it fails; any other failed open has changed nothing.
+	failed := d.ioError(DiskOpen)
+	failedAfter := failed && options.Create && d.failedAfter(DiskOpen, name, id)
+	if failed && !failedAfter {
+		d.trace(DiskOpen, name, "io_error", 0, id)
+		return nil, errIO
+	}
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -466,6 +496,10 @@ func (d *Disk) Open(ctx context.Context, name string, options platform.OpenOptio
 		if !options.Create {
 			d.trace(DiskOpen, name, "not_found", 0, id)
 			return nil, platform.ErrNotFound
+		}
+		if d.noSpace(DiskOpen) {
+			d.trace(DiskOpen, name, "no_space", 0, id)
+			return nil, errNoSpaceUnchanged
 		}
 		image = &diskImage{}
 		d.files[name] = image
@@ -490,6 +524,10 @@ func (d *Disk) Open(ctx context.Context, name string, options platform.OpenOptio
 		image.volatile = fileBytes{}
 		d.recordPendingLocked(image, pendingOp{kind: pendingTruncate, id: id})
 	}
+	if failedAfter {
+		d.trace(DiskOpen, name, "io_error_after", 0, id)
+		return nil, errIO
+	}
 	handle := &file{disk: d, image: image, name: name, epoch: d.epoch}
 	if options.Lock {
 		image.locked = handle
@@ -507,13 +545,24 @@ func (d *Disk) Remove(ctx context.Context, name string) error {
 		return err
 	}
 	defer release()
+	// A remove whose directory sync fails has removed the file.
+	failed := d.ioError(DiskRemove)
+	if failed && !d.failedAfter(DiskRemove, name, id) {
+		d.trace(DiskRemove, name, "io_error", 0, id)
+		return errIO
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if _, exists := d.files[name]; !exists {
+	_, exists := d.files[name]
+	delete(d.files, name)
+	switch {
+	case failed:
+		d.trace(DiskRemove, name, "io_error_after", 0, id)
+		return errIO
+	case !exists:
 		d.trace(DiskRemove, name, "not_found", 0, id)
 		return platform.ErrNotFound
 	}
-	delete(d.files, name)
 	d.trace(DiskRemove, name, "ok", 0, id)
 	return nil
 }
@@ -531,6 +580,16 @@ func (d *Disk) Rename(ctx context.Context, oldName, newName string) error {
 		return err
 	}
 	defer release()
+	// A rename whose directory sync fails has renamed the file.
+	failed := d.ioError(DiskRename)
+	if failed && !d.failedAfter(DiskRename, resource, id) {
+		d.trace(DiskRename, resource, "io_error", 0, id)
+		return errIO
+	}
+	if !failed && d.noSpace(DiskRename) {
+		d.trace(DiskRename, resource, "no_space", 0, id)
+		return errNoSpaceUnchanged
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	image, exists := d.files[oldName]
@@ -542,6 +601,10 @@ func (d *Disk) Rename(ctx context.Context, oldName, newName string) error {
 		d.files[newName] = image
 		delete(d.files, oldName)
 	}
+	if failed {
+		d.trace(DiskRename, resource, "io_error_after", 0, id)
+		return errIO
+	}
 	d.trace(DiskRename, resource, "ok", 0, id)
 	return nil
 }
@@ -552,6 +615,10 @@ func (d *Disk) SyncNamespace(ctx context.Context) error {
 		return err
 	}
 	defer release()
+	if d.ioError(DiskSyncNamespace) {
+		d.trace(DiskSyncNamespace, "", "io_error", 0, id)
+		return errIO
+	}
 	// Successful namespace operations are already durable in this adapter.
 	d.trace(DiskSyncNamespace, "", "ok", 0, id)
 	return nil
@@ -568,6 +635,10 @@ func (d *Disk) List(ctx context.Context, prefix string) ([]string, error) {
 		return nil, err
 	}
 	defer release()
+	if d.ioError(DiskList) {
+		d.trace(DiskList, prefix, "io_error", 0, id)
+		return nil, errIO
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	names := make([]string, 0)
@@ -905,6 +976,19 @@ func (b *fileBytes) zeroPage(index, start, end int64) {
 	b.pages[index] = page
 }
 
+// provision makes name a file of size zero bytes, durable, at once and with
+// no fault, as the cloud makes a network disk's device.
+func (d *Disk) provision(name string, size int64) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	image := &diskImage{durableExists: true}
+	image.volatile.resize(size)
+	image.durable = image.volatile.clone()
+	d.files[name] = image
+	d.runtime.trace.record(Event{Kind: "disk", Resource: d.id + "/" + name, Operation: "provision", Outcome: "ok",
+		Bytes: int(size)})
+}
+
 func (d *Disk) Destroy(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
@@ -984,6 +1068,30 @@ func (d *Disk) begin(ctx context.Context, operation DiskOperation, resource stri
 	return id, release, nil
 }
 
+// ioError reports whether the device fails this call of operation.
+func (d *Disk) ioError(operation DiskOperation) bool {
+	return d.runtime.buggifyHere("sim/disk/io-error/"+string(operation), ioErrorProbability)
+}
+
+// noSpace reports whether the filesystem refuses this call of operation for
+// want of space, whatever it has free.
+func (d *Disk) noSpace(operation DiskOperation) bool {
+	return d.runtime.buggifyHere("sim/disk/no-space/"+string(operation), noSpaceProbability)
+}
+
+// faultsRandom is the choice source for what a failed operation did.
+func (d *Disk) faultsRandom() Random { return d.runtime.Random("sim/disk-faults") }
+
+// failedAfter reports whether a failed namespace operation happened before it
+// failed, as one whose directory sync failed did.
+func (d *Disk) failedAfter(operation DiskOperation, resource string, id uint64) bool {
+	return d.faultsRandom().Chance(fmt.Sprintf("%s/%s/%s/%d/after", d.id, operation, resource, id), 0.5)
+}
+
+// errNoSpaceUnchanged is a namespace operation refused for want of space
+// before it changed anything, as the real adapter reports one.
+var errNoSpaceUnchanged = errors.Join(platform.ErrNoSpace, platform.ErrFileUnchanged)
+
 func (d *Disk) trace(operation DiskOperation, resource, outcome string, bytes int, id uint64) {
 	d.runtime.trace.record(Event{
 		Kind:      "disk",
@@ -1020,6 +1128,10 @@ func (f *file) ReadAt(ctx context.Context, destination []byte, offset int64) (in
 	if err := f.validLocked(); err != nil {
 		return 0, err
 	}
+	if !f.disk.config.ReadsNeverFail && f.disk.ioError(DiskRead) {
+		f.disk.trace(DiskRead, f.name, "io_error", 0, id)
+		return 0, errIO
+	}
 	if offset >= f.image.volatile.size {
 		f.disk.trace(DiskRead, f.name, "eof", 0, id)
 		return 0, io.EOF
@@ -1049,7 +1161,7 @@ func (f *file) WriteAt(ctx context.Context, source []byte, offset int64) (int, e
 		return 0, err
 	}
 	if needed := f.image.volatile.newPages(offset, int64(len(source))) * diskPageBytes; needed > 0 &&
-		needed > f.disk.total-f.disk.outside-f.disk.hostBytesLocked() {
+		(needed > f.disk.total-f.disk.outside-f.disk.hostBytesLocked() || f.disk.noSpace(DiskWrite)) {
 		f.disk.trace(DiskWrite, f.name, "no_space", 0, id)
 		return 0, platform.ErrNoSpace
 	}
@@ -1059,6 +1171,12 @@ func (f *file) WriteAt(ctx context.Context, source []byte, offset int64) (int, e
 		keep := min(f.disk.tearNext, len(source))
 		write = source[:keep]
 		f.disk.tearNext = -1
+		torn = true
+	} else if f.disk.ioError(DiskWrite) {
+		// The device failed partway: what it took before it failed is
+		// written, and the rest is not.
+		keep := f.disk.faultsRandom().Intn(fmt.Sprintf("%s/%s/write/%d/keep", f.disk.id, f.name, id), len(source)+1)
+		write = source[:keep]
 		torn = true
 	}
 	if len(write) > 0 {
@@ -1073,7 +1191,7 @@ func (f *file) WriteAt(ctx context.Context, source []byte, offset int64) (int, e
 	}
 	if torn {
 		f.disk.trace(DiskWrite, f.name, "torn", len(write), id)
-		return len(write), platform.ErrInjectedFault
+		return len(write), errIO
 	}
 	f.disk.trace(DiskWrite, f.name, "ok", len(write), id)
 	return len(write), nil
@@ -1092,6 +1210,10 @@ func (f *file) Truncate(ctx context.Context, size int64) error {
 	defer f.disk.mu.Unlock()
 	if err := f.validLocked(); err != nil {
 		return err
+	}
+	if f.disk.ioError(DiskTruncate) {
+		f.disk.trace(DiskTruncate, f.name, "io_error", 0, id)
+		return errIO
 	}
 	f.image.volatile.resize(size)
 	f.disk.recordPendingLocked(f.image, pendingOp{kind: pendingTruncate, length: size, id: id})
@@ -1112,6 +1234,10 @@ func (f *file) PunchHole(ctx context.Context, offset, length int64) error {
 	defer f.disk.mu.Unlock()
 	if err := f.validLocked(); err != nil {
 		return err
+	}
+	if f.disk.ioError(DiskPunchHole) {
+		f.disk.trace(DiskPunchHole, f.name, "io_error", 0, id)
+		return errIO
 	}
 	f.image.volatile.zero(offset, offset+length)
 	f.disk.recordPendingLocked(f.image, pendingOp{kind: pendingPunch, offset: offset, length: length, id: id})
@@ -1136,8 +1262,12 @@ func (f *file) Allocate(ctx context.Context, offset, length int64) error {
 	if err := f.validLocked(); err != nil {
 		return err
 	}
+	if f.disk.ioError(DiskAllocate) {
+		f.disk.trace(DiskAllocate, f.name, "io_error", 0, id)
+		return errIO
+	}
 	if needed := f.image.volatile.newPages(offset, length) * diskPageBytes; needed > 0 &&
-		needed > f.disk.total-f.disk.outside-f.disk.hostBytesLocked() {
+		(needed > f.disk.total-f.disk.outside-f.disk.hostBytesLocked() || f.disk.noSpace(DiskAllocate)) {
 		f.disk.trace(DiskAllocate, f.name, "no_space", 0, id)
 		return platform.ErrNoSpace
 	}
@@ -1213,6 +1343,16 @@ func (f *file) Sync(ctx context.Context) error {
 	if err := f.validLocked(); err != nil {
 		return err
 	}
+	// A sync the device fails, or one whose delayed allocation finds no
+	// space, makes nothing durable: everything stays pending.
+	if f.disk.ioError(DiskSync) {
+		f.disk.trace(DiskSync, f.name, "io_error", 0, id)
+		return errIO
+	}
+	if f.disk.noSpace(DiskSync) {
+		f.disk.trace(DiskSync, f.name, "no_space", 0, id)
+		return platform.ErrNoSpace
+	}
 	if !f.disk.syncPersists(f.name, id) {
 		// The device acknowledged a flush it did not perform. Everything stays
 		// pending, so a power loss can still lose or garble it.
@@ -1237,6 +1377,10 @@ func (f *file) Size(ctx context.Context) (int64, error) {
 	if err := f.validLocked(); err != nil {
 		return 0, err
 	}
+	if f.disk.ioError(DiskSize) {
+		f.disk.trace(DiskSize, f.name, "io_error", 0, id)
+		return 0, errIO
+	}
 	size := f.image.volatile.size
 	f.disk.trace(DiskSize, f.name, "ok", 0, id)
 	return size, nil
@@ -1254,6 +1398,10 @@ func (f *file) Allocated(ctx context.Context) (int64, error) {
 	defer f.disk.mu.Unlock()
 	if err := f.validLocked(); err != nil {
 		return 0, err
+	}
+	if f.disk.ioError(DiskAllocated) {
+		f.disk.trace(DiskAllocated, f.name, "io_error", 0, id)
+		return 0, errIO
 	}
 	allocated := int64(len(f.image.volatile.pages)) * diskPageBytes
 	f.disk.trace(DiskAllocated, f.name, "ok", 0, id)

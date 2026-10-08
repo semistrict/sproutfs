@@ -7,6 +7,7 @@ import (
 	"testing/synctest"
 
 	"github.com/semistrict/sproutfs/control"
+	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/vmmemory"
 )
 
@@ -70,8 +71,13 @@ func (b *peerBacking) holds(page uint64) bool {
 	return b.installed[page]
 }
 
+// LoadUnpublished fails at random in a campaign, as a migration's peer
+// backing does where the source host cannot be reached or its seal read.
 func (b *peerBacking) LoadUnpublished(ctx context.Context, offset uint64, dst []byte) ([]bool, error) {
-	if err := b.backing.Load(ctx, offset, dst); err != nil {
+	if b.failRead || sim.Buggify(ctx, "vmmemory-test/backing-read-fails/load-unpublished", 0.01) {
+		return nil, errInjected
+	}
+	if err := b.backing.read(offset, dst); err != nil {
 		return nil, err
 	}
 	b.installedMu.Lock()

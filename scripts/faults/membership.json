@@ -1,0 +1,92 @@
+{
+ "comment": "The membership object every host reads and any process writes by compare-and-set (membership.Store), and a process's copy of it (membership.Source, the View), which reads the object again when a peer names a newer generation. Both reach the object store through platform.ObjectStore; the store's own sites fail a read, fail a write and lose a write's reply (membership/store.go). The cloud's disks the shard controller attaches and detaches are platform.NetworkDisks, the platform's manifest. See scripts/check-faults.py.",
+ "interfaces": [
+  {
+   "package": "membership",
+   "name": "Store"
+  },
+  {
+   "package": "membership",
+   "name": "Source"
+  }
+ ],
+ "faults": [
+  {
+   "interface": "membership.Store",
+   "method": "Read",
+   "error": "read fails",
+   "site": "membership/read-fails",
+   "package": "membership",
+   "run": "^TestConcurrentWritersNeverLoseAnUpdateOrGoBack$",
+   "purpose": "the store is down: a view keeps the generation it holds and a writer tries again"
+  },
+  {
+   "interface": "membership.Store",
+   "method": "Update",
+   "error": "read fails",
+   "site": "membership/read-fails",
+   "package": "membership",
+   "run": "^TestConcurrentWritersNeverLoseAnUpdateOrGoBack$",
+   "purpose": "nothing was written: the update fails and is made again"
+  },
+  {
+   "interface": "membership.Store",
+   "method": "Update",
+   "error": "write fails",
+   "site": "membership/write-fails",
+   "package": "membership",
+   "run": "^TestConcurrentWritersNeverLoseAnUpdateOrGoBack$",
+   "purpose": "the store refused the write before applying it: the update fails and is made again from what the store holds"
+  },
+  {
+   "interface": "membership.Store",
+   "method": "Update",
+   "error": "reply lost",
+   "site": "membership/reply-lost",
+   "package": "membership",
+   "run": "^TestConcurrentWritersNeverLoseAnUpdateOrGoBack$",
+   "purpose": "the write landed and its reply did not: the writer finds its own write by its nonce and does not write it twice"
+  },
+  {
+   "interface": "membership.Store",
+   "method": "Reconcile",
+   "error": "read fails",
+   "site": "membership/read-fails",
+   "package": "membership",
+   "run": "^TestConcurrentWritersNeverLoseAnUpdateOrGoBack$",
+   "purpose": "as for Update: the controller's pass fails and the next pass takes the step"
+  },
+  {
+   "interface": "membership.Store",
+   "method": "Reconcile",
+   "error": "write fails",
+   "site": "membership/write-fails",
+   "package": "membership",
+   "run": "^TestConcurrentWritersNeverLoseAnUpdateOrGoBack$",
+   "purpose": "as for Update"
+  },
+  {
+   "interface": "membership.Store",
+   "method": "Reconcile",
+   "error": "reply lost",
+   "site": "membership/reply-lost",
+   "package": "membership",
+   "run": "^TestConcurrentWritersNeverLoseAnUpdateOrGoBack$",
+   "purpose": "as for Update"
+  },
+  {
+   "interface": "membership.Source",
+   "method": "Current",
+   "none": "the membership the view holds in this process"
+  },
+  {
+   "interface": "membership.Source",
+   "method": "Catch",
+   "error": "read fails",
+   "site": "membership/read-fails",
+   "package": "checkpoint",
+   "run": "^TestClusterReadsSurviveTheirFaultsAndReachTheirProbes$",
+   "purpose": "a holder behind a request could not read the newer membership: it answers stale with its own generation and never asks its cache"
+  }
+ ]
+}

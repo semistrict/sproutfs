@@ -559,6 +559,60 @@ func TestAFlushSurvivesItsHostDyingDuringAScaleDownsWait(t *testing.T) {
 	})
 }
 
+// A handover the VM's VMM refused to pause for leaves the VM where it was, so
+// its flushes are its host's to answer as before: one that waits for a
+// checkpoint to name the journal is answered once that checkpoint lands. The
+// host stops the VM's loop for the handover, and a stop that also dropped the
+// flushes waiting for the journal left every later one of them unanswered for
+// good: the guest's flush never returned.
+func TestAFlushAfterAHandoverItsVMMRefusedIsAnswered(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		runtime := newCampaignRuntime(43, false)
+		ctx := sim.WithRuntime(t.Context(), runtime)
+		world := journalWorld(t, ctx, runtime, "refused-handover/", 2)
+		flushed(t, world, []uint64{0}, 4)
+		// The record names host-0's journal; a flush on host-1 waits for a
+		// checkpoint that names host-1's.
+		if err := world.Takeover(ctx, "vm-0", 1); err != nil {
+			t.Fatal(err)
+		}
+		refused := simtest.RefusedStop()
+		if err := refused.Begin(ctx, world); err != nil {
+			t.Fatal(err)
+		}
+		if err := world.Migrate(ctx, "vm-0", 0); err != nil {
+			t.Fatal(err)
+		}
+		if err := refused.End(ctx, world); err != nil {
+			t.Fatal(err)
+		}
+		if got := world.HostOf("vm-0"); got != 1 {
+			t.Fatalf("the VM runs on host-%d after a handover its VMM refused, want host-1", got)
+		}
+		if err := world.StorePages("vm-0", simtest.DiskVolume, []uint64{1}, 5); err != nil {
+			t.Fatal(err)
+		}
+		answer := world.Flush("vm-0", simtest.DiskVolume)
+		late := time.NewTimer(time.Minute)
+		defer late.Stop()
+		select {
+		case err := <-answer:
+			if err != nil {
+				t.Fatalf("the flush after a refused handover failed: %v", err)
+			}
+		case <-late.C:
+			t.Fatal("the flush after a refused handover went unanswered")
+		}
+		readsPage(t, ctx, world, 1, 5)
+		if err := world.VerifyFlushes(); err != nil {
+			t.Fatal(err)
+		}
+		if err := world.Close(ctx); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
 // flushed has the VM's guest store value into each of pages of its disk and
 // flush the disk, and fails unless the flush succeeds.
 func flushed(t *testing.T, world *simtest.World, pages []uint64, value byte) {

@@ -32,24 +32,24 @@ func TestTheMappingRulesSurviveTheirCampaign(t *testing.T) {
 	for seed := uint64(1); seed <= rulesCampaignSeeds; seed++ {
 		t.Run(fmt.Sprintf("seed-%d", seed), func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				scheduler := sim.NewScheduler(seed)
-				runtime := sim.New(sim.Config{Seed: seed, Wait: scheduler.Wait, Buggify: true})
-				done := make(chan struct{})
-				go func() {
-					defer close(done)
-					stats := rulesWorld(t, sim.WithRuntime(t.Context(), runtime), seed,
-						scheduledSpillDisk(seed, scheduler, done), 2, 2)
-					copies += stats.RuleCopies
-				}()
-				if err := scheduler.Run(done); err != nil {
-					t.Fatal(err)
-				}
+				var stats vmmemory.Stats
+				runCampaign(t, seed, func(ctx context.Context, disk *sim.Disk) {
+					stats = rulesWorld(t, ctx, seed, disk, 2, 2)
+				})
+				copies += stats.RuleCopies
 			})
 		})
 	}
 	if copies == 0 {
 		t.Fatal("the campaign's rules copied no page: it never reached them")
 	}
+}
+
+// A seed of the rules campaign replays (testReplays).
+func TestRulesCampaignReplaysItsSeeds(t *testing.T) {
+	testReplays(t, []uint64{2, 5}, func(t *testing.T, seed uint64) campaignRun {
+		return runCampaign(t, seed, func(ctx context.Context, disk *sim.Disk) { rulesWorld(t, ctx, seed, disk, 2, 2) })
+	})
 }
 
 // rulesWorld is the rules campaign's world on one seed: forks forks of one
@@ -65,23 +65,31 @@ func rulesWorld(t *testing.T, ctx context.Context, seed uint64, disk *sim.Disk, 
 		ResidentPages: logical * 3 / 4, ArenaOffsets: 2 * logical, LogicalPages: logical, DirtyPages: logical,
 		ReadAheadPages: 16, WriteAheadPages: 1, PrefetchRuns: 2})
 	if err != nil {
-		t.Error(err)
+		// A host whose spill file could not be made never started.
+		if !injected(err) {
+			t.Error(err)
+		}
 		return vmmemory.Stats{}
 	}
 	// Production's client takes runs in batches; odd seeds take that path.
 	f.batched = seed%2 == 1
 	var guests []*campaignGuest
+	attach := func(name string, kind vmmemory.MemoryRegionKind, b vmmemory.Backing) *campaignGuest {
+		guest := f.attachGuest(name, kind, b, initialBytes(rulesPages))
+		if guest != nil {
+			guest.vcpus, guest.storeOdds = vcpus, 2
+			guests = append(guests, guest)
+		}
+		return guest
+	}
 	for fork := range forks {
 		b := f.slowBacking(rulesPages)
 		b.admit = true
-		r, m := f.attach(b)
-		r.PressMappings()
-		guests = append(guests, &campaignGuest{name: "fork-" + string(rune('a'+fork)), region: r, m: m,
-			want: initialBytes(rulesPages), vcpus: vcpus, storeOdds: 2})
+		if guest := attach("fork-"+string(rune('a'+fork)), vmmemory.Ram, b); guest != nil {
+			guest.region.PressMappings()
+		}
 	}
-	pmem, pmemMapping := f.attachKind(vmmemory.Pmem, f.slowBacking(rulesPages))
-	guests = append(guests, &campaignGuest{name: "disk", region: pmem, m: pmemMapping, want: initialBytes(rulesPages),
-		vcpus: vcpus, storeOdds: 2})
+	attach("disk", vmmemory.Pmem, f.slowBacking(rulesPages))
 	runCampaignWorld(t, ctx, seed, guests)
 	stats, err := f.h.Stats(ctx)
 	if err != nil {

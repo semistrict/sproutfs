@@ -113,14 +113,15 @@ func (c *campaign) open(holder uint64) *Journal {
 	t.Helper()
 	lease := Lease{Assigned: holder, Member: memberOf(holder)}
 	var j *Journal
-	// A header write can fail under its site, and the open with it.
+	// A header write can fail under its site, or the device can fail the
+	// open's reads and writes, and the open fails with them.
 	for attempt := 0; j == nil; attempt++ {
 		opened, err := Open(c.ctx, c.handle(), Config{Identity: diskOne, Lease: lease,
 			Entropy: c.runtime.NewEntropy(fmt.Sprintf("journal/%d/%d", holder, attempt))})
 		switch {
 		case err == nil:
 			j = opened
-		case !errors.Is(err, platform.ErrInjectedFault) || attempt == 10:
+		case !deviceFailed(err) || attempt == 10:
 			t.Fatalf("holder %d opening the journal: %v", holder, err)
 		}
 	}
@@ -140,7 +141,12 @@ func (c *campaign) open(holder uint64) *Journal {
 		j.Trim(vmName(vm), nil)
 	}
 	stale := Lease{Assigned: holder - 1, Member: memberOf(holder - 1)}
-	if _, err := Open(c.ctx, c.handle(), Config{Identity: diskOne, Lease: stale}); !errors.Is(err, ErrLeased) {
+	_, err := Open(c.ctx, c.handle(), Config{Identity: diskOne, Lease: stale})
+	// The device may fail the open's read of the header, which is made again.
+	for attempt := 0; deviceFailed(err) && attempt < 10; attempt++ {
+		_, err = Open(c.ctx, c.handle(), Config{Identity: diskOne, Lease: stale})
+	}
+	if !errors.Is(err, ErrLeased) {
 		t.Fatalf("opening the journal under the lease before holder %d's: %v, want ErrLeased", holder, err)
 	}
 	return j
@@ -155,20 +161,26 @@ func (c *campaign) verify(j *Journal, vm string, epoch, holder uint64) {
 	if epoch == holder-1 {
 		after = c.covered[vm]
 	}
-	read := make(map[uint64]bool)
-	err := j.Read(c.ctx, ReadRequest{VM: vm, Epoch: epoch, After: after, Generation: c.generation, Reader: holder},
-		func(e Entry) error {
-			read[e.Position] = true
-			want, ok := c.attempted[nameOf(e)]
-			if !ok || !sameContent(e, want) {
-				return fmt.Errorf("an entry no commit was made of read back: %s", describe([]Entry{e}))
-			}
-			if answered, ok := c.answered[e.Position]; ok && !sameContent(e, answered) {
-				return fmt.Errorf("%s read back at %d, where %s was answered", describe([]Entry{e}), e.Position,
-					describe([]Entry{answered}))
-			}
-			return nil
-		})
+	var read map[uint64]bool
+	var err error
+	// A read the device fails is made again, as a recovery makes its read
+	// again: an entry it visited before the failure is visited again.
+	for attempt := 0; attempt == 0 || deviceFailed(err) && attempt < 10; attempt++ {
+		read = make(map[uint64]bool)
+		err = j.Read(c.ctx, ReadRequest{VM: vm, Epoch: epoch, After: after, Generation: c.generation, Reader: holder},
+			func(e Entry) error {
+				read[e.Position] = true
+				want, ok := c.attempted[nameOf(e)]
+				if !ok || !sameContent(e, want) {
+					return fmt.Errorf("an entry no commit was made of read back: %s", describe([]Entry{e}))
+				}
+				if answered, ok := c.answered[e.Position]; ok && !sameContent(e, answered) {
+					return fmt.Errorf("%s read back at %d, where %s was answered", describe([]Entry{e}), e.Position,
+						describe([]Entry{answered}))
+				}
+				return nil
+			})
+	}
 	if err != nil {
 		t.Fatalf("holder %d reading %s's epoch %d: %v", holder, vm, epoch, err)
 	}
@@ -184,6 +196,12 @@ func (c *campaign) verify(j *Journal, vm string, epoch, holder uint64) {
 				describe([]Entry{e}), position, vm, after)
 		}
 	}
+}
+
+// deviceFailed reports an error the journal's device made: an I/O error, or a
+// filesystem out of space.
+func deviceFailed(err error) bool {
+	return errors.Is(err, platform.ErrInjectedFault) || errors.Is(err, platform.ErrNoSpace)
 }
 
 // nameOf is the name a campaign entry's data begins with.

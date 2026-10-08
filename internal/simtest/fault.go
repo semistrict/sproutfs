@@ -196,12 +196,18 @@ func (f *hostLosesStore) Holds(ctx context.Context, w *World) error {
 }
 
 // storeAnswers reports whether a store is carrying operations again, which is
-// what a store fault has to leave behind.
+// what a store fault has to leave behind. Under Buggify the simulated store
+// refuses a request now and then of its own, which says nothing about whether
+// the outage ended, so it is asked a few times: a store still down refuses
+// every one.
 func storeAnswers(ctx context.Context, store platform.ObjectStore, prefix platform.ObjectPrefix) error {
-	if _, err := store.List(ctx, platform.ListRequest{Prefix: prefix, Limit: 1}); err != nil {
-		return fmt.Errorf("the store does not answer after the fault ended: %w", err)
+	var err error
+	for range 3 {
+		if _, err = store.List(ctx, platform.ListRequest{Prefix: prefix, Limit: 1}); err == nil {
+			return nil
+		}
 	}
-	return nil
+	return fmt.Errorf("the store does not answer after the fault ended: %w", err)
 }
 
 // partitionedPages separates one host from another's peer server in both

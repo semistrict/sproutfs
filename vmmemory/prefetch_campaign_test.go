@@ -1,16 +1,13 @@
 package vmmemory_test
 
 import (
-	"bytes"
 	"cmp"
 	"context"
-	"errors"
 	"fmt"
 	"maps"
 	"math/rand/v2"
 	"slices"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -50,13 +47,11 @@ var prefetchCampaignSeeds = []uint64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}
 // campaignPages is each guest's memory, in pages.
 const campaignPages = 16
 
-// campaignGuest is one guest of the campaign: its memory region, what it maps,
-// and the byte it must read at each page.
+// campaignGuest is one guest of the campaign: its machine, and the byte it
+// must read at each page.
 type campaignGuest struct {
-	name   string
-	region *vmmemory.MemoryRegion
-	m      *mapping
-	want   []byte
+	machine
+	want []byte
 	// vcpus is how many vCPUs the guest runs, one where it is zero. Each
 	// reads and stores only its own pages, every vcpus-th from its number,
 	// so what each reads is still the model's, while its faults and stores
@@ -65,36 +60,6 @@ type campaignGuest struct {
 	// storeOdds is one in how many accesses is a store, four where it is
 	// zero.
 	storeOdds int
-	// lost is set once the guest's client lost a command and its region
-	// failed of it (commandLost): the machine is gone, and nothing of it is
-	// checked again.
-	lost atomic.Bool
-}
-
-// lose reports whether err ended the guest because its client lost a command:
-// its region failed of an injected fault. The guest stops, and its region is
-// detached with the others at the end, as a host closes a machine whose VMM
-// has ended: until then the pages it held are no one's, and the guests that go
-// on must still read every byte they stored. A detach beside the guests that
-// go on does not replay, since nothing of it is admitted to the run's
-// scheduler, so it waits for the end.
-func (g *campaignGuest) lose(err error) bool {
-	if g.lost.Load() {
-		return true
-	}
-	if err == nil || !lostToItsClient(g.region, g.m) {
-		return false
-	}
-	g.lost.Store(true)
-	return true
-}
-
-// lostToItsClient reports whether region is a machine its client ended: the
-// region failed after the client injected a fault it cannot survive (a lost
-// command or a refused revocation), which a campaign takes as a machine gone
-// rather than a failure of the pager.
-func lostToItsClient(region *vmmemory.MemoryRegion, m *mapping) bool {
-	return m.injected.Load() && vmmemory.Failed(region) != nil
 }
 
 // Prefetches survive every fault their sites inject — a read held back, a run
@@ -112,9 +77,9 @@ func TestPrefetchSurvivesItsFaultsAndReachesItsProbes(t *testing.T) {
 	for _, seed := range prefetchCampaignSeeds {
 		t.Run(fmt.Sprintf("seed-%d", seed), func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				reached, sites, _ := prefetchCampaign(t, seed)
-				maps.Copy(probes, addCounts(probes, reached))
-				maps.Copy(fired, addCounts(fired, sites))
+				run := prefetchCampaign(t, seed)
+				maps.Copy(probes, addCounts(probes, run.probes))
+				maps.Copy(fired, addCounts(fired, run.fired))
 			})
 		})
 	}
@@ -137,24 +102,9 @@ func addCounts(into, from map[string]uint64) map[string]uint64 {
 	return sum
 }
 
-// prefetchCampaign runs one seed and reports the probes it reached, the sites
-// it fired, and the order its scheduler released every operation in.
-func prefetchCampaign(t *testing.T, seed uint64) (map[string]uint64, map[string]uint64, []byte) {
-	scheduler := sim.NewScheduler(seed)
-	runtime := sim.New(sim.Config{Seed: seed, Wait: scheduler.Wait, Buggify: true})
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		prefetchWorld(t, sim.WithRuntime(t.Context(), runtime), seed, scheduledSpillDisk(seed, scheduler, done), 2, 1)
-	}()
-	if err := scheduler.Run(done); err != nil {
-		t.Fatal(err)
-	}
-	recording, err := scheduler.Recording(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return runtime.Probes(), runtime.FiredSites(), recording.Execution
+// prefetchCampaign runs one seed of the campaign.
+func prefetchCampaign(t *testing.T, seed uint64) campaignRun {
+	return runCampaign(t, seed, func(ctx context.Context, disk *sim.Disk) { prefetchWorld(t, ctx, seed, disk, 2, 1) })
 }
 
 // prefetchWorld is the campaign's world on one seed: forks forks of one
@@ -170,7 +120,10 @@ func prefetchWorld(t *testing.T, ctx context.Context, seed uint64, disk *sim.Dis
 		ResidentPages: 24, LogicalPages: campaignPages * (guestCount + 1), DirtyPages: campaignPages * guestCount,
 		ReadAheadPages: 4, PrefetchRuns: 2})
 	if err != nil {
-		t.Error(err)
+		// A host whose spill file could not be made never started.
+		if !injected(err) {
+			t.Error(err)
+		}
 		return
 	}
 	// Production's client takes runs in batches; odd seeds take that path.
@@ -182,44 +135,48 @@ func prefetchWorld(t *testing.T, ctx context.Context, seed uint64, disk *sim.Dis
 	runCampaignWorld(t, ctx, seed, guests)
 }
 
-// runCampaignWorld runs a campaign's guests at once, each on a task of its
-// own, and beside each disk a flusher on a task of its own, as a guest's flush
-// arrives on another vCPU than its stores. Then it checks every page of each
-// guest and detaches them.
+// runCampaignWorld runs a campaign's guests at once, each vCPU on a task of
+// its own, and beside each disk a flusher on a task of its own, as a guest's
+// flush arrives on another vCPU than its stores, each guest's host closing it
+// once it is gone. Then it checks every page of each guest still running and
+// detaches them.
 func runCampaignWorld(t *testing.T, ctx context.Context, seed uint64, guests []*campaignGuest) {
-	var wg, flushers sync.WaitGroup
+	machines := make([]*machine, len(guests))
+	for at, guest := range guests {
+		guest.boot(ctx)
+		machines[at] = &guest.machine
+	}
+	stopHosts := hostMachines(ctx, t, machines)
+	var vcpus, flushers sync.WaitGroup
 	stop := make(chan struct{})
 	for at, guest := range guests {
-		vcpus := max(1, guest.vcpus)
-		for vcpu := range vcpus {
+		count := max(1, guest.vcpus)
+		for vcpu := range count {
 			task := guest.name
-			if vcpus > 1 {
+			if count > 1 {
 				task = fmt.Sprintf("%s/vcpu-%d", guest.name, vcpu)
 			}
-			wg.Go(func() {
-				runCampaignGuest(sim.WithTask(ctx, task), t, guest,
-					rand.New(rand.NewPCG(seed, uint64(at)|uint64(vcpu)<<32)), vcpu)
-			})
+			random := rand.New(rand.NewPCG(seed, uint64(at)|uint64(vcpu)<<32))
+			guest.run(&vcpus, task, func(ctx context.Context) { runCampaignGuest(ctx, t, guest, random, vcpu) })
 		}
 		if guest.region.Kind() == vmmemory.Pmem {
-			flushers.Go(func() {
-				runCampaignFlusher(sim.WithTask(ctx, guest.name+"-flusher"), t, guest,
-					rand.New(rand.NewPCG(seed, uint64(len(guests)+at))), stop)
+			random := rand.New(rand.NewPCG(seed, uint64(len(guests)+at)))
+			guest.run(&flushers, guest.name+"-flusher", func(ctx context.Context) {
+				runCampaignFlusher(ctx, t, guest, random, stop)
 			})
 		}
 	}
-	wg.Wait()
+	vcpus.Wait()
+	// The last vCPU to stop goes on beside this, and so may a flusher whose
+	// time came at the same instant: the flushers are stopped when the run
+	// chooses, not by whichever of the two the Go scheduler runs first.
+	if err := sim.Admit(sim.WithTask(ctx, "world"), "campaign/vcpus-stopped"); err != nil {
+		t.Error(err)
+	}
 	close(stop)
 	flushers.Wait()
-	// A guest's region may have failed of a command another guest's eviction
-	// lost, with nothing of its own left to meet the failure: it is lost too.
 	for _, guest := range guests {
-		if failed := vmmemory.Failed(guest.region); failed != nil {
-			guest.lose(failed)
-		}
-	}
-	for _, guest := range guests {
-		if guest.lost.Load() {
+		if guest.gone() {
 			continue
 		}
 		if err := unjournaledWritable(guest.region, guest.m); err != nil {
@@ -227,31 +184,37 @@ func runCampaignWorld(t *testing.T, ctx context.Context, seed uint64, guests []*
 		}
 	}
 	for _, guest := range guests {
-		if guest.lost.Load() {
-			continue
-		}
-		if err := guest.region.SettlePrefetches(ctx); err != nil {
-			t.Error(err)
-			return
-		}
-		for page := range uint64(len(guest.want)) {
-			got, err := memoryByte(sim.WithTask(ctx, guest.name+"-check"), guest.region, guest.m, page, nil)
-			if err != nil && guest.lose(err) {
-				break
-			}
-			if err != nil || got != guest.want[page] {
-				t.Errorf("%s page %d reads %d at the end, want %d: %v", guest.name, page, got, guest.want[page], err)
-			}
-		}
+		var look sync.WaitGroup
+		guest.run(&look, guest.name+"-check", func(ctx context.Context) { checkCampaignGuest(ctx, t, guest) })
+		look.Wait()
 	}
 	// The guests stop and detach while the scheduler still runs: a detach
 	// waits for the prefetches it cancels.
+	stopHosts()
 	for _, guest := range guests {
-		guest.m.arena.mu.Lock()
-		clear(guest.m.pages)
-		guest.m.arena.mu.Unlock()
-		if err := guest.region.Detach(ctx); err != nil {
-			t.Error(err)
+		guest.close(ctx, t)
+	}
+}
+
+// checkCampaignGuest requires every page of a guest still running to read
+// what the model holds, once its prefetches have settled.
+func checkCampaignGuest(ctx context.Context, t *testing.T, g *campaignGuest) {
+	if g.gone() {
+		return
+	}
+	if err := g.region.SettlePrefetches(ctx); err != nil {
+		if !g.lose(err) {
+			t.Errorf("%s settling its prefetches: %v", g.name, err)
+		}
+		return
+	}
+	for page := range uint64(len(g.want)) {
+		got, err := memoryByte(ctx, g.region, g.m, page, nil)
+		if g.lose(err) {
+			return
+		}
+		if err != nil || got != g.want[page] {
+			t.Errorf("%s page %d reads %d at the end, want %d: %v", g.name, page, got, g.want[page], err)
 		}
 	}
 }
@@ -263,7 +226,9 @@ func runCampaignWorld(t *testing.T, ctx context.Context, seed uint64, guests []*
 // with no scheduler, and the two went on side by side at one instant, outside
 // any turn of the run, both faults that go on to take slots. Once done has
 // closed nothing waits: the fixture closes the file after the scheduler has
-// stopped.
+// stopped. The disk fails at random, as a device does (EIO, ENOSPC): an
+// eviction's spill, a fault's read of a spilled page and the pager's making
+// and giving back of the file.
 func scheduledSpillDisk(seed uint64, scheduler *sim.Scheduler, done <-chan struct{}) *sim.Disk {
 	wait := func(ctx context.Context, id string, minimum, maximum time.Duration) error {
 		select {
@@ -273,54 +238,29 @@ func scheduledSpillDisk(seed uint64, scheduler *sim.Scheduler, done <-chan struc
 		}
 		return scheduler.Wait(ctx, id, minimum, maximum)
 	}
-	return sim.New(sim.Config{Seed: seed, Wait: wait}).NewDisk("pager", sim.DiskConfig{})
+	return sim.New(sim.Config{Seed: seed, Wait: wait, Buggify: true}).NewDisk("pager", sim.DiskConfig{})
 }
 
-// A seed of the campaign replays: run twice, it releases every operation in
-// the same order and reaches the same probes the same number of times. What a
-// seed reaches is then the seed's, not the Go scheduler's. Before 2026-10-04 it
-// was not: a fault's read and a prefetch were tasks named by numbers counted
-// across the host, in the order the Go scheduler ran the faults of other
-// tasks; an allocation woken by slots coming back went on beside whatever gave
-// them back; and the guests whose pauses ended at one instant took free slots
-// in whatever order they ran. A seed reached the duplicate probe in some runs
+// A seed of the campaign replays (testReplays). Before 2026-10-04 one did not:
+// a fault's read and a prefetch were tasks named by numbers counted across
+// the host, in the order the Go scheduler ran the faults of other tasks; an
+// allocation woken by slots coming back went on beside whatever gave them
+// back; and the guests whose pauses ended at one instant took free slots in
+// whatever order they ran. A seed reached the duplicate probe in some runs
 // and not in others.
 func TestPrefetchCampaignReplaysItsSeeds(t *testing.T) {
-	for _, seed := range []uint64{1, 5, 7} {
-		t.Run(fmt.Sprintf("seed-%d", seed), func(t *testing.T) {
-			var probes [2]map[string]uint64
-			var orders [2][]byte
-			for run := range 2 {
-				synctest.Test(t, func(t *testing.T) {
-					probes[run], _, orders[run] = prefetchCampaign(t, seed)
-				})
-			}
-			if !maps.Equal(probes[0], probes[1]) {
-				t.Fatalf("seed %d reached %v, then %v", seed, probes[0], probes[1])
-			}
-			if !bytes.Equal(orders[0], orders[1]) {
-				t.Fatalf("seed %d released its operations in another order on its second run", seed)
-			}
-		})
-	}
+	testReplays(t, []uint64{5, 7, 10}, prefetchCampaign)
 }
 
 // campaignGuests attaches the campaign's guests: forks forks of one
 // checkpoint, whose loads race for the same identities, one whose migration
-// source serves two pages the volume names as its own, and a disk. A guest
-// whose client loses a command as it attaches is a machine that never started,
-// and is left out.
+// source serves two pages the volume names as its own, and a disk.
 func campaignGuests(f *fixture, forks int) []*campaignGuest {
 	var guests []*campaignGuest
 	attach := func(name string, kind vmmemory.MemoryRegionKind, b vmmemory.Backing, want []byte) {
-		r, m, err := f.tryAttachBacking(vmmemory.MemoryRegionBacking{Kind: kind, Backing: b})
-		if errors.Is(err, errInjected) {
-			return
+		if guest := f.attachGuest(name, kind, b, want); guest != nil {
+			guests = append(guests, guest)
 		}
-		if err != nil {
-			f.t.Fatal(err)
-		}
-		guests = append(guests, &campaignGuest{name: name, region: r, m: m, want: want})
 	}
 	for fork := range forks {
 		b := f.slowBacking(campaignPages)
@@ -338,6 +278,21 @@ func campaignGuests(f *fixture, forks int) []*campaignGuest {
 	disk := f.slowBacking(campaignPages)
 	attach("disk", vmmemory.Pmem, disk, withZeros(disk.backing, initialBytes(campaignPages)))
 	return guests
+}
+
+// attachGuest attaches a campaign's guest, which must read want. A guest
+// that fails of an injected fault as it attaches is a machine that never
+// started: it is nil.
+func (f *fixture) attachGuest(name string, kind vmmemory.MemoryRegionKind, b vmmemory.Backing,
+	want []byte) *campaignGuest {
+	r, m, err := f.tryAttachBacking(vmmemory.MemoryRegionBacking{Kind: kind, Backing: b})
+	if injected(err) {
+		return nil
+	}
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return &campaignGuest{machine: machine{name: name, region: r, m: m}, want: want}
 }
 
 // campaignZeros are the pages a campaign's volumes hold zeros at, which a
@@ -366,7 +321,9 @@ func runCampaignFlusher(ctx context.Context, t *testing.T, g *campaignGuest, ran
 		case <-time.After(time.Duration(1+random.IntN(4)) * time.Millisecond):
 		}
 		if err := sim.Admit(ctx, "campaign/flush"); err != nil {
-			t.Errorf("%s flusher: %v", g.name, err)
+			if !g.lose(err) {
+				t.Errorf("%s flusher: %v", g.name, err)
+			}
 			return
 		}
 		captured, err := g.region.Capture(ctx, g.region.Unjournaled())
@@ -405,7 +362,9 @@ func runCampaignGuest(ctx context.Context, t *testing.T, g *campaignGuest, rando
 		// otherwise which of them takes a free slot first is the Go
 		// scheduler's choice, and a seed would not replay.
 		if err := sim.Admit(ctx, "campaign/access"); err != nil {
-			t.Errorf("%s: %v", g.name, err)
+			if !g.lose(err) {
+				t.Errorf("%s: %v", g.name, err)
+			}
 			return
 		}
 		if random.IntN(2) == 0 {

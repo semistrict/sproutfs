@@ -13,6 +13,7 @@ import (
 	migratev1 "github.com/semistrict/sproutfs/peer/internal/gen/sproutfs/migrate/v1"
 	"github.com/semistrict/sproutfs/peer/internal/wire"
 	"github.com/semistrict/sproutfs/platform"
+	"github.com/semistrict/sproutfs/platform/sim"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -28,6 +29,30 @@ var (
 	// which no reply of its can be read as.
 	ErrPageSize = errors.New("peer: the peer serves pages of another size")
 )
+
+// The requests a host makes of a peer, by the name their fault sites go by.
+const (
+	requestPages    = "pages"
+	requestResident = "resident"
+	requestClaim    = "claim"
+	requestStripes  = "read-stripes"
+	requestKeep     = "keep"
+	requestDrop     = "drop"
+	requestPresence = "presence"
+	requestProbe    = "probe"
+	requestJournal  = "read-journal"
+)
+
+// replyLostChance is how often an activated site loses the reply to one
+// request of kind: rarely for the requests every fault and read makes, so
+// a seed still reads through its peers, and often for the others, which a
+// seed makes a few times.
+func replyLostChance(kind string) float64 {
+	if kind == requestPages || kind == requestStripes {
+		return 0.02
+	}
+	return 0.25
+}
 
 // Run is a run of consecutive pages the peer holds.
 type Run struct {
@@ -65,7 +90,7 @@ func (p *Peer) Pages(ctx context.Context, asked PageRequest) (Answer, error) {
 		Volume: proto.String(asked.Volume), FirstPage: proto.Uint64(asked.First),
 		Count: proto.Uint32(uint32(count)), PayloadFormat: proto.Uint32(1)}.Build()
 	pageBytes := int64(count) * int64(asked.PageSize)
-	got, waited, err := p.call(ctx, asked.VM+"/"+asked.Volume, request, response, pageBytes, pageBytes+blob.HeaderSize, nil)
+	got, waited, err := p.call(ctx, requestPages, asked.VM+"/"+asked.Volume, request, response, pageBytes, pageBytes+blob.HeaderSize, nil)
 	if busy := (*BusyError)(nil); errors.As(err, &busy) {
 		return Answer{Present: make([]byte, (count+7)/8), Dirty: make([]byte, (count+7)/8), Busy: busy,
 			Waited: waited}, nil
@@ -134,7 +159,7 @@ func (p *Peer) Resident(ctx context.Context, vm, volume string, pageSize, maxRun
 		request := migratev1.ResidentRequest_builder{Vm: proto.String(vm),
 			Volume: proto.String(volume), FirstPage: proto.Uint64(first),
 			MaxRuns: proto.Uint32(uint32(maxRuns))}.Build()
-		got, _, err := p.call(ctx, vm+"/"+volume, request, response, 0, 0, nil)
+		got, _, err := p.call(ctx, requestResident, vm+"/"+volume, request, response, 0, 0, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -164,7 +189,7 @@ func (p *Peer) Resident(ctx context.Context, vm, volume string, pageSize, maxRun
 // out.
 func (p *Peer) Claim(ctx context.Context, vm string) error {
 	response := new(migratev1.ClaimResponse)
-	got, _, err := p.call(ctx, vm, migratev1.ClaimRequest_builder{Vm: proto.String(vm)}.Build(), response, 0, 0, nil)
+	got, _, err := p.call(ctx, requestClaim, vm, migratev1.ClaimRequest_builder{Vm: proto.String(vm)}.Build(), response, 0, 0, nil)
 	if err != nil {
 		return err
 	}
@@ -185,8 +210,8 @@ func (p *Peer) Claim(ctx context.Context, vm string) error {
 // again whenever it waited for either: see Admitter and readmit. Its sent hook
 // is called once it is on the wire, or once it fails before it is: see
 // WithSent.
-func (p *Peer) call(ctx context.Context, admitAs string, request, response proto.Message, reserve, maxPayload int64,
-	payload []byte) (result, time.Duration, error) {
+func (p *Peer) call(ctx context.Context, kind, admitAs string, request, response proto.Message, reserve,
+	maxPayload int64, payload []byte) (result, time.Duration, error) {
 	sent := sentHook(ctx)
 	defer sent()
 	if admitAs != "" {
@@ -227,6 +252,16 @@ func (p *Peer) call(ctx context.Context, admitAs string, request, response proto
 	got, err := c.roundTrip(ctx, request, payload, reserve, maxPayload, sent)
 	if err != nil {
 		return result{}, waited, err
+	}
+	if sim.Buggify(ctx, "peer/reply-lost/"+kind, replyLostChance(kind)) {
+		// The peer carried the request out and answered, and the connection
+		// broke before the answer was read, failing whatever else was on it:
+		// the caller cannot tell a request that was applied from one that
+		// never arrived.
+		got.payload.release()
+		lost := fmt.Errorf("peer: the connection broke before the reply to a %s: %w", kind, io.ErrUnexpectedEOF)
+		c.fail(lost)
+		return result{}, waited, lost
 	}
 	if busy, ok := busyFrom(got.incoming); ok {
 		got.payload.release()

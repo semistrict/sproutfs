@@ -37,11 +37,13 @@ type ObjectStoreConfig struct {
 	// Cloud Storage once waited 52 minutes for its headers; the default is an
 	// hour.
 	Hold time.Duration
-	// RequestChaos puts this store's requests under three Buggify sites: a
+	// RequestChaos puts this store's requests under its Buggify sites: a
 	// request held before its reply, a write applied and its reply then held,
-	// and a body held halfway, each for Hold. They fire only while the
-	// runtime's Buggify switch is on, and only on a store that asks for them,
-	// because a caller that bounds none of its requests waits out every hold.
+	// and a body held halfway, each for Hold; and the store's honest
+	// failures below. They fire only while the runtime's Buggify switch is
+	// on, and only on a store that asks for them, because a caller that
+	// bounds none of its requests waits out every hold, and not every
+	// campaign's callers yet make a refused request again (TASK-113).
 	RequestChaos bool
 }
 
@@ -51,6 +53,27 @@ const (
 	SiteObjectHangAfterApply = "sim/object-store/hang-after-apply"
 	SiteObjectStallBody      = "sim/object-store/stall-body"
 )
+
+// The honest failures of a store with RequestChaos: a request the store
+// refuses before it does anything, as a 503 refuses it once its client has
+// stopped trying again, one per operation at
+// sim/object-store/unavailable/<operation>; a write the store applies and whose
+// reply never comes back whole, as a 500 after the write or a connection reset
+// under the reply leaves it, at sim/object-store/reply-lost/<operation>; and a
+// body whose connection resets partway, at sim/object-store/body-fails.
+const (
+	unavailableProbability = 0.01
+	replyLostProbability   = 0.01
+	bodyFailsProbability   = 0.01
+	// SiteObjectBodyFails is the body that fails partway.
+	SiteObjectBodyFails = "sim/object-store/body-fails"
+)
+
+// errReplyLost is what a write whose reply was lost returns.
+var errReplyLost = fmt.Errorf("%w: the store applied the write and its reply was lost", platform.ErrUnavailable)
+
+// errBodyReset is what a body whose connection reset returns.
+var errBodyReset = fmt.Errorf("%w: the connection reset under a body", platform.ErrUnavailable)
 
 // The chance that each request chaos site fires on one request, once a seed
 // has activated it.
@@ -211,6 +234,12 @@ func (s *ObjectStore) Get(ctx context.Context, request platform.GetRequest) (pla
 		body.stallAt = int64(len(value) / 2)
 		body.stall = func(ctx context.Context) error { return s.hold(ctx, ObjectGet, request.Key, id, "body") }
 	}
+	if len(value) > 0 && s.config.RequestChaos && s.runtime.buggifyHere(SiteObjectBodyFails, bodyFailsProbability) {
+		body.failAt = int64(s.runtime.Random("sim/object-store-faults").Intn(
+			fmt.Sprintf("%s/get/%d/fail-at", s.label(request.Key), id), len(value)))
+		body.fails = true
+		s.trace(ObjectGet, request.Key, "body_fails", int(body.failAt), id)
+	}
 	return platform.GetResult{
 		Metadata:      metadataFor(request.Key, object),
 		ContentLength: int64(len(value)),
@@ -272,6 +301,10 @@ func (s *ObjectStore) Put(ctx context.Context, request platform.PutRequest) (pla
 		s.trace(ObjectPut, request.Key, "applied_injected_fault", len(value), id)
 		return platform.PutResult{}, platform.ErrInjectedFault
 	}
+	if s.config.RequestChaos && s.runtime.buggifyHere("sim/object-store/reply-lost/"+string(ObjectPut), replyLostProbability) {
+		s.trace(ObjectPut, request.Key, "applied_reply_lost", len(value), id)
+		return platform.PutResult{}, errReplyLost
+	}
 	s.trace(ObjectPut, request.Key, "ok", len(value), id)
 	return platform.PutResult{Metadata: metadataFor(request.Key, object)}, nil
 }
@@ -302,6 +335,10 @@ func (s *ObjectStore) Delete(ctx context.Context, request platform.DeleteRequest
 	if s.takeFailAfterApply(ObjectDelete) {
 		s.trace(ObjectDelete, request.Key, "applied_injected_fault", 0, id)
 		return platform.ErrInjectedFault
+	}
+	if s.config.RequestChaos && s.runtime.buggifyHere("sim/object-store/reply-lost/"+string(ObjectDelete), replyLostProbability) {
+		s.trace(ObjectDelete, request.Key, "applied_reply_lost", 0, id)
+		return errReplyLost
 	}
 	s.trace(ObjectDelete, request.Key, "ok", 0, id)
 	return nil
@@ -442,6 +479,10 @@ func (s *ObjectStore) before(ctx context.Context, operation ObjectOperation, key
 		s.trace(operation, key, "canceled", 0, id)
 		return 0, err
 	}
+	if s.config.RequestChaos && s.runtime.buggifyHere("sim/object-store/unavailable/"+string(operation), unavailableProbability) {
+		s.trace(operation, key, "refused", 0, id)
+		return 0, fmt.Errorf("%w: the store refused the request", platform.ErrUnavailable)
+	}
 	if s.take(s.hangNext, operation) || s.chaos(SiteObjectHang, hangProbability) {
 		if err := s.hold(ctx, operation, key, id, "reply"); err != nil {
 			return 0, err
@@ -563,6 +604,10 @@ type objectReader struct {
 	stallAt   int64
 	stall     func(context.Context) error
 	delivered int64
+	// fails says the body's connection resets once it has handed over
+	// failAt bytes.
+	fails  bool
+	failAt int64
 }
 
 func (r *objectReader) Read(destination []byte) (int, error) {
@@ -576,6 +621,14 @@ func (r *objectReader) Read(destination []byte) (int, error) {
 				return 0, err
 			}
 		} else if left := r.stallAt - r.delivered; int64(len(destination)) > left {
+			destination = destination[:left]
+		}
+	}
+	if r.fails {
+		if r.delivered == r.failAt {
+			return 0, errBodyReset
+		}
+		if left := r.failAt - r.delivered; int64(len(destination)) > left {
 			destination = destination[:left]
 		}
 	}

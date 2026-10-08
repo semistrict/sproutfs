@@ -1,12 +1,15 @@
 package host_test
 
 import (
+	"context"
+	"errors"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/vmmemory"
+	"github.com/semistrict/sproutfs/volume"
 )
 
 // A host reports, per VM it runs, how long that VM has held a write no
@@ -279,4 +282,61 @@ func TestTheLoopCheckpointsAVMNearItsLossWindowOnItsOwnClock(t *testing.T) {
 	if stats.CheckpointRequests != 0 {
 		t.Fatalf("the pager asked for %d checkpoints, want the loop's clock alone to take it", stats.CheckpointRequests)
 	}
+}
+
+// A checkpoint asked for out of the interval's turn whose attempt failed is
+// still owed. Its asker, a flush waiting for its journal to be named or a
+// ring that needs room, asked once and waits for what that checkpoint
+// changes, so the loop tries again after the backoff rather than at the next
+// interval: a VMM that refused one pause would otherwise hold a guest's flush
+// for a whole interval.
+func TestARequestedCheckpointThatFailedIsTriedAgainAfterTheBackoff(t *testing.T) {
+	const interval = 4 * time.Second
+	h := newSizedHostHarness(t, 1)
+	h.configs[0].CheckpointInterval = interval
+	// Longer than this test: nothing it runs is ever past the window.
+	h.configs[0].LossWindow = time.Hour
+	pagers := newPagerWithConfig(t, h.configs[0].Resources, vmmemory.Config{
+		ResidentPages: 16, LogicalPages: 32, DirtyPages: 8, ReadAheadPages: 1})
+	h.configs[0].Pagers = pagers.pagers
+	h.start(t)
+
+	vm, err := h.hosts[0].Volumes().Create(t.Context(), "vm-1", diskVolumes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	guest, err := newMachine(t, pagers, vm, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	guest.store("disk", 0, 7)
+	refusing := &refusingOnce{countingMachine: newCountingMachine(guest)}
+	if err := h.hosts[0].AddMachine("vm-1", refusing); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { h.hosts[0].RemoveMachine("vm-1") })
+	began := time.Now()
+	h.hosts[0].AskCheckpoint("vm-1")
+	refusing.awaitTurns(t, 1)
+	if elapsed := time.Since(began); elapsed >= interval/2 {
+		t.Fatalf("the checkpoint asked for after a refused pause came %s later, want it within the backoff of %s",
+			elapsed, interval/8)
+	}
+	if refused := refusing.refused.Load(); refused != 1 {
+		t.Fatalf("the VMM refused %d pauses, want the one this test staged", refused)
+	}
+}
+
+// refusingOnce is a VMM that refuses its first pause of the disks, as one
+// whose API answered no does, and takes every one after it.
+type refusingOnce struct {
+	*countingMachine
+	refused atomic.Int32
+}
+
+func (m *refusingOnce) SealDisks(ctx context.Context) (map[string]volume.DirtySource, error) {
+	if m.refused.CompareAndSwap(0, 1) {
+		return nil, errors.New("the VMM refused the pause")
+	}
+	return m.countingMachine.SealDisks(ctx)
 }

@@ -827,7 +827,7 @@ func (r *MemoryRegion) mapPrefetched(ctx context.Context, pf *prefetch, landed [
 	}
 	defer r.live.RUnlock()
 	stripe := r.stripe(pf.start)
-	if err := stripe.Lock(ctx); err != nil {
+	if err := lockStripe(ctx, stripe); err != nil {
 		return
 	}
 	defer stripe.Unlock()
@@ -943,6 +943,11 @@ func (r *MemoryRegion) cancelPrefetches(ctx context.Context) error {
 		case <-changed:
 		case <-ctx.Done():
 			return context.Cause(ctx)
+		}
+		// The prefetch that ended goes on beside the detach; in a controlled
+		// run they go on one at a time, in the order it chooses.
+		if err := sim.Admit(ctx, "vmmemory/detach-prefetches"); err != nil {
+			return err
 		}
 	}
 }

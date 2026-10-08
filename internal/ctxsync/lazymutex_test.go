@@ -138,3 +138,55 @@ func TestLazyMutexUnlockOfUnlockedPanics(t *testing.T) {
 	var mutex ctxsync.LazyMutex
 	mutex.Unlock()
 }
+
+// WaitFree waits for the holder's Unlock and takes nothing: every waiter
+// wakes to an unlocked mutex, and the one that tries first takes it.
+func TestLazyMutexWaitFreeTakesNothing(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var mutex ctxsync.LazyMutex
+		if err := mutex.WaitFree(t.Context()); err != nil {
+			t.Fatalf("WaitFree on an unlocked LazyMutex: %v", err)
+		}
+		if !mutex.TryLock() {
+			t.Fatal("WaitFree took the lock")
+		}
+		const waiters = 3
+		freed := make(chan time.Time, waiters)
+		for range waiters {
+			go func() {
+				if err := mutex.WaitFree(t.Context()); err != nil {
+					t.Error(err)
+					return
+				}
+				freed <- time.Now()
+			}()
+		}
+		start := time.Now()
+		time.AfterFunc(time.Second, mutex.Unlock)
+		for range waiters {
+			if got := (<-freed).Sub(start); got != time.Second {
+				t.Fatalf("a waiter woke after %v, want 1s", got)
+			}
+		}
+		if !mutex.TryLock() {
+			t.Fatal("a waiter took the lock")
+		}
+		mutex.Unlock()
+	})
+}
+
+func TestLazyMutexWaitFreeReturnsContextCause(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var mutex ctxsync.LazyMutex
+		if !mutex.TryLock() {
+			t.Fatal("an unlocked LazyMutex refused TryLock")
+		}
+		cause := errors.New("stop waiting")
+		ctx, cancel := context.WithCancelCause(t.Context())
+		time.AfterFunc(time.Second, func() { cancel(cause) })
+		if err := mutex.WaitFree(ctx); !errors.Is(err, cause) {
+			t.Fatalf("WaitFree error = %v, want cancellation cause", err)
+		}
+		mutex.Unlock()
+	})
+}

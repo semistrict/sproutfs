@@ -2128,12 +2128,65 @@ batch path production takes for every fault.
 The pager's client (`scripts/faults/vmmemory.json`) refuses any mapping
 command at random, as a client out of VMAs does, and the campaigns attach half
 their seeds with `batchedMapping`, which takes a fault's runs and an
-eviction's revocations in batches as production's client does. Its faults a
-region cannot survive, a lost command or a refused revocation, are written and
-switched off (`simulateTerminalFaults`) until a seed that injects one replays
-(TASK-111). With them on, a campaign takes the machine whose client ended as
-gone and requires every other guest, a fork point's children above all, to
-read exactly what it holds.
+eviction's revocations in batches as production's client does. It also loses
+a command's answer at random, and refuses a revocation, which a region cannot
+survive. A campaign takes the machine whose client ended as gone: its host
+learns of the end from the region, ends the VMM, which ends every fault the
+machine had in flight, and detaches the region once nothing of it runs, as a
+host closes a dead VM. Every other guest, a fork point's children above all,
+must read exactly what it holds. Each campaign's replay test runs seeds that
+inject such a fault. The first runs found that a fork point's child whose
+client refused a revocation failed its parent's unseal
+(`pager-end-a-step-with-its-sharer`).
+
+The pager's backing, arena and spill are in the same manifest. The campaigns'
+backings fail a read, a lookup of identities and a verification at random, as
+a volume does where its store, its cache or a peer cannot answer or its VM is
+no longer this host's; the arena fails to make a file or allocate a page, as a
+memfd does for want of memory; and the spill's simulated disk fails as a
+device does. A guest whose request meets one of them has its session ended, as
+production ends it on any error a fault is answered with (TASK-112 would serve
+a store's refusal once it answers), and its host closes it. The host also
+verifies each region on a timer, as a session does.
+
+A seed replays only where every step that goes on beside another is one the
+run admits. Turning lost commands on found where that did not hold, each the
+Go runtime's choice: an eviction revoked a page from each region that maps it
+in a map's order, so which region met the refusal varied; the waiters an
+unlock woke raced to take the lock, and a woken writer raced the reader that
+woke it; and a detach went on beside the faults it waited for. Regions are now
+commanded in the order they attached (`MemoryRegion.serial`), and every pager
+lock is waited for without taking it and taken when the run admits the waiter
+(`lockAdmitted`, `wlockAdmitted`). `requireReplay` prints the first operation
+two runs of a seed part at, which is where such a search begins.
+
+The platform's own ports (`scripts/faults/platform.json`) are the disk, the
+object store, the network and the cloud's network disks. Under Buggify every
+simulated disk fails each operation at random, as EIO and ENOSPC do, and leaves
+what a real failure leaves; the network refuses listens, dials and accepts and
+times connections out; the cloud loses the replies to what it did. The store
+refuses requests, loses the replies to writes it applied and resets bodies only
+where `RequestChaos` is on, until every campaign's callers handle that
+(TASK-113), and a network disk's device fails no reads until a host keeps its
+journal through one (TASK-114). An answer the simulation gives from the state
+it models, such as `ErrNotFound` for a file that is not there, needs no site.
+The clock and the entropy cannot fail.
+
+Above the platform and the pager, the manifests are these. `host.json` and
+`vmmigrate.json` list the VMM process: the simulated one in `internal/simtest`
+refuses each command at random, never answers one and is killed, crashes,
+fails to start and fails to close, and a VM whose process ended comes back
+elsewhere at a checkpoint it published. `volume.json` lists a memory region's
+sealed checkpoint, which the simulated VMM hands each capture with its reads,
+settles, shares and retires failing at random, and durable flush's journal
+cover and replayer. `peer.json` lists the requests one host makes of another,
+each of which may lose its reply after the peer carried it out
+(`peer/reply-lost/<request>`). `membership.json` lists the membership's store
+and a view of it. `TestSeededTopologyUnderBoundaryFaults` runs the seeds that
+between them fire the simulated VMM's and the peers' sites. The control store
+calls nothing but `platform.ObjectStore`, which is the platform's manifest.
+The orchestrator's hosts, pods and records (TASK-119) and the guest agent's
+exec (TASK-116) have no manifest yet.
 
 ## Negative tests in the tree
 

@@ -13,6 +13,7 @@ import (
 	hostapi "github.com/semistrict/sproutfs/api/host"
 	"github.com/semistrict/sproutfs/checkpoint"
 	"github.com/semistrict/sproutfs/control"
+	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/vmmemory"
 	"github.com/semistrict/sproutfs/vmmigrate"
 	"github.com/semistrict/sproutfs/volume"
@@ -165,7 +166,7 @@ func (h *Host) AddMachineWith(vmID string, runtime Machine, terms MachineTerms) 
 	delete(h.machines.running, vmID)
 	h.machines.mu.Unlock()
 	if existing != nil {
-		existing.end()
+		existing.leave()
 	}
 	entry := &registration{runtime: runtime, terms: terms, cadence: h.cadenceOf(terms)}
 	entry.journal.postCopy = terms.PostCopy
@@ -253,8 +254,11 @@ func (h *Host) awaitingExit(ctx context.Context, cancel context.CancelFunc, vmID
 // It is idempotent and safe to call from two callers at once, which is what a
 // migration racing the epoch timer does. It must not be called from either of
 // those goroutines: it waits for both to return.
+//
+// A handover or a stop ends the loop before it knows whether the VM leaves,
+// and runs it again where it stays, so ending it says nothing about the
+// flushes waiting for the VM's journal: leave does.
 func (m *registration) end() {
-	m.journal.left()
 	m.mu.Lock()
 	stop, done := m.stop, m.done
 	m.stop, m.done = nil, nil
@@ -264,6 +268,13 @@ func (m *registration) end() {
 	}
 	stop()
 	<-done
+}
+
+// leave is end for a VM that leaves this host: the flushes waiting for its
+// journal go unanswered with it, as every flush of a VM that left does.
+func (m *registration) leave() {
+	m.journal.left()
+	m.end()
 }
 
 // discard gives up everything this host holds of a VM it can no longer run:
@@ -285,6 +296,9 @@ func (h *Host) discard(ctx context.Context, vmID string, entry *registration, me
 	// life of the process.
 	ctx, cancel := cleanup(ctx)
 	defer cancel()
+	if entry != nil {
+		entry.journal.left()
+	}
 	errs := h.retireForks(vmID)
 	if h.pages != nil {
 		h.pages.Discard(vmID)
@@ -329,7 +343,7 @@ func (h *Host) retireForks(vmID string) []error {
 // fenced or a dead one leaves it. Its caller has claimed the close, so a stall
 // and a death that find the same VM close it once between them.
 func (h *Host) stopped(vmID string, entry *registration, cause error) {
-	entry.end()
+	entry.leave()
 	ctx := context.WithoutCancel(h.ctx)
 	// The fork points taken on this VM go first: a VM one of them still holds
 	// sealed cannot be captured at all, so a stop that left them would publish
@@ -405,7 +419,7 @@ func (h *Host) RemoveMachine(vmID string) {
 	delete(h.machines.running, vmID)
 	h.machines.mu.Unlock()
 	if entry != nil {
-		entry.end()
+		entry.leave()
 	}
 }
 
@@ -441,7 +455,7 @@ func (h *Host) Delete(ctx context.Context, vmID string) error {
 	delete(h.machines.running, vmID)
 	h.machines.mu.Unlock()
 	if entry != nil {
-		entry.end()
+		entry.leave()
 	}
 	if h.pages != nil {
 		h.pages.Discard(vmID)
@@ -522,6 +536,8 @@ func (h *Host) Stop(ctx context.Context, vmID string, request hostapi.StopReques
 		h.run(vmID, entry)
 		return control.Ref{}, fmt.Errorf("publishing the last checkpoint of %s: %w", vmID, err)
 	}
+	// The VM leaves this host whoever closes it.
+	entry.journal.left()
 	// Whoever drops the registration owns giving the VM up, so a stop that
 	// raced a takeover or a death leaves the closing to whichever got there.
 	if !h.forget(vmID, entry) {
@@ -530,12 +546,21 @@ func (h *Host) Stop(ctx context.Context, vmID string, request hostapi.StopReques
 	if h.pages != nil {
 		h.pages.Discard(vmID)
 	}
+	// The VM is stopped from here whatever the closes say: its checkpoint
+	// landed and this host has forgotten it. A VMM process that failed to give
+	// a staging file back, or a handle whose release the store refused, is
+	// this host's to clean up, and is logged. Reporting it as a failed stop
+	// would have the caller believe the VM still runs here.
 	errs := []error{h.closeRuntime(entry.runtime)}
 	if held := h.vm(vmID); held != nil {
 		errs = append(errs, held.Close(ctx))
 	}
 	if err := errors.Join(errs...); err != nil {
-		return control.Ref{}, err
+		if sim.Bug(ctx, "host-stop-reports-a-failed-close") {
+			return control.Ref{}, err
+		}
+		slog.WarnContext(ctx, "host: a stopped VM's process or handle did not close cleanly", "vm", vmID,
+			"error", err)
 	}
 	slog.InfoContext(ctx, "host: stopped a VM", "vm", vmID,
 		"checkpoint", checkpoint.Ref().Sequence, "suspended", request.Suspend, "kept", request.Keep)

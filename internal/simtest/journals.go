@@ -374,7 +374,7 @@ func (w *World) Flush(id, name string) <-chan error {
 		return answered
 	}
 	g.flush(name, func(error) {}, func(took bool, err error) {
-		if took {
+		if took || errors.Is(err, errExited) {
 			answered <- err
 		}
 	})
@@ -393,7 +393,7 @@ func (w *World) FlushOn(index int, id, name string) <-chan error {
 		return answered
 	}
 	g.flush(name, func(error) {}, func(took bool, err error) {
-		if took {
+		if took || errors.Is(err, errExited) {
 			answered <- err
 		}
 	})
@@ -481,20 +481,33 @@ func (h *HeldFlush) Deliver() bool {
 // hold it, and then reaches the guest unless its VMM is gone by then. The
 // answer the guest took is recorded before took hears of it, so a caller that
 // acts on it acts on a world that knows it.
+//
+// A guest whose VMM process ended before the answer came takes none: its
+// flush is told why, so whoever waits for it is not left waiting on a host
+// that dropped it with the VM it gave up.
 func (g *guest) flush(name string, door func(error), took func(bool, error)) {
 	g.mu.Lock()
 	f := g.flushes
 	g.mu.Unlock()
 	p := f.point(name)
-	g.memoryRegions[name].Flush(func(err error) {
-		door(err)
-		if g.isClosed() {
-			took(false, err)
-			return
-		}
-		f.answer(p, err)
-		took(true, err)
-	})
+	var once sync.Once
+	answer := func(err error) {
+		once.Do(func() {
+			door(err)
+			if exit := g.exitCause(); exit != nil {
+				took(false, exit)
+				return
+			}
+			if g.isClosed() {
+				took(false, err)
+				return
+			}
+			f.answer(p, err)
+			took(true, err)
+		})
+	}
+	g.atExit(answer)
+	g.memoryRegions[name].Flush(answer)
 }
 
 // flushPoint is where every durable disk of g is now: a checkpoint's pause

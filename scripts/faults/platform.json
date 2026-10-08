@@ -1,0 +1,639 @@
+{
+ "comment": "The platform's ports: what a process reaches the disk, the object store, the network, the cloud's network disks, the clock and entropy through. The real implementations are platform/internal/real and platform/adapters; the simulated ones are platform/sim, whose disks, network and cloud have these sites under the runtime's Buggify switch, and whose store has them where ObjectStoreConfig.RequestChaos is on (TASK-113), and whose network disk devices fail no reads (TASK-114). An error of the caller's own making (an invalid name, range or option, its own context ending) is not listed, nor is an answer the simulation gives from the state it models: ErrNotFound for a file, object or disk that is not there, ErrAlreadyExists, ErrLocked for a lock another handle holds, ErrPrecondition for a condition that does not hold, ErrInUse for a disk attached elsewhere. See scripts/check-faults.py.",
+ "interfaces": [
+  {
+   "package": "platform",
+   "name": "ObjectStore"
+  },
+  {
+   "package": "platform",
+   "name": "Disk"
+  },
+  {
+   "package": "platform",
+   "name": "DiskSpace"
+  },
+  {
+   "package": "platform",
+   "name": "FileAllocation"
+  },
+  {
+   "package": "platform",
+   "name": "DeviceWrites"
+  },
+  {
+   "package": "platform",
+   "name": "File"
+  },
+  {
+   "package": "platform",
+   "name": "SparseFile"
+  },
+  {
+   "package": "platform",
+   "name": "AllocatingFile"
+  },
+  {
+   "package": "platform",
+   "name": "NetworkDisks"
+  },
+  {
+   "package": "platform",
+   "name": "Devices"
+  },
+  {
+   "package": "platform",
+   "name": "Network"
+  },
+  {
+   "package": "platform",
+   "name": "Transport"
+  },
+  {
+   "package": "platform",
+   "name": "Listener"
+  },
+  {
+   "package": "platform",
+   "name": "Conn"
+  },
+  {
+   "package": "platform",
+   "name": "Clock"
+  },
+  {
+   "package": "platform",
+   "name": "Timer"
+  },
+  {
+   "package": "platform",
+   "name": "Ticker"
+  },
+  {
+   "package": "platform",
+   "name": "Stopper"
+  },
+  {
+   "package": "platform",
+   "name": "Entropy"
+  }
+ ],
+ "faults": [
+  {
+   "interface": "platform.ObjectStore",
+   "method": "Head",
+   "error": "ErrUnavailable",
+   "site": "sim/object-store/unavailable/head",
+   "package": "platform/bounded",
+   "run": "^TestTheBoundsSurviveTheirFaultsAndReachTheirProbes$",
+   "purpose": "a 408, 429 or 5xx the provider's client gave up retrying (S3 SlowDown, a GCS 503): the request changed nothing; a reader asks again"
+  },
+  {
+   "interface": "platform.ObjectStore",
+   "method": "Get",
+   "error": "ErrUnavailable",
+   "site": "sim/object-store/unavailable/get",
+   "package": "platform/bounded",
+   "run": "^TestTheBoundsSurviveTheirFaultsAndReachTheirProbes$",
+   "purpose": "a 408, 429 or 5xx the provider's client gave up retrying: nothing was read; a reader asks again"
+  },
+  {
+   "interface": "platform.ObjectStore",
+   "method": "Get",
+   "error": "a body error",
+   "site": "sim/object-store/body-fails",
+   "package": "platform/bounded",
+   "run": "^TestTheBoundsSurviveTheirFaultsAndReachTheirProbes$",
+   "purpose": "the connection resets under a body: the reader has a prefix of the bytes and an error, which the real adapters return raw from the HTTP client and the simulation as unavailable"
+  },
+  {
+   "interface": "platform.ObjectStore",
+   "method": "Put",
+   "error": "ErrUnavailable",
+   "site": "sim/object-store/unavailable/put",
+   "package": "platform/bounded",
+   "run": "^TestTheBoundsSurviveTheirFaultsAndReachTheirProbes$",
+   "purpose": "a 409 conflict between conditional writes, a 408, 429 or 5xx before the store applied the write: nothing changed"
+  },
+  {
+   "interface": "platform.ObjectStore",
+   "method": "Put",
+   "error": "ErrUnavailable after applying",
+   "site": "sim/object-store/reply-lost/put",
+   "package": "platform/bounded",
+   "run": "^TestTheBoundsSurviveTheirFaultsAndReachTheirProbes$",
+   "purpose": "a 500 after the write, or a connection reset under the reply: the write landed and its writer was told it failed, which a conditional writer settles by reading, and an unconditional one by keeping both outcomes possible"
+  },
+  {
+   "interface": "platform.ObjectStore",
+   "method": "Delete",
+   "error": "ErrUnavailable",
+   "site": "sim/object-store/unavailable/delete",
+   "package": "platform/sim",
+   "run": "^TestTheStoreRefusesAndLosesRepliesAtRandom$",
+   "purpose": "a 408, 429 or 5xx before the store deleted the object: nothing changed"
+  },
+  {
+   "interface": "platform.ObjectStore",
+   "method": "Delete",
+   "error": "ErrUnavailable after applying",
+   "site": "sim/object-store/reply-lost/delete",
+   "package": "platform/sim",
+   "run": "^TestTheStoreRefusesAndLosesRepliesAtRandom$",
+   "purpose": "the object was deleted and its deleter told the delete failed"
+  },
+  {
+   "interface": "platform.ObjectStore",
+   "method": "List",
+   "error": "ErrUnavailable",
+   "site": "sim/object-store/unavailable/list",
+   "package": "platform/bounded",
+   "run": "^TestTheBoundsSurviveTheirFaultsAndReachTheirProbes$",
+   "purpose": "a 408, 429 or 5xx the client gave up retrying: a lister lists again"
+  },
+  {
+   "interface": "platform.Disk",
+   "method": "Open",
+   "error": "an I/O error",
+   "site": "sim/disk/io-error/open",
+   "package": "platform/sim",
+   "run": "^TestEveryDiskOperationFailsAtRandomAndLeavesWhatTheDeviceWould$",
+   "purpose": "an I/O error (EIO from the syscall, returned as the os package wraps it), from mkdir or open, which changed nothing, or from the directory sync after a create, which made and may have truncated the file"
+  },
+  {
+   "interface": "platform.Disk",
+   "method": "Open",
+   "error": "ErrNoSpace",
+   "site": "sim/disk/no-space/open",
+   "package": "platform/sim",
+   "run": "^TestEveryDiskOperationFailsAtRandomAndLeavesWhatTheDeviceWould$",
+   "purpose": "ENOSPC or EDQUOT creating the file or its directory, joined with ErrFileUnchanged: nothing changed"
+  },
+  {
+   "interface": "platform.Disk",
+   "method": "Remove",
+   "error": "an I/O error",
+   "site": "sim/disk/io-error/remove",
+   "package": "platform/sim",
+   "run": "^TestEveryDiskOperationFailsAtRandomAndLeavesWhatTheDeviceWould$",
+   "purpose": "an I/O error (EIO from the syscall, returned as the os package wraps it), from the unlink, which changed nothing, or from the directory sync after it, which removed the file"
+  },
+  {
+   "interface": "platform.Disk",
+   "method": "Rename",
+   "error": "an I/O error",
+   "site": "sim/disk/io-error/rename",
+   "package": "platform/sim",
+   "run": "^TestEveryDiskOperationFailsAtRandomAndLeavesWhatTheDeviceWould$",
+   "purpose": "an I/O error (EIO from the syscall, returned as the os package wraps it), from the rename, which changed nothing, or from a directory sync after it, which renamed the file"
+  },
+  {
+   "interface": "platform.Disk",
+   "method": "Rename",
+   "error": "ErrNoSpace",
+   "site": "sim/disk/no-space/rename",
+   "package": "platform/sim",
+   "run": "^TestEveryDiskOperationFailsAtRandomAndLeavesWhatTheDeviceWould$",
+   "purpose": "ENOSPC making the new name's directory or growing a directory for it, joined with ErrFileUnchanged: nothing changed"
+  },
+  {
+   "interface": "platform.Disk",
+   "method": "List",
+   "error": "an I/O error",
+   "site": "sim/disk/io-error/list",
+   "package": "platform/sim",
+   "run": "^TestEveryDiskOperationFailsAtRandomAndLeavesWhatTheDeviceWould$",
+   "purpose": "an I/O error (EIO from the syscall, returned as the os package wraps it) reading a directory"
+  },
+  {
+   "interface": "platform.Disk",
+   "method": "SyncNamespace",
+   "error": "an I/O error",
+   "site": "sim/disk/io-error/sync_namespace",
+   "package": "platform/sim",
+   "run": "^TestEveryDiskOperationFailsAtRandomAndLeavesWhatTheDeviceWould$",
+   "purpose": "an I/O error (EIO from the syscall, returned as the os package wraps it) syncing a directory: the names are not known durable"
+  },
+  {
+   "interface": "platform.DiskSpace",
+   "method": "Space",
+   "error": "an error reading the filesystem",
+   "site": "sim/disk/space-fails",
+   "package": "resource",
+   "run": "^TestTheDiskLimiterStaysSafeUnderFaults$",
+   "purpose": "statfs fails, or reports a filesystem that cannot be (ErrInvalidRange): the limiter acts on its last reading"
+  },
+  {
+   "interface": "platform.FileAllocation",
+   "method": "Allocated",
+   "error": "an I/O error",
+   "site": "sim/disk/io-error/allocated",
+   "package": "resource",
+   "run": "^TestTheDiskLimiterStaysSafeUnderFaults$",
+   "purpose": "fstat fails, or reports blocks that cannot be (ErrInvalidRange): the limiter acts on its last reading"
+  },
+  {
+   "interface": "platform.DeviceWrites",
+   "method": "BytesWritten",
+   "error": "an error reading the counter",
+   "site": "sim/disk/device-writes-fail",
+   "package": "resource",
+   "run": "^TestTheDiskLimiterStaysSafeUnderFaults$",
+   "purpose": "the block device's stat file cannot be read, or holds a count that does not parse (ErrInvalidRange)"
+  },
+  {
+   "interface": "platform.File",
+   "method": "ReadAt",
+   "error": "an I/O error",
+   "site": "sim/disk/io-error/read",
+   "package": "journal",
+   "run": "^TestAJournalKeepsEveryAnsweredEntryThroughItsFaults$",
+   "purpose": "an I/O error (EIO from the syscall, returned as the os package wraps it): nothing was read. A device whose network disk was detached fails every read the same way, which the network disk campaigns make by detaching it"
+  },
+  {
+   "interface": "platform.File",
+   "method": "WriteAt",
+   "error": "an I/O error",
+   "site": "sim/disk/io-error/write",
+   "package": "checkpoint",
+   "run": "^(TestDiskSurvivesItsFaultsAndReachesItsProbes|TestDiskStripesSurviveTheirFaultsAndReachTheirProbes)$",
+   "purpose": "an I/O error (EIO from the syscall, returned as the os package wraps it) partway: a prefix of the bytes, perhaps none, was written"
+  },
+  {
+   "interface": "platform.File",
+   "method": "WriteAt",
+   "error": "ErrNoSpace",
+   "site": "sim/disk/no-space/write",
+   "package": "resource",
+   "run": "^TestTheDiskLimiterStaysSafeUnderFaults$",
+   "purpose": "ENOSPC or EDQUOT for a write that needs blocks the file does not hold: nothing was written"
+  },
+  {
+   "interface": "platform.File",
+   "method": "Truncate",
+   "error": "an I/O error",
+   "site": "sim/disk/io-error/truncate",
+   "package": "platform/sim",
+   "run": "^TestEveryDiskOperationFailsAtRandomAndLeavesWhatTheDeviceWould$",
+   "purpose": "an I/O error (EIO from the syscall, returned as the os package wraps it): the size did not change"
+  },
+  {
+   "interface": "platform.File",
+   "method": "Sync",
+   "error": "an I/O error",
+   "site": "sim/disk/io-error/sync",
+   "package": "internal/simtest",
+   "run": "^TestShardsSurviveTheirFaultsAndReachTheirProbes$",
+   "purpose": "an I/O error (EIO from the syscall, returned as the os package wraps it) from fsync: nothing since the last sync is known durable, and a power loss may still take it"
+  },
+  {
+   "interface": "platform.File",
+   "method": "Sync",
+   "error": "ErrNoSpace",
+   "site": "sim/disk/no-space/sync",
+   "package": "journal",
+   "run": "^TestAJournalKeepsEveryAnsweredEntryThroughItsFaults$",
+   "purpose": "ENOSPC from fsync, where the filesystem allocates the blocks of delayed writes: nothing is durable"
+  },
+  {
+   "interface": "platform.File",
+   "method": "Size",
+   "error": "an I/O error",
+   "site": "sim/disk/io-error/size",
+   "package": "internal/simtest",
+   "run": "^TestShardsSurviveTheirFaultsAndReachTheirProbes$",
+   "purpose": "an I/O error (EIO from the syscall, returned as the os package wraps it) from fstat, or from the seek that sizes a block device"
+  },
+  {
+   "interface": "platform.File",
+   "method": "Close",
+   "none": "closing a local file releases its descriptor: Linux reports no write error at close for a local filesystem, and a second close is the caller's own mistake, which the real adapter reports as ErrClosed"
+  },
+  {
+   "interface": "platform.SparseFile",
+   "method": "File",
+   "none": "the embedded platform.File, whose methods have entries of their own"
+  },
+  {
+   "interface": "platform.SparseFile",
+   "method": "PunchHole",
+   "error": "an I/O error",
+   "site": "sim/disk/io-error/punch_hole",
+   "package": "platform/sim",
+   "run": "^TestEveryDiskOperationFailsAtRandomAndLeavesWhatTheDeviceWould$",
+   "purpose": "an I/O error (EIO from the syscall, returned as the os package wraps it) from fallocate or F_PUNCHHOLE: the range keeps its bytes. A filesystem that cannot punch holes refuses every punch (EOPNOTSUPP, or ErrUnsupported off Linux and Darwin), which is the deployment's, not a fault"
+  },
+  {
+   "interface": "platform.AllocatingFile",
+   "method": "File",
+   "none": "the embedded platform.File, whose methods have entries of their own"
+  },
+  {
+   "interface": "platform.AllocatingFile",
+   "method": "Allocate",
+   "error": "an I/O error",
+   "site": "sim/disk/io-error/allocate",
+   "package": "checkpoint",
+   "run": "^(TestDiskSurvivesItsFaultsAndReachesItsProbes|TestDiskStripesSurviveTheirFaultsAndReachTheirProbes)$",
+   "purpose": "an I/O error (EIO from the syscall, returned as the os package wraps it) from fallocate: nothing was reserved. Off Linux every allocation is ErrUnsupported, which is the deployment's, not a fault"
+  },
+  {
+   "interface": "platform.AllocatingFile",
+   "method": "Allocate",
+   "error": "ErrNoSpace",
+   "site": "sim/disk/no-space/allocate",
+   "package": "platform/sim",
+   "run": "^TestEveryDiskOperationFailsAtRandomAndLeavesWhatTheDeviceWould$",
+   "purpose": "ENOSPC or EDQUOT: the filesystem has no room for the range, and nothing was reserved"
+  },
+  {
+   "interface": "platform.NetworkDisks",
+   "method": "Describe",
+   "error": "ErrUnavailable",
+   "site": "sim/network-disk/describe-fails",
+   "package": "platform/sim",
+   "run": "^(TestTheCloudsSitesFireAndNeverAttachADiskTwice|TestTheCloudsCreateAndDeleteSitesFire)$",
+   "purpose": "a 429 or 5xx from the compute API; a 404 is ErrNotFound, which the cloud's state answers"
+  },
+  {
+   "interface": "platform.NetworkDisks",
+   "method": "Attach",
+   "error": "ErrUnavailable",
+   "site": "sim/network-disk/attach-fails",
+   "package": "platform/sim",
+   "run": "^(TestTheCloudsSitesFireAndNeverAttachADiskTwice|TestTheCloudsCreateAndDeleteSitesFire)$",
+   "purpose": "a 429 or 5xx before the cloud attached the disk. ErrInUse, a disk attached to another machine, is the cloud's state answering, as is a race two attaches lose to each other"
+  },
+  {
+   "interface": "platform.NetworkDisks",
+   "method": "Attach",
+   "error": "an error after attaching",
+   "site": "sim/network-disk/attach-reply-lost",
+   "package": "platform/sim",
+   "run": "^(TestTheCloudsSitesFireAndNeverAttachADiskTwice|TestTheCloudsCreateAndDeleteSitesFire)$",
+   "purpose": "the operation's wait failed or ran out of time, and the cloud attached the disk all the same"
+  },
+  {
+   "interface": "platform.NetworkDisks",
+   "method": "Detach",
+   "error": "ErrUnavailable",
+   "site": "sim/network-disk/detach-fails",
+   "package": "platform/sim",
+   "run": "^(TestTheCloudsSitesFireAndNeverAttachADiskTwice|TestTheCloudsCreateAndDeleteSitesFire)$",
+   "purpose": "a 429 or 5xx before the cloud detached the disk"
+  },
+  {
+   "interface": "platform.NetworkDisks",
+   "method": "Detach",
+   "error": "an error after detaching",
+   "site": "sim/network-disk/detach-reply-lost",
+   "package": "platform/sim",
+   "run": "^(TestTheCloudsSitesFireAndNeverAttachADiskTwice|TestTheCloudsCreateAndDeleteSitesFire)$",
+   "purpose": "the operation's wait failed and the cloud detached the disk all the same: the machine has lost it"
+  },
+  {
+   "interface": "platform.NetworkDisks",
+   "method": "List",
+   "error": "ErrUnavailable",
+   "site": "sim/network-disk/list-fails",
+   "package": "platform/sim",
+   "run": "^(TestTheCloudsSitesFireAndNeverAttachADiskTwice|TestTheCloudsCreateAndDeleteSitesFire)$",
+   "purpose": "a 429 or 5xx listing disks by label: the journal controller acts on nothing this pass"
+  },
+  {
+   "interface": "platform.NetworkDisks",
+   "method": "Create",
+   "error": "ErrUnavailable",
+   "site": "sim/network-disk/create-fails",
+   "package": "platform/sim",
+   "run": "^(TestTheCloudsSitesFireAndNeverAttachADiskTwice|TestTheCloudsCreateAndDeleteSitesFire)$",
+   "purpose": "a 429 or 5xx before the cloud made the disk. ErrAlreadyExists is the cloud's state answering"
+  },
+  {
+   "interface": "platform.NetworkDisks",
+   "method": "Create",
+   "error": "an error after creating",
+   "site": "sim/network-disk/create-reply-lost",
+   "package": "platform/sim",
+   "run": "^(TestTheCloudsSitesFireAndNeverAttachADiskTwice|TestTheCloudsCreateAndDeleteSitesFire)$",
+   "purpose": "the operation's wait failed and the cloud made the disk all the same, which the next list finds"
+  },
+  {
+   "interface": "platform.NetworkDisks",
+   "method": "Delete",
+   "error": "ErrUnavailable",
+   "site": "sim/network-disk/delete-fails",
+   "package": "platform/sim",
+   "run": "^(TestTheCloudsSitesFireAndNeverAttachADiskTwice|TestTheCloudsCreateAndDeleteSitesFire)$",
+   "purpose": "a 429 or 5xx before the cloud deleted the disk. ErrNotFound and ErrInUse are the cloud's state answering"
+  },
+  {
+   "interface": "platform.NetworkDisks",
+   "method": "Delete",
+   "error": "an error after deleting",
+   "site": "sim/network-disk/delete-reply-lost",
+   "package": "platform/sim",
+   "run": "^(TestTheCloudsSitesFireAndNeverAttachADiskTwice|TestTheCloudsCreateAndDeleteSitesFire)$",
+   "purpose": "the operation's wait failed and the cloud deleted the disk all the same, which the next delete finds not found"
+  },
+  {
+   "interface": "platform.Devices",
+   "method": "Open",
+   "error": "an I/O error",
+   "site": "sim/disk/io-error/open",
+   "package": "platform/sim",
+   "run": "^(TestTheCloudsSitesFireAndNeverAttachADiskTwice|TestTheCloudsCreateAndDeleteSitesFire)$",
+   "purpose": "an I/O error (EIO from the syscall, returned as the os package wraps it) opening the block device. ErrNotFound, a volume not attached here, and ErrLocked, a device another process holds (EBUSY), are the cloud's and the machine's state answering"
+  },
+  {
+   "interface": "platform.Network",
+   "method": "Listen",
+   "error": "a refused listen",
+   "site": "sim/network/listen-fails",
+   "package": "platform/sim",
+   "run": "^TestTheNetworkRefusesAndEndsWhatItIsAskedAtRandom$",
+   "purpose": "EADDRINUSE, EACCES or EMFILE from the transport: nothing listens; a host that cannot listen fails to start, and its supervisor starts it again"
+  },
+  {
+   "interface": "platform.Network",
+   "method": "Dial",
+   "error": "a refused dial",
+   "site": "sim/network/dial-refused",
+   "package": "platform/sim",
+   "run": "^TestTheNetworkRefusesAndEndsWhatItIsAskedAtRandom$",
+   "purpose": "ECONNREFUSED from a full backlog, or a timeout from SYNs that went unanswered (ErrUnavailable): no connection was made. ErrNotFound, nobody listening, is the network's state answering, and a cut link the campaigns' own partitions"
+  },
+  {
+   "interface": "platform.Transport",
+   "method": "Listen",
+   "error": "a refused listen",
+   "site": "sim/network/listen-fails",
+   "package": "platform/sim",
+   "run": "^TestTheNetworkRefusesAndEndsWhatItIsAskedAtRandom$",
+   "purpose": "as Network.Listen, from the byte-stream network a framed simulated network stands on, which is the simulation's transport"
+  },
+  {
+   "interface": "platform.Transport",
+   "method": "Dial",
+   "error": "a refused dial",
+   "site": "sim/network/dial-refused",
+   "package": "platform/sim",
+   "run": "^TestTheNetworkRefusesAndEndsWhatItIsAskedAtRandom$",
+   "purpose": "as Network.Dial, on the byte streams"
+  },
+  {
+   "interface": "platform.Listener",
+   "method": "Accept",
+   "error": "a failed accept",
+   "site": "sim/network/accept-fails",
+   "package": "peer",
+   "run": "^TestThePeerServerCampaignNeverAnswersWrong$",
+   "purpose": "EMFILE or ENFILE with a connection waiting: the connection waits for the next accept, and a server accepts again rather than stopping"
+  },
+  {
+   "interface": "platform.Listener",
+   "method": "Address",
+   "none": "the address the listener was opened at, which it holds"
+  },
+  {
+   "interface": "platform.Listener",
+   "method": "Close",
+   "none": "closing a socket that listens does not fail: the descriptor is released whatever the close returns"
+  },
+  {
+   "interface": "platform.Conn",
+   "method": "Send",
+   "error": "ErrDisconnected",
+   "site": "sim/network/random-close",
+   "package": "peer",
+   "run": "^TestThePeerServerCampaignNeverAnswersWrong$",
+   "purpose": "a connection closed or reset under a frame, before or after the frame arrived"
+  },
+  {
+   "interface": "platform.Conn",
+   "method": "Send",
+   "error": "ErrUnavailable",
+   "site": "sim/network/send-timed-out",
+   "package": "platform/sim",
+   "run": "^TestTheNetworkRefusesAndEndsWhatItIsAskedAtRandom$",
+   "purpose": "the kernel ends a connection whose sent bytes went unacknowledged past TCP_USER_TIMEOUT (ETIMEDOUT): the frame may or may not have arrived"
+  },
+  {
+   "interface": "platform.Conn",
+   "method": "Receive",
+   "error": "ErrDisconnected",
+   "site": "sim/network/random-close",
+   "package": "peer",
+   "run": "^TestThePeerServerCampaignNeverAnswersWrong$",
+   "purpose": "the peer closed or reset the connection, or a prefix arrived that is no frame's"
+  },
+  {
+   "interface": "platform.Conn",
+   "method": "Receive",
+   "error": "ErrUnavailable",
+   "site": "sim/network/receive-timed-out",
+   "package": "peer",
+   "run": "^TestThePeerServerCampaignNeverAnswersWrong$",
+   "purpose": "the keepalive probes of an idle connection went unanswered (ETIMEDOUT)"
+  },
+  {
+   "interface": "platform.Conn",
+   "method": "Receive",
+   "error": "ErrMessageTooLarge",
+   "site": "sim/network/stream-bit-flip",
+   "package": "peer",
+   "run": "^TestThePeerServerCampaignNeverAnswersWrong$",
+   "purpose": "a frame's prefix arrived with a length past the bound, as a flipped bit on a stream whose checksum missed it leaves one; the connection is closed"
+  },
+  {
+   "interface": "platform.Conn",
+   "method": "LocalAddress",
+   "none": "the address the connection was made from, which it holds"
+  },
+  {
+   "interface": "platform.Conn",
+   "method": "RemoteAddress",
+   "none": "the address the connection was made to, which it holds"
+  },
+  {
+   "interface": "platform.Conn",
+   "method": "Close",
+   "none": "a close whose peer is already gone reports EPIPE or ECONNRESET, which the framer drops: the socket is closed either way"
+  },
+  {
+   "interface": "platform.Clock",
+   "method": "Now",
+   "none": "reading the clock or arming a timer does not fail"
+  },
+  {
+   "interface": "platform.Clock",
+   "method": "Since",
+   "none": "reading the clock or arming a timer does not fail"
+  },
+  {
+   "interface": "platform.Clock",
+   "method": "AfterFunc",
+   "none": "reading the clock or arming a timer does not fail"
+  },
+  {
+   "interface": "platform.Clock",
+   "method": "NewTimer",
+   "none": "reading the clock or arming a timer does not fail"
+  },
+  {
+   "interface": "platform.Clock",
+   "method": "NewTicker",
+   "none": "reading the clock or arming a timer does not fail"
+  },
+  {
+   "interface": "platform.Clock",
+   "method": "Sleep",
+   "none": "it returns only its caller's own context ending"
+  },
+  {
+   "interface": "platform.Timer",
+   "method": "Stopper",
+   "none": "the embedded platform.Stopper, which has an entry of its own"
+  },
+  {
+   "interface": "platform.Timer",
+   "method": "C",
+   "none": "a channel the timer holds"
+  },
+  {
+   "interface": "platform.Timer",
+   "method": "Reset",
+   "none": "rearming a timer does not fail"
+  },
+  {
+   "interface": "platform.Ticker",
+   "method": "C",
+   "none": "a channel the ticker holds"
+  },
+  {
+   "interface": "platform.Ticker",
+   "method": "Stop",
+   "none": "stopping a ticker does not fail"
+  },
+  {
+   "interface": "platform.Ticker",
+   "method": "Reset",
+   "none": "rearming a ticker does not fail"
+  },
+  {
+   "interface": "platform.Stopper",
+   "method": "Stop",
+   "none": "disarming a timer does not fail"
+  },
+  {
+   "interface": "platform.Entropy",
+   "method": "Fill",
+   "none": "crypto/rand ends the process rather than return an error: a process that cannot read entropy cannot be trusted to choose nonces"
+  },
+  {
+   "interface": "platform.Entropy",
+   "method": "Uint64",
+   "none": "as Fill"
+  }
+ ]
+}

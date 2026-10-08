@@ -543,7 +543,7 @@ func (p *Peer) ReadStripes(ctx context.Context, route membership.Route, read Str
 		}
 		defer p.table.stripes.Release(read.MaxBytes)
 	}
-	got, _, err := p.call(ctx, "", request, response, read.MaxBytes, read.MaxBytes, nil)
+	got, _, err := p.call(ctx, requestStripes, "", request, response, read.MaxBytes, read.MaxBytes, nil)
 	if err != nil {
 		return StripesReply{}, err
 	}
@@ -607,7 +607,7 @@ func (p *Peer) KeepAdmitted(ctx context.Context, route membership.Route, keep Ke
 		Repair: proto.Bool(keep.Repair), Publication: proto.Bool(keep.Publication),
 		Generation: proto.Uint64(route.Generation)}.Build()
 	response := new(peerv1.Kept)
-	got, _, err := p.call(WithClass(ctx, BulkWrite), "", request, response, size, 0, keep.Payload)
+	got, _, err := p.call(WithClass(ctx, BulkWrite), requestKeep, "", request, response, size, 0, keep.Payload)
 	if errors.Is(err, ErrBusy) {
 		// A cache at its write budget for this host drops the keep, as one
 		// whose own budget is spent does.
@@ -627,7 +627,7 @@ func (p *Peer) Drop(ctx context.Context, route membership.Route, drop Drop) erro
 		Index: proto.Uint32(uint32(drop.Index)), K: proto.Uint32(uint32(drop.Code.K)),
 		M: proto.Uint32(uint32(drop.Code.M)), Generation: proto.Uint64(route.Generation)}.Build()
 	response := new(peerv1.Dropped)
-	got, _, err := p.call(WithClass(ctx, Fault), "", request, response, 0, 0, nil)
+	got, _, err := p.call(WithClass(ctx, Fault), requestDrop, "", request, response, 0, 0, nil)
 	if err != nil {
 		return err
 	}
@@ -650,7 +650,7 @@ func (p *Peer) Presence(ctx context.Context, route membership.Route, presence Pr
 	if p.table.bug("peer-presence-in-fault-class") {
 		class = Fault
 	}
-	got, _, err := p.call(WithClass(ctx, class), "", request, response, 0, 0, nil)
+	got, _, err := p.call(WithClass(ctx, class), requestPresence, "", request, response, 0, 0, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -684,7 +684,7 @@ func (p *Peer) Probe(ctx context.Context, disk rank.Identity) (rank.Identity, er
 		request.SetCache(disk[:])
 	}
 	response := new(peerv1.Probed)
-	got, _, err := p.call(WithClass(ctx, Fault), "", request, response, 0, 0, nil)
+	got, _, err := p.call(WithClass(ctx, Fault), requestProbe, "", request, response, 0, 0, nil)
 	if err != nil {
 		return rank.Identity{}, err
 	}

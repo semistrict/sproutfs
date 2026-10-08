@@ -391,14 +391,20 @@ after an eighth of the interval, doubling up to the interval. The guest's
 stores, and the vCPUs that made them, are held behind it, so a fresh pause
 would not be possible. The retries stop when the loop does. Inside the window,
 a failed publication gives its pages back and is retried a full interval
-later.
+later, unless the checkpoint was one asked for out of turn: whatever asked,
+a flush waiting for the journal to be named or a ring that needs room, asked
+once and is still owed it, so it is tried again after the same backoff. A
+checkpoint that landed and whose seal the pager could not end reports that it
+landed; the seal is logged and ends at the next capture's release.
 
 `Config.FlushBound` (`SPROUTFS_FLUSH_BOUND`) is twice the checkpoint interval
 by default, so 120 s; zero completes every flush at once. It is the maximum
 age of the VM's oldest unpublished disk write at which a guest's flush still
 completes at once. Past it, the flush waits until a checkpoint covers the
 write, which the loop takes out of turn. When a VM leaves the host, its
-waiting flushes go unanswered, and its device asks the next host again. With
+waiting flushes go unanswered, and its device asks the next host again. A
+migration or a stop that is refused leaves the VM, and its waiting flushes,
+where they were. With
 [durable flush](architecture.md#durable-flush) on, the host's journal answers
 a flush instead, and the loop also takes a checkpoint out of turn when the
 VM's record does not yet name the journal, when the journal is three quarters

@@ -258,7 +258,7 @@ func (r *MemoryRegion) mapsLocked(f *arenaFile) bool {
 // giveFork hands this memory region's process a fork point's file, once,
 // before anything is mapped from it.
 func (r *MemoryRegion) giveFork(ctx context.Context, f *arenaFile) error {
-	if err := r.filesMu.Lock(ctx); err != nil {
+	if err := lockAdmitted(ctx, "vmmemory/files", r.filesMu.TryLock, r.filesMu.WaitFree); err != nil {
 		return err
 	}
 	defer r.filesMu.Unlock()
@@ -707,14 +707,14 @@ func (h *Host) unindex(ctx context.Context, page *zirconvm.VmPage, key pageKey) 
 		h.mu.Unlock()
 		return
 	}
-	if err := h.dropSharers(ctx, page); err != nil {
+	if _, err := h.dropSharers(ctx, page); err != nil {
 		slog.WarnContext(ctx, "vmmemory: a page that left its root could not be taken from its regions", "error", err)
 		return
 	}
 	h.mu.Lock()
 	f.layer = owner
 	h.mu.Unlock()
-	h.releaseFrame(page)
+	h.giveUp(page)
 }
 
 // unindexSeam runs in an unindex between its taking a page from its root and
@@ -751,7 +751,8 @@ func (h *Host) rebind(ctx context.Context, from, to *zirconvm.VmPage) error {
 	// fault binds it again and nothing but a detach takes a binding off it;
 	// each region's bindings are looked at again under the hold that rebinds
 	// them, and from's aliases under the one that decides it is idle.
-	for q, bindings := range byRegion {
+	for _, q := range inAttachOrder(byRegion) {
+		bindings := byRegion[q]
 		admitGoingOn(ctx, "vmmemory/rebind")
 		if err := q.remap(ctx, bindings, to); err != nil {
 			q.heldPages(ctx, err)
@@ -768,18 +769,7 @@ func (h *Host) rebind(ctx context.Context, from, to *zirconvm.VmPage) error {
 		}
 		h.mu.Unlock()
 	}
-	h.mu.Lock()
-	f := frameOf(from)
-	idle := f.slot >= 0 && f.aliases.len() == 0
-	if idle && f.replacing > 0 {
-		// A store of the owner is replacing its mapping of the page, and the
-		// memory goes back when that command lands.
-		f.dropped, idle = true, false
-	}
-	h.mu.Unlock()
-	if idle {
-		h.releaseFrame(from)
-	}
+	h.giveUp(from)
 	return nil
 }
 

@@ -525,7 +525,7 @@ func start(ctx context.Context, config Config) (*World, error) {
 		}
 		w.hosts = append(w.hosts, h)
 		h.config = w.hostConfig(h)
-		if err := w.launch(h); err != nil {
+		if err := w.supervise(h); err != nil {
 			return nil, err
 		}
 	}
@@ -843,6 +843,11 @@ func (w *World) starter(h *hostState) host.StartFunc {
 		if refused != nil {
 			return nil, refused
 		}
+		// A VMM may fail to start, as a Firecracker that could not restore
+		// the state it was given does.
+		if sim.Buggify(ctx, "simtest/vmm-start-fails", vmmFaultChance) {
+			return nil, fmt.Errorf("%w: the VMM of %s did not start", ErrInjected, vm.ID())
+		}
 		if began != nil {
 			// The caller hangs up here, and the start goes on without it.
 			close(began)
@@ -874,6 +879,25 @@ func (w *World) starter(h *hostState) host.StartFunc {
 	}
 }
 
+// hostStarts is how many times a host's supervisor starts it before it gives
+// up on it.
+const hostStarts = 10
+
+// supervise starts one host as its supervisor starts a host process: a start
+// that fails, for a listen the network refuses or a disk whose device fails a
+// read, ends that process, and the host is started again.
+func (w *World) supervise(h *hostState) error {
+	for start := 1; ; start++ {
+		err := w.launch(h)
+		if err == nil || start == hostStarts {
+			return err
+		}
+		if stopped := h.process.Stop(w.ctx); stopped != nil && !errors.Is(stopped, platform.ErrProcessStopped) {
+			return errors.Join(err, stopped)
+		}
+	}
+}
+
 // launch starts one host inside its own simulated process. The process's
 // context is the host's, so a kill cancels every goroutine that host owns;
 // whatever else the incarnation owns — its pager, its arena, the spill file on
@@ -890,9 +914,16 @@ func (w *World) launch(h *hostState) error {
 		w.mu.Lock()
 		h.incarnation++
 		w.mu.Unlock()
+		// A start that fails ran nothing, so it is no incarnation of the host.
+		failed := func(err error) {
+			w.mu.Lock()
+			h.incarnation--
+			w.mu.Unlock()
+			ready <- err
+		}
 		pager, release, err := w.newPager(ctx, h)
 		if err != nil {
-			ready <- err
+			failed(err)
 			return
 		}
 		// The cache's file is the one thing on the host's disk that a
@@ -902,7 +933,7 @@ func (w *World) launch(h *hostState) error {
 			file, err := h.disk.Open(ctx, "cache", platform.OpenOptions{Create: true})
 			if err != nil {
 				release()
-				ready <- err
+				failed(err)
 				return
 			}
 			h.config.Cache.Disk = file
@@ -919,7 +950,11 @@ func (w *World) launch(h *hostState) error {
 		h.config.Pagers = pager.pagers
 		started, err := host.StartHost(ctx, h.config)
 		h.host, h.down = started, err != nil
-		ready <- err
+		if err != nil {
+			failed(err)
+		} else {
+			ready <- nil
+		}
 		if err == nil {
 			<-ctx.Done()
 			// A kill has already taken this host's store away, so the shutdown
@@ -1177,8 +1212,17 @@ func (w *World) create(ctx context.Context, spec VMSpec) error {
 		}
 	}
 	// The first checkpoint makes those pages durable, so the VM has something
-	// to rewind to from its very first moment.
-	return w.Checkpoint(ctx, spec.ID)
+	// to rewind to from its very first moment. One that did not happen, as
+	// any other checkpoint the driver takes, leaves the VM at its root: a VMM
+	// that refused the pause runs on, and one that ended is taken over at the
+	// first settle.
+	if err := w.Checkpoint(ctx, spec.ID); err != nil {
+		if refused(err) {
+			return err
+		}
+		w.logf("%s: the first checkpoint did not happen: %v", spec.ID, err)
+	}
+	return nil
 }
 
 func (w *World) adopt(in *instance) {
@@ -1251,7 +1295,9 @@ func (w *World) runningVM(id string) (*instance, *guest) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	in := w.instances[id]
-	if in == nil || !in.present || in.guest == nil {
+	// A VMM process that ended runs nothing: its host gives the VM up, and the
+	// world takes it over at the next settle as it does a lost host's.
+	if in == nil || !in.present || in.guest == nil || in.guest.hasExited() {
 		return nil, nil
 	}
 	h := w.hosts[in.host]
@@ -1367,6 +1413,10 @@ func (w *World) Store(ctx context.Context, id string, writes int, choose func(li
 		// memory region's worth of pages on the seeds that have two.
 		name := g.names[choose(len(g.names))]
 		page := uint64(choose(g.pages[name]))
+		if err := g.crashes(ctx); err != nil {
+			w.logf("%s: %v", id, err)
+			return nil
+		}
 		// One access in four is a write fault the guest stores nothing
 		// through, which is what a cold read and a cache maintenance reach the
 		// pager as. The page is copied all the same, and the settle behind the
@@ -1387,6 +1437,11 @@ func (w *World) Store(ctx context.Context, id string, writes int, choose func(li
 		}
 		switch {
 		case err == nil:
+		case errors.Is(err, errExited):
+			// The process ended under the store, which did not happen. What
+			// the VM held past its last checkpoint goes with the process.
+			w.logf("%s: %v", id, err)
+			return nil
 		case excused(err):
 			// A store into a page this host does not hold has to fetch it
 			// first, and a fault has taken away whatever holds it. The store did
@@ -1450,6 +1505,11 @@ func (w *World) StorePages(id, name string, pages []uint64, value byte) error {
 	defer func() { w.noteWrites(in, g, before) }()
 	for _, page := range pages {
 		if err := g.storeValue(name, page, value); err != nil {
+			if errors.Is(err, errExited) {
+				// As in Store: the process ended under the store.
+				w.logf("%s: %v", id, err)
+				return nil
+			}
 			return err
 		}
 	}
@@ -2679,7 +2739,7 @@ func (w *World) forked(ctx context.Context, source, destination *hostState, spec
 		case <-gone:
 			// The destination was lost as its receive returned, and its guest
 			// with it: a child that existed there alone unless its root landed.
-			return w.lostBeforeRoot(ctx, source, destination, spec, nil, at)
+			return w.lostBeforeRoot(ctx, source, destination, spec, nil, at, "its host was lost")
 		default:
 		}
 		received.Close()
@@ -2689,13 +2749,29 @@ func (w *World) forked(ctx context.Context, source, destination *hostState, spec
 	// The host publishes the child's root behind the running child; this
 	// step of the world ends once it has landed, so what follows sees the
 	// child durable and the parent's hold on the point retired, or once the
-	// host running the child is lost.
-	select {
-	case <-received.VM().Rooted():
-	case <-gone:
-		return w.lostBeforeRoot(ctx, source, destination, spec, child, at)
-	case <-ctx.Done():
-		return false, context.Cause(ctx)
+	// host running the child is lost, or its VMM process ends. A root that
+	// failed, because its VMM refused the pause or the store its objects, is
+	// tried again on the destination's clock, which only the world moves: a
+	// root that has not landed in a step's time moves it to the next try. A
+	// root that lands at all lands in microseconds of the bubble's time.
+	for rooted := false; !rooted; {
+		next := time.NewTimer(rootRetryStep)
+		select {
+		case <-received.VM().Rooted():
+			rooted = true
+		case <-gone:
+			next.Stop()
+			return w.lostBeforeRoot(ctx, source, destination, spec, child, at, "its host was lost")
+		case <-child.exited:
+			next.Stop()
+			return w.lostBeforeRoot(ctx, source, destination, spec, child, at, "its VMM process ended")
+		case <-ctx.Done():
+			next.Stop()
+			return false, context.Cause(ctx)
+		case <-next.C:
+			destination.clock.Advance(rootRetryStep)
+		}
+		next.Stop()
 	}
 	root := received.VM().Status().Checkpoint
 	child.adopt(at)
@@ -2730,14 +2806,20 @@ func (w *World) forked(ctx context.Context, source, destination *hostState, spec
 	return true, nil
 }
 
-// lostBeforeRoot is a child whose host was lost while its root was still
-// publishing. Whether anything of it survived is what its control record says,
-// as it is to the orchestrator. A root that landed is the child durable at the
-// point it inherited, and a host brings it back as it does any VM whose host is
-// gone. A root that did not is a child that existed on that host alone: there
-// is nothing of it to open, and its identity is freed at the next step.
+// rootRetryStep is how far the world moves a destination's clock while a
+// child's root is being tried again: the host's first wait between two tries,
+// which doubles from there.
+const rootRetryStep = 250 * time.Millisecond
+
+// lostBeforeRoot is a child lost while its root was still publishing: its host
+// was lost, or its VMM process ended and its host gave it up. Whether anything
+// of it survived is what its control record says, as it is to the
+// orchestrator. A root that landed is the child durable at the point it
+// inherited, and a host brings it back as it does any VM nothing runs. A root
+// that did not is a child that existed on that host alone: there is nothing of
+// it to open, and its identity is freed at the next step.
 func (w *World) lostBeforeRoot(ctx context.Context, source, destination *hostState, spec VMSpec,
-	child *guest, at map[string][]byte) (bool, error) {
+	child *guest, at map[string][]byte, why string) (bool, error) {
 	w.mu.Lock()
 	w.rootsCut++
 	w.mu.Unlock()
@@ -2746,8 +2828,15 @@ func (w *World) lostBeforeRoot(ctx context.Context, source, destination *hostSta
 		return false, err
 	}
 	record, err := records.Read(ctx, spec.ID)
+	if errors.Is(err, platform.ErrNotFound) {
+		// The host that gave the child up closed it, and a child closed
+		// before its root removes its own record: its identity is free.
+		w.logf("%s: %s before its root landed, and its host gave its identity back", spec.ID, why)
+		w.abandonSource(ctx, source, spec.ID)
+		return false, nil
+	}
 	if err != nil {
-		return false, fmt.Errorf("%s: reading the record of a child whose host was lost: %w", spec.ID, err)
+		return false, fmt.Errorf("%s: reading the record of a child lost before its root landed: %w", spec.ID, err)
 	}
 	if record.Created {
 		in := &instance{spec: spec}
@@ -2760,10 +2849,10 @@ func (w *World) lostBeforeRoot(ctx context.Context, source, destination *hostSta
 			writes = child.stored()
 		}
 		w.landed(in, nil, durableState{model: at, writes: writes, sequence: record.Selected})
-		w.logf("%s: its host was lost after its root landed at %d", spec.ID, record.Selected)
+		w.logf("%s: %s after its root landed at %d", spec.ID, why, record.Selected)
 		return true, nil
 	}
-	w.logf("%s: its host was lost before its root landed, so nothing of it was durable", spec.ID)
+	w.logf("%s: %s before its root landed, so nothing of it was durable", spec.ID, why)
 	if w.orphans == nil {
 		w.orphans = map[string]bool{}
 	}
@@ -3286,7 +3375,7 @@ func (w *World) Restart(ctx context.Context, index int) error {
 		return nil
 	}
 	h.dead.Store(false)
-	if err := w.launch(h); err != nil {
+	if err := w.supervise(h); err != nil {
 		return err
 	}
 	h.down = false

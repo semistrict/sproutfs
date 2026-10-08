@@ -105,7 +105,7 @@ func (p *Peer) ReadJournal(ctx context.Context, disk rank.Identity, request jour
 		Generation: proto.Uint64(request.Generation), Reader: proto.Uint64(request.Reader),
 		MaxBytes: proto.Uint64(uint64(maxBytes))}.Build()
 	response := new(peerv1.JournalEntries)
-	got, _, err := p.call(ctx, "", wire, response, maxBytes, maxBytes, nil)
+	got, _, err := p.call(ctx, requestJournal, "", wire, response, maxBytes, maxBytes, nil)
 	if err != nil {
 		return JournalPage{}, err
 	}

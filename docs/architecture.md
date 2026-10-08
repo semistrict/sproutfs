@@ -133,8 +133,9 @@ wait.
 
 A failed publication changes nothing durable. The previous checkpoint stays
 selected, the overlay keeps its bytes, and the failure is reported in the VM's
-status and retried: at the next interval inside the window, and past it after an
-eighth of the interval, doubling up to the interval. A fenced host discovers
+status and retried: at the next interval inside the window, and past it, or
+when a flush or a full journal asked for that checkpoint, after an eighth of
+the interval, doubling up to the interval. A fenced host discovers
 the fence at its interval checkpoint, then closes the VMM and releases the VM,
 so no guest runs whose writes can never be published.
 

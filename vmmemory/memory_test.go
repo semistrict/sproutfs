@@ -122,8 +122,13 @@ type arenaFile struct {
 
 func newArena(pageSize int) *arena { return &arena{pageSize: pageSize} }
 
-// File makes a file of offsets slots, every one of them a hole.
-func (a *arena) File(_ context.Context, offsets int) (vmmemory.ArenaFile, error) {
+// File makes a file of offsets slots, every one of them a hole. In a campaign
+// it fails at random, as making a memfd and mapping it does where the process
+// is out of descriptors or memory (EMFILE, ENOMEM).
+func (a *arena) File(ctx context.Context, offsets int) (vmmemory.ArenaFile, error) {
+	if sim.Buggify(ctx, "vmmemory-test/arena-out-of-memory/file", 0.05) {
+		return nil, errInjected
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	f := &arenaFile{arena: a, id: len(a.files), offsets: offsets, slots: make(map[int][]byte)}
@@ -198,7 +203,14 @@ func (f *arenaFile) Read(_ context.Context, slot int, dst []byte) error {
 	copy(dst, f.slots[slot])
 	return nil
 }
-func (f *arenaFile) Write(_ context.Context, slot int, src []byte) error {
+
+// Write fills a punched slot. In a campaign it fails at random, as the Linux
+// arena's allocation does where the pod or the HugeTLB pool has no memory for
+// the page (ENOMEM, ENOSPC), before anything is written.
+func (f *arenaFile) Write(ctx context.Context, slot int, src []byte) error {
+	if sim.Buggify(ctx, "vmmemory-test/arena-out-of-memory/write", 0.002) {
+		return errInjected
+	}
 	a := f.arena
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -223,7 +235,12 @@ func (f *arenaFile) Write(_ context.Context, slot int, src []byte) error {
 
 // Zero models the Linux arena allocating punched slots: nothing is copied in,
 // and from then on the slots hold zeros a mapping can install.
-func (f *arenaFile) Zero(_ context.Context, slot, count int) error {
+func (f *arenaFile) Zero(ctx context.Context, slot, count int) error {
+	// The allocation fails at random as Write's does, before any slot of the
+	// run holds a page.
+	if sim.Buggify(ctx, "vmmemory-test/arena-out-of-memory/zero", 0.05) {
+		return errInjected
+	}
 	a := f.arena
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -538,9 +555,6 @@ func (m batchedMapping) RevokeBatch(ctx context.Context, runs []vmmemory.PageRun
 // counts it as a fault it injected (injected).
 func (m *mapping) outOfMappings(ctx context.Context, command string) bool {
 	revocation := command == "revoke" || command == "revoke-batch"
-	if revocation && !simulateTerminalFaults {
-		return false
-	}
 	// A fault maps zeros a few times a run, so its refusal has the larger
 	// chance, as the commands a run issues rarely have for a lost answer.
 	p := 0.05
@@ -556,13 +570,6 @@ func (m *mapping) outOfMappings(ctx context.Context, command string) bool {
 	return true
 }
 
-// simulateTerminalFaults turns on the client's faults a region cannot survive:
-// a lost command (commandLost) and a refused revocation (outOfMappings). They
-// are off until a seed that injects one replays (TASK-111): the region's
-// failure, and the detach a host makes of a dead machine, go on beside the
-// other guests in Go-scheduler order.
-const simulateTerminalFaults = false
-
 // commandLost is a client command whose answer never came: the pager cannot
 // tell whether the client applied it, so the region is terminal from here, as
 // a session that times out on a command is. A map or a file given is applied
@@ -570,14 +577,16 @@ const simulateTerminalFaults = false
 // dropped is not, which is the way round each can do harm: a page mapped that
 // the pager may think is not, and one it may think is gone. Each command has a
 // site of its own (scripts/faults/vmmemory.json), and the ones a run issues a
-// few times have the larger chance, so a campaign reaches every one.
+// few times have the larger chance, so a campaign reaches every one: a file
+// given, or zeros mapped, a few times a run, and a file dropped only as a fork
+// point's seal ends.
 func (m *mapping) commandLost(ctx context.Context, command string) bool {
-	if !simulateTerminalFaults {
-		return false
-	}
 	p := 0.002
-	if command == "give-file" || command == "drop-file" {
+	switch command {
+	case "give-file", "map-zero":
 		p = 0.05
+	case "drop-file":
+		p = 0.5
 	}
 	if !sim.Buggify(ctx, "vmmemory-test/client-command-lost/"+command, p) {
 		return false
@@ -691,10 +700,21 @@ type backing struct {
 }
 
 func (b *backing) Size() uint64 { return uint64(len(b.data)) }
-func (b *backing) Load(_ context.Context, off uint64, dst []byte) error {
-	if b.failRead {
+
+// Load reads the backing's bytes. In a campaign it fails at random, as a
+// volume's read does where its object store or its cache cannot answer, or
+// its VM has ended (ErrNeedsRecovery); each of a backing's read paths has a
+// site of its own (scripts/faults/vmmemory.json).
+func (b *backing) Load(ctx context.Context, off uint64, dst []byte) error {
+	if b.failRead || sim.Buggify(ctx, "vmmemory-test/backing-read-fails/load", 0.02) {
 		return errInjected
 	}
+	return b.read(off, dst)
+}
+
+// read reads the backing's bytes, as every read path of it does once it has
+// not failed.
+func (b *backing) read(off uint64, dst []byte) error {
 	if b.onLoad != nil {
 		b.onLoad(off, len(dst))
 	}
@@ -725,7 +745,13 @@ func (b *backing) identity(page uint64) control.Identity {
 	}
 }
 
-func (b *backing) Locate(_ context.Context, off, length uint64) ([]control.Extent, error) {
+// Locate reports the identities of a range. In a campaign it fails at random,
+// as a volume's does where the segments of the checkpoint index it fetches
+// cannot be read.
+func (b *backing) Locate(ctx context.Context, off, length uint64) ([]control.Extent, error) {
+	if sim.Buggify(ctx, "vmmemory-test/backing-read-fails/locate", 0.001) {
+		return nil, errInjected
+	}
 	if b.onLocate != nil {
 		b.onLocate(off, length)
 	}
@@ -806,8 +832,11 @@ func (b *backing) write(off uint64, src []byte) {
 	}
 }
 
-func (b *backing) Verify(context.Context) error {
-	if b.failVerify {
+// Verify fails where a test says, and in a campaign at random, as a volume's
+// does once its VM is not this host's any more (ErrHandedOff, ErrClosed) or
+// has ended (ErrNeedsRecovery).
+func (b *backing) Verify(ctx context.Context) error {
+	if b.failVerify || sim.Buggify(ctx, "vmmemory-test/backing-not-owned/verify", 0.02) {
 		return errInjected
 	}
 	return nil
@@ -960,7 +989,7 @@ func newFixtureOn(t *testing.T, ctx context.Context, disk *sim.Disk, cfg vmmemor
 	t.Helper()
 	spill, err := disk.Open(ctx, "spill", platform.OpenOptions{Create: true})
 	if err != nil {
-		t.Fatal(err)
+		return nil, err
 	}
 	t.Cleanup(func() { _ = spill.Close() })
 	a := newArena(int(cfg.PageSize))
@@ -974,7 +1003,8 @@ func newFixtureOn(t *testing.T, ctx context.Context, disk *sim.Disk, cfg vmmemor
 		return nil, err
 	}
 	t.Cleanup(func() {
-		if err := h.Close(context.Background()); err != nil {
+		// A campaign's disk may fail giving the spill file back.
+		if err := h.Close(context.Background()); err != nil && !injected(err) {
 			t.Error(err)
 		}
 	})
