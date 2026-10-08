@@ -24,7 +24,7 @@
 # among them) beside a narrowed Firecracker run, which a whole qualification
 # runs anyway. SPROUTFS_TEMPLATE_FORKS is how many forks of one cold template
 # vmmachine's TestForksOfOneColdTemplateStartAtOnceAndReadEveryPage starts at
-# once (default 8).
+# once (default 4).
 #
 # SPROUTFS_GCE_BUCKET names a Cloud Storage bucket the benchmarks keep their
 # objects in instead of the host's disk, which is the deployment's object store

@@ -61,12 +61,16 @@ var templateForkSteps = []templateForkStep{
 }
 
 // templateForks is how many forks one run starts at once:
-// SPROUTFS_TEMPLATE_FORKS, eight by default.
+// SPROUTFS_TEMPLATE_FORKS, four by default. The arena is smaller than what
+// the forks hold between them, so their evictions, spills and refaults grow
+// much faster than their number: on GCE's eight-processor qualification host
+// (2026-10-08) two forks evicted 1,045 pages and four 15,380 in a 27 s phase,
+// and eight thrashed until their guests stalled. A larger host runs more.
 func templateForks(t *testing.T) int {
 	t.Helper()
 	value := os.Getenv("SPROUTFS_TEMPLATE_FORKS")
 	if value == "" {
-		return 8
+		return 4
 	}
 	forks, err := strconv.Atoi(value)
 	if err != nil || forks < 2 {
