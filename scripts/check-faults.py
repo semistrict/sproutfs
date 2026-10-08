@@ -69,7 +69,8 @@ def sites_in_tree():
     prefix of one followed by a string literal of the same file."""
     sites = set()
     for path in ROOT.rglob("*.go"):
-        if "third_party" in path.parts or ".claude" in path.parts:
+        parts = path.relative_to(ROOT).parts
+        if "third_party" in parts or ".claude" in parts:
             continue
         text = path.read_text(errors="replace")
         sites.update(BUGGIFY.findall(text))
