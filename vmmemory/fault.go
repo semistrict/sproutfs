@@ -132,6 +132,7 @@ func (r *MemoryRegion) faultOnce(ctx context.Context, index uint64, write bool, 
 	}
 	defer func() {
 		if !errors.Is(err, errMemoryRegionDropped) {
+			r.agree(r.window(index))
 			r.mu.RUnlock()
 		}
 	}()

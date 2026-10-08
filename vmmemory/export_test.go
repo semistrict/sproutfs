@@ -197,3 +197,15 @@ func (h *Host) Unreachable() []string {
 	}
 	return found
 }
+
+// The package's tests check every mapping command against what the pager
+// has installed (mappingaudit.go).
+func init() { auditMappings = true }
+
+// WithoutMappingAudit attaches the test's memory regions with no mapping
+// audit, for a test that measures what the pager itself costs. It is
+// restored when the test ends.
+func WithoutMappingAudit(t *testing.T) {
+	auditMappings = false
+	t.Cleanup(func() { auditMappings = true })
+}

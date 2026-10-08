@@ -215,7 +215,7 @@ func (r *MemoryRegion) Seal(ctx context.Context) error {
 	held := false
 	defer func() {
 		if !held {
-			r.mu.Unlock()
+			r.unlock()
 		}
 	}()
 	if err := r.ready(); err != nil {
@@ -520,7 +520,7 @@ func (r *MemoryRegion) endSeal(ctx context.Context, checkpoint *MemoryRegionChec
 			return err
 		}
 		err := func() error {
-			defer r.mu.Unlock()
+			defer r.unlock()
 			if published {
 				return r.finalizeCheckpoint(ctx, current, batch, identities)
 			}
@@ -544,7 +544,7 @@ func (r *MemoryRegion) endSeal(ctx context.Context, checkpoint *MemoryRegionChec
 	if err := r.mu.Lock(ctx); err != nil {
 		return err
 	}
-	defer r.mu.Unlock()
+	defer r.unlock()
 	if !published {
 		r.restoreDirtySince(current.since())
 	}
@@ -629,7 +629,7 @@ func (r *MemoryRegion) takeDirtySet() map[uint64]*binding {
 // running and the region the seal took held, and gives the region back.
 func (r *MemoryRegion) take(ctx context.Context, c *MemoryRegionCheckpoint, pending map[uint64]*binding) {
 	h := r.host
-	defer r.mu.Unlock()
+	defer r.unlock()
 	defer close(c.taken)
 	if sealWalkSeam != nil {
 		sealWalkSeam()

@@ -5,6 +5,8 @@ import (
 	"context"
 	"fmt"
 	"math/rand/v2"
+	"os"
+	"strconv"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -512,9 +514,24 @@ func (g *forkGuest) step(ctx context.Context, page uint64, value *byte) error {
 // every read of the parent what it stored. The seal's end, the fork point's
 // lending and the children's faults go on at the points a seed's scheduler
 // chooses, which is what puts a child's fault between two pages of the end.
+//
+// SPROUTFS_FORK_CAMPAIGN_SEEDS=n runs seeds 1 to n instead, to sweep the
+// scheduler's interleavings for a rare failure; each seed replays alone by
+// its subtest's name.
 func TestAForkPointsChildrenReadWhatItLentWhileItsSealEnds(t *testing.T) {
 	vmmemory.SetCheckpointBatchPages(t, 2)
-	for _, seed := range forkCampaignSeeds {
+	seeds := forkCampaignSeeds
+	if setting := os.Getenv("SPROUTFS_FORK_CAMPAIGN_SEEDS"); setting != "" {
+		n, err := strconv.ParseUint(setting, 10, 64)
+		if err != nil || n == 0 {
+			t.Fatalf("SPROUTFS_FORK_CAMPAIGN_SEEDS=%q is not a count of seeds", setting)
+		}
+		seeds = nil
+		for seed := uint64(1); seed <= n; seed++ {
+			seeds = append(seeds, seed)
+		}
+	}
+	for _, seed := range seeds {
 		t.Run(fmt.Sprintf("seed-%d", seed), func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) { forkCampaign(t, seed) })
 		})

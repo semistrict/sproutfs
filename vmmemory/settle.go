@@ -222,7 +222,7 @@ func (r *MemoryRegion) reshare(ctx context.Context, c *MemoryRegionCheckpoint, c
 			return err
 		}
 		err := func() error {
-			defer r.mu.Unlock()
+			defer r.unlock()
 			if err := r.ready(); err != nil {
 				return err
 			}

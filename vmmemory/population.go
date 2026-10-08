@@ -104,13 +104,13 @@ func (r *MemoryRegion) Populate(ctx context.Context) error {
 		return err
 	}
 	if err := r.ready(); err != nil {
-		r.mu.Unlock()
+		r.unlock()
 		return err
 	}
 	h.mu.Lock()
 	available := r.host.rootPages > 0 || h.zeroMemoryRegions > 0 || r.host.lendsAnyLocked()
 	h.mu.Unlock()
-	r.mu.Unlock()
+	r.unlock()
 	if !available {
 		// There is no page to populate from. A first fault will discover
 		// cold data or zeros without making attachment wait for metadata.
@@ -123,7 +123,7 @@ func (r *MemoryRegion) Populate(ctx context.Context) error {
 			if err := r.mu.Lock(ctx); err != nil {
 				return err
 			}
-			defer r.mu.Unlock()
+			defer r.unlock()
 			if err := r.ready(); err != nil {
 				return err
 			}

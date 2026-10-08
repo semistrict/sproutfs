@@ -268,7 +268,7 @@ func (r *MemoryRegion) Capture(ctx context.Context, pages []uint64) (*Captured, 
 	if err := r.mu.Lock(ctx); err != nil {
 		return nil, err
 	}
-	defer r.mu.Unlock()
+	defer r.unlock()
 	if err := r.ready(); err != nil {
 		return nil, err
 	}

@@ -156,7 +156,7 @@ func (r *MemoryRegion) Handoff(ctx context.Context) (time.Duration, error) {
 	if err := r.mu.Lock(ctx); err != nil {
 		return 0, err
 	}
-	defer r.mu.Unlock()
+	defer r.unlock()
 	if err := r.ready(); err != nil {
 		return 0, err
 	}

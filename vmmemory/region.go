@@ -80,6 +80,10 @@ type MemoryRegion struct {
 	layer    *zirconvm.ObjectPaged
 	pages    *zirconvm.CowPages
 	resolver *rootResolver
+	// audit is what the mapping commands installed for each page, which the
+	// package's tests check the pager's decisions against; nil in production
+	// (mappingaudit.go).
+	audit *mappingAudit
 	// bindingsMu guards beside, the bindings beside the layer, the dirty set
 	// and its age, and the cold copies.
 	bindingsMu sync.Mutex
@@ -306,6 +310,7 @@ func (r *MemoryRegion) newLayer() error {
 	r.beside, r.dirtyRuns = zirconvm.NewPageList[binding](ps), newPageRuns(ps)
 	r.journal.unjournaled = newPageRuns(ps)
 	r.resolver = &rootResolver{region: r}
+	r.audit = newMappingAudit()
 	// The layer's source is the region's own, and it traps dirty
 	// transitions, as a VMO whose pager tracks its writes does: a page of
 	// the layer becomes Dirty only when the pager says so (DirtyPages), which
@@ -431,6 +436,14 @@ func (r *MemoryRegion) heldPages(ctx context.Context, err error) {
 		"pages", r.pageCount, "error", err)
 }
 
+// unlock gives the region up from an exclusive hold, a seal, retire,
+// unseal, handoff or detach, once every page's mapping agrees with its
+// binding (mappingaudit.go).
+func (r *MemoryRegion) unlock() {
+	r.agree(0, uint64(r.pageCount))
+	r.mu.Unlock()
+}
+
 func (r *MemoryRegion) window(index uint64) (start, end uint64) {
 	size := uint64(r.readAheadPages)
 	start = index - index%size
@@ -449,6 +462,15 @@ func (r *MemoryRegion) mapPages(ctx context.Context, run MapRun, writable bool) 
 	start := r.host.clock.Now()
 	err := r.mapping.Map(ctx, run.Page, run.File, run.Slot, run.Count, writable)
 	r.host.mappingLatency.Observe(r.host.clock.Since(start))
+	if writable {
+		r.audited(err, func() { r.audit.installed(run.Page, run.Count, installedWritable, "map writable") })
+	} else {
+		r.audited(err, func() {
+			if r.audit != nil {
+				r.audit.installed(run.Page, run.Count, installedReadOnly, "map read-only, "+r.describeBinding(run.Page))
+			}
+		})
+	}
 	return err
 }
 
@@ -456,6 +478,7 @@ func (r *MemoryRegion) mapZeroPages(ctx context.Context, page uint64, count int)
 	start := r.host.clock.Now()
 	err := r.mapping.MapZero(ctx, page, count)
 	r.host.mappingLatency.Observe(r.host.clock.Since(start))
+	r.audited(err, func() { r.audit.installed(page, count, installedReadOnly, "map zero") })
 	return err
 }
 
@@ -463,7 +486,26 @@ func (r *MemoryRegion) mapBatch(ctx context.Context, batch BatchMapping, runs []
 	start := r.host.clock.Now()
 	commands, mappingRuns, err := batch.MapBatch(ctx, runs)
 	r.host.mappingLatency.Observe(r.host.clock.Since(start))
+	r.audited(err, func() {
+		for _, run := range runs {
+			r.audit.installed(run.Page, run.Count, installedReadOnly, "map batch")
+		}
+	})
 	return commands, mappingRuns, err
+}
+
+// audited records what a command installed where it landed. A refusal
+// changed nothing, and any other failure leaves the mapping unknown.
+func (r *MemoryRegion) audited(err error, record func()) {
+	if r.audit == nil {
+		return
+	}
+	switch {
+	case err == nil:
+		record()
+	case !errors.Is(err, ErrMappingRefused):
+		r.audit.fail()
+	}
 }
 
 // mappingFailed reports what a failed mapping command means for this memory region. A
@@ -486,6 +528,7 @@ func (r *MemoryRegion) revokePage(ctx context.Context, page uint64) error {
 	start := r.host.clock.Now()
 	err := r.mapping.Revoke(ctx, page)
 	r.host.revokeLatency.Observe(r.host.clock.Since(start))
+	r.audited(err, func() { r.audit.installed(page, 1, notInstalled, "revoke") })
 	return err
 }
 
@@ -493,13 +536,20 @@ func (r *MemoryRegion) revokeBatch(ctx context.Context, batch BatchRevocation, r
 	start := r.host.clock.Now()
 	commands, revokedRuns, err := batch.RevokeBatch(ctx, runs)
 	r.host.revokeLatency.Observe(r.host.clock.Since(start))
+	r.audited(err, func() {
+		for _, run := range runs {
+			r.audit.installed(run.Page, run.Count, notInstalled, "revoke batch")
+		}
+	})
 	return commands, revokedRuns, err
 }
 
 func (r *MemoryRegion) resolvePages(ctx context.Context, page uint64, count int, writable bool) error {
+	r.audit.resolved(page, count, writable)
 	start := r.host.clock.Now()
 	err := r.mapping.Resolve(ctx, page, count, writable)
 	r.host.resolveLatency.Observe(r.host.clock.Since(start))
+	r.audited(err, func() {})
 	return err
 }
 
@@ -507,6 +557,7 @@ func (r *MemoryRegion) protectPages(ctx context.Context, page uint64, count int)
 	start := r.host.clock.Now()
 	err := r.mapping.Protect(ctx, page, count)
 	r.host.protectLatency.Observe(r.host.clock.Since(start))
+	r.audited(err, func() { r.audit.protected(page, count) })
 	return err
 }
 
@@ -731,7 +782,7 @@ func (r *MemoryRegion) Detach(ctx context.Context) error {
 	if err := r.mu.Lock(ctx); err != nil {
 		return err
 	}
-	defer r.mu.Unlock()
+	defer r.unlock()
 	if r.closed {
 		return nil
 	}

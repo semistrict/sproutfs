@@ -137,7 +137,9 @@ func (r *MemoryRegion) eachBoundLocked(first, last uint64, visit func(*binding))
 func (r *MemoryRegion) bind(index uint64, p *zirconvm.VmPage) {
 	r.bindingsMu.Lock()
 	b := r.bindingLocked(index)
+	dirty := b.dirty
 	r.bindingsMu.Unlock()
+	r.auditBind(index, dirty, p)
 	h := r.host
 	h.mu.Lock()
 	if b.page != p {

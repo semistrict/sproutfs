@@ -94,6 +94,7 @@ func (b *sparseMemoryBacking) Locate(ctx context.Context, offset, length uint64)
 }
 
 func TestLargeLogicalMemoryRegionAllocatesMetadataOnlyWhenUsed(t *testing.T) {
+	vmmemory.WithoutMappingAudit(t)
 	synctest.Test(t, func(t *testing.T) {
 		pages := uint64(32 << 30 / pageSize)
 		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 2, LogicalPages: int(pages), DirtyPages: 4, ReadAheadPages: 1})
@@ -164,6 +165,7 @@ func (m *sparseZeroMapping) Resolve(context.Context, uint64, int, bool) error { 
 func (m *sparseZeroMapping) Protect(context.Context, uint64, int) error       { return nil }
 
 func TestEagerZeroPopulationKeepsLargeLogicalMetadataSparse(t *testing.T) {
+	vmmemory.WithoutMappingAudit(t)
 	synctest.Test(t, func(t *testing.T) {
 		pages := uint64(32 << 30 / pageSize)
 		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 1, LogicalPages: int(pages) + 1, DirtyPages: 2, ReadAheadPages: 1})

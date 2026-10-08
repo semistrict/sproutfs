@@ -30,6 +30,7 @@ const residentHeapBytes = 768
 // itself, which is in the arena. A 4 KiB pager's arena of 24 GiB is six million
 // pages, so every hundred bytes here is 600 MB of the host's heap.
 func TestAResidentPageCostsLittleHeap(t *testing.T) {
+	vmmemory.WithoutMappingAudit(t)
 	// A 4 KiB pager, whichever page the rest of the suite is running: it is
 	// the page there are millions of. The probe build keeps a history per page
 	// on purpose, so this is a bound on the ordinary one.
