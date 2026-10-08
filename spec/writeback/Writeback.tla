@@ -33,6 +33,10 @@
 (*    stores nothing copies too;                                           *)
 (*  - a refault of a spilled page, which reads the slot, gives the region  *)
 (*    up for its reclaim, and decides again after it (loadOnce);           *)
+(*  - a fault on the guest's own resident page that it does not map, as an *)
+(*    abandon leaves it: it looks at the page under its lock, lets the     *)
+(*    lock go, and looks the page up. A lookup that finds the page spilled *)
+(*    meanwhile decides again, and refaults it (errOwnPageSpilled);        *)
 (*  - eviction, in two halves under the page's lock alone: it takes the    *)
 (*    page, then writes it to the slot its owner's reservation names, or   *)
 (*    drops a clean page;                                                  *)
@@ -97,7 +101,8 @@ VARIABLES
     phase,      \* the checkpoint, see Phases
     gen,        \* seals taken; it names the checkpoint's copy
     forked,     \* the seal is a fork point's
-    fstate,     \* the fault on each page: "idle", "copying" or "refaulting"
+    fstate,     \* the fault on each page: "idle", "copying", "refaulting"
+                \* or "looking"
     fslot,      \* the reservation a store fault took
     fdata,      \* the bytes the fault read before it gave the region up
     fheld,      \* what the fault decided against: <<dirty, copy>>
@@ -283,6 +288,33 @@ RefaultEnd(p) ==
                    /\ UNCHANGED <<copyVars, slotBytes>>
     /\ UNCHANGED <<guest, vol, gslot, dset, busy, sealVars, stores>>
 
+\* The guest's own page, resident: its dirty page, or the copy it shares.
+OwnResident(p) == gloc[p] = "frame" \/ (gloc[p] = "ck" /\ cloc[p] = "frame")
+
+\* A fault on its own resident page, which the guest does not map: it looks
+\* at the page under its lock, finds nothing to complete, and lets the lock
+\* go before its lookup (loadOnce).
+LookBegin(p) ==
+    /\ Idle(p) /\ Region
+    /\ OwnResident(p) /\ busy[p] = "none"
+    /\ fstate' = [fstate EXCEPT ![p] = "looking"]
+    /\ UNCHANGED <<guestVars, vol, copyVars, slotBytes, busy, sealVars,
+                   fslot, fdata, fheld, fstore, stores>>
+
+\* The lookup, under the layer's lock, which an eviction holds the page
+\* across. It finds the page resident, and maps it; or an eviction spilled
+\* it meanwhile, and the fault decides again from the top, which refaults
+\* it. Before 2026-10-08 the lookup went on past the layer, and bound the
+\* volume's page over the guest's own.
+LookEnd(p) ==
+    /\ fstate[p] = "looking" /\ Region /\ busy[p] = "none"
+    /\ FaultEnds(p)
+    /\ IF OwnResident(p) \/ "lookup-past-the-layer" \notin Bugs
+       THEN UNCHANGED gloc
+       ELSE gloc' = [gloc EXCEPT ![p] = "shared"]
+    /\ UNCHANGED <<guest, vol, gbytes, gslot, dset, copyVars, slotBytes, busy,
+                   sealVars, stores>>
+
 (***************************************************************************)
 (* Eviction, under the page's lock alone, at any time.                     *)
 (***************************************************************************)
@@ -458,7 +490,7 @@ Next ==
     \/ \E p \in Pages :
           \/ StoreInPlace(p) \/ CopyEnd(p) \/ ZirconStore(p)
           \/ \E store \in BOOLEAN : CopyBegin(p, store)
-          \/ RefaultBegin(p) \/ RefaultEnd(p)
+          \/ RefaultBegin(p) \/ RefaultEnd(p) \/ LookBegin(p) \/ LookEnd(p)
           \/ \E who \in {"guest", "copy"} : EvictBegin(p, who)
           \/ EvictEnd(p) \/ Drop(p)
           \/ Walk(p) \/ Settle(p) \/ Read(p) \/ Retire(p) \/ Abandon(p)
@@ -476,7 +508,7 @@ TypeOK ==
     /\ gloc \in [Pages -> {"vol", "shared", "frame", "spill", "ck"}]
     /\ cloc \in [Pages -> {"none", "frame", "spill"}]
     /\ busy \in [Pages -> {"none", "guest", "copy"}]
-    /\ fstate \in [Pages -> {"idle", "copying", "refaulting"}]
+    /\ fstate \in [Pages -> {"idle", "copying", "refaulting", "looking"}]
     /\ phase \in Phases
     /\ dset \subseteq Pages /\ pending \subseteq Pages
 
