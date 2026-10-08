@@ -1165,11 +1165,11 @@ func (r *MemoryRegion) publish(ctx context.Context, c *MemoryRegionCheckpoint, b
 	h.mu.Lock()
 	r.host.unaliasLocked(b)
 	h.mu.Unlock()
-	if err := r.host.dropSharers(ctx, page); err != nil {
+	if _, err := r.host.dropSharers(ctx, page); err != nil {
 		return err
 	}
 	r.layer.RemovePage(b.index*ps, page)
-	r.host.releaseFrame(page)
+	r.host.giveUp(page)
 	return nil
 }
 
@@ -1197,10 +1197,10 @@ func (r *MemoryRegion) retireCopy(ctx context.Context, held *binding, page *zirc
 	if now.stored && !now.id.zero() && r.host.adopt(ctx, nil, page, held.index, now.id) {
 		return nil
 	}
-	if err := r.host.dropSharers(ctx, page); err != nil {
+	if _, err := r.host.dropSharers(ctx, page); err != nil {
 		return err
 	}
-	r.host.releaseFrame(page)
+	r.host.giveUp(page)
 	return nil
 }
 
@@ -1287,7 +1287,9 @@ func (r *MemoryRegion) abandonCopies(ctx context.Context, batch []*binding) erro
 			// here: the name a fork point lends it under goes now, while its
 			// lock is held, and not when the seal ends.
 			r.host.unlend(ctx, page)
-			if err := r.host.dropSharers(ctx, page, b, held); err != nil {
+			// A sharer that keeps the page is terminal, and reads nothing
+			// the guest stores into it from here.
+			if _, err := r.host.dropSharers(ctx, page, b, held); err != nil {
 				r.host.unlockPage(page)
 				return err
 			}
@@ -1365,7 +1367,7 @@ func (r *MemoryRegion) discardCheckpoint(ctx context.Context, c *MemoryRegionChe
 			// of it holds too, so ending the lending page by page leaves no
 			// window (endSeal).
 			r.host.unlend(ctx, page)
-			err = r.host.dropSharers(ctx, page)
+			_, err = r.host.dropSharers(ctx, page)
 			h.mu.Lock()
 			if held.page != nil {
 				r.host.unaliasLocked(held)
@@ -1482,10 +1484,10 @@ func (h *Host) dropLentRoot(ctx context.Context, root *identityRoot) error {
 		if err := h.lockPage(ctx, page); err != nil {
 			return err
 		}
-		err := h.dropSharers(ctx, page)
+		_, err := h.dropSharers(ctx, page)
 		if err == nil && frameOf(page).slot >= 0 {
 			h.removeFromObject(page)
-			h.releaseFrame(page)
+			h.giveUp(page)
 		}
 		h.unlockPage(page)
 		if err != nil {
@@ -1562,8 +1564,11 @@ var dropLentRootSeam func()
 
 // dropSharers takes page away from every binding that maps it but keep: a
 // page the guest takes back as dirty state, or that goes back to the arena,
-// must be no other region's. Caller holds the page's lock.
-func (h *Host) dropSharers(ctx context.Context, page *zirconvm.VmPage, keep ...*binding) error {
+// must be no other region's. A sharer whose mapping cannot be taken away is
+// terminal from here and keeps the page, which it reports: the page then goes
+// back once that sharer is closed (giveUp), and the sharer's end is its own,
+// not the caller's. Caller holds the page's lock.
+func (h *Host) dropSharers(ctx context.Context, page *zirconvm.VmPage, keep ...*binding) (held bool, err error) {
 	var sharers []*binding
 	h.mu.Lock()
 	for b := range frameOf(page).aliases.all() {
@@ -1585,12 +1590,20 @@ func (h *Host) dropSharers(ctx context.Context, page *zirconvm.VmPage, keep ...*
 	// any. In a controlled run another task goes on here.
 	if len(sharers) > 0 {
 		if err := sim.Admit(ctx, "vmmemory/drop-sharers"); err != nil {
-			return err
+			return false, err
 		}
 	}
 	for _, b := range sharers {
 		if err := b.region.revoke(ctx, b); err != nil {
-			return err
+			// Before 2026-10-08 the sharer's end was the caller's: a fork
+			// point's child whose client refused the revocation failed its
+			// parent's unseal, retire or detach.
+			if b.region.terminal.Load() == nil || sim.Bug(ctx, "pager-end-a-step-with-its-sharer") {
+				return held, err
+			}
+			b.region.heldPages(ctx, err)
+			held = true
+			continue
 		}
 		h.mu.Lock()
 		if b.page != nil {
@@ -1598,7 +1611,7 @@ func (h *Host) dropSharers(ctx context.Context, page *zirconvm.VmPage, keep ...*
 		}
 		h.mu.Unlock()
 	}
-	return nil
+	return held, nil
 }
 
 // published reports a page of an identity root, still resident: what a copy

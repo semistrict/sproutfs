@@ -1192,6 +1192,12 @@
     "purpose": "Let an eviction of a region's own page go on without holding the region live, so a detach gives its reservations back and destroys its layer under it: the eviction reads a freed slot and writes into a reservation no longer the region's."
   },
   {
+    "id": "pager-end-a-step-with-its-sharer",
+    "package": "vmmemory",
+    "run": "^TestAChildWhoseMappingCannotBeTakenFailsNotItsParentsUnseal$",
+    "purpose": "Fail a step that takes a page from its sharers where one sharer's revocation fails, so a fork point's child whose client refuses ends its parent's unseal, retire or detach."
+  },
+  {
     "id": "pager-wait-on-a-supplied-prefetch",
     "package": "vmmemory",
     "run": "^TestAWaitOnAPrefetchItsSupplyAnsweredWaitsOnNothing$",

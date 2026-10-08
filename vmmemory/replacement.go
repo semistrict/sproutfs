@@ -36,10 +36,8 @@ func (p *replacement) done() {
 	var dropped []*zirconvm.VmPage
 	h.mu.Lock()
 	for _, page := range p.pages {
-		f := frameOf(page)
-		f.replacing--
-		if f.replacing == 0 && f.dropped && f.aliases.len() == 0 {
-			f.dropped = false
+		frameOf(page).replacing--
+		if droppedLocked(page) {
 			dropped = append(dropped, page)
 			continue
 		}

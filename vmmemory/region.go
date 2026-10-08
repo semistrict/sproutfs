@@ -787,13 +787,22 @@ func (r *MemoryRegion) Detach(ctx context.Context) error {
 	})
 	r.bindingsMu.Unlock()
 	r.releaseDirty()
+	// A page another region gave up while this one mapped it, which its
+	// mapping could not be taken from, goes back now (giveUp).
+	var dropped []*zirconvm.VmPage
 	h.mu.Lock()
 	for _, b := range bound {
-		if b.page != nil {
+		if page := b.page; page != nil {
 			r.host.unaliasLocked(b)
+			if droppedLocked(page) {
+				dropped = append(dropped, page)
+			}
 		}
 	}
 	h.mu.Unlock()
+	for _, page := range dropped {
+		h.releaseFrame(page)
+	}
 	// Between the hold above and the one below, a fault of another region
 	// may count this one among the attached: it holds nothing and maps
 	// nothing now, so it asks no checkpoint of it and is no victim's alias.
