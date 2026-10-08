@@ -1,0 +1,133 @@
+{
+ "comment": "The VMM process a host runs each VM in (host.Machine), as vmmachine.Process drives Firecracker over its API socket: a command the VMM refuses leaves it running and doing nothing the refusal does not say, and a command whose answer never comes has vmmachine kill the process, so Wait returns and the host gives the VM up. The simulated process is the guest in internal/simtest/guest.go. The guest agent's exec (api/guest) is called only by the Linux supervisor, which nothing simulates: TASK-116. See scripts/check-faults.py.",
+ "interfaces": [
+  {
+   "package": "host",
+   "name": "Machine"
+  }
+ ],
+ "faults": [
+  {
+   "interface": "host.Machine",
+   "method": "MemoryRegions",
+   "none": "the memory regions the process maps, held in this process: nothing is asked of the VMM"
+  },
+  {
+   "interface": "host.Machine",
+   "method": "Prepare",
+   "error": "pause refused",
+   "site": "simtest/vmm-refuses/pause",
+   "package": "internal/simtest",
+   "run": "^TestSeededTopologyUnderBoundaryFaults$",
+   "purpose": "the VMM answered no to the pause: the guest runs on, the capture fails, and the checkpoint is taken later"
+  },
+  {
+   "interface": "host.Machine",
+   "method": "Prepare",
+   "error": "snapshot refused",
+   "site": "simtest/vmm-refuses/prepare",
+   "package": "internal/simtest",
+   "run": "^TestSeededTopologyUnderBoundaryFaults$",
+   "purpose": "the VMM refused the snapshot having paused and sealed a memory region: the capture's release unseals it and resumes the guest"
+  },
+  {
+   "interface": "host.Machine",
+   "method": "Prepare",
+   "error": "lost",
+   "site": "simtest/vmm-ends/prepare",
+   "package": "internal/simtest",
+   "run": "^TestSeededTopologyUnderBoundaryFaults$",
+   "purpose": "the snapshot's answer never came, so the VMM is killed: the host gives the VM up, and it comes back elsewhere at a checkpoint it published"
+  },
+  {
+   "interface": "host.Machine",
+   "method": "Prepare",
+   "error": "pause lost",
+   "site": "simtest/vmm-ends/pause",
+   "package": "internal/simtest",
+   "run": "^TestSeededTopologyUnderBoundaryFaults$",
+   "purpose": "the pause's answer never came, so the VMM is killed before anything was sealed"
+  },
+  {
+   "interface": "host.Machine",
+   "method": "SealDisks",
+   "error": "pause refused",
+   "site": "simtest/vmm-refuses/seal-disks",
+   "package": "internal/simtest",
+   "run": "^TestSeededTopologyUnderBoundaryFaults$",
+   "purpose": "the interval's pause refused: nothing was sealed, the guest runs on, and a flush waiting for the checkpoint is tried again after the backoff"
+  },
+  {
+   "interface": "host.Machine",
+   "method": "SealDisks",
+   "error": "lost",
+   "site": "simtest/vmm-ends/seal-disks",
+   "package": "internal/simtest",
+   "run": "^TestSeededTopologyUnderBoundaryFaults$",
+   "purpose": "the pause's answer never came, so the VMM is killed and the VM given up"
+  },
+  {
+   "interface": "host.Machine",
+   "method": "Stop",
+   "error": "pause refused",
+   "site": "simtest/vmm-refuses/pause",
+   "package": "internal/simtest",
+   "run": "^TestSeededTopologyUnderBoundaryFaults$",
+   "purpose": "a migration's pause refused: the guest runs on where it was and its loop and its waiting flushes go on"
+  },
+  {
+   "interface": "host.Machine",
+   "method": "Stop",
+   "error": "capture refused",
+   "site": "simtest/vmm-refuses/stop",
+   "package": "internal/simtest",
+   "run": "^TestSeededTopologyUnderBoundaryFaults$",
+   "purpose": "the handoff's capture refused after the pause, a memory region sealed on the way: the release unseals it and the VM stays"
+  },
+  {
+   "interface": "host.Machine",
+   "method": "Stop",
+   "error": "lost",
+   "site": "simtest/vmm-ends/stop",
+   "package": "internal/simtest",
+   "run": "^TestSeededTopologyUnderBoundaryFaults$",
+   "purpose": "the handoff's capture never answered, so the VMM is killed mid-migration: the VM is given up and taken over"
+  },
+  {
+   "interface": "host.Machine",
+   "method": "Resume",
+   "error": "lost",
+   "site": "simtest/vmm-ends/resume",
+   "package": "internal/simtest",
+   "run": "^TestSeededTopologyUnderBoundaryFaults$",
+   "purpose": "vmmachine kills a VMM whose resume failed however it failed: a sealed capture is given up with the VM"
+  },
+  {
+   "interface": "host.Machine",
+   "method": "Release",
+   "error": "lost",
+   "site": "simtest/vmm-ends/release",
+   "package": "internal/simtest",
+   "run": "^TestSeededTopologyUnderBoundaryFaults$",
+   "purpose": "a release that fails kills the VMM: the failed capture's error and the death are both reported"
+  },
+  {
+   "interface": "host.Machine",
+   "method": "Wait",
+   "error": "exited",
+   "site": "simtest/vmm-crashes",
+   "package": "internal/simtest",
+   "run": "^TestSeededTopologyUnderBoundaryFaults$",
+   "purpose": "the VMM ended on its own while the guest ran: the host gives the VM up and its writes since its last checkpoint go with it"
+  },
+  {
+   "interface": "host.Machine",
+   "method": "Close",
+   "error": "fails",
+   "site": "simtest/vmm-close-fails",
+   "package": "internal/simtest",
+   "run": "^TestSeededTopologyUnderBoundaryFaults$",
+   "purpose": "the process is gone and something of it was not given back: a stop whose checkpoint landed still reports the stop"
+  }
+ ]
+}

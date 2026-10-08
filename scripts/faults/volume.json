@@ -1,0 +1,134 @@
+{
+ "comment": "What a volume calls outside itself. DirtySource is a memory region's sealed checkpoint (vmmemory.MemoryRegionCheckpoint), whose pages may be spilled to the host's disk; the simulated VMM hands each capture the pager's own with its errors returned at random (sealedPages in internal/simtest/guest.go). JournalCover and Replayer are the host's durable flush (host/journal.go, host/replay.go), over the membership and the peers that serve journal disks. See scripts/check-faults.py.",
+ "interfaces": [
+  {
+   "package": "volume",
+   "name": "DirtySource"
+  },
+  {
+   "package": "volume",
+   "name": "JournalCover"
+  },
+  {
+   "package": "volume",
+   "name": "Replayer"
+  }
+ ],
+ "faults": [
+  {
+   "interface": "volume.DirtySource",
+   "method": "DirtyPages",
+   "none": "the set the seal froze, held in this process"
+  },
+  {
+   "interface": "volume.DirtySource",
+   "method": "ReadDirty",
+   "error": "read fails",
+   "site": "simtest/dirty-source/read-fails",
+   "package": "internal/simtest",
+   "run": "^TestSeededTopologyUnderBoundaryFaults$",
+   "purpose": "a sealed page the pager spilled could not be read: the publication fails and gives the pages back, and the next checkpoint takes them; a fork child's read through the point fails and is asked again"
+  },
+  {
+   "interface": "volume.DirtySource",
+   "method": "Settle",
+   "error": "fails",
+   "site": "simtest/dirty-source/settle-fails",
+   "package": "internal/simtest",
+   "run": "^TestSeededTopologyUnderBoundaryFaults$",
+   "purpose": "the capture fails behind the pause, and the host's release unseals the guest"
+  },
+  {
+   "interface": "volume.DirtySource",
+   "method": "UnpublishedAge",
+   "none": "a duration the seal holds in this process"
+  },
+  {
+   "interface": "volume.DirtySource",
+   "method": "Hold",
+   "none": "marks the seal in this process"
+  },
+  {
+   "interface": "volume.DirtySource",
+   "method": "Share",
+   "error": "fails",
+   "site": "simtest/dirty-source/share-fails",
+   "package": "internal/simtest",
+   "run": "^TestSeededTopologyUnderBoundaryFaults$",
+   "purpose": "a fork point could not lend its pages to a child on its own host: the receive fails and the child is discarded"
+  },
+  {
+   "interface": "volume.DirtySource",
+   "method": "Retire",
+   "error": "fails",
+   "site": "simtest/dirty-source/retire-fails",
+   "package": "internal/simtest",
+   "run": "^TestSeededTopologyUnderBoundaryFaults$",
+   "purpose": "the seal stays although its checkpoint landed: a fork's root still gives its parent's point back, and the next capture's release ends the seal"
+  },
+  {
+   "interface": "volume.JournalCover",
+   "method": "Journals",
+   "error": "given up",
+   "site": "host/journal-cover-given-up",
+   "package": "internal/simtest",
+   "run": "^TestJournalsSurviveTheirFaultsAndReachTheirProbes$",
+   "purpose": "the wait for the journal to place the pause ended with the publication: the selection fails and the flushes it would have answered wait for the next checkpoint"
+  },
+  {
+   "interface": "volume.JournalCover",
+   "method": "Selected",
+   "none": "trims the journal in this process and returns nothing; a trim it could not make is made by the next selection or the host's trim"
+  },
+  {
+   "interface": "volume.Replayer",
+   "method": "Served",
+   "error": "ErrJournalPending",
+   "site": "sim/network-disk/attach-fails",
+   "package": "internal/simtest",
+   "run": "^TestJournalsSurviveTheirFaultsAndReachTheirProbes$",
+   "purpose": "a lost host's journal disk the cloud has not attached to a survivor is served by no member: the open takes no epoch and is asked again"
+  },
+  {
+   "interface": "volume.Replayer",
+   "method": "Served",
+   "error": "membership read fails",
+   "site": "membership/read-fails",
+   "package": "internal/simtest",
+   "run": "^TestJournalsSurviveTheirFaultsAndReachTheirProbes$",
+   "purpose": "the open cannot tell who serves the journals and is refused before it takes an epoch"
+  },
+  {
+   "interface": "volume.Replayer",
+   "method": "Replay",
+   "error": "ErrJournalPending",
+   "site": "peer/reply-lost/read-journal",
+   "package": "internal/simtest",
+   "run": "^TestJournalsSurviveTheirFaultsAndReachTheirProbes$",
+   "purpose": "the member serving the journal could not be read: nothing read is applied, and the open is asked again"
+  },
+  {
+   "interface": "volume.Replayer",
+   "method": "Replay",
+   "error": "membership read fails",
+   "site": "membership/read-fails",
+   "package": "internal/simtest",
+   "run": "^TestJournalsSurviveTheirFaultsAndReachTheirProbes$",
+   "purpose": "the replay cannot find the journals' holders: nothing is applied and the open fails"
+  },
+  {
+   "interface": "volume.Replayer",
+   "method": "Replay",
+   "error": "journal.ErrGeneration",
+   "purpose": "a journal formatted again lost the flushes it held: the open is refused with ErrJournalLost and only an operator's discard opens the VM",
+   "deferred": "TASK-117: no campaign formats a journal disk again, and none has an oracle for the flushes such a disk loses"
+  },
+  {
+   "interface": "volume.Replayer",
+   "method": "Replay",
+   "error": "the journal disk's read fails or finds a damaged entry",
+   "purpose": "a recovery writes none of a damaged entry's bytes into the VM and reports it",
+   "deferred": "TASK-104.20: nothing fails a read of a journal disk or damages an entry it synced yet"
+  }
+ ]
+}

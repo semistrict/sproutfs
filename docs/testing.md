@@ -2147,6 +2147,22 @@ journal through one (TASK-114). An answer the simulation gives from the state
 it models, such as `ErrNotFound` for a file that is not there, needs no site.
 The clock and the entropy cannot fail.
 
+Above the platform and the pager, the manifests are these. `host.json` and
+`vmmigrate.json` list the VMM process: the simulated one in `internal/simtest`
+refuses each command at random, never answers one and is killed, crashes,
+fails to start and fails to close, and a VM whose process ended comes back
+elsewhere at a checkpoint it published. `volume.json` lists a memory region's
+sealed checkpoint, which the simulated VMM hands each capture with its reads,
+settles, shares and retires failing at random, and durable flush's journal
+cover and replayer. `peer.json` lists the requests one host makes of another,
+each of which may lose its reply after the peer carried it out
+(`peer/reply-lost/<request>`). `membership.json` lists the membership's store
+and a view of it. `TestSeededTopologyUnderBoundaryFaults` runs the seeds that
+between them fire the simulated VMM's and the peers' sites. The control store
+calls nothing but `platform.ObjectStore`, which is the platform's manifest.
+The orchestrator's hosts, pods and records (TASK-119) and the guest agent's
+exec (TASK-116) have no manifest yet.
+
 ## Negative tests in the tree
 
 Most of the fault catalogue is in the tree as `sim.Bug(ctx, id)` guards, at the

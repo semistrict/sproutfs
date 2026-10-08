@@ -13,7 +13,8 @@ has entries: each error the method can return, with the sim.Buggify site that
 returns it at random in the simulated implementation and the campaign that must
 fire it, or "none" with the reason the method cannot fail. An entry may be
 "deferred" to a backlog task, which names why its site is not fired yet: it is
-checked against the source and listed, and its campaign is not run. This
+checked against the source and listed, and its campaign is not run. A deferred
+entry whose task is to write the site names no site and no campaign. This
 fails where:
 
   - a listed interface has a method with no entry, or an entry names a method
@@ -49,11 +50,12 @@ CONSTANT = re.compile(r'^\s*([A-Za-z_]\w*)\s*=\s*"([^"]+)"', re.M)
 
 def interface_methods(package, name):
     """The methods of interface name in package, from its source: one per line
-    of the form `\tMethod(`. An embedded interface is reported as itself."""
+    of the form `\tMethod(`. An embedded interface is reported as itself. A
+    concrete type, a client the system calls across the boundary with no
+    interface in front of it, is reported with its exported methods."""
     pattern = re.compile(r"^type " + re.escape(name) + r" interface \{\s*$")
-    for path in sorted((ROOT / package).glob("*.go")):
-        if path.name.endswith("_test.go"):
-            continue
+    sources = [path for path in sorted((ROOT / package).glob("*.go")) if not path.name.endswith("_test.go")]
+    for path in sources:
         lines = path.read_text().splitlines()
         for index, line in enumerate(lines):
             if not pattern.match(line):
@@ -66,7 +68,9 @@ def interface_methods(package, name):
                 if found:
                     methods.append(found.group(1))
             return methods
-    return None
+    method = re.compile(r"^func \(\w+ \*?" + re.escape(name) + r"\) ([A-Z]\w*)\(", re.MULTILINE)
+    methods = sorted({m for path in sources for m in method.findall(path.read_text())})
+    return methods or None
 
 
 def sites_in_tree():
@@ -131,7 +135,10 @@ def check_static(manifests):
             if "deferred" in entry and not re.match(r"TASK-\d+(\.\d+)*: ", entry["deferred"]):
                 problems.append(f'{where}: {entry["interface"]}.{entry["method"]} is deferred without '
                                 f'"TASK-n: why"')
-            for field in ("error", "site", "package", "run", "purpose"):
+            # A deferred entry whose task is to write the site names none yet.
+            fields = ("error", "purpose") if "deferred" in entry and "site" not in entry else \
+                ("error", "site", "package", "run", "purpose")
+            for field in fields:
                 if not entry.get(field):
                     problems.append(f'{where}: {entry["interface"]}.{entry["method"]} lacks "{field}"')
             if entry.get("site") and entry["site"] not in sites:

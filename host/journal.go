@@ -572,6 +572,13 @@ func (c *cover) resolve(position uint64) {
 // journal, at the position the pause covered, after the journals of earlier
 // epochs the record names where the pause came before the post-copy ended.
 func (c *cover) Journals(ctx context.Context) ([]control.Journal, error) {
+	// The wait for the journal to place the pause ends with the publication
+	// waiting on it: its VM closing, or its host. A site ends it at random,
+	// and the selection fails as it does then.
+	if sim.Buggify(ctx, "host/journal-cover-given-up", 0.1) {
+		return nil, fmt.Errorf("the wait for %s's journal to place its pause was given up: %w", c.vmID,
+			context.Canceled)
+	}
 	covered, err := c.position(ctx)
 	if err != nil {
 		return nil, err

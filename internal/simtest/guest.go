@@ -88,6 +88,16 @@ type guest struct {
 	stopped bool
 	sealing chan struct{}
 	closed  bool
+	// exited closes when the VMM process ends without its host asking it to,
+	// and exit is why: a command whose answer never came, after which
+	// vmmachine kills the process rather than guess at its state, or a crash.
+	// Wait returns it, every command after it fails, and the guest stores
+	// nothing more.
+	exited chan struct{}
+	exit   error
+	// exiting is what runs when the process ends, with why: the flushes
+	// it never answered.
+	exiting []func(error)
 	// flushes is what durable flush promises this VM, which every store is
 	// recorded into: nil in a world without it (journals.go).
 	flushes *flushes
@@ -101,7 +111,7 @@ type guest struct {
 // completion.
 func (w *World) newGuest(h *hostState, p *pager, vm *volume.VM, backings map[string]vmmemory.Backing, state []byte) (*guest, error) {
 	ctx := w.ctx
-	g := &guest{instance: vm.ID(), ctx: ctx, pages: map[string]int{},
+	g := &guest{instance: vm.ID(), ctx: ctx, pages: map[string]int{}, exited: make(chan struct{}),
 		memoryRegions: map[string]*vmmemory.MemoryRegion{}, mappings: map[string]*testpager.Mapping{},
 		pageBytes: map[string]int{}, ephemeral: map[string]bool{}, backings: map[string]*testbacking.Admitting{},
 		model: map[string][]byte{}, admit: w.config.Admit, reverse: w.config.ReverseMemoryRegions,
@@ -163,9 +173,17 @@ func (g *guest) MemoryRegions() map[string]*vmmemory.MemoryRegion {
 // Prepare is a capture's pause: the guest stops storing, its state is captured,
 // and every memory region seals the pages the checkpoint will publish.
 func (g *guest) Prepare(ctx context.Context) ([]byte, map[string]volume.DirtySource, error) {
-	state, err := g.Stop(ctx)
+	state, err := g.pause(ctx, "prepare")
 	if err != nil {
 		return nil, nil, err
+	}
+	// The VMM seals as part of the snapshot request, which it may refuse
+	// having sealed some of its memory regions, or never answer.
+	if err := g.ends(ctx, "prepare"); err != nil {
+		return nil, nil, err
+	}
+	if err := g.refuses(ctx, "prepare"); err != nil {
+		return nil, nil, g.refuseSealed(ctx, err)
 	}
 	g.captures++
 	names := slices.Clone(g.names)
@@ -181,7 +199,7 @@ func (g *guest) Prepare(ctx context.Context) ([]byte, map[string]volume.DirtySou
 			// A VMM seals every memory region it maps. An ephemeral disk's
 			// seal takes nothing, and no checkpoint is given its pages.
 			if !g.ephemeral[name] {
-				sources[name] = g.memoryRegions[name].Checkpoint()
+				sources[name] = sealed(g.memoryRegions[name].Checkpoint())
 			}
 		}
 		return state, sources, nil
@@ -204,7 +222,7 @@ func (g *guest) Prepare(ctx context.Context) ([]byte, map[string]volume.DirtySou
 			mu.Lock()
 			defer mu.Unlock()
 			if err == nil && !g.ephemeral[name] {
-				sources[name] = g.memoryRegions[name].Checkpoint()
+				sources[name] = sealed(g.memoryRegions[name].Checkpoint())
 			}
 			result = errors.Join(result, err)
 		}()
@@ -220,6 +238,33 @@ func (g *guest) Prepare(ctx context.Context) ([]byte, map[string]volume.DirtySou
 // captured. Nothing is sealed and nothing is uploaded — the pages this process
 // keeps are what the destination fetches.
 func (g *guest) Stop(ctx context.Context) ([]byte, error) {
+	state, err := g.pause(ctx, "stop")
+	if err != nil {
+		return nil, err
+	}
+	if err := g.ends(ctx, "stop"); err != nil {
+		return nil, err
+	}
+	if err := g.refuses(ctx, "stop"); err != nil {
+		return nil, g.refuseSealed(ctx, err)
+	}
+	return state, nil
+}
+
+// pause stops the vCPUs and captures the state, which is the first half of a
+// capture and of a migration's stop. A VMM may refuse the pause, and then
+// nothing happened; or never answer it, and then it is killed. A refused stop
+// the RefusedStop fault stages fails after the pause began.
+func (g *guest) pause(ctx context.Context, command string) ([]byte, error) {
+	if err := g.alive(command); err != nil {
+		return nil, err
+	}
+	if err := g.ends(ctx, "pause"); err != nil {
+		return nil, err
+	}
+	if err := g.refuses(ctx, "pause"); err != nil {
+		return nil, err
+	}
 	g.mu.Lock()
 	refused := g.refuseStop
 	state := make([]byte, stateBytes)
@@ -228,15 +273,20 @@ func (g *guest) Stop(ctx context.Context) ([]byte, error) {
 	g.stopped = true
 	g.mu.Unlock()
 	if refused != nil {
-		// A stop that fails after the pause began seals one memory region on its way
-		// out, so the release has to unseal this process and leave both the
-		// memory and the disk writable before a migration can be retried.
-		if err := g.memoryRegions[g.names[0]].Seal(ctx); err != nil {
-			return nil, err
-		}
-		return nil, refused
+		return nil, g.refuseSealed(ctx, refused)
 	}
 	return state, nil
+}
+
+// refuseSealed is a refusal that came after the pause began: it seals one
+// memory region on its way out, so the release has to unseal this process
+// and leave both the memory and the disk writable before the capture or the
+// migration can be tried again.
+func (g *guest) refuseSealed(ctx context.Context, refusal error) error {
+	if err := g.memoryRegions[g.names[0]].Seal(ctx); err != nil {
+		return errors.Join(refusal, err)
+	}
+	return refusal
 }
 
 // setRefuseStop makes this guest's next migration pause fail after it has
@@ -250,6 +300,17 @@ func (g *guest) setRefuseStop(err error) {
 // SealDisks is a disk checkpoint's pause: the guest stops storing and the
 // memory regions of its disks seal, while its RAM and its state are left alone.
 func (g *guest) SealDisks(ctx context.Context) (map[string]volume.DirtySource, error) {
+	if err := g.alive("seal-disks"); err != nil {
+		return nil, err
+	}
+	if err := g.ends(ctx, "seal-disks"); err != nil {
+		return nil, err
+	}
+	// The pause is the one request this command makes of the VMM, and a
+	// refused one changed nothing.
+	if err := g.refuses(ctx, "seal-disks"); err != nil {
+		return nil, err
+	}
 	g.mu.Lock()
 	g.stopped = true
 	if g.sealing == nil {
@@ -264,7 +325,7 @@ func (g *guest) SealDisks(ctx context.Context) (map[string]volume.DirtySource, e
 		if err := g.memoryRegions[name].Seal(ctx); err != nil {
 			return nil, err
 		}
-		sources[name] = g.memoryRegions[name].Checkpoint()
+		sources[name] = sealed(g.memoryRegions[name].Checkpoint())
 	}
 	return sources, nil
 }
@@ -273,7 +334,15 @@ func (g *guest) SealDisks(ctx context.Context) (map[string]volume.DirtySource, e
 // so what a resume means here is that stores are accepted again — which is
 // exactly what an abandoned capture or migration owes the guest it stopped, and
 // exactly what a run that never checked would not notice was missing.
-func (g *guest) Resume(context.Context) error {
+func (g *guest) Resume(ctx context.Context) error {
+	if err := g.alive("resume"); err != nil {
+		return err
+	}
+	// vmmachine kills a VMM whose resume failed however it failed, because a
+	// guest that may or may not be running is one nothing can reason about.
+	if err := g.ends(ctx, "resume"); err != nil {
+		return err
+	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.stopped = false
@@ -289,9 +358,11 @@ func (g *guest) Resume(context.Context) error {
 func (g *guest) runs(ctx context.Context) error {
 	for {
 		g.mu.Lock()
-		stopped, sealing := g.stopped, g.sealing
+		stopped, sealing, exit := g.stopped, g.sealing, g.exit
 		g.mu.Unlock()
 		switch {
+		case exit != nil:
+			return exit
 		case !stopped:
 			return nil
 		case sealing == nil:
@@ -299,6 +370,7 @@ func (g *guest) runs(ctx context.Context) error {
 		}
 		select {
 		case <-sealing:
+		case <-g.exited:
 		case <-ctx.Done():
 			return context.Cause(ctx)
 		}
@@ -308,6 +380,13 @@ func (g *guest) runs(ctx context.Context) error {
 // Release unseals every memory region and resumes a still-paused process, which is
 // what an abandoned capture or migration owes the guest it stopped.
 func (g *guest) Release(ctx context.Context) error {
+	if err := g.alive("release"); err != nil {
+		return err
+	}
+	// As for a resume, a release that fails kills the process.
+	if err := g.ends(ctx, "release"); err != nil {
+		return err
+	}
 	for _, name := range g.names {
 		if err := g.memoryRegions[name].Unseal(ctx); err != nil {
 			return err
@@ -316,11 +395,124 @@ func (g *guest) Release(ctx context.Context) error {
 	return g.Resume(ctx)
 }
 
-// Wait reports the end of the VMM process. This one has no life of its own:
-// only its caller ends it.
-func (g *guest) Wait(ctx context.Context) error { <-ctx.Done(); return context.Cause(ctx) }
+// Wait reports the end of the VMM process: one killed because a command's
+// answer never came, or one that crashed.
+func (g *guest) Wait(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+		return context.Cause(ctx)
+	case <-g.exited:
+		return g.exitCause()
+	}
+}
 
-func (g *guest) Close() error { return g.detach(context.Background()) }
+// Close ends the process and detaches its memory regions. As vmmachine's, it
+// may fail to give something of the process back, and the process is gone
+// all the same.
+func (g *guest) Close() error {
+	err := g.detach(context.Background())
+	if err == nil && sim.Buggify(g.ctx, "simtest/vmm-close-fails", vmmFaultChance) {
+		err = fmt.Errorf("%s: %w: a staging file of the VMM could not be removed", g.instance, ErrInjected)
+	}
+	return err
+}
+
+// The simulated VMM's faults. A real one answers each command over its API
+// socket (vmmachine.Process.request). It may refuse one, and then it runs and
+// did nothing the refusal does not say it did. Or the answer may never come,
+// and then vmmachine kills the process rather than guess at its state: Wait
+// returns, and the host gives the VM up. Each command has a site of each, and
+// a running guest may crash.
+const (
+	vmmFaultChance = 0.1
+	vmmCrashChance = 0.02
+)
+
+// errRefused is what a VMM that refused a command answers.
+var errRefused = errors.New("simtest: the VMM refused the command")
+
+// refuses reports the command a VMM refused, or nil.
+func (g *guest) refuses(ctx context.Context, command string) error {
+	if !sim.Buggify(ctx, "simtest/vmm-refuses/"+command, vmmFaultChance) {
+		return nil
+	}
+	return fmt.Errorf("%s: %w: %s", g.instance, errRefused, command)
+}
+
+// ends is a command whose answer never came: the process is killed, and the
+// command fails with why.
+func (g *guest) ends(ctx context.Context, command string) error {
+	if !sim.Buggify(ctx, "simtest/vmm-ends/"+command, vmmFaultChance) {
+		return nil
+	}
+	return g.exitWith(fmt.Errorf("%s: %w: the VMM never answered %s, so it was killed", g.instance,
+		ErrInjected, command))
+}
+
+// crashes ends a running process on its own, which is the end a host learns
+// of only through Wait. It is drawn before each of the campaign's stores.
+func (g *guest) crashes(ctx context.Context) error {
+	if !sim.Buggify(ctx, "simtest/vmm-crashes", vmmCrashChance) {
+		return nil
+	}
+	return g.exitWith(fmt.Errorf("%s: %w: the VMM crashed", g.instance, ErrInjected))
+}
+
+// exitWith ends the process with cause, once, and reports why it ended.
+func (g *guest) exitWith(cause error) error {
+	g.mu.Lock()
+	if g.exit != nil {
+		defer g.mu.Unlock()
+		return g.exit
+	}
+	g.exit = fmt.Errorf("%w: %w", errExited, cause)
+	g.stopped = true
+	close(g.exited)
+	exiting := g.exiting
+	g.exiting = nil
+	g.mu.Unlock()
+	for _, fn := range exiting {
+		fn(g.exit)
+	}
+	return g.exit
+}
+
+// atExit runs fn with why the process ended when it ends, or at once if it
+// has.
+func (g *guest) atExit(fn func(error)) {
+	g.mu.Lock()
+	exit := g.exit
+	if exit == nil {
+		g.exiting = append(g.exiting, fn)
+	}
+	g.mu.Unlock()
+	if exit != nil {
+		fn(exit)
+	}
+}
+
+// errExited is every command of a process that has ended, and every store
+// into it.
+var errExited = errors.New("simtest: the VMM process has ended")
+
+// exitCause is why the process ended, nil while it runs.
+func (g *guest) exitCause() error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.exit
+}
+
+// alive fails a command to a process that has ended, as a request to a
+// socket nothing listens on does.
+func (g *guest) alive(command string) error {
+	if err := g.exitCause(); err != nil {
+		return fmt.Errorf("%s: %w", command, err)
+	}
+	return nil
+}
+
+// hasExited reports a process that ended without its host asking it to.
+func (g *guest) hasExited() bool { return g.exitCause() != nil }
 
 // isClosed reports a VMM process that has been ended, by its host or by
 // whatever gave the VM up.
@@ -629,3 +821,56 @@ type pager struct {
 
 // arenaOf is the shared page store the memory regions of one pager map through.
 func (p *pager) arenaOf(pager *vmmemory.Host) *testpager.Arena { return p.arenas[pager] }
+
+// sealedPages is a memory region's sealed checkpoint as the simulated VMM
+// hands it to a capture: the pager's own, with the errors the real one returns
+// returned at random. Each fails before it does anything, as the pager's do
+// when its region can no longer be held live or a read of its spill fails.
+type sealedPages struct{ volume.DirtySource }
+
+// sealed wraps one memory region's checkpoint.
+func sealed(checkpoint *vmmemory.MemoryRegionCheckpoint) volume.DirtySource {
+	return sealedPages{checkpoint}
+}
+
+// sealedFaultChance is how often an activated site of a sealed checkpoint
+// fails one call, and sealedReadFaultChance one read of a page: a checkpoint
+// reads every page it seals, and one that failed most of its reads would
+// leave a seed nothing but failed checkpoints.
+const (
+	sealedFaultChance     = 0.1
+	sealedReadFaultChance = 0.02
+)
+
+// ReadDirty fails as a read of a page the pager spilled fails.
+func (s sealedPages) ReadDirty(ctx context.Context, page uint64, dst []byte) error {
+	if sim.Buggify(ctx, "simtest/dirty-source/read-fails", sealedReadFaultChance) {
+		return fmt.Errorf("%w: reading sealed page %d from the spill file", ErrInjected, page)
+	}
+	return s.DirtySource.ReadDirty(ctx, page, dst)
+}
+
+// Settle fails as one whose region is no longer serving does.
+func (s sealedPages) Settle(ctx context.Context) (int, error) {
+	if sim.Buggify(ctx, "simtest/dirty-source/settle-fails", sealedFaultChance) {
+		return 0, fmt.Errorf("%w: settling a seal", ErrInjected)
+	}
+	return s.DirtySource.Settle(ctx)
+}
+
+// Share fails before it lends anything.
+func (s sealedPages) Share(ctx context.Context, ref control.Ref, volume string) error {
+	if sim.Buggify(ctx, "simtest/dirty-source/share-fails", sealedFaultChance) {
+		return fmt.Errorf("%w: sharing %s of %s", ErrInjected, volume, ref)
+	}
+	return s.DirtySource.Share(ctx, ref, volume)
+}
+
+// Retire fails leaving the seal in place, as one whose look-up of its pages'
+// identities failed does: the call may be repeated.
+func (s sealedPages) Retire(ctx context.Context, published bool) error {
+	if sim.Buggify(ctx, "simtest/dirty-source/retire-fails", sealedFaultChance) {
+		return fmt.Errorf("%w: retiring a seal, published=%t", ErrInjected, published)
+	}
+	return s.DirtySource.Retire(ctx, published)
+}

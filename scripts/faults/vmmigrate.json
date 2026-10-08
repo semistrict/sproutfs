@@ -1,0 +1,70 @@
+{
+ "comment": "The VMM process a migration drives (vmmigrate.Runtime), which host.Machine is and the simulated guest in internal/simtest/guest.go implements: see scripts/faults/host.json for what its refusals and lost answers mean. The pages a destination fetches from its source cross to another host through peer.Peer (scripts/faults/peer.json). See scripts/check-faults.py.",
+ "interfaces": [
+  {
+   "package": "vmmigrate",
+   "name": "Runtime"
+  }
+ ],
+ "faults": [
+  {
+   "interface": "vmmigrate.Runtime",
+   "method": "MemoryRegions",
+   "none": "the memory regions the process maps, held in this process: nothing is asked of the VMM"
+  },
+  {
+   "interface": "vmmigrate.Runtime",
+   "method": "Stop",
+   "error": "pause refused",
+   "site": "simtest/vmm-refuses/pause",
+   "package": "internal/simtest",
+   "run": "^TestSeededTopologyUnderBoundaryFaults$",
+   "purpose": "the handoff's pause refused before anything was handed over: the VM stays and runs on"
+  },
+  {
+   "interface": "vmmigrate.Runtime",
+   "method": "Stop",
+   "error": "capture refused",
+   "site": "simtest/vmm-refuses/stop",
+   "package": "internal/simtest",
+   "run": "^TestSeededTopologyUnderBoundaryFaults$",
+   "purpose": "the handoff's capture refused after the pause: the migration releases the process and the VM stays"
+  },
+  {
+   "interface": "vmmigrate.Runtime",
+   "method": "Stop",
+   "error": "lost",
+   "site": "simtest/vmm-ends/stop",
+   "package": "internal/simtest",
+   "run": "^TestSeededTopologyUnderBoundaryFaults$",
+   "purpose": "the capture never answered and the VMM was killed: the migration fails, its release fails with it, and the host gives the VM up"
+  },
+  {
+   "interface": "vmmigrate.Runtime",
+   "method": "Resume",
+   "error": "lost",
+   "site": "simtest/vmm-ends/resume",
+   "package": "internal/simtest",
+   "run": "^TestSeededTopologyUnderBoundaryFaults$",
+   "purpose": "a resume that fails kills the VMM"
+  },
+  {
+   "interface": "vmmigrate.Runtime",
+   "method": "Release",
+   "error": "lost",
+   "site": "simtest/vmm-ends/release",
+   "package": "internal/simtest",
+   "run": "^TestSeededTopologyUnderBoundaryFaults$",
+   "purpose": "an abandoned migration's release that fails kills the VMM: the VM is given up rather than left paused"
+  },
+  {
+   "interface": "vmmigrate.Runtime",
+   "method": "Close",
+   "error": "fails",
+   "site": "simtest/vmm-close-fails",
+   "package": "internal/simtest",
+   "run": "^TestSeededTopologyUnderBoundaryFaults$",
+   "purpose": "the source's process closed after its release with something of it not given back: the release happened"
+  }
+ ]
+}
