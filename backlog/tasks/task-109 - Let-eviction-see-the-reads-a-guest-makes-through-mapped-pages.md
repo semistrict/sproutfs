@@ -1,9 +1,11 @@
 ---
 id: TASK-109
 title: Let eviction see the reads a guest makes through mapped pages
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-08 12:34'
+updated_date: '2026-10-08 12:37'
 labels:
   - vmmemory
   - eviction
