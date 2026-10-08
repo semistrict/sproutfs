@@ -9,3 +9,11 @@ func SetCaptureSeam(t *testing.T, seam func(taken []uint64)) {
 	captureSeam = seam
 	t.Cleanup(func() { captureSeam = previous })
 }
+
+// SetSettleComparedSeam installs what a settle runs once it has compared its
+// copies and before it reshares them. It is restored when the test ends.
+func SetSettleComparedSeam(t *testing.T, seam func()) {
+	previous := settleComparedSeam
+	settleComparedSeam = seam
+	t.Cleanup(func() { settleComparedSeam = previous })
+}

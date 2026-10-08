@@ -507,11 +507,18 @@ func (r *MemoryRegion) zeroDigests() []blockDigest {
 }
 
 // originDigests is the digests of the page a dirty page was copied from, nil
-// where that page is no longer resident: the capture then writes the whole
-// page.
+// where that page is no longer resident, or where something holds its lock:
+// the capture then writes the whole page. The capture holds the region
+// exclusively, and the origin is a root's page, which a fault of the region
+// holds in its plan across its read and until it has taken the region back;
+// waiting for the lock here, each waited for the other.
 func (r *MemoryRegion) originDigests(ctx context.Context, origin *zirconvm.VmPage) ([]blockDigest, error) {
-	if err := r.host.lockPage(ctx, origin); err != nil {
-		return nil, err
+	if sim.Bug(ctx, "journal-wait-for-an-origin-under-the-region") {
+		if err := r.host.lockPage(ctx, origin); err != nil {
+			return nil, err
+		}
+	} else if !frameOf(origin).mu.TryLock() {
+		return nil, nil
 	}
 	defer r.host.unlockPage(origin)
 	if !r.host.published(origin) {

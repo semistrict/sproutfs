@@ -113,6 +113,9 @@ func (c *MemoryRegionCheckpoint) Settle(ctx context.Context) (int, error) {
 	if err := sim.Admit(ctx, "vmmemory/settle-reshare"); err != nil {
 		return 0, err
 	}
+	if settleComparedSeam != nil {
+		settleComparedSeam()
+	}
 	if err := r.reshare(ctx, c, copies, equal, dropped); err != nil {
 		failures = append(failures, err)
 	}
@@ -236,9 +239,17 @@ func (r *MemoryRegion) reshare(ctx context.Context, c *MemoryRegionCheckpoint, c
 	return nil
 }
 
+// settleComparedSeam runs in a settle once it has compared its copies and
+// before it reshares them. Production leaves it nil.
+var settleComparedSeam func()
+
 // reshareBatch is one batch of reshare, with the region held exclusively.
 // It holds every page it will touch for the whole batch, so the revocation
-// that covers them all is issued while none of them can change.
+// that covers them all is issued while none of them can change. It never
+// waits for an origin's lock: the origin is a root's page, which a prefetch
+// may hold waiting for a window's stripe, and a fault of that window holds the
+// stripe waiting for the region. A copy whose origin is held stays in the
+// checkpoint.
 func (r *MemoryRegion) reshareBatch(ctx context.Context, copies []*binding, equal []*zirconvm.VmPage,
 	dropped []bool, batch []int) error {
 	locked := make(map[*zirconvm.VmPage]bool, 2*len(batch))
@@ -258,8 +269,12 @@ func (r *MemoryRegion) reshareBatch(ctx context.Context, copies []*binding, equa
 	for _, i := range batch {
 		origin := equal[i]
 		if !locked[origin] {
-			if err := r.host.lockPage(ctx, origin); err != nil {
-				return err
+			if sim.Bug(ctx, "settle-wait-for-an-origin-under-the-region") {
+				if err := r.host.lockPage(ctx, origin); err != nil {
+					return err
+				}
+			} else if !frameOf(origin).mu.TryLock() {
+				continue
 			}
 			locked[origin] = true
 		}

@@ -1179,8 +1179,12 @@ The settle compares in parallel on `Config.SettleWorkers` workers, by default
 the host's processors, each page under its own lock and its origin's. The memory
 regions of one VM settle concurrently. The decisions are applied afterwards, in
 page order and in bounded batches under the memory region, so the revocations go
-as one command per run and a fault waits for one batch. The settle takes no I/O
-permits. The workers share only the count of unchanged pages and the set the
+as one command per run and a fault waits for one batch. A batch never waits
+for an origin's lock while it holds the region: a prefetch may hold that root's
+page waiting for a window's stripe, which a fault holds waiting for the region.
+A copy whose origin is held stays in the checkpoint
+(`TestASettleNeverWaitsForTheLockOfThePageItsCopyWasMadeFrom`). The settle takes
+no I/O permits. The workers share only the count of unchanged pages and the set the
 checkpoint will list, under the checkpoint's mutex, so the result does not
 depend on the order workers finish. An arena that can compare two of its own
 slots does so in place; every other arena is read into two buffers per worker.
@@ -1234,8 +1238,13 @@ captured, in memory: 16 KiB for a 2 MiB page. They describe what the journal
 holds for the page, so an unchanged block is one a replay already restores. A
 page with no entry since it became the region's own takes its digests from
 what a replay starts from: the page it was copied from, while that is
-resident, or zeros for a page made from zeros. Otherwise its first capture
-writes it whole. A store that lands while a capture reads its block may or may
+resident and its lock is free, or zeros for a page made from zeros. Otherwise
+its first capture writes it whole. The capture never waits for the origin's
+lock: it holds the region exclusively, and a fault that holds the origin in
+its plan takes the region back after its read before it lets the page go, so
+the two would wait for each other
+(`TestACaptureNeverWaitsForTheLockOfThePageItsCopyWasMadeFrom`). The GCE soak
+hung there on 2026-10-08. A store that lands while a capture reads its block may or may
 not be in the entry. The page is unjournaled again, so the next capture takes
 it.
 

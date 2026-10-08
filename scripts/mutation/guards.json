@@ -1222,6 +1222,18 @@
     "purpose": "Give up the idle page allocateOwn chose under h.mu once its lock is taken, without asking again whether it is idle. A page a settle handed back to the region meanwhile, and an eviction's look aged, is freed while the region names it: the pager panics."
   },
   {
+    "id": "settle-wait-for-an-origin-under-the-region",
+    "package": "vmmemory",
+    "run": "^TestASettleNeverWaitsForTheLockOfThePageItsCopyWasMadeFrom$",
+    "purpose": "Let a settle's reshare, which holds the region exclusively, wait for the lock of the root's page a copy was made from. A prefetch holding that page waits for a window's stripe, a fault holding the stripe waits for the region, and nothing moves."
+  },
+  {
+    "id": "journal-wait-for-an-origin-under-the-region",
+    "package": "vmmemory",
+    "run": "^TestACaptureNeverWaitsForTheLockOfThePageItsCopyWasMadeFrom$",
+    "purpose": "Let a capture, which holds the region exclusively, wait for the lock of the page a dirty page was copied from. A fault holding that root's page in its plan waits to take the region back after its read, and the two wait for each other."
+  },
+  {
     "id": "pager-look-a-spilled-page-up-past-its-layer",
     "package": "vmmemory",
     "run": "^TestAFaultRefaultsItsOwnPageAnEvictionSpilledBeforeItsLookup$",
