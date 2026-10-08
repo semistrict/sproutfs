@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-08 12:34'
-updated_date: '2026-10-08 12:37'
+updated_date: '2026-10-08 13:05'
 labels:
   - vmmemory
   - eviction
@@ -28,3 +28,20 @@ An embedder measured a DAX root disk (ext4 dax=always on a PMEM region) under he
 - [ ] #4 A GCE run of the same shape (8 GiB guest, 80 GiB DAX root, 6.4 GiB PMEM arena, several GB written while a 512 MB file is read at random) reports read p50 and p90 during the writes, before and after
 - [ ] #5 docs/vm-memory.md says what the queues' recency is made of
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. zirconvm: a third isolate queue, harvested, between don't-need and standard; pageQueueList keeps its length; PeekUnharvestedWhere(n, accept) takes the oldest standard isolated pages (isolating inactive LRU pages if short); MoveToHarvested moves one still isolated to the harvested tail. MarkAccessed already moves an isolated page to the MRU queue.
+2. evict.go: each reclaim step first harvests: tops the harvested queue up toward a lead (a quarter of the arena, at most a batch per step), revoking every mapped alias of each page under its lock as an eviction does, but keeping the page. The victim order is don't-need, harvested, standard.
+3. A guest touch of a harvested page faults; the lookup maps it from its frame and marks it accessed, so it leaves the isolate queues.
+4. Test (synctest, both kinds): a page read through its mapping between writes of fresh pages is not loaded again once evictions are steady; fails before the change.
+5. Stats: harvested pages and second chances. Docs: vm-memory.md recency, pagequeues.go departures, cowpages.go UnmapAndHarvest.
+6. Run vmmemory tests, campaigns, just check; GCE DAX run for the before/after numbers.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implemented in the harvest worktree: harvested isolate queue (zirconvm), harvest step in reclaimStep (vmmemory/harvest.go), AgeOnAccess restored per served fault (the ported core had stopped calling it since e0fb32de), store traps on harvested read-only pages served as loads (no cold copy). Found and fixed a latent bug: unprotectForStore mapped a page without recording it mapped, so an eviction gave back a slot the guest still mapped writable (TestAStoreIntoAHarvestedJournaledPageIsRevokedByItsEviction). The seal-pause test stored 0, which pages 255/511/767/1023 already held; it now stores each page's complement. vmmemory green in both arenas; guard pager-harvest-without-revoking killed.
+<!-- SECTION:NOTES:END -->
