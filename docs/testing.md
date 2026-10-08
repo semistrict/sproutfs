@@ -2139,6 +2139,16 @@ inject such a fault. The first runs found that a fork point's child whose
 client refused a revocation failed its parent's unseal
 (`pager-end-a-step-with-its-sharer`).
 
+The pager's backing, arena and spill are in the same manifest. The campaigns'
+backings fail a read, a lookup of identities and a verification at random, as
+a volume does where its store, its cache or a peer cannot answer or its VM is
+no longer this host's; the arena fails to make a file or allocate a page, as a
+memfd does for want of memory; and the spill's simulated disk fails as a
+device does. A guest whose request meets one of them has its session ended, as
+production ends it on any error a fault is answered with (TASK-112 would serve
+a store's refusal once it answers), and its host closes it. The host also
+verifies each region on a timer, as a session does.
+
 A seed replays only where every step that goes on beside another is one the
 run admits. Turning lost commands on found where that did not hold, each the
 Go runtime's choice: an eviction revoked a page from each region that maps it

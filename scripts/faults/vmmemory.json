@@ -1,5 +1,5 @@
 {
- "comment": "The pager's client: the VMM process that maps a memory region (vmmemory.Mapping), as connection_linux.go speaks to it. The test client is mapping and batchedMapping in vmmemory/memory_test.go; the campaigns attach with batchedMapping on odd seeds. See scripts/check-faults.py.",
+ "comment": "The pager's boundaries. Its client: the VMM process that maps a memory region (vmmemory.Mapping), as connection_linux.go speaks to it; the test client is mapping and batchedMapping in vmmemory/memory_test.go, and the campaigns attach with batchedMapping on odd seeds. Its backing: a volume (volume.Volume), which reads object storage, its cache and, for a migration's destination, a peer host; the test backings are backing, slowBacking and peerBacking. Its arena: the Linux arena's memfds (vmmemory/linux.go), which allocate memory as a page is put at a slot; the test arena is arena in memory_test.go. Its spill: a file on a local device (platform.File through zirconvm.SpillStorage), a simulated disk in the campaigns. Any error a guest's request is answered with ends its session, as Connection.serveFaults ends it, and a campaign's host then closes the machine (vmmemory/machine_test.go). An error of the caller's own making (a range outside the file, a context the caller ended) is not listed. See scripts/check-faults.py.",
  "interfaces": [
   {
    "package": "vmmemory",
@@ -12,6 +12,62 @@
   {
    "package": "vmmemory",
    "name": "BatchRevocation"
+  },
+  {
+   "package": "vmmemory",
+   "name": "Backing"
+  },
+  {
+   "package": "vmmemory",
+   "name": "PagedBacking"
+  },
+  {
+   "package": "vmmemory",
+   "name": "EphemeralBacking"
+  },
+  {
+   "package": "vmmemory",
+   "name": "SparseLoader"
+  },
+  {
+   "package": "vmmemory",
+   "name": "UnpublishedLoader"
+  },
+  {
+   "package": "vmmemory",
+   "name": "UnpublishedInstaller"
+  },
+  {
+   "package": "vmmemory",
+   "name": "Arena"
+  },
+  {
+   "package": "vmmemory",
+   "name": "ArenaFile"
+  },
+  {
+   "package": "vmmemory",
+   "name": "ZeroFile"
+  },
+  {
+   "package": "vmmemory",
+   "name": "EqualFile"
+  },
+  {
+   "package": "vmmemory",
+   "name": "CountedFile"
+  },
+  {
+   "package": "vmmemory",
+   "name": "ClosableFile"
+  },
+  {
+   "package": "platform",
+   "name": "File"
+  },
+  {
+   "package": "platform",
+   "name": "AllocatingFile"
   }
  ],
  "faults": [
@@ -140,6 +196,198 @@
    "package": "vmmemory",
    "run": "^(TestPrefetchSurvivesItsFaultsAndReachesItsProbes|TestTheMappingRulesSurviveTheirCampaign|TestAForkPointsChildrenReadWhatItLentWhileItsSealEnds)$",
    "purpose": "a command whose answer never came, so the pager cannot tell whether the client applied it: the region is terminal from here; no run of the batch is revoked"
+  },
+  {
+   "interface": "vmmemory.Backing",
+   "method": "Size",
+   "none": "the volume's size, which it holds"
+  },
+  {
+   "interface": "vmmemory.Backing",
+   "method": "Load",
+   "error": "a read error",
+   "site": "vmmemory-test/backing-read-fails/load",
+   "package": "vmmemory",
+   "run": "^(TestPrefetchSurvivesItsFaultsAndReachesItsProbes|TestTheMappingRulesSurviveTheirCampaign|TestAForkPointsChildrenReadWhatItLentWhileItsSealEnds)$",
+   "purpose": "the volume could not read the range: its object store or its cache failed, a sealed source's ReadDirty failed, or its VM ended (ErrNeedsRecovery). The fault fails, and the guest's session with it (TASK-112 would serve a store's refusal once it answers); a prefetch's read that fails ends nothing"
+  },
+  {
+   "interface": "vmmemory.Backing",
+   "method": "Verify",
+   "error": "the VM is not this host's",
+   "site": "vmmemory-test/backing-not-owned/verify",
+   "package": "vmmemory",
+   "run": "^(TestPrefetchSurvivesItsFaultsAndReachesItsProbes|TestTheMappingRulesSurviveTheirCampaign|TestAForkPointsChildrenReadWhatItLentWhileItsSealEnds)$",
+   "purpose": "ErrHandedOff, ErrClosed or ErrNeedsRecovery: MemoryRegion.Verify fails, and the session ends, as Connection.verify ends it"
+  },
+  {
+   "interface": "vmmemory.Backing",
+   "method": "Locate",
+   "error": "a read error",
+   "site": "vmmemory-test/backing-read-fails/locate",
+   "package": "vmmemory",
+   "run": "^(TestPrefetchSurvivesItsFaultsAndReachesItsProbes|TestTheMappingRulesSurviveTheirCampaign|TestAForkPointsChildrenReadWhatItLentWhileItsSealEnds)$",
+   "purpose": "the segments of the checkpoint index the range falls in could not be read, or the VM ended: the fault that looked the range up fails"
+  },
+  {
+   "interface": "vmmemory.PagedBacking",
+   "method": "PageSize",
+   "none": "the volume's page, which it holds"
+  },
+  {
+   "interface": "vmmemory.EphemeralBacking",
+   "method": "Ephemeral",
+   "none": "whether the volume is an ephemeral disk, which it holds"
+  },
+  {
+   "interface": "vmmemory.SparseLoader",
+   "method": "LoadPages",
+   "error": "a read error",
+   "site": "vmmemory-test/backing-read-fails/load-pages",
+   "package": "vmmemory",
+   "run": "^(TestPrefetchSurvivesItsFaultsAndReachesItsProbes|TestTheMappingRulesSurviveTheirCampaign|TestAForkPointsChildrenReadWhatItLentWhileItsSealEnds)$",
+   "purpose": "as Load's: the read of a window's wanted pages fails"
+  },
+  {
+   "interface": "vmmemory.UnpublishedLoader",
+   "method": "LoadUnpublished",
+   "error": "a read error",
+   "site": "vmmemory-test/backing-read-fails/load-unpublished",
+   "package": "vmmemory",
+   "run": "^(TestPrefetchSurvivesItsFaultsAndReachesItsProbes|TestTheMappingRulesSurviveTheirCampaign|TestAForkPointsChildrenReadWhatItLentWhileItsSealEnds)$",
+   "purpose": "a migration's peer backing could not reach the source host, or the source could not read its seal: the fault fails"
+  },
+  {
+   "interface": "vmmemory.UnpublishedInstaller",
+   "method": "UnpublishedLoader",
+   "none": "the embedded vmmemory.UnpublishedLoader, whose method has an entry of its own"
+  },
+  {
+   "interface": "vmmemory.UnpublishedInstaller",
+   "method": "InstalledUnpublished",
+   "none": "it tells the backing which pages the region holds, and returns nothing"
+  },
+  {
+   "interface": "vmmemory.Arena",
+   "method": "File",
+   "error": "ENOMEM or EMFILE",
+   "site": "vmmemory-test/arena-out-of-memory/file",
+   "package": "vmmemory",
+   "run": "^(TestPrefetchSurvivesItsFaultsAndReachesItsProbes|TestTheMappingRulesSurviveTheirCampaign|TestAForkPointsChildrenReadWhatItLentWhileItsSealEnds)$",
+   "purpose": "making a memfd, or mapping it, failed for want of descriptors or memory: an attach fails, a machine that never starts, and a child's fault that needed its fork point's file fails"
+  },
+  {
+   "interface": "vmmemory.ArenaFile",
+   "method": "Read",
+   "none": "reading a slot of a memfd this process made and maps reads memory, and does not fail; a slot outside the file (ErrRange) is the caller's own"
+  },
+  {
+   "interface": "vmmemory.ArenaFile",
+   "method": "Write",
+   "error": "ENOMEM or ENOSPC",
+   "site": "vmmemory-test/arena-out-of-memory/write",
+   "package": "vmmemory",
+   "run": "^(TestPrefetchSurvivesItsFaultsAndReachesItsProbes|TestTheMappingRulesSurviveTheirCampaign|TestAForkPointsChildrenReadWhatItLentWhileItsSealEnds)$",
+   "purpose": "the slot's page could not be allocated, of the pod's memory (MADV_POPULATE_WRITE) or of the HugeTLB pool (fallocate), before anything was written: the fault or the copy that wanted the page fails"
+  },
+  {
+   "interface": "vmmemory.ArenaFile",
+   "method": "Release",
+   "none": "punching a slot of a memfd frees its page and does not fail: the kernel's interruption is retried, and a slot outside the file is the caller's own"
+  },
+  {
+   "interface": "vmmemory.ZeroFile",
+   "method": "Zero",
+   "error": "ENOMEM or ENOSPC",
+   "site": "vmmemory-test/arena-out-of-memory/zero",
+   "package": "vmmemory",
+   "run": "^(TestPrefetchSurvivesItsFaultsAndReachesItsProbes|TestTheMappingRulesSurviveTheirCampaign|TestAForkPointsChildrenReadWhatItLentWhileItsSealEnds)$",
+   "purpose": "as Write's, for a run of slots made zeros: none of the run holds a page"
+  },
+  {
+   "interface": "vmmemory.EqualFile",
+   "method": "Equal",
+   "none": "it compares two slots through this process's own mapping, and does not fail"
+  },
+  {
+   "interface": "vmmemory.CountedFile",
+   "method": "AllocatedBytes",
+   "none": "an fstat of a memfd this process holds open does not fail"
+  },
+  {
+   "interface": "vmmemory.CountedFile",
+   "method": "Punch",
+   "none": "as Release's punch: a file whose kernel cannot say where its data is is walked slot by slot"
+  },
+  {
+   "interface": "vmmemory.ClosableFile",
+   "method": "Close",
+   "none": "unmapping and closing a memfd releases it whatever the calls return"
+  },
+  {
+   "interface": "platform.File",
+   "method": "ReadAt",
+   "error": "an I/O error",
+   "site": "sim/disk/io-error/read",
+   "package": "vmmemory",
+   "run": "^(TestPrefetchSurvivesItsFaultsAndReachesItsProbes|TestTheMappingRulesSurviveTheirCampaign|TestAForkPointsChildrenReadWhatItLentWhileItsSealEnds)$",
+   "purpose": "the spill's device failed a fault's read of a spilled page: the page's bytes are not to be had, and the fault fails"
+  },
+  {
+   "interface": "platform.File",
+   "method": "WriteAt",
+   "error": "an I/O error",
+   "site": "sim/disk/io-error/write",
+   "package": "vmmemory",
+   "run": "^(TestPrefetchSurvivesItsFaultsAndReachesItsProbes|TestTheMappingRulesSurviveTheirCampaign|TestAForkPointsChildrenReadWhatItLentWhileItsSealEnds)$",
+   "purpose": "the spill's device failed an eviction's write: the victim keeps its slot and its bytes, its mappings already taken away, and the allocation that evicted it fails"
+  },
+  {
+   "interface": "platform.File",
+   "method": "Truncate",
+   "error": "an I/O error",
+   "site": "sim/disk/io-error/truncate",
+   "package": "vmmemory",
+   "run": "^TestAPagerWhoseSpillFileFailsNeverStartsAndSaysWhy$",
+   "purpose": "the spill file could not be emptied: vmmemory.New fails, a host that never starts, or Close reports it"
+  },
+  {
+   "interface": "platform.File",
+   "method": "Sync",
+   "none": "the spill is scratch, never synced"
+  },
+  {
+   "interface": "platform.File",
+   "method": "Size",
+   "none": "the spill never asks its size"
+  },
+  {
+   "interface": "platform.File",
+   "method": "Close",
+   "none": "the spill's owner closes the file, not the pager"
+  },
+  {
+   "interface": "platform.AllocatingFile",
+   "method": "File",
+   "none": "the embedded platform.File, whose methods have entries of their own"
+  },
+  {
+   "interface": "platform.AllocatingFile",
+   "method": "Allocate",
+   "error": "an I/O error",
+   "site": "sim/disk/io-error/allocate",
+   "package": "vmmemory",
+   "run": "^TestAPagerWhoseSpillFileFailsNeverStartsAndSaysWhy$",
+   "purpose": "the spill file's extent could not be reserved: vmmemory.New fails, a host that never starts"
+  },
+  {
+   "interface": "platform.AllocatingFile",
+   "method": "Allocate",
+   "error": "ErrNoSpace",
+   "site": "sim/disk/no-space/allocate",
+   "package": "vmmemory",
+   "run": "^TestAPagerWhoseSpillFileFailsNeverStartsAndSaysWhy$",
+   "purpose": "the device has no room for the spill's extent: vmmemory.New fails, a host that never starts"
   }
  ]
 }

@@ -3,7 +3,6 @@ package vmmemory_test
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"math/rand/v2"
 	"os"
@@ -540,7 +539,7 @@ func TestAForkPointsChildrenReadWhatItLentWhileItsSealEnds(t *testing.T) {
 // A seed of the fork campaign replays (testReplays).
 func TestForkCampaignReplaysItsSeeds(t *testing.T) {
 	vmmemory.SetCheckpointBatchPages(t, 2)
-	testReplays(t, []uint64{2, 5, 10}, forkCampaign)
+	testReplays(t, []uint64{1, 2, 6}, forkCampaign)
 }
 
 // forkCampaign runs one seed of the fork campaign.
@@ -557,7 +556,10 @@ func forkWorld(t *testing.T, ctx context.Context, seed uint64, disk *sim.Disk, c
 		ResidentPages: 16, LogicalPages: 64 + forkCampaignPages*(children-2),
 		DirtyPages: 32 + forkCampaignPages*(children-2), ReadAheadPages: 1})
 	if err != nil {
-		t.Error(err)
+		// A host whose spill file could not be made never started.
+		if !injected(err) {
+			t.Error(err)
+		}
 		return
 	}
 	// Production's client takes runs in batches; odd seeds take that path.
@@ -565,14 +567,14 @@ func forkWorld(t *testing.T, ctx context.Context, seed uint64, disk *sim.Disk, c
 	random := rand.New(rand.NewPCG(seed, 0))
 	parent, err := forkParent(sim.WithTask(ctx, "parent"), f)
 	if err != nil {
-		// A parent whose client lost a command before its point was made, or
-		// as it attached, has no children to check.
+		// A parent that failed of an injected fault before its point was
+		// made, or as it attached, has no children to check.
 		if parent != nil {
-			if !parent.gone() {
+			if !parent.lose(err) {
 				t.Error(err)
 			}
 			parent.close(ctx, t)
-		} else if !errors.Is(err, errInjected) {
+		} else if !injected(err) {
 			t.Error(err)
 		}
 		return
@@ -585,9 +587,9 @@ func forkWorld(t *testing.T, ctx context.Context, seed uint64, disk *sim.Disk, c
 			b.data[page*f.pageSize] = value
 		}
 		r, m, err := f.tryAttachBacking(vmmemory.MemoryRegionBacking{Kind: vmmemory.Ram, Backing: b})
-		if errors.Is(err, errInjected) {
-			// The child's client lost a command as it attached: a machine
-			// that never started.
+		if injected(err) {
+			// The child failed of an injected fault as it attached: a
+			// machine that never started.
 			continue
 		}
 		if err != nil {

@@ -61,6 +61,10 @@ func (b *slowBacking) Load(ctx context.Context, offset uint64, dst []byte) error
 }
 
 func (b *slowBacking) LoadPages(ctx context.Context, offset uint64, dst []byte, wanted []bool) error {
+	// A campaign's read fails at random, as Load's does.
+	if sim.Buggify(ctx, "vmmemory-test/backing-read-fails/load-pages", 0.002) {
+		return errInjected
+	}
 	size := uint64(b.pageSize)
 	pages := uint64(len(dst)) / size
 	carried := uint64(0)

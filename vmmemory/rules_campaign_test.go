@@ -65,7 +65,10 @@ func rulesWorld(t *testing.T, ctx context.Context, seed uint64, disk *sim.Disk, 
 		ResidentPages: logical * 3 / 4, ArenaOffsets: 2 * logical, LogicalPages: logical, DirtyPages: logical,
 		ReadAheadPages: 16, WriteAheadPages: 1, PrefetchRuns: 2})
 	if err != nil {
-		t.Error(err)
+		// A host whose spill file could not be made never started.
+		if !injected(err) {
+			t.Error(err)
+		}
 		return vmmemory.Stats{}
 	}
 	// Production's client takes runs in batches; odd seeds take that path.

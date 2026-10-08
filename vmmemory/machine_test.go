@@ -6,21 +6,26 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/vmmemory"
 )
 
 // machine is a campaign guest's VM as its host runs it. Its tasks, a vCPU, a
 // flusher or the campaign's last look at its memory, run under its VMM's
-// context. When its region fails of a fault its client injected
-// (lostToItsClient), the host learns of it from the session, as
-// Connection.verify does, and ends the VMM, which ends every fault and
-// command it had in flight; once nothing of it runs, the host closes it
-// (Connection.Close), which detaches the region. The pages it held are then
-// back for the guests that go on, as a host gives a dead VM's memory back at
-// once: a campaign that left a lost guest attached to the end starved the
-// others of slots. A region that fails of anything else is the pager's
+// context. Its session ends as production's does: where its region fails of a
+// fault its client injected (lostToItsClient), which the host learns of as
+// Connection.verify does, and where a request of its guest is answered with
+// an error a fault injected, a backing's read, an arena's allocation or the
+// spill's I/O, as Connection.serveFaults ends it. The host then ends the VMM,
+// which ends every fault and command it had in flight, and once nothing of it
+// runs closes it (Connection.Close), which detaches the region. The pages it
+// held are then back for the guests that go on, as a host gives a dead VM's
+// memory back at once: a campaign that left a lost guest attached to the end
+// starved the others of slots. The host also verifies the region on a timer,
+// as Connection.verify does. An error no fault injected is the pager's
 // failure, which the guest's tasks report.
 type machine struct {
 	name   string
@@ -36,8 +41,11 @@ type machine struct {
 	mu      sync.Mutex
 	running int
 	stopped chan struct{}
-	// lost is set once the machine is gone (gone).
-	lost atomic.Bool
+	// lost is set once the machine is gone (gone), and failed closed once its
+	// session has ended of an injected fault.
+	lost       atomic.Bool
+	failed     chan struct{}
+	failedOnce sync.Once
 	// closed is set once the machine's region is detached.
 	closed bool
 }
@@ -48,6 +56,7 @@ var errMachineGone = errors.New("the machine's VMM has ended")
 // boot starts the machine's VMM under world.
 func (g *machine) boot(world context.Context) {
 	g.ctx, g.end = context.WithCancelCause(world)
+	g.failed = make(chan struct{})
 }
 
 // run runs one of the machine's tasks, named task, under its VMM's context,
@@ -106,8 +115,33 @@ func (g *machine) gone() bool {
 	return true
 }
 
-// lose reports whether err ended the machine: it is gone.
-func (g *machine) lose(err error) bool { return err != nil && g.gone() }
+// lose reports whether err ended the machine's session: it is gone, or err is
+// a fault the campaign injected, which ends the session as any error a
+// request of its guest is answered with does.
+func (g *machine) lose(err error) bool {
+	if err == nil {
+		return false
+	}
+	if !g.gone() && !injected(err) {
+		return false
+	}
+	g.lost.Store(true)
+	g.failedOnce.Do(func() {
+		// A machine never booted has no host to tell.
+		if g.failed != nil {
+			close(g.failed)
+		}
+	})
+	return true
+}
+
+// injected reports an error a campaign's fixtures or simulated platform
+// injected: a fixture's, a device's (EIO), or a filesystem's refusal for want
+// of space, which a simulated disk makes whatever it holds.
+func injected(err error) bool {
+	return errors.Is(err, errInjected) || errors.Is(err, platform.ErrInjectedFault) ||
+		errors.Is(err, platform.ErrNoSpace)
+}
 
 // lostToItsClient reports whether region is a machine its client ended: the
 // region failed after the client injected a fault it cannot survive (a lost
@@ -116,23 +150,45 @@ func lostToItsClient(region *vmmemory.MemoryRegion, m *mapping) bool {
 	return m.injected.Load() && vmmemory.Failed(region) != nil
 }
 
-// host is the machine's host until stop closes: once the machine is gone, it
-// ends the VMM, waits for the machine's tasks to stop and closes it. ctx is
-// the host's own, not the VMM's.
+// verifyInterval is how often a campaign's host verifies a machine's region.
+const verifyInterval = 5 * time.Millisecond
+
+// host is the machine's host until stop closes: it verifies the region every
+// verifyInterval, and once the machine is gone it ends the VMM, waits for the
+// machine's tasks to stop and closes it. ctx is the host's own, not the VMM's.
 func (g *machine) host(ctx context.Context, t *testing.T, stop <-chan struct{}) {
-	select {
-	case <-vmmemory.Ended(g.region):
-	case <-stop:
-		return
-	}
-	// Whatever ended the region goes on beside the host; in a controlled run
-	// they go on one at a time, in the order it chooses.
-	if err := sim.Admit(ctx, "campaign/close"); err != nil {
-		t.Errorf("%s host: %v", g.name, err)
-		return
-	}
-	if !g.gone() {
-		return
+	for {
+		select {
+		case <-vmmemory.Ended(g.region):
+		case <-g.failed:
+		case <-time.After(verifyInterval):
+		case <-stop:
+			return
+		}
+		// Whatever woke the host goes on beside it; in a controlled run they go
+		// on one at a time, in the order it chooses. What it does then is
+		// decided by what holds by then, not by which of them woke it.
+		if err := sim.Admit(ctx, "campaign/host"); err != nil {
+			t.Errorf("%s host: %v", g.name, err)
+			return
+		}
+		if g.gone() {
+			break
+		}
+		if vmmemory.Failed(g.region) != nil {
+			// A failure of the pager, which the guest's tasks report.
+			return
+		}
+		err := g.region.Verify(ctx)
+		if errors.Is(err, vmmemory.ErrClosed) {
+			// The machine's own guest stopped it, as a fork campaign's parent
+			// may: there is nothing left to host.
+			return
+		}
+		if err != nil && !g.lose(err) {
+			t.Errorf("%s verifying: %v", g.name, err)
+			return
+		}
 	}
 	g.end(errMachineGone)
 	if err := g.waitStopped(ctx); err != nil {

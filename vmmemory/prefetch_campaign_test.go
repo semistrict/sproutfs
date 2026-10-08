@@ -3,7 +3,6 @@ package vmmemory_test
 import (
 	"cmp"
 	"context"
-	"errors"
 	"fmt"
 	"maps"
 	"math/rand/v2"
@@ -121,7 +120,10 @@ func prefetchWorld(t *testing.T, ctx context.Context, seed uint64, disk *sim.Dis
 		ResidentPages: 24, LogicalPages: campaignPages * (guestCount + 1), DirtyPages: campaignPages * guestCount,
 		ReadAheadPages: 4, PrefetchRuns: 2})
 	if err != nil {
-		t.Error(err)
+		// A host whose spill file could not be made never started.
+		if !injected(err) {
+			t.Error(err)
+		}
 		return
 	}
 	// Production's client takes runs in batches; odd seeds take that path.
@@ -224,7 +226,9 @@ func checkCampaignGuest(ctx context.Context, t *testing.T, g *campaignGuest) {
 // with no scheduler, and the two went on side by side at one instant, outside
 // any turn of the run, both faults that go on to take slots. Once done has
 // closed nothing waits: the fixture closes the file after the scheduler has
-// stopped.
+// stopped. The disk fails at random, as a device does (EIO, ENOSPC): an
+// eviction's spill, a fault's read of a spilled page and the pager's making
+// and giving back of the file.
 func scheduledSpillDisk(seed uint64, scheduler *sim.Scheduler, done <-chan struct{}) *sim.Disk {
 	wait := func(ctx context.Context, id string, minimum, maximum time.Duration) error {
 		select {
@@ -234,7 +238,7 @@ func scheduledSpillDisk(seed uint64, scheduler *sim.Scheduler, done <-chan struc
 		}
 		return scheduler.Wait(ctx, id, minimum, maximum)
 	}
-	return sim.New(sim.Config{Seed: seed, Wait: wait}).NewDisk("pager", sim.DiskConfig{})
+	return sim.New(sim.Config{Seed: seed, Wait: wait, Buggify: true}).NewDisk("pager", sim.DiskConfig{})
 }
 
 // A seed of the campaign replays (testReplays). Before 2026-10-04 one did not:
@@ -277,12 +281,12 @@ func campaignGuests(f *fixture, forks int) []*campaignGuest {
 }
 
 // attachGuest attaches a campaign's guest, which must read want. A guest
-// whose client loses a command as it attaches is a machine that never
+// that fails of an injected fault as it attaches is a machine that never
 // started: it is nil.
 func (f *fixture) attachGuest(name string, kind vmmemory.MemoryRegionKind, b vmmemory.Backing,
 	want []byte) *campaignGuest {
 	r, m, err := f.tryAttachBacking(vmmemory.MemoryRegionBacking{Kind: kind, Backing: b})
-	if errors.Is(err, errInjected) {
+	if injected(err) {
 		return nil
 	}
 	if err != nil {
