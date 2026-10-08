@@ -19,3 +19,12 @@ func SetReadSpillSeam(t *testing.T, seam func()) {
 	readSpillSeam = seam
 	t.Cleanup(func() { readSpillSeam = previous })
 }
+
+// SetDropLentRootSeam installs what the end of a fork point's seal runs once
+// a lent root's copies are taken and before they go. It is restored when the
+// test ends.
+func SetDropLentRootSeam(t *testing.T, seam func()) {
+	previous := dropLentRootSeam
+	dropLentRootSeam = seam
+	t.Cleanup(func() { dropLentRootSeam = previous })
+}

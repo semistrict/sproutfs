@@ -1453,12 +1453,30 @@ func (h *Host) lentHere(root *identityRoot, page *zirconvm.VmPage) bool {
 // page a child had read into it, and the pager panicked freeing a page a
 // child mapped.
 func (h *Host) dropLentRoot(ctx context.Context, root *identityRoot) error {
+	// The pages naming a parent's frame go first, each under its lock. A
+	// child's fork copy holds the lent page it replaces from start to end,
+	// and its copy joins root.copies before it lets go (forkCopy): once each
+	// lent page's lock has been taken here, every copy is in root.copies, and
+	// no copy starts after, because no lookup finds a lent page in the root.
+	// The seal's end takes most lent pages out under their locks before
+	// this, but not a page a retire published under another name, whose lent
+	// page stays. Before 2026-10-07 the copies were taken first, and a
+	// child's copy of such a page made meanwhile stayed in the root with its
+	// file gone: the next child to find it panicked giving itself the file.
+	if !sim.Bug(ctx, "pager-drop-lent-copies-before-their-lent-pages") {
+		if err := h.unlendRoot(ctx, root); err != nil {
+			return err
+		}
+	}
 	// A copy in the point's file goes with the root: every child that maps
 	// it reads it through its own backing from here.
 	h.mu.Lock()
 	copies := root.copies
 	root.copies = nil
 	h.mu.Unlock()
+	if dropLentRootSeam != nil {
+		dropLentRootSeam()
+	}
 	for _, page := range copies {
 		if err := h.lockPage(ctx, page); err != nil {
 			return err
@@ -1473,14 +1491,9 @@ func (h *Host) dropLentRoot(ctx context.Context, root *identityRoot) error {
 			return err
 		}
 	}
-	// No copy joins root.copies once they are taken above. A copy is made by
-	// a child's fault holding the lent page it replaces (forkCopy), and the
-	// seal's end has taken every lent page out of the root under its lock
-	// before this runs, which waited for any copy under way: a point
-	// publishes its pages under the name it lent them, so adopting a page
-	// took its lent page out, and a page that went anywhere else was unlent.
-	// In a controlled run another task goes on here; the root goes whole
-	// whatever it says.
+	// No copy joins root.copies once they are taken above: the lent pages
+	// went first. In a controlled run another task goes on here; the root
+	// goes whole whatever it says.
 	cancelled := sim.Admit(ctx, "vmmemory/drop-lent-root")
 	h.mu.Lock()
 	lent := root.lentPages
@@ -1511,6 +1524,40 @@ func (h *Host) dropLentRoot(ctx context.Context, root *identityRoot) error {
 	}
 	return context.Cause(ctx)
 }
+
+// unlendRoot takes every page naming a parent's frame out of a lent root,
+// each under its lock, which waits for a child's fork copy of it under way.
+// A copy takes its lent page out of root.lentPages itself, and one that took
+// the page's place first leaves nothing here to remove.
+func (h *Host) unlendRoot(ctx context.Context, root *identityRoot) error {
+	h.mu.Lock()
+	lent := slices.Clone(root.lentPages)
+	h.mu.Unlock()
+	for _, page := range lent {
+		if err := h.lockPage(ctx, page); err != nil {
+			return err
+		}
+		h.mu.Lock()
+		if f := frameOf(page); f.lent == page {
+			f.lent = nil
+		}
+		root.lentPages = slices.DeleteFunc(root.lentPages, func(p *zirconvm.VmPage) bool { return p == page })
+		h.mu.Unlock()
+		if link, ok := h.node.PageQueues().Backlink(page); ok {
+			lock := link.Cow.Lock()
+			lock.Lock()
+			link.Cow.RemovePageLocked(link.Offset, page)
+			lock.Unlock()
+		}
+		h.unlockPage(page)
+	}
+	return nil
+}
+
+// dropLentRootSeam runs in the end of a fork point's seal once a lent root's
+// copies are taken and before they go. It is nil in production; a test
+// faults a child on a lent page there.
+var dropLentRootSeam func()
 
 // dropSharers takes page away from every binding that maps it but keep: a
 // page the guest takes back as dirty state, or that goes back to the arena,

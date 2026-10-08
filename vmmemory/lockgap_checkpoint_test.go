@@ -130,6 +130,71 @@ func TestAChildFaultingDuringItsParentsRetireMapsNoPageTheRetireGaveBack(t *test
 	})
 }
 
+// A retire that publishes a page under another name than the one a fork
+// point lends it under leaves the lent page in the point's root once it lets
+// the page go, and a child's fault on it copies it into the point's file. The
+// end of the seal takes each lent page out under its lock before it takes the
+// root's copies, so it waits for that copy and drops it with the rest. Before
+// 2026-10-07 it took the copies first: a copy made meanwhile stayed in the
+// root, the file was dropped from under the child that mapped it, and the
+// next child to find the copy panicked giving itself the file (the
+// unscheduled soak).
+func TestTheEndOfASealWaitsForAChildsCopyOfAPageTheRetirePublishedElsewhere(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := isolatedFixture(t, vmmemory.Config{ResidentPages: 16, LogicalPages: 32, DirtyPages: 8,
+			ReadAheadPages: 1})
+		vmmemory.SetCheckpointBatchPages(t, 1)
+		parent, pm, pb, cb := lendingParent(t, f)
+		child, cm := f.attach(cb)
+		share(t, f, parent, cb)
+		// The publication names the pages under the parent's own volume, not
+		// the point's name.
+		published, err := f.publishCheckpoint(f.ctx, parent, pb)
+		if err != nil {
+			t.Fatal(err)
+		}
+		copying := make(chan struct{})
+		var faulted error
+		var fault sync.WaitGroup
+		vmmemory.SetForkCopySeam(t, func(page uint64) {
+			close(copying)
+			// The copy is made, its lent page held: the seal's end goes on
+			// until it waits.
+			synctest.Wait()
+		})
+		entered := false
+		pb.onLocate = func(offset, _ uint64) {
+			if offset != uint64(f.pageSize) || entered {
+				return
+			}
+			// The retire's second batch looks its page up with nothing held,
+			// after the first published page 0.
+			entered = true
+			fault.Go(func() { faulted = child.Fault(f.ctx, 0, false) })
+			<-copying
+		}
+		vmmemory.SetDropLentRootSeam(t, fault.Wait)
+		if err := parent.Checkpoint().Retire(f.ctx, published); err != nil {
+			t.Fatal(err)
+		}
+		if !entered || faulted != nil {
+			t.Fatalf("the child's fault during the retire ran %t and returned %v, want it run and served", entered, faulted)
+		}
+		if got := access(t, child, cm, 0, false)[0]; got != 44 || cm.number(0) == 3 {
+			t.Fatalf("the child reads %d at page 0 from file %d, want the 44 its volume holds, from no point's file",
+				got, cm.number(0))
+		}
+		// Another child of the point finds no copy the point's file held.
+		sibling, sm := f.attach(pointChild(f, cb))
+		if got := access(t, sibling, sm, 0, false)[0]; got != 44 {
+			t.Fatalf("another child reads %d at page 0, want 44", got)
+		}
+		if got := access(t, parent, pm, 0, false)[0]; got != 44 {
+			t.Fatalf("the parent reads %d at page 0, want its own 44", got)
+		}
+	})
+}
+
 // An unseal that hands a page a fork point lends back to its guest takes the
 // point's name for it away under the page's lock, so a child that faults on
 // the page while the unseal goes on reads it through its own volume and never
