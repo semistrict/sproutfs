@@ -2379,6 +2379,11 @@ SPROUTFS_VM_MEMORY_REPEAT=20 scripts/test-vm-memory-lima.sh
 scripts/test-firecracker-lima.sh
 ```
 
+`scripts/test-vm-memory-gce.sh all` runs the vmmemory suite's Linux tests the
+same way on a disposable GCE VM, with the crate's example client as the VMM and
+a 2 MiB pool of `SPROUTFS_VM_MEMORY_HUGEPAGES` pages, and deletes the VM on
+exit. `SPROUTFS_VM_MEMORY_RUN` selects tests by `-test.run` pattern.
+
 Every suite builds its pagers in the arena mode `SPROUTFS_ARENA` names,
 `isolated` when it is unset. `just check` runs the Go suites of the packages
 whose pagers take the mode again under `SPROUTFS_ARENA=shared`, and the
