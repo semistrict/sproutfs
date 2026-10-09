@@ -107,9 +107,6 @@ type Host struct {
 	// protectedLocked.
 	displaced uint64
 	changed   chan struct{}
-	// revoked is closed, and replaced, whenever a revocation lands. A fault
-	// whose mapping its client refused waits for it. See revocations.
-	revoked chan struct{}
 	// windows lends out the buffers window reads fill, as *[]byte so that
 	// handing one back allocates nothing. See takeWindow.
 	windows   sync.Pool
@@ -248,10 +245,10 @@ func New(ctx context.Context, resources *resource.Budget, cfg Config, arena Aren
 	// 4 KiB, and one at 2 MiB, which is a pager with nothing to place.
 	extentPages := int(rangeBytes / pageSize)
 	h := &Host{changeSeed: maphash.MakeSeed(), pageSize: pageSize, cfg: cfg, clock: platform.ClockOr(cfg.Clock), spill: spillStorage, resources: resources,
-		arena:       arena,
-		extents:     make(map[extentKey]*extent),
-		extentPages: extentPages,
-		changed:     make(chan struct{}), revoked: make(chan struct{}),
+		arena:         arena,
+		extents:       make(map[extentKey]*extent),
+		extentPages:   extentPages,
+		changed:       make(chan struct{}),
 		requests:      sync.Pool{New: func() any { return zirconvm.NewPageRequest() }},
 		memoryRegions: make(map[*MemoryRegion]struct{}), highWater: highWater(cfg.DirtyPages),
 		io: make(chan struct{}, cfg.ConcurrentIO), writeback: make(chan struct{}, 1),
@@ -362,12 +359,6 @@ func (h *Host) changes() <-chan struct{} {
 	return h.changed
 }
 
-// revokedLocked records that a revocation landed. Caller holds h.mu.
-func (h *Host) revokedLocked() {
-	close(h.revoked)
-	h.revoked = make(chan struct{})
-}
-
 // takeWindow lends a fault the bytes its window read fills, of the given pages
 // of this pager. A window read covers the whole span of the pages it is
 // fetching, holes and all, so a fault that wants two pages at opposite ends of
@@ -416,18 +407,6 @@ func (h *Host) beginCheckpointIO(ctx context.Context) (func(), error) {
 	case <-ctx.Done():
 		return nil, context.Cause(ctx)
 	}
-}
-
-// revocations reports the signal the host's next revocation closes. A client
-// refuses a mapping command for want of mapping budget, and a revocation is the
-// only work of this pager's that gives a client budget back. Any other change
-// does not: a fault that waited for any change would be woken by the pages it
-// takes and gives back itself, and two refused faults would wake each other
-// for as long as their client refuses them.
-func (h *Host) revocations() <-chan struct{} {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.revoked
 }
 
 // closeRoots is what Close does before it gives back every slot: once no

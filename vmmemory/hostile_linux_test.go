@@ -128,6 +128,9 @@ const (
 	stayQuiet
 	// hangUp closes the socket instead of answering.
 	hangUp
+	// rejectStale answers ESTALE, which is how a client refuses a command
+	// whose generation is not the one it holds.
+	rejectStale
 	answerKinds
 )
 
@@ -906,6 +909,9 @@ func (p *hostilePeer) respond() {
 		case hangUp:
 			_ = p.conn.Close()
 			return
+		case rejectStale:
+			ack.Flags = uint64(syscall.ESTALE)
+			reply = ack.Bytes()
 		}
 		if p.write(reply) != nil {
 			return
@@ -957,7 +963,7 @@ var hostileCases = []struct {
 	{"a store into a page it never read", hostileScript{awaitEnd: true,
 		ops: []hostileOp{{opFault, 1, 1}}}, "UFFDIO_CONTINUE"},
 	{"a store after a refused populate", hostileScript{pmem: true, inherits: true, answers: []answer{refuse, acknowledge},
-		ops: []hostileOp{{opFault, 2, 7}, {opLinger, 0, 0}}}, "managed-memory mapping refused"},
+		ops: []hostileOp{{opFault, 2, 7}, {opLinger, 0, 0}}}, "UFFDIO_CONTINUE"},
 	{"a fault on a page it shares", hostileScript{inherits: true, awaitEnd: true,
 		ops: []hostileOp{{opFault, 1, 1}}}, "UFFDIO_CONTINUE"},
 	{"faults past its queue", hostileScript{awaitEnd: true, answers: []answer{acknowledge, stayQuiet},
@@ -976,6 +982,11 @@ var hostileCases = []struct {
 		"invalid mapping acknowledgement"},
 	{"a refusal of its readiness", hostileScript{awaitEnd: true, answers: []answer{refuse}},
 		"managed-memory mapping refused"},
+	{"a rejection of its readiness for its generation", hostileScript{awaitEnd: true, answers: []answer{rejectStale}},
+		"the client rejected a mapping command: stale file handle"},
+	{"a rejection of a fault's mapping for its generation", hostileScript{awaitEnd: true,
+		answers: []answer{acknowledge, rejectStale}, ops: []hostileOp{{opFault, 0, 0}}},
+		"the client rejected a mapping command: stale file handle"},
 	{"a client that never answers", hostileScript{awaitEnd: true, answers: []answer{stayQuiet}},
 		"context deadline exceeded"},
 	{"a client that hangs up for an answer", hostileScript{awaitEnd: true, answers: []answer{hangUp}}, "EOF"},
@@ -1023,36 +1034,31 @@ func errorSays(err error, says string) bool {
 	return err != nil && says != "" && strings.Contains(err.Error(), says)
 }
 
-// A client refuses a mapping command when it is out of mapping budget, and a
-// refusal changed nothing, so the fault it was for is served again. What frees
-// a client's budget is a revocation, so that is what the fault waits for. It
-// does not wait for any other change on the host: two refused faults would
-// otherwise wake each other, since each one takes and gives back pages, and a
-// client that refuses every command would keep the pager serving it for as
-// long as it lives.
-func TestARefusedFaultWaitsForARevocation(t *testing.T) {
-	// Each fault reads its page alone. A prefetch behind a fault would map
-	// what it read with a command of its own, which the client refuses too,
-	// and whether it lands before the client hangs up is a race this test
-	// is not about.
+// A client refuses a mapping command when it is out of mapping budget, and the
+// budget is its own memory region's mappings, so the session takes those back
+// and serves the fault again rather than wait for a revocation, which with no
+// other work on the host never comes. A memory region that maps nothing has
+// nothing to take back, and the fault would only be refused again, so its
+// session ends on the refusal at once.
+func TestARefusedFaultWithNothingToTakeBackEndsItsSession(t *testing.T) {
+	// The fault reads its page alone. A prefetch behind it would map what it
+	// read with a command of its own.
 	fx := newHostileFixtureReading(t, suiteArena, 4, 1)
 	before := kernelStats(t, fx.h)
-	// The two faults are on different pages, so they are served at once.
 	// After the READY, the client refuses every command.
-	end := fx.round(t, hostileScript{answers: []answer{acknowledge, refuse}, ops: []hostileOp{
-		{opFault, 0, 0}, {opFault, 4, 0},
-		{opAwait, 0, 0}, {opAwait, 0, 0},
-		// The pager has nothing to revoke, so no command arrives now.
-		{opLinger, 0, 0},
-	}})
-	if !errorSays(end.err, "EOF") {
-		t.Fatalf("the refusing session ended with %q, want the client's hanging up", end.err)
+	end := fx.round(t, hostileScript{awaitEnd: true, answers: []answer{acknowledge, refuse},
+		ops: []hostileOp{{opFault, 0, 0}}})
+	for _, want := range []string{"page 0 fault (write=false): managed-memory mapping refused: no space left on device",
+		"and the memory region maps no page it could take back"} {
+		if !errorSays(end.err, want) {
+			t.Fatalf("the refusing session ended with %q, want it to say %q", end.err, want)
+		}
 	}
-	if end.commands != 3 {
-		t.Fatalf("the pager sent the refusing client %d commands, want 3: the READY and one mapping per fault", end.commands)
+	if end.commands != 2 {
+		t.Fatalf("the pager sent the refusing client %d commands, want 2: the READY and the fault's mapping", end.commands)
 	}
-	if refused := kernelStats(t, fx.h).RefusedMappings - before.RefusedMappings; refused != 2 {
-		t.Fatalf("the pager deferred %d refused faults, want 2", refused)
+	if refused := kernelStats(t, fx.h).RefusedMappings - before.RefusedMappings; refused != 1 {
+		t.Fatalf("the pager counted %d refused faults, want 1", refused)
 	}
 }
 

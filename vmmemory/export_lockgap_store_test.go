@@ -53,5 +53,6 @@ func HarvestPage(ctx context.Context, r *MemoryRegion, index uint64) (bool, erro
 	if err != nil || page == nil {
 		return false, err
 	}
-	return true, h.harvestPages(ctx, []*zirconvm.VmPage{page})
+	_, err = h.harvestPages(ctx, []*zirconvm.VmPage{page})
+	return true, err
 }

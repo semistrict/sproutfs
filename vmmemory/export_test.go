@@ -1,6 +1,7 @@
 package vmmemory
 
 import (
+	"context"
 	"fmt"
 	"testing"
 	"time"
@@ -134,6 +135,10 @@ const (
 	RepeatBurst    = repeatBurst
 	RepeatInterval = repeatInterval
 )
+
+// HarvestOwn takes back every mapping of r it can, as a session does when its
+// client refuses one of r's mappings for want of budget.
+func HarvestOwn(ctx context.Context, r *MemoryRegion) (int, error) { return r.harvestOwn(ctx) }
 
 // Repeated reports whether a fault on page for this access would be a repeated
 // fault, which the Linux transport paces.

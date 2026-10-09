@@ -101,7 +101,6 @@ func (r *MemoryRegion) revokeBindings(ctx context.Context, bindings []*binding) 
 		h.stats.Revocations += uint64(commands)
 		h.stats.RevokeRuns += uint64(count)
 		h.stats.RevokedPages += uint64(pages)
-		h.revokedLocked()
 		h.mu.Unlock()
 		return nil
 	})
@@ -126,7 +125,6 @@ func (r *MemoryRegion) revoke(ctx context.Context, b *binding) error {
 		h.stats.Revocations++
 		h.stats.RevokeRuns++
 		h.stats.RevokedPages++
-		h.revokedLocked()
 		h.mu.Unlock()
 		return nil
 	})

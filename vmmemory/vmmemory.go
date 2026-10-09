@@ -110,14 +110,15 @@ var (
 	// ErrContended reports a faulting page whose identity kept losing
 	// publication races. It is retryable and never observed in practice.
 	ErrContended = errors.New("managed-memory page could not be resolved")
-	// ErrMappingRefused reports a mapping command the client refused: it checks
-	// what a command would cost its mapping budget before it touches anything,
-	// so a refusal is the one failure that is known to have changed nothing.
-	// Nothing about the client's mappings moved, which makes it a failed
-	// operation rather than a failed session — the pages are not mapped, the
-	// memory region goes on serving, and the fault is served again once the budget it
-	// ran out of has been freed. Every other mapping failure is ambiguous: the
-	// command may have been applied, and the memory region is terminal.
+	// ErrMappingRefused reports a mapping command the client refused for its
+	// mapping budget (ENOSPC): it checks what a command would cost the budget
+	// before it touches anything, so a refusal is the one failure that is known
+	// to have changed nothing. Nothing about the client's mappings moved, which
+	// makes it a failed operation rather than a failed session — the pages are
+	// not mapped, the memory region goes on serving, and its session takes back
+	// the region's own mappings and serves the fault again. Every other mapping
+	// failure, a command the client rejected for any other errno among them, is
+	// terminal.
 	ErrMappingRefused = errors.New("managed-memory mapping refused")
 	// ErrDirtyStalled reports a store the dirty budget cannot admit and no
 	// checkpoint can make room for. It is deliberately not ErrCapacity: a store

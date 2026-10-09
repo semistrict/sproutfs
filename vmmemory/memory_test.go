@@ -1475,7 +1475,7 @@ func memoryByte(ctx context.Context, r *vmmemory.MemoryRegion, m *mapping, page 
 		}
 		m.arena.mu.Unlock()
 		// A fault refused for want of mapping budget is served again, as the
-		// connection serves it again once a revocation lands (deferFault).
+		// connection serves it again once it has made room (makeRoom).
 		if err := r.Fault(ctx, page, value != nil); err != nil && !errors.Is(err, vmmemory.ErrMappingRefused) {
 			return 0, err
 		}

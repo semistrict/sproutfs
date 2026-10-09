@@ -390,7 +390,16 @@ func (c *Connection) commandFrames(ctx context.Context, f vmwire.Frame, runs []v
 		// budget before it touches anything, and answers a refusal as an
 		// ordinary acknowledgement; a failure after that point ends the session
 		// without one. So a flagged acknowledgement means nothing moved.
-		return failed(fmt.Errorf("%w: %w", ErrMappingRefused, syscall.Errno(response.Flags)))
+		errno := syscall.Errno(response.Flags)
+		if errno != syscall.ENOSPC {
+			// Only the budget is a refusal the pager can answer. Any other
+			// errno is the client finding the command itself wrong: a stale
+			// generation (ESTALE), or a range or file it does not have
+			// (EINVAL). Serving the fault again sends the same command, so the
+			// session ends on it.
+			return failed(fmt.Errorf("the client rejected a mapping command: %w", errno))
+		}
+		return failed(fmt.Errorf("%w: %w", ErrMappingRefused, errno))
 	}
 	return nil
 }
@@ -731,35 +740,38 @@ func (c *Connection) wake() {
 	}
 }
 
-// deferFault holds a fault the client refused a mapping command for until the
-// pager has revoked a mapping, then queues it to be served again. It reports
-// whether the session is still live. The page is neither queued nor in flight
-// while this waits, so no worker retries it meanwhile: the budget it ran out of
-// is freed by revocation, and nothing about serving the same page again before
-// one has happened can free it. It waits for a revocation and not for any
-// change, because the refused fault took and gave back pages itself: two
-// refused faults would each wake the other, and a client that refuses every
-// command would keep the pager serving it for as long as it lives. A page that
-// faults again in the meantime is merged with this entry, so the wait for the
-// queue is measured from the access that has waited longest.
-func (c *Connection) deferFault(page uint64, entry queuedFault, refused error) bool {
-	// A refusal is rare, and a guest held by one waits on work it cannot see,
-	// so each is written down with the command and the client's errno.
-	attrs := []any{"memory_region", c.cfg.Name, "page", page}
+// makeRoom answers a fault whose mapping the client refused for want of
+// mapping budget. It reports whether the session is still live. The budget is
+// this memory region's own mappings, so the session frees it itself: it takes
+// back every mapping of the region it can (harvestOwn) and queues the fault to
+// be served again. It never waits for other work to revoke something, which
+// with no memory pressure on the host never comes. A region that maps no page
+// it could take back has nothing left to give the client, and serving the
+// fault again would only be refused again, so the session ends on the
+// refusal. A page that faults again meanwhile is merged with this entry, so
+// the wait for the queue is measured from the access that has waited longest.
+func (c *Connection) makeRoom(page uint64, entry queuedFault, refused error) bool {
+	c.host.mu.Lock()
+	c.host.stats.RefusedMappings++
+	c.host.mu.Unlock()
+	taken, err := c.memoryRegion.Memory.harvestOwn(c.ctx)
+	// A refusal is rare, and each is written down with the command and what
+	// the session took back for it.
+	attrs := []any{"memory_region", c.cfg.Name, "page", page, "taken_back", taken}
 	var command *commandFailure
 	if errors.As(refused, &command) {
 		attrs = append(attrs, command.attrs()...)
 	}
-	slog.Warn("vmmemory: the client refused a fault's mapping; it waits for a revocation",
+	slog.Warn("vmmemory: the client refused a fault's mapping for its budget; the session takes back its own mappings",
 		append(attrs, "error", refused)...)
-	revoked := c.host.revocations()
-	c.host.mu.Lock()
-	c.host.stats.RefusedMappings++
-	c.host.mu.Unlock()
-	select {
-	case <-c.ctx.Done():
+	if err != nil {
+		c.fail(fmt.Errorf("page %d fault (write=%t): taking back the mappings for a refusal: %w", page, entry.write, err))
 		return false
-	case <-revoked:
+	}
+	if taken == 0 {
+		c.fail(fmt.Errorf("page %d fault (write=%t): %w, and the memory region maps no page it could take back",
+			page, entry.write, refused))
+		return false
 	}
 	c.faults.requeue(page, entry)
 	c.wake()
@@ -922,11 +934,8 @@ func (c *Connection) serveFaults() {
 			if errors.Is(err, ErrMappingRefused) {
 				// The client refused a command for want of mapping budget and
 				// changed nothing, so this fault is one to serve again rather
-				// than a session to end. What frees that budget is revocation,
-				// which is other work of this pager's: the fault is queued
-				// again once a revocation has landed. Until then the guest
-				// waits, as it does for the dirty budget.
-				if !c.deferFault(page, entry, err) {
+				// than a session to end, once the session has made room.
+				if !c.makeRoom(page, entry, err) {
 					return
 				}
 				continue

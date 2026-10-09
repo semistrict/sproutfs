@@ -68,6 +68,61 @@ func TestARefusedMappingFailsTheFaultAndNotTheMemoryRegion(t *testing.T) {
 	}
 }
 
+// A client refuses a mapping for want of budget, and the budget is its own
+// region's mappings, so a session answers a refusal by taking those back
+// itself (makeRoom) rather than waiting for the host to revoke something,
+// which with no memory pressure never comes. Taking them back keeps every
+// page: each one's mapping is revoked, its bytes stay in the arena, and the
+// guest's next touch maps it again from its frame with no read, a store it
+// made still there.
+func TestTakingBackARegionsMappingsKeepsItsPages(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := newFixture(t, 8, 16, 8)
+		r, m, b := f.memoryRegion(4)
+		value := byte(71)
+		if _, err := memoryByte(t.Context(), r, m, 0, &value); err != nil {
+			t.Fatal(err)
+		}
+		var before [4]byte
+		for page := range uint64(4) {
+			got, err := memoryByte(t.Context(), r, m, page, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			before[page] = got
+		}
+		loads, revokes := b.loads, m.revokes
+		taken, err := vmmemory.HarvestOwn(t.Context(), r)
+		if err != nil {
+			t.Fatalf("taking back the region's mappings: %v", err)
+		}
+		if taken != 4 {
+			t.Fatalf("took back the mappings of %d pages, want the region's 4", taken)
+		}
+		if len(m.pages) != 0 {
+			t.Fatalf("the client still maps %d pages after the region's mappings were taken back, want none", len(m.pages))
+		}
+		if m.revokes == revokes {
+			t.Fatal("taking back the region's mappings sent no revocation")
+		}
+		for page := range uint64(4) {
+			got, err := memoryByte(t.Context(), r, m, page, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != before[page] {
+				t.Fatalf("page %d reads %d after its mapping was taken back, want %d", page, got, before[page])
+			}
+		}
+		if before[0] != 71 {
+			t.Fatalf("page 0 read %d before its mapping was taken back, want the store's 71", before[0])
+		}
+		if b.loads != loads {
+			t.Fatalf("mapping the pages again read the backing %d times, want none", b.loads-loads)
+		}
+	})
+}
+
 // A revocation the client refused is not the refusal a fault is served again
 // for: what such a fault waits for is a revocation, and this is one that could
 // not happen. It is terminal like every other failed revocation — the pages

@@ -1862,16 +1862,23 @@ read-only one for writing through `/proc/self/fd`, and cannot fchmod any of them
 When the VMM allocates memory in its own private file, verification ends its
 session with `ErrUncounted`.
 
-A rejected command is the only failure known to have changed nothing, so the
-pager treats it as a failed operation, not a failed session. In practice it is
-the mapping budget: the client checks a command against the budget before it
-changes anything and answers `ENOSPC`, and the pages it would have mapped are not
+A command refused for the mapping budget is the only failure known to have
+changed nothing, so the pager treats it as a failed operation, not a failed
+session. The client checks a command against the budget before it changes
+anything and answers `ENOSPC`, and the pages it would have mapped are not
 recorded as mapped. A command whose acknowledgement never arrives may have been
 applied, so its pages stay recorded as mapped. After a refusal, the fault fails
-and the memory region keeps serving. The worker queues that fault again once the
-pager has revoked a mapping, and not after any other change, so two refused
-faults cannot wake each other. The guest waits there as it waits for the dirty
-budget, and the VM can still be checkpointed or migrated off the host.
+and the memory region keeps serving. The budget is the region's own mappings,
+so the worker makes room itself: it harvests every page the region maps whose
+lock is free, which leaves the client one mapping for the region, and queues
+the fault again. The guest's next touch of a harvested page maps it again from
+its frame, with no read. A region that maps no page it could take back ends its
+session on the refusal, since the fault would only be refused again. The worker
+never waits for other work to revoke a mapping: on a host with no memory
+pressure none comes, and before 2026-10-09 a guest waited there for good. Any
+other errno in a refusal, such as `ESTALE` for a stale generation or `EINVAL`
+for a range the client does not have, is the client finding the command wrong,
+and it ends the session.
 
 What the bindings say is mapped is the pager's record of page tables it cannot
 read, and one place keeps it (`vmmemory/mapper.go` and `revocation.go`). Every

@@ -48,8 +48,8 @@ func TestNativeMappingBudgetRejectsBeforeKernelMutation(t *testing.T) {
 // A refused mapping command is a failed operation, not a failed session. The
 // client admits a command against its mapping budget before it touches
 // anything, so a refusal changed nothing: the pages are not mapped, the memory region
-// goes on serving its guest, and the fault is served again once revocation has
-// freed the budget. Ending the session here would kill a VMM over a command
+// goes on serving its guest, and the fault is served again once its session has
+// taken back the region's mappings. Ending the session here would kill a VMM over a command
 // that did nothing, and recording the refused pages as mapped would resolve a
 // later fault against a mapping the client never installed.
 func TestNativeRefusedMappingLeavesTheSessionServing(t *testing.T) {
@@ -93,39 +93,23 @@ func TestNativeRefusedMappingLeavesTheSessionServing(t *testing.T) {
 		t.Fatalf("%d faults were deferred for a refusal, want none: these were the pager's own, not a client's access", s.RefusedMappings)
 	}
 	// A guest's own access is refused the same way, and the worker serving it
-	// queues that fault again rather than ending the session: the guest waits
-	// for the budget, as it waits for the dirty budget, and the VM stays alive
-	// to be checkpointed or migrated off this host.
-	if _, err := fmt.Fprintf(a.input, "fill 0 %d 1 42\n", hugePageSize); err != nil {
-		t.Fatal(err)
+	// makes room rather than ending the session or waiting for some other
+	// work to revoke a mapping: it takes back the memory region's own mappings,
+	// which is the budget the client ran out of, and serves the fault again.
+	// The guest waits only for that, and the VM stays alive.
+	a.request(fmt.Sprintf("fill 0 %d 1 42", hugePageSize), "filled")
+	s, err := h.Stats(t.Context())
+	if err != nil {
+		t.Fatalf("the host after a client's access was refused: %v", err)
 	}
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		s, err := h.Stats(t.Context())
-		if err != nil {
-			t.Fatalf("the host while a client's access was refused: %v", err)
-		}
-		if s.RefusedMappings > 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the client's refused access was never deferred: the session ended on it instead")
-		}
-		time.Sleep(time.Millisecond)
+	if s.RefusedMappings != 1 {
+		t.Fatalf("%d of the client's faults were refused, want the one its access made", s.RefusedMappings)
 	}
 	if err := memoryRegion.Verify(t.Context()); err != nil {
 		t.Fatalf("a client's refused access left the memory region unable to serve: %v", err)
 	}
-	// Revocation is what frees the budget, and the client admits one whatever
-	// its budget holds: the range a revocation replaces becomes a trap that
-	// merges with the traps around it, so it installs nothing. Abandoning the
-	// seal revokes every page the guest had, and the deferred fault is served
-	// as soon as it lands.
 	if err := memoryRegion.Unseal(t.Context()); err != nil {
-		t.Fatalf("abandoning the seal to revoke the guest's mappings: %v", err)
-	}
-	if got := a.line(); got != "filled" {
-		t.Fatalf("the deferred access answered %q, want it served once the revocations freed the budget", got)
+		t.Fatalf("abandoning the seal: %v", err)
 	}
 	a.request(fmt.Sprintf("read 0 %d 1", hugePageSize), "data 2a")
 	if err := memoryRegion.Fault(t.Context(), refused, true); err != nil {

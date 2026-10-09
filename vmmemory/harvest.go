@@ -73,15 +73,16 @@ func (h *Host) harvest(ctx context.Context) error {
 	for i, link := range found {
 		pages[i] = link.Page
 	}
-	return h.harvestPages(ctx, pages)
+	_, err := h.harvestPages(ctx, pages)
+	return err
 }
 
 // harvestPages harvests pages, each locked by the caller, and unlocks them:
 // every mapping of each is taken away, and each still standard isolated moves
-// to the harvested queue.
-func (h *Host) harvestPages(ctx context.Context, locked []*zirconvm.VmPage) error {
+// to the harvested queue. It reports how many pages it took every mapping of.
+func (h *Host) harvestPages(ctx context.Context, locked []*zirconvm.VmPage) (int, error) {
 	if len(locked) == 0 {
-		return nil
+		return 0, nil
 	}
 	queues := h.node.PageQueues()
 	pages := make([]*zirconvm.VmPage, 0, len(locked))
@@ -128,19 +129,22 @@ func (h *Host) harvestPages(ctx context.Context, locked []*zirconvm.VmPage) erro
 		for _, p := range pages {
 			h.unlockPage(p)
 		}
-		return err
+		return 0, err
 	}
-	harvested := 0
+	revoked, harvested := 0, 0
 	for _, p := range pages {
-		if !h.heldByAny(frameOf(p), held) && queues.MoveToHarvested(p) {
-			harvested++
+		if !h.heldByAny(frameOf(p), held) {
+			revoked++
+			if queues.MoveToHarvested(p) {
+				harvested++
+			}
 		}
 		h.unlockPage(p)
 	}
 	h.mu.Lock()
 	h.stats.HarvestedPages += uint64(harvested)
 	h.mu.Unlock()
-	return nil
+	return revoked, nil
 }
 
 // heldByAny reports whether one of the regions in held maps f.
@@ -154,4 +158,40 @@ func (h *Host) heldByAny(f *frame, held map[*MemoryRegion]bool) bool {
 		}
 	}
 	return false
+}
+
+// harvestOwn harvests every page r maps whose lock is free, which is how a
+// session answers a client that refused one of r's mappings for want of
+// budget: each mapping it takes away is budget the client gets back, and the
+// guest's next touch of a page maps it again from its frame, with no read. A
+// page whose lock is held is in use and left alone, and so is a zero, which
+// holds no page. Revoking every mapping at once leaves the client one mapping
+// for the region however its pages were scattered, which no choice of fewer
+// pages can promise, and a refusal is rare enough for the refaults to be the
+// cheaper side. It reports how many pages it took the mappings of.
+func (r *MemoryRegion) harvestOwn(ctx context.Context) (int, error) {
+	h := r.host
+	var locked []*zirconvm.VmPage
+	taken := make(map[*frame]bool)
+	h.mu.Lock()
+	r.bindingsMu.Lock()
+	r.eachBoundLocked(0, uint64(r.pageCount), func(b *binding) {
+		if !b.mapped || b.page == nil || isLent(b.page) {
+			return
+		}
+		// A page's lock comes before Host.mu, so it is only tried here.
+		f := frameOf(b.page)
+		if taken[f] || !f.mu.TryLock() {
+			return
+		}
+		if !h.usableVictimLocked(f) {
+			f.mu.Unlock()
+			return
+		}
+		taken[f] = true
+		locked = append(locked, b.page)
+	})
+	r.bindingsMu.Unlock()
+	h.mu.Unlock()
+	return h.harvestPages(ctx, locked)
 }
