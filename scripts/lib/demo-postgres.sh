@@ -190,10 +190,14 @@ kubectl set env -n "$namespace" deployment/sproutfs-host \
     SPROUTFS_TEMPLATES="alpine=/usr/share/sproutfs/guest/guest.ext4,postgres=$template_path:$guest_memory_bytes" \
     SPROUTFS_PMEM_PAGE_BYTES="$pmem_page" GOMEMLIMIT=10GiB > /dev/null
 ((${#host_env[@]} == 0)) || kubectl set env -n "$namespace" deployment/sproutfs-host "${host_env[@]}" > /dev/null
+# The host's processor quota is the guest's vCPUs and one more for the pager:
+# plain Linux has the guest's vCPUs to itself, and a quota below them throttles
+# the guest's vCPUs and the pager that serves their faults together.
+host_cpus=$((guest_vcpus + 1))
 kubectl patch -n "$namespace" deployment/sproutfs-host --type json -p '[
     {"op": "replace", "path": "/spec/template/spec/containers/0/resources",
-     "value": {"requests": {"cpu": "2", "memory": "'"$pod_memory"'", "hugepages-2Mi": "'"$hugepages"'"},
-               "limits": {"cpu": "3", "memory": "'"$pod_memory"'", "hugepages-2Mi": "'"$hugepages"'"}}}]' > /dev/null
+     "value": {"requests": {"cpu": "'"$host_cpus"'", "memory": "'"$pod_memory"'", "hugepages-2Mi": "'"$hugepages"'"},
+               "limits": {"cpu": "'"$host_cpus"'", "memory": "'"$pod_memory"'", "hugepages-2Mi": "'"$hugepages"'"}}}]' > /dev/null
 kubectl rollout status -n "$namespace" deployment/sproutfs-host --timeout=900s > /dev/null
 kubectl rollout restart -n "$namespace" deployment/sproutfs-orchestrator > /dev/null
 kubectl rollout status -n "$namespace" deployment/sproutfs-orchestrator --timeout=300s > /dev/null
