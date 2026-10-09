@@ -344,6 +344,29 @@ type mapping struct {
 	// onMap runs before a Map replaces anything, which is where a test holds
 	// a store's mapping command in flight and looks at what the guest sees.
 	onMap func(page uint64, count int)
+	// exited marks a client whose process has exited (exit): it maps nothing,
+	// and every map fails as a command on a closed connection does. Guarded
+	// by the arena's lock.
+	exited bool
+}
+
+// errClientExited is what a map of a client whose process exited fails with.
+var errClientExited = errors.New("the client's process has exited")
+
+// exit ends the client's process: its mappings go with it, and it maps
+// nothing from here, as no VMM that has exited can.
+func (m *mapping) exit() {
+	m.arena.mu.Lock()
+	defer m.arena.mu.Unlock()
+	clear(m.pages)
+	m.exited = true
+}
+
+// hasExited reports whether the client's process has exited.
+func (m *mapping) hasExited() bool {
+	m.arena.mu.Lock()
+	defer m.arena.mu.Unlock()
+	return m.exited
 }
 
 func newMapping(a *arena) *mapping {
@@ -431,6 +454,9 @@ func (m *mapping) Map(ctx context.Context, page uint64, file, slot, count int, w
 	if err := m.mappable(file, writable); err != nil {
 		return err
 	}
+	if m.hasExited() {
+		return errClientExited
+	}
 	if m.refuseMap || m.outOfMappings(ctx, "map") {
 		return vmmemory.ErrMappingRefused
 	}
@@ -443,6 +469,9 @@ func (m *mapping) Map(ctx context.Context, page uint64, file, slot, count int, w
 	return nil
 }
 func (m *mapping) MapZero(ctx context.Context, page uint64, count int) error {
+	if m.hasExited() {
+		return errClientExited
+	}
 	if m.refuseMap || m.outOfMappings(ctx, "map-zero") {
 		return vmmemory.ErrMappingRefused
 	}

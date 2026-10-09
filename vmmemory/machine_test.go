@@ -211,9 +211,7 @@ func (g *machine) close(ctx context.Context, t *testing.T) {
 // detach detaches the machine's region, its VMM's mappings gone with the VMM.
 func (g *machine) detach(ctx context.Context) error {
 	g.closed = true
-	g.m.arena.mu.Lock()
-	clear(g.m.pages)
-	g.m.arena.mu.Unlock()
+	g.m.exit()
 	return g.region.Detach(ctx)
 }
 
