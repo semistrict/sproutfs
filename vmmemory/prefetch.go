@@ -629,8 +629,10 @@ func (pf *prefetch) land(ctx context.Context) []prefetchPage {
 	ps := h.pageSize
 	first, last := pf.pages[0].page, pf.pages[len(pf.pages)-1].page+1
 	wanted := make([]bool, last-first)
+	keys := make([]pageKey, last-first)
 	for _, page := range pf.pages {
 		wanted[page.page-first] = true
+		keys[page.page-first] = page.key
 	}
 	buffer := h.takeWindow(last - first)
 	defer h.putWindow(buffer)
@@ -641,7 +643,7 @@ func (pf *prefetch) land(ctx context.Context) []prefetchPage {
 	}
 	var unpublished []bool
 	if err == nil {
-		unpublished, err = r.readRun(ctx, first, wanted, data, &h.prefetchLatency)
+		unpublished, err = r.readRun(ctx, first, wanted, keys, data, &h.prefetchLatency)
 	}
 	if err == nil && sim.Buggify(ctx, buggifyPrefetchFailed, 0.1) {
 		err = errPrefetchFailed

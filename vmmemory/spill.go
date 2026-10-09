@@ -3,6 +3,8 @@ package vmmemory
 import (
 	"context"
 	"errors"
+	"log/slog"
+	"slices"
 
 	"github.com/semistrict/sproutfs/vmmemory/internal/zirconvm"
 )
@@ -18,6 +20,27 @@ import (
 type reservation struct {
 	ref   zirconvm.ReferenceValue
 	taken bool
+}
+
+// The index of published versions is memory: each costs its identity twice,
+// once as a key and once in the queue it is dropped from, and the map's own
+// overhead. maxVersionIndexBytes bounds it, which at 2 MiB pages is every
+// slot of any spill file a node has, and at 4 KiB about a gigabyte and a half
+// of versions.
+const (
+	maxVersionIndexBytes   = 64 << 20
+	versionIndexEntryBytes = 176
+)
+
+// spillVersions is the most published versions a pager's spill file keeps.
+func spillVersions(cfg Config) int {
+	switch {
+	case cfg.MaxSpillVersions < 0:
+		return 0
+	case cfg.MaxSpillVersions > 0:
+		return min(cfg.MaxSpillVersions, cfg.DirtyPages)
+	}
+	return min(cfg.DirtyPages, maxVersionIndexBytes/versionIndexEntryBytes)
 }
 
 // noReservation is no reservation at all.
@@ -58,13 +81,79 @@ func (h *Host) readSpill(ctx context.Context, spill reservation, dst []byte) err
 func (h *Host) releaseSpill(spill reservation) {
 	h.mu.Lock()
 	h.spill.Free(spill.ref)
+	h.releasedLocked()
+	h.mu.Unlock()
+}
+
+// releasedLocked counts one reservation out of the dirty budget and wakes
+// waiters. Caller holds h.mu.
+func (h *Host) releasedLocked() {
 	h.dirty--
 	if h.dirty < h.highWater {
 		// Back under the mark: the next store to cross it asks again.
 		h.asked = false
 	}
 	h.signal()
+}
+
+// retireSpill gives back the reservation of a checkpoint's page whose
+// checkpoint has retired, keeping its bytes as the version of the identity the
+// page was published as where the reservation holds them (step 1 of
+// plans/local-writeback-2026-10-09.md). They are that version's bytes: the
+// copy a checkpoint holds never changes, and a reservation holds the bytes of
+// a page only from the eviction that wrote them until a refault hands the
+// guest that page as its own again (refault). A load reads the version before
+// the backing (readVersions).
+func (h *Host) retireSpill(spill reservation, now storedPage) {
+	h.mu.Lock()
+	if now.stored && !now.id.zero() {
+		// Publish gives the allocation back where it keeps nothing.
+		if h.spill.Publish(spill.ref, now.id) {
+			h.stats.KeptVersions++
+		}
+	} else {
+		h.spill.Free(spill.ref)
+	}
+	h.releasedLocked()
 	h.mu.Unlock()
+}
+
+// readVersions reads the pages of [first, first+len(wanted)) that wanted marks
+// and the spill file keeps a published version of into data, which covers the
+// run whole, and reports what is left for the backing to read: wanted, less
+// what it read. keys is each page's identity, zero where it has none to look
+// up. A version the device lost is dropped and the page read from the backing.
+func (r *MemoryRegion) readVersions(ctx context.Context, first uint64, wanted []bool, keys []pageKey,
+	data []byte) []bool {
+	h := r.host
+	ps := h.pageSize
+	left := wanted
+	loaded := uint64(0)
+	for at, key := range keys {
+		if !wanted[at] || key == (pageKey{}) || key.zero() {
+			continue
+		}
+		found, err := h.spill.ReadVersion(ctx, key, data[uint64(at)*ps:uint64(at+1)*ps])
+		if err != nil {
+			slog.Warn("vmmemory: a published version in the spill file could not be read; the page is read from its volume",
+				"page", first+uint64(at), "error", err)
+			continue
+		}
+		if !found {
+			continue
+		}
+		if loaded == 0 {
+			left = slices.Clone(wanted)
+		}
+		left[at] = false
+		loaded++
+	}
+	if loaded > 0 {
+		h.mu.Lock()
+		h.stats.VersionLoads += loaded
+		h.mu.Unlock()
+	}
+	return left
 }
 
 // takeReservationLocked admits one more private page to the dirty budget if

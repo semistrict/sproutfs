@@ -60,6 +60,20 @@ working copy of every page its memory regions have written or read. Under that,
 object storage holds checkpoints. A page is in the arena, in the log, or only
 in the store.
 
+**The log is slots, not an append log** (decided 2026-10-09, before step 1).
+Every version the log keeps is exactly one page of its pager, so any free slot
+of the file takes any version and nothing is ever compacted: no segments, no
+collection, no write amplification, and no headroom past the slots promised.
+The spill file already is such a file. It grows into the log: a slot holds a
+private version, which its reservation names and which must stay until it is
+published or freed, or a published version, which its identity names and
+which may be dropped whenever a slot is wanted. Publication relabels a slot
+and moves no byte. Writes stay runs of consecutive slots where the free slots
+allow, as the spill's writes are now. What an append log would add is
+sequential writes and replay after a restart; a local SSD's own translation
+layer makes the first moot, and the log is scratch, so the second is a later
+step that does not need its layout. "Log" below means this file.
+
 **Three meanings of clean.** A page is Dirty when the arena holds bytes the log
 does not. It is Written when the log holds its bytes: the arena may drop it.
 It is Published when a landed checkpoint holds the version the log holds.
@@ -108,10 +122,11 @@ both are local copies keyed by page identity.
 
 ## What changes
 
-- `zirconvm.SpillStorage` becomes the log: segments appended in order, each
-  page version with its CRC32C, an index from page to version, and garbage
-  collection of versions superseded and published. It keeps what the spill
-  file guarantees: space it promises is allocated before it is promised.
+- `zirconvm.SpillStorage` becomes the log: its slots hold private versions
+  under reservations, as now, and published versions under their identities,
+  each with its CRC32C, the published ones dropped oldest first when a slot is
+  wanted. It keeps what the spill file guarantees: space it promises is
+  allocated before it is promised.
 - The dirty states gain Written beside Clean. A writeback to the log is
   Zircon's writeback; a publication changes no dirty state, it marks versions
   published.
@@ -132,12 +147,21 @@ page queues, the harvest, the identity roots and the sharing index.
 Each step lands with a simulation campaign or test that fails before it, guards
 for the bugs it closes, and the benchmark beside plain GCE.
 
-1. **The log.** Replace the spill file with the log, holding only what the
-   spill holds now. No behaviour changes. Gate: every suite and campaign as
-   before.
-2. **Keep what is written.** A published page keeps its log version as its
-   local copy. Eviction drops a page the log holds; a refault reads the log
-   before the store (absorbs TASK-122.2). Gate: the benchmark's random reads
+1. **Keep what is written.** The spill file keeps a published version: a
+   checkpoint's page whose bytes are in its reservation when the checkpoint
+   retires is relabelled under its identity instead of freed, and a load
+   reads a version the log holds before the store. A slot's bytes count as a
+   version only while no store can have changed the page since they were
+   written, so a refault that hands the guest its page writable drops them.
+   Gate: every suite and campaign; a test publishes a spilled page, evicts it
+   and refaults it from the log (TASK-122.8).
+2. **Keep what is evicted.** Eviction of a published page the log does not
+   hold writes it to a free slot, and drops it; a refault reads the log
+   before the store (absorbs TASK-122.2). The file's slots stop being the
+   dirty budget: the pager admits reservations against its dirty budget, the
+   file has that many slots plus room for versions, and a version write takes
+   only a slot no reservation can be refused for, so the dirty budget is
+   never short of a slot a version holds. Gate: the benchmark's random reads
    come from local disk.
 3. **Write back.** The writer, Written pages, the asynchronous evictor.
    Gate: no eviction inside a fault on the benchmark's write phases.

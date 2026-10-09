@@ -493,6 +493,11 @@ type Config struct {
 	LogicalPages int
 	// DirtyPages bounds volatile private state on RAM and spill combined.
 	DirtyPages int
+	// MaxSpillVersions bounds the published versions the spill file keeps
+	// (spill.go). Zero keeps as many as the index's memory bound allows, and a
+	// negative number keeps none, so every load of a published page reads
+	// its backing.
+	MaxSpillVersions int
 	// Ephemeral makes this the pager of ephemeral disks: PMEM memory regions no
 	// checkpoint holds. Their private pages are their only copy, in the arena
 	// or spilled, until the memory region detaches. A seal of one takes

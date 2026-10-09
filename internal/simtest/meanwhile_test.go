@@ -68,6 +68,10 @@ func runMeanwhile(t *testing.T, fork bool) {
 	k := knobs.Defaults()
 	k.ResidentPages, k.DirtyPages, k.LogicalPages = memoryPages/3, 4*memoryPages, 8*memoryPages
 	k.ReadAheadPages, k.WriteAheadPages = 1, 1
+	// And no published versions in the spill files: a page the destination
+	// spilled before its checkpoint published it would come back from its
+	// own spill file, and the window is a read that reaches the peer backing.
+	k.SpillVersions = -1
 	if err := k.Validate(); err != nil {
 		t.Fatal(err)
 	}

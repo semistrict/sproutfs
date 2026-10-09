@@ -26,7 +26,7 @@ type vmoEnv struct {
 	pmm         *testPmm
 	node        *Node
 	compression *Compression
-	storage     *SpillStorage
+	storage     *SpillStorage[int]
 	disk        *sim.Disk
 	// disks is how many spill disks the case has made.
 	disks int
@@ -56,7 +56,7 @@ const testSpillPages = 64
 
 // newSpillStorage is a spill of pages pages on a disk of its own, with room
 // for it, and the disk.
-func (env *vmoEnv) newSpillStorage(t *testing.T, pages int) (*SpillStorage, *sim.Disk) {
+func (env *vmoEnv) newSpillStorage(t *testing.T, pages int) (*SpillStorage[int], *sim.Disk) {
 	t.Helper()
 	env.disks++
 	disk := env.runtime.NewDisk(fmt.Sprintf("spill-%d", env.disks),
@@ -65,7 +65,7 @@ func (env *vmoEnv) newSpillStorage(t *testing.T, pages int) (*SpillStorage, *sim
 	if err != nil {
 		t.Fatal(err)
 	}
-	storage, err := NewSpillStorage(env.ctx, file, env.ps, pages)
+	storage, err := NewSpillStorage[int](env.ctx, file, env.ps, pages, pages)
 	if err != nil {
 		t.Fatal(err)
 	}

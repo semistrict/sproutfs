@@ -97,6 +97,10 @@ type Knobs struct {
 	// SettleWorkers is how many workers one settle divides a sealed set
 	// between, comparing each page it holds with the page it was copied from.
 	SettleWorkers int
+	// SpillVersions bounds the published versions each pager's spill file
+	// keeps, as vmmemory.Config.MaxSpillVersions: zero is the pager's own
+	// bound, and a negative number keeps none.
+	SpillVersions int
 
 	// DrainConcurrency is how many VMs one drain hands over at once,
 	// DrainTimeout bounds the whole drain and DrainPerVM one VM's handover
@@ -171,6 +175,7 @@ func (k Knobs) Validate() error {
 	bound("WriteAheadPages", k.WriteAheadPages, 1, 4096)
 	bound("ConcurrentIO", k.ConcurrentIO, 1, 1024)
 	bound("SettleWorkers", k.SettleWorkers, 1, 1024)
+	bound("SpillVersions", k.SpillVersions, -1, 1<<24)
 	bound("DrainConcurrency", k.DrainConcurrency, 1, 1024)
 	if k.ReadAheadPages&(k.ReadAheadPages-1) != 0 {
 		errs = append(errs, fmt.Errorf("%w: ReadAheadPages is %d, want a power of two", ErrInvalid, k.ReadAheadPages))
@@ -283,6 +288,11 @@ func Randomize(r Random) Knobs {
 	set("write-ahead-pages", &k.WriteAheadPages, 1, 2, 4, 64)
 	set("concurrent-io", &k.ConcurrentIO, 1, 2, 16, 256)
 	set("settle-workers", &k.SettleWorkers, 1, 2, 16)
+	// None, so every load of a published page reads its backing; one, so
+	// every second version drops the first; and the pager's own bound.
+	if !keep("spill-versions") {
+		k.SpillVersions = []int{-1, 1, 0}[r.Intn("knobs/spill-versions", 3)]
+	}
 	set("drain-concurrency", &k.DrainConcurrency, 1, 2, 4, 64)
 
 	interval := func(id string, current *time.Duration, choices ...time.Duration) {
@@ -357,6 +367,7 @@ func (k Knobs) Changed() []string {
 	add("write-ahead-pages", k.WriteAheadPages, base.WriteAheadPages)
 	add("concurrent-io", k.ConcurrentIO, base.ConcurrentIO)
 	add("settle-workers", k.SettleWorkers, base.SettleWorkers)
+	add("spill-versions", k.SpillVersions, base.SpillVersions)
 	add("drain-concurrency", k.DrainConcurrency, base.DrainConcurrency)
 	add("drain-timeout", k.DrainTimeout, base.DrainTimeout)
 	add("drain-per-vm", k.DrainPerVM, base.DrainPerVM)

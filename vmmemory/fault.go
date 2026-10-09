@@ -363,6 +363,14 @@ func (r *MemoryRegion) refault(ctx context.Context, b *binding) (bool, error) {
 		r.host.aliasLocked(held, frame)
 	}
 	h.mu.Unlock()
+	if held == nil && !sim.Bug(ctx, "pager-keep-a-refaulted-page-s-spill") {
+		// The page is the guest's own again, and resident: from here a store
+		// changes it with nothing passing through the spill, so the bytes the
+		// reservation holds are no version of it any more. An eviction writes
+		// them again. A page that shares the checkpoint's copy is that copy,
+		// which never changes, so its reservation keeps them.
+		h.spill.Unstore(spill.ref)
+	}
 	// The refaulted page holds the guest's own current bytes: the newest
 	// generation of them, not a step back.
 	h.probe.granted(b, frameOf(frame), nil)
@@ -870,10 +878,14 @@ func (p *plan) beginFaulting(ctx context.Context, index uint64) *faultRead {
 	h := r.host
 	readCtx, cancel := context.WithCancelCause(sim.WithTask(ctx, fmt.Sprintf("fault-read-%d", index)))
 	read := &faultRead{host: h, page: index, buffer: h.takeWindow(1), done: make(chan struct{}), cancel: cancel}
+	keys := make([]pageKey, 1)
+	if id, ok := p.identity(index); ok {
+		keys[0] = id
+	}
 	go func() {
 		defer close(read.done)
 		if read.err = sim.Admit(readCtx, "vmmemory/fault-read"); read.err == nil {
-			read.unpublished, read.err = r.readRun(readCtx, index, []bool{true}, *read.buffer, &h.loadLatency)
+			read.unpublished, read.err = r.readRun(readCtx, index, []bool{true}, keys, *read.buffer, &h.loadLatency)
 		}
 	}()
 	return read

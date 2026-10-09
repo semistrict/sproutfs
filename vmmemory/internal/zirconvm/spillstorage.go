@@ -43,15 +43,26 @@ import (
 //     is here, not in the file: a page that comes back short, zeroed or
 //     holding bytes nobody wrote is a page the device lost, and it is
 //     refused, not handed to a guest as memory it never wrote.
+//   - A published version (plans/local-writeback-2026-10-09.md, step 1). An
+//     allocation whose bytes a checkpoint published can be kept under the
+//     key it was published as, K, instead of given back: it is then no
+//     reservation, a load reads it by its key, and whenever a reservation
+//     wants an allocation and none is free, the oldest version not read
+//     since it was last passed over is dropped and its allocation handed
+//     out. So versions take only what reservations leave, and a full budget
+//     of reservations is never refused for them.
 //
 // An allocation given back keeps its blocks. Punching them would give them
 // back to the filesystem, where another writer can take them, and the next
 // page stored there would have nowhere to go. The stale bytes are never
 // read: an allocation holds no bytes until it is written again.
-type SpillStorage struct {
+type SpillStorage[K comparable] struct {
 	file     platform.File
 	pageSize uint64
 	budget   int
+	// maxVersions bounds the published versions kept, which is the memory
+	// their index costs.
+	maxVersions int
 
 	mu sync.Mutex
 	// next is how many ids have been handed out, ever; free is those given
@@ -60,11 +71,29 @@ type SpillStorage struct {
 	free []int
 	// allocations is the record of every id handed out so far.
 	allocations []spillAllocation
+	// versions is each published version by its key, and queue the versions
+	// in the order they were published, oldest at head, which is the order
+	// they are dropped in. An entry its key no longer names was dropped
+	// already and is passed over. published counts the versions ever kept,
+	// which numbers each one.
+	versions  map[K]spillVersion[K]
+	queue     []spillVersion[K]
+	head      int
+	published uint64
 	// stored and storedBytes are Zircon's stored_items_ and
 	// total_compressed_item_size_: the allocations that hold bytes, and how
 	// many.
 	stored      int
 	storedBytes uint64
+}
+
+// spillVersion is one published version: its key, its allocation, and its
+// number, which tells it from a later version of the same key in the same
+// allocation.
+type spillVersion[K comparable] struct {
+	key    K
+	id     int
+	number uint64
 }
 
 // spillAllocation is one allocation, Zircon's Allocation.
@@ -77,6 +106,9 @@ type spillAllocation struct {
 	metadata uint32
 	// written says the allocation holds bytes to be read back.
 	written bool
+	// version says the allocation is a published version, and read that it
+	// was read since the queue last passed over it.
+	version, read bool
 }
 
 // spillChecksums is what every stored page is checked against when it is read
@@ -98,11 +130,12 @@ const (
 	bugForgetSpill = "pager-forget-spill"
 )
 
-// NewSpillStorage makes file the storage of budget pages of pageSize bytes:
-// whatever the file held is dropped, since the spill is scratch, and its whole
-// extent is allocated. The file must be a platform.AllocatingFile. A budget
-// beyond MaxSpillPages, or below one, is ErrOutOfRange.
-func NewSpillStorage(ctx context.Context, file platform.File, pageSize uint64, budget int) (*SpillStorage, error) {
+// NewSpillStorage makes file the storage of budget pages of pageSize bytes,
+// which keeps at most maxVersions published versions: whatever the file held
+// is dropped, since the spill is scratch, and its whole extent is allocated.
+// The file must be a platform.AllocatingFile. A budget beyond MaxSpillPages,
+// or below one, is ErrOutOfRange.
+func NewSpillStorage[K comparable](ctx context.Context, file platform.File, pageSize uint64, budget, maxVersions int) (*SpillStorage[K], error) {
 	if err := checkSpillBudget(budget); err != nil {
 		return nil, err
 	}
@@ -123,7 +156,8 @@ func NewSpillStorage(ctx context.Context, file platform.File, pageSize uint64, b
 			return nil, fmt.Errorf("allocating the spill file's %d bytes: %w", size, err)
 		}
 	}
-	return &SpillStorage{file: file, pageSize: pageSize, budget: budget}, nil
+	return &SpillStorage[K]{file: file, pageSize: pageSize, budget: budget,
+		maxVersions: max(maxVersions, 0), versions: make(map[K]spillVersion[K])}, nil
 }
 
 // checkSpillBudget refuses a budget no reference can name, and none at all.
@@ -135,7 +169,7 @@ func checkSpillBudget(budget int) error {
 }
 
 // refToID is RefToAllocLocked's id: the allocation a reference names.
-func (s *SpillStorage) refToID(ref ReferenceValue) int {
+func (s *SpillStorage[K]) refToID(ref ReferenceValue) int {
 	id := int(ref.Value() >> ReferenceAlignBits)
 	assert(id < s.next, "the reference was handed out")
 	return id
@@ -146,16 +180,18 @@ func idToRef(id int) ReferenceValue {
 	return MakeReferenceValue(uint32(id) << ReferenceAlignBits)
 }
 
-// Available is how many more allocations may be handed out.
-func (s *SpillStorage) Available() int {
+// Available is how many more allocations may be handed out, a published
+// version's among them.
+func (s *SpillStorage[K]) Available() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return len(s.free) + s.budget - s.next
+	return len(s.free) + s.budget - s.next + len(s.versions)
 }
 
 // Reserve hands out an allocation that holds nothing, or reports false where
-// the budget has none left (D5).
-func (s *SpillStorage) Reserve() (ReferenceValue, bool) {
+// the budget has none left (D5). With none free, it drops the oldest
+// published version for its allocation.
+func (s *SpillStorage[K]) Reserve() (ReferenceValue, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if n := len(s.free); n > 0 {
@@ -163,18 +199,126 @@ func (s *SpillStorage) Reserve() (ReferenceValue, bool) {
 		s.free = s.free[:n-1]
 		return idToRef(id), true
 	}
-	if s.next == s.budget {
-		return ReferenceValue{}, false
+	if s.next < s.budget {
+		id := s.next
+		s.next++
+		s.allocations = append(s.allocations, spillAllocation{})
+		return idToRef(id), true
 	}
-	id := s.next
-	s.next++
-	s.allocations = append(s.allocations, spillAllocation{})
-	return idToRef(id), true
+	if id, ok := s.dropOldestLocked(); ok {
+		return idToRef(id), true
+	}
+	return ReferenceValue{}, false
+}
+
+// Publish keeps the bytes ref holds as the published version key names,
+// instead of giving ref back. The allocation is a reservation no more, and
+// ref names nothing from here. Where ref holds no bytes, key has a version
+// already, or no version may be kept, it is given back as Free gives it, and
+// Publish reports false.
+func (s *SpillStorage[K]) Publish(ref ReferenceValue, key K) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	id := s.refToID(ref)
+	allocation := &s.allocations[id]
+	_, known := s.versions[key]
+	if !allocation.written || known || s.maxVersions == 0 {
+		s.freeLocked(id)
+		return false
+	}
+	if len(s.versions) == s.maxVersions {
+		dropped, ok := s.dropOldestLocked()
+		assert(ok, "a full index has a version to drop")
+		s.free = append(s.free, dropped)
+	}
+	allocation.version, allocation.read = true, false
+	s.published++
+	version := spillVersion[K]{key: key, id: id, number: s.published}
+	s.versions[key] = version
+	s.queue = append(s.queue, version)
+	return true
+}
+
+// ReadVersion reads the published version key names into dst, a page, and
+// reports whether there is one. The read holds no lock, so a version dropped
+// while it is read, whose allocation may be another page's by the time the
+// read ends, is a miss: the version must still be the same one once the read
+// is over, and nothing hands its allocation out before it is dropped. A
+// version whose bytes do not match their checksum is dropped, and the error is
+// ErrIODataIntegrity: the device lost it, and the store still has it.
+func (s *SpillStorage[K]) ReadVersion(ctx context.Context, key K, dst []byte) (bool, error) {
+	s.mu.Lock()
+	version, ok := s.versions[key]
+	if !ok {
+		s.mu.Unlock()
+		return false, nil
+	}
+	allocation := &s.allocations[version.id]
+	allocation.read = true
+	length, sum := allocation.length, allocation.sum
+	s.mu.Unlock()
+	dst = dst[:length]
+	n, err := s.file.ReadAt(ctx, dst, int64(version.id)*int64(s.pageSize))
+	if err == nil && n != len(dst) {
+		err = io.ErrUnexpectedEOF
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if current, ok := s.versions[key]; !ok || current.number != version.number {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if crc32.Checksum(dst, spillChecksums) != sum {
+		delete(s.versions, key)
+		s.freeLocked(version.id)
+		return false, fmt.Errorf("%w: the spill's version of a page does not match its checksum", ErrIODataIntegrity)
+	}
+	return true, nil
+}
+
+// Versions is how many published versions the storage keeps.
+func (s *SpillStorage[K]) Versions() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.versions)
+}
+
+// dropOldestLocked drops the oldest published version not read since the
+// queue last passed over it, and returns its allocation, which holds nothing
+// and is handed out by the caller. A version read since goes to the back,
+// unread: a second chance, as a clock gives one. It reports false where no
+// version is kept. Caller holds s.mu.
+func (s *SpillStorage[K]) dropOldestLocked() (int, bool) {
+	for len(s.versions) > 0 {
+		entry := s.queue[s.head]
+		s.queue[s.head] = spillVersion[K]{}
+		s.head++
+		if s.head*2 >= len(s.queue) {
+			s.queue = append(s.queue[:0], s.queue[s.head:]...)
+			s.head = 0
+		}
+		if current, ok := s.versions[entry.key]; !ok || current.number != entry.number {
+			continue
+		}
+		allocation := &s.allocations[entry.id]
+		if allocation.read {
+			allocation.read = false
+			s.queue = append(s.queue, entry)
+			continue
+		}
+		delete(s.versions, entry.key)
+		s.forgetLocked(allocation)
+		*allocation = spillAllocation{}
+		return entry.id, true
+	}
+	return 0, false
 }
 
 // Store keeps data in a new allocation, as Zircon's Store does: it fails with
 // ErrNoSpace where the budget has none left.
-func (s *SpillStorage) Store(ctx context.Context, data []byte) (ReferenceValue, error) {
+func (s *SpillStorage[K]) Store(ctx context.Context, data []byte) (ReferenceValue, error) {
 	ref, ok := s.Reserve()
 	if !ok {
 		return ReferenceValue{}, ErrNoSpace
@@ -192,7 +336,7 @@ func (s *SpillStorage) Store(ctx context.Context, data []byte) (ReferenceValue, 
 // took. The allocations are recorded as holding their bytes first, as the
 // writes need no lock (D5). Nothing here needs room: the extent is the file's
 // already.
-func (s *SpillStorage) StoreReserved(ctx context.Context, refs []ReferenceValue, data []byte) (int, error) {
+func (s *SpillStorage[K]) StoreReserved(ctx context.Context, refs []ReferenceValue, data []byte) (int, error) {
 	ps := int(s.pageSize)
 	assert(len(refs) > 0, "there is something to store")
 	assert(len(data) > (len(refs)-1)*ps && len(data) <= len(refs)*ps, "the bytes are the references' pages")
@@ -240,7 +384,7 @@ func (s *SpillStorage) StoreReserved(ctx context.Context, refs []ReferenceValue,
 // and its metadata. Bytes that do not match the checksum they were written
 // with are ErrIODataIntegrity: the device lost them. An allocation that holds
 // none is ErrBadState.
-func (s *SpillStorage) CompressedData(ctx context.Context, ref ReferenceValue, dst []byte) (int, uint32, error) {
+func (s *SpillStorage[K]) CompressedData(ctx context.Context, ref ReferenceValue, dst []byte) (int, uint32, error) {
 	s.mu.Lock()
 	id := s.refToID(ref)
 	allocation := s.allocations[id]
@@ -263,14 +407,14 @@ func (s *SpillStorage) CompressedData(ctx context.Context, ref ReferenceValue, d
 }
 
 // Holds reports whether ref holds bytes.
-func (s *SpillStorage) Holds(ref ReferenceValue) bool {
+func (s *SpillStorage[K]) Holds(ref ReferenceValue) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.allocations[s.refToID(ref)].written
 }
 
 // Unstore drops the bytes ref holds, and keeps ref handed out (D5).
-func (s *SpillStorage) Unstore(ref ReferenceValue) {
+func (s *SpillStorage[K]) Unstore(ref ReferenceValue) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	allocation := &s.allocations[s.refToID(ref)]
@@ -279,17 +423,21 @@ func (s *SpillStorage) Unstore(ref ReferenceValue) {
 }
 
 // Free gives ref back, holding nothing.
-func (s *SpillStorage) Free(ref ReferenceValue) {
+func (s *SpillStorage[K]) Free(ref ReferenceValue) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	id := s.refToID(ref)
+	s.freeLocked(s.refToID(ref))
+}
+
+// freeLocked gives an allocation back, holding nothing. Caller holds s.mu.
+func (s *SpillStorage[K]) freeLocked(id int) {
 	s.forgetLocked(&s.allocations[id])
 	s.allocations[id] = spillAllocation{}
 	s.free = append(s.free, id)
 }
 
 // forgetLocked takes an allocation's bytes out of the counts.
-func (s *SpillStorage) forgetLocked(allocation *spillAllocation) {
+func (s *SpillStorage[K]) forgetLocked(allocation *spillAllocation) {
 	if allocation.written {
 		s.stored--
 		s.storedBytes -= uint64(allocation.length)
@@ -297,14 +445,14 @@ func (s *SpillStorage) forgetLocked(allocation *spillAllocation) {
 }
 
 // GetMetadata is the metadata kept with ref.
-func (s *SpillStorage) GetMetadata(ref ReferenceValue) uint32 {
+func (s *SpillStorage[K]) GetMetadata(ref ReferenceValue) uint32 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.allocations[s.refToID(ref)].metadata
 }
 
 // SetMetadata sets the metadata kept with ref.
-func (s *SpillStorage) SetMetadata(ref ReferenceValue, metadata uint32) {
+func (s *SpillStorage[K]) SetMetadata(ref ReferenceValue, metadata uint32) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.allocations[s.refToID(ref)].metadata = metadata
@@ -312,7 +460,7 @@ func (s *SpillStorage) SetMetadata(ref ReferenceValue, metadata uint32) {
 
 // GetMemoryUsage is what the storage holds: the pages stored, the file's
 // extent, and the bytes stored.
-func (s *SpillStorage) GetMemoryUsage() StorageMemoryUsage {
+func (s *SpillStorage[K]) GetMemoryUsage() StorageMemoryUsage {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return StorageMemoryUsage{
@@ -323,8 +471,9 @@ func (s *SpillStorage) GetMemoryUsage() StorageMemoryUsage {
 }
 
 // Release gives the file's space back once nothing will be stored again:
-// it truncates the file, and every allocation holds nothing from then on.
-func (s *SpillStorage) Release(ctx context.Context) error {
+// it truncates the file, and every allocation holds nothing from then on, a
+// published version's included.
+func (s *SpillStorage[K]) Release(ctx context.Context) error {
 	if err := s.file.Truncate(ctx, 0); err != nil {
 		return err
 	}
@@ -334,5 +483,11 @@ func (s *SpillStorage) Release(ctx context.Context) error {
 		s.forgetLocked(&s.allocations[id])
 		s.allocations[id].written = false
 	}
+	for key, version := range s.versions {
+		delete(s.versions, key)
+		s.allocations[version.id] = spillAllocation{}
+		s.free = append(s.free, version.id)
+	}
+	s.queue, s.head = nil, 0
 	return nil
 }

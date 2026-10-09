@@ -65,7 +65,7 @@ type Host struct {
 	lent map[lentKey]*MemoryRegionCheckpoint
 	// spill is the dirty budget: the spill file as the storage of a
 	// reservation per private page this pager admits. See spill.go.
-	spill *zirconvm.SpillStorage
+	spill *zirconvm.SpillStorage[pageKey]
 	// requests are the READ requests not in use (pagerequests.go).
 	// prefetching counts the prefetches still reading, and prefetchRunning
 	// those whose goroutines have not ended, mapping their pages included.
@@ -234,7 +234,7 @@ func New(ctx context.Context, resources *resource.Budget, cfg Config, arena Aren
 	// The spill storage drops whatever the file held, since the spill is
 	// scratch and none of it is read back, and allocates the file's whole
 	// extent.
-	spillStorage, err := zirconvm.NewSpillStorage(ctx, spill, pageSize, cfg.DirtyPages)
+	spillStorage, err := zirconvm.NewSpillStorage[pageKey](ctx, spill, pageSize, cfg.DirtyPages, spillVersions(cfg))
 	if errors.Is(err, zirconvm.ErrNotSupported) || errors.Is(err, zirconvm.ErrOutOfRange) {
 		return nil, fmt.Errorf("%w: %w", ErrConfig, err)
 	}

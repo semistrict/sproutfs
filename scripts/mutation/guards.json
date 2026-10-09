@@ -108,6 +108,12 @@
     "purpose": "Forget that evicted private bytes exist in scratch storage. Its test spills a page the guest stored into, twice, and faults it back each time."
   },
   {
+    "id": "pager-keep-a-refaulted-page-s-spill",
+    "package": "vmmemory",
+    "run": "^TestARefaultedPageKeepsNoStaleVersion$",
+    "purpose": "Keep a spilled page's bytes in its reservation after a refault hands the guest the page as its own. The guest stores over it, and the checkpoint's retire keeps the stale bytes as the version the page was published as."
+  },
+  {
     "id": "spill-sparse",
     "package": "vmmemory",
     "run": "^TestASpillSucceedsOnADiskFilledFromOutside$",

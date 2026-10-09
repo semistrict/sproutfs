@@ -661,10 +661,17 @@ func (r *MemoryRegion) reclaimWith(ctx context.Context, take func() (fileSlot, e
 // leaves it nil; a test installs one to end that page's dirty epoch there.
 var reclaimSeam func(index uint64)
 
-// histogram is what each backing read is timed into.
-func (r *MemoryRegion) readRun(ctx context.Context, first uint64, wanted []bool, dst []byte,
+// readRun reads the pages of [first, first+len(wanted)) that wanted marks into
+// dst, which covers the run whole: each the spill file keeps a published
+// version of from there (readVersions), by its identity in keys, and the rest
+// from the backing. histogram is what each backing read is timed into.
+func (r *MemoryRegion) readRun(ctx context.Context, first uint64, wanted []bool, keys []pageKey, dst []byte,
 	histogram *latency.Histogram) ([]bool, error) {
 	ps := r.host.pageSize
+	wanted = r.readVersions(ctx, first, wanted, keys, dst)
+	if !slices.Contains(wanted, true) {
+		return nil, nil
+	}
 	// A peer backing reports which pages the source still holds, which is a
 	// second answer per page; it is read stretch by stretch until it can give
 	// both at once.

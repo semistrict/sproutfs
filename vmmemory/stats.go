@@ -46,6 +46,13 @@ type Stats struct {
 	PrivateExtents                                         int
 	PeakResidentPages, PeakDirtyPages                      int
 	Faults, CopyOnWrites, Evictions, Spills, SpillRefaults uint64
+	// Versions is how many published versions the spill file keeps:
+	// checkpoint pages whose bytes were in their reservations when their
+	// checkpoints retired, kept under their identities rather than given back.
+	// KeptVersions counts those kept, and VersionLoads the pages a load read
+	// from one rather than from the backing (spill.go).
+	Versions                   int
+	KeptVersions, VersionLoads uint64
 	// HarvestedPages counts the pages the evictor harvested ahead of taking
 	// any: their mappings taken away and their bytes kept, so that the guest's
 	// next touch of one faults and marks it accessed (harvest.go).
@@ -127,7 +134,8 @@ type Stats struct {
 	// the rules hold it together.
 	RuleCopies, MappingMerges uint64
 	// RefusedMappings counts the faults a client refused a mapping command for,
-	// each of which is served again once the pager has revoked something. A
+	// each of which its session made room for by taking back its region's own
+	// mappings. A
 	// host that refuses is a host whose client's mapping budget is too small
 	// for the mappings its guest's access pattern fragments into.
 	RefusedMappings uint64
@@ -279,6 +287,7 @@ func (h *Host) snapshot() (Stats, error) {
 	stats.IdlePages = h.idlePages
 	stats.PrivateExtents = len(h.extents)
 	stats.DirtyPages = h.dirty
+	stats.Versions = h.spill.Versions()
 	stats.LogicalPages = h.logical
 	stats.SecondChances = h.node.PageQueues().SecondChances()
 	stats.UFFDReads = h.uffdReads.Load()

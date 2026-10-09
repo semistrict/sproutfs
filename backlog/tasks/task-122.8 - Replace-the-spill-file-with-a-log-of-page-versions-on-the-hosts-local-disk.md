@@ -1,9 +1,11 @@
 ---
 id: TASK-122.8
-title: Replace the spill file with a log of page versions on the host's local disk
-status: To Do
-assignee: []
+title: 'Keep a published page''s version in the spill file, and load it from there'
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-09 09:25'
+updated_date: '2026-10-09 09:53'
 labels:
   - performance
 dependencies: []
@@ -16,12 +18,13 @@ ordinal: 164000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Step 1 of plans/local-writeback-2026-10-09.md. zirconvm.SpillStorage becomes a log: segments appended in order, each page version with its CRC32C, an index from page to version, and collection of versions superseded and published. It holds only what the spill holds now, so nothing else changes; it keeps the spill's promise that space it hands out was allocated before.
+Step 1 of plans/local-writeback-2026-10-09.md, after the decision there that the log is the spill file's fixed slots rather than an append log. A checkpoint's page whose bytes are in its reservation when the checkpoint retires keeps that slot under its identity instead of freeing it, and a load reads a version the spill holds before the store. Published versions are dropped oldest first whenever a reservation wants a slot. A slot's bytes count as a version only while no store can have changed the page since they were written, so a refault that hands the guest its page writable drops them.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The pager spills to the log, and every vmmemory suite and campaign passes as before
-- [ ] #2 A test drives a log through append, supersede, collect and a full disk
-- [ ] #3 docs/vm-memory.md describes the log where it describes the spill file
+- [ ] #1 A test publishes a spilled page, evicts it and refaults it from the spill file, with no backing read
+- [ ] #2 A reservation takes the slot of the oldest published version when no slot is free, and the dirty budget is unchanged
+- [ ] #3 A refault that hands the guest its page writable drops the slot's bytes, and a test proves a stale version is never loaded
+- [ ] #4 Every vmmemory suite and campaign passes; docs/vm-memory.md describes the published versions
 <!-- AC:END -->

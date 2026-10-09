@@ -1036,8 +1036,9 @@ func (r *MemoryRegion) finalizeCheckpoint(ctx context.Context, c *MemoryRegionCh
 		}
 		// Nothing reads the copy's reservation from here: the publication
 		// that read it is over, and the copy names no page an eviction could
-		// reach it through.
-		h.releaseSpill(spill)
+		// reach it through. Where it holds the copy's bytes, they are the
+		// version the page was published as, and the spill file keeps them.
+		h.retireSpill(spill, now)
 		r.bindingsMu.Lock()
 		held.spill, held.dirty = noReservation, false
 		r.bindingsMu.Unlock()

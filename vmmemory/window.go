@@ -794,8 +794,12 @@ func (p *plan) loadReserved(ctx context.Context) error {
 		return nil
 	}
 	wanted := make([]bool, last-first)
+	keys := make([]pageKey, last-first)
 	for page := first; page < last; page++ {
 		wanted[page-first] = p.reserved[page-p.start].slot >= 0
+		if id, ok := p.identity(page); ok {
+			keys[page-first] = id
+		}
 	}
 	buffer := h.takeWindow(last - first)
 	defer h.putWindow(buffer)
@@ -822,7 +826,7 @@ func (p *plan) loadReserved(ctx context.Context) error {
 			return err
 		}
 		var err error
-		unpublished, err = r.readRun(ctx, first, wanted, data, &h.loadLatency)
+		unpublished, err = r.readRun(ctx, first, wanted, keys, data, &h.loadLatency)
 		return err
 	})
 	if err != nil {

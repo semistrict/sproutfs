@@ -5,6 +5,7 @@
 package zirconvm
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -23,7 +24,7 @@ import (
 func TestReservationsCostWhatIsTakenNotWhatIsAdmitted(t *testing.T) {
 	forEachVmoPageSize(t, func(t *testing.T, env *vmoEnv) {
 		// The bookkeeping alone: a file of this extent is not allocated.
-		s := &SpillStorage{pageSize: env.ps, budget: MaxSpillPages}
+		s := &SpillStorage[int]{pageSize: env.ps, budget: MaxSpillPages}
 		for want := range 3 {
 			ref, ok := s.Reserve()
 			expect(t, "reserved", ok, true)
@@ -83,13 +84,13 @@ func TestASpillBeyondWhatAReferenceNamesIsRefused(t *testing.T) {
 		disk := env.runtime.NewDisk("refused", sim.DiskConfig{Space: sim.SpaceConfig{TotalBytes: 1 << 30}})
 		file, err := disk.Open(env.ctx, "spill", platform.OpenOptions{Create: true})
 		mustNotFail(t, "open", err)
-		_, err = NewSpillStorage(env.ctx, file, env.ps, MaxSpillPages+1)
+		_, err = NewSpillStorage[int](env.ctx, file, env.ps, MaxSpillPages+1, 0)
 		expect(t, "too many", errors.Is(err, ErrOutOfRange), true)
-		_, err = NewSpillStorage(env.ctx, file, env.ps, 0)
+		_, err = NewSpillStorage[int](env.ctx, file, env.ps, 0, 0)
 		expect(t, "none", errors.Is(err, ErrOutOfRange), true)
 		// The bounds themselves are budgets: one page, and the most a
 		// reference names, which is not allocated here.
-		one, err := NewSpillStorage(env.ctx, file, env.ps, 1)
+		one, err := NewSpillStorage[int](env.ctx, file, env.ps, 1, 0)
 		mustNotFail(t, "one page", err)
 		expect(t, "one available", one.Available(), 1)
 		mustNotFail(t, "the most", checkSpillBudget(MaxSpillPages))
@@ -154,6 +155,168 @@ func TestTheSpillHoldsItsExtentUntilReleased(t *testing.T) {
 		mustNotFail(t, "size", err)
 		expect(t, "truncated", size, int64(0))
 		expect(t, "holds nothing", s.Holds(ref), false)
+		expect(t, "nothing stored", s.GetMemoryUsage().UncompressedContentBytes, uint64(0))
+	})
+}
+
+// storeVersion reserves an allocation, writes data to it and publishes it as
+// key's version.
+func storeVersion(t *testing.T, env *vmoEnv, s *SpillStorage[int], key int, data []byte) {
+	t.Helper()
+	ref, ok := s.Reserve()
+	expect(t, "reserved", ok, true)
+	_, err := s.StoreReserved(env.ctx, []ReferenceValue{ref}, data)
+	mustNotFail(t, "store", err)
+	expect(t, "published", s.Publish(ref, key), true)
+}
+
+// readVersion is what ReadVersion reads of key, and whether it found it.
+func readVersion(t *testing.T, env *vmoEnv, s *SpillStorage[int], key int) (string, bool) {
+	t.Helper()
+	got := make([]byte, env.ps)
+	found, err := s.ReadVersion(env.ctx, key, got)
+	mustNotFail(t, "read the version", err)
+	return string(got), found
+}
+
+// A reservation's bytes, published, are kept under their key and read back by
+// it, and the allocation is no reservation any more. A reservation that holds
+// no bytes, or a key that has a version already, gives the allocation back
+// instead.
+func TestAPublishedReservationIsKeptUnderItsKey(t *testing.T) {
+	forEachVmoPageSize(t, func(t *testing.T, env *vmoEnv) {
+		s, _ := env.newSpillStorage(t, 4)
+		storeVersion(t, env, s, 7, pattern(env.ps, 'P'))
+		got, found := readVersion(t, env, s, 7)
+		expect(t, "found", found, true)
+		expect(t, "the bytes", got == string(pattern(env.ps, 'P')), true)
+		_, found = readVersion(t, env, s, 8)
+		expect(t, "another key", found, false)
+		expect(t, "one version", s.Versions(), 1)
+		expect(t, "every allocation available", s.Available(), 4)
+		empty, _ := s.Reserve()
+		expect(t, "no bytes, not published", s.Publish(empty, 9), false)
+		again, _ := s.Reserve()
+		_, err := s.StoreReserved(env.ctx, []ReferenceValue{again}, pattern(env.ps, 'Q'))
+		mustNotFail(t, "store", err)
+		expect(t, "a second version of a key, not published", s.Publish(again, 7), false)
+		got, _ = readVersion(t, env, s, 7)
+		expect(t, "the first version stays", got == string(pattern(env.ps, 'P')), true)
+		expect(t, "both given back", s.Available(), 4)
+	})
+}
+
+// Versions take only what reservations leave. A reservation that finds no
+// allocation free takes the oldest version's, and one read since the queue
+// last passed over it goes to the back once: a whole budget of reservations
+// is never refused for versions.
+func TestAReservationTakesTheOldestUnreadVersionsAllocation(t *testing.T) {
+	forEachVmoPageSize(t, func(t *testing.T, env *vmoEnv) {
+		s, _ := env.newSpillStorage(t, 3)
+		for key := range 3 {
+			storeVersion(t, env, s, key, pattern(env.ps, byte('a'+key)))
+		}
+		readVersion(t, env, s, 0)
+		_, ok := s.Reserve()
+		expect(t, "reserved over versions", ok, true)
+		_, found := readVersion(t, env, s, 1)
+		expect(t, "the oldest unread version went", found, false)
+		got, found := readVersion(t, env, s, 0)
+		expect(t, "the oldest, read since, stays", found, true)
+		expect(t, "with its bytes", got == string(pattern(env.ps, 'a')), true)
+		_, ok = s.Reserve()
+		expect(t, "a second", ok, true)
+		_, ok = s.Reserve()
+		expect(t, "a third", ok, true)
+		expect(t, "no version left", s.Versions(), 0)
+		_, ok = s.Reserve()
+		expect(t, "the budget, all reservations", ok, false)
+	})
+}
+
+// The index of versions is bounded: a version past the bound drops the oldest.
+func TestVersionsPastTheirBoundDropTheOldest(t *testing.T) {
+	forEachVmoPageSize(t, func(t *testing.T, env *vmoEnv) {
+		disk := env.runtime.NewDisk("bounded", sim.DiskConfig{Space: sim.SpaceConfig{TotalBytes: 8 * int64(env.ps)}})
+		file, err := disk.Open(env.ctx, "spill", platform.OpenOptions{Create: true})
+		mustNotFail(t, "open", err)
+		s, err := NewSpillStorage[int](env.ctx, file, env.ps, 4, 2)
+		mustNotFail(t, "make", err)
+		for key := range 3 {
+			storeVersion(t, env, s, key, pattern(env.ps, byte('a'+key)))
+		}
+		expect(t, "two versions", s.Versions(), 2)
+		_, found := readVersion(t, env, s, 0)
+		expect(t, "the oldest went", found, false)
+		_, found = readVersion(t, env, s, 2)
+		expect(t, "the newest stays", found, true)
+		expect(t, "the dropped allocation is free", s.Available(), 4)
+		none, err := NewSpillStorage[int](env.ctx, file, env.ps, 4, 0)
+		mustNotFail(t, "make", err)
+		ref, _ := none.Reserve()
+		_, err = none.StoreReserved(env.ctx, []ReferenceValue{ref}, pattern(env.ps, 'n'))
+		mustNotFail(t, "store", err)
+		expect(t, "a storage that keeps none publishes none", none.Publish(ref, 1), false)
+	})
+}
+
+// A version the device changed is dropped and reported, so the page is read
+// from the store instead.
+func TestAVersionTheDeviceChangedIsDropped(t *testing.T) {
+	forEachVmoPageSize(t, func(t *testing.T, env *vmoEnv) {
+		s, _ := env.newSpillStorage(t, 2)
+		storeVersion(t, env, s, 5, pattern(env.ps, 'V'))
+		_, err := s.file.WriteAt(env.ctx, []byte{'X'}, 1)
+		mustNotFail(t, "change a byte", err)
+		found, err := s.ReadVersion(env.ctx, 5, make([]byte, env.ps))
+		expect(t, "refused", errors.Is(err, ErrIODataIntegrity), true)
+		expect(t, "not found", found, false)
+		expect(t, "dropped", s.Versions(), 0)
+		expect(t, "its allocation free", s.Available(), 2)
+	})
+}
+
+// A version dropped while it is read is a miss, whatever the read brought
+// back: its allocation may be another page's by then.
+func TestAVersionDroppedWhileItIsReadIsAMiss(t *testing.T) {
+	forEachVmoPageSize(t, func(t *testing.T, env *vmoEnv) {
+		s, _ := env.newSpillStorage(t, 1)
+		storeVersion(t, env, s, 3, pattern(env.ps, 'O'))
+		s.file = &droppingFile{File: s.file, during: func() {
+			ref, ok := s.Reserve()
+			expect(t, "the version's allocation, reserved", ok, true)
+			_, err := s.StoreReserved(env.ctx, []ReferenceValue{ref}, pattern(env.ps, 'N'))
+			mustNotFail(t, "store over it", err)
+		}}
+		found, err := s.ReadVersion(env.ctx, 3, make([]byte, env.ps))
+		mustNotFail(t, "read", err)
+		expect(t, "a miss", found, false)
+	})
+}
+
+// droppingFile runs during once, before its first read.
+type droppingFile struct {
+	platform.File
+	during func()
+}
+
+func (f *droppingFile) ReadAt(ctx context.Context, b []byte, offset int64) (int, error) {
+	if f.during != nil {
+		during := f.during
+		f.during = nil
+		during()
+	}
+	return f.File.ReadAt(ctx, b, offset)
+}
+
+// Release drops every version with the file.
+func TestReleaseDropsEveryVersion(t *testing.T) {
+	forEachVmoPageSize(t, func(t *testing.T, env *vmoEnv) {
+		s, _ := env.newSpillStorage(t, 2)
+		storeVersion(t, env, s, 1, pattern(env.ps, 'R'))
+		mustNotFail(t, "release", s.Release(env.ctx))
+		_, found := readVersion(t, env, s, 1)
+		expect(t, "gone", found, false)
 		expect(t, "nothing stored", s.GetMemoryUsage().UncompressedContentBytes, uint64(0))
 	})
 }

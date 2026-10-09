@@ -193,6 +193,21 @@ reservation before a write can resume: a reference of the spill storage
 covers the page whether resident or spilled. A spill writes the page into it,
 and a refault reads it back and checks the CRC32C the write recorded.
 
+The spill file also keeps published versions, step 1 of
+[the local writeback plan](../plans/local-writeback-2026-10-09.md). When a
+checkpoint retires, a page whose bytes are in its reservation keeps them under
+the identity it was published as, instead of giving the reservation back. A
+load reads a version the spill file keeps before it reads the backing, so a
+page this host published and then evicted comes back from the host's disk. The
+bytes are a version only while no store can have changed the page since they
+were written: the copy a checkpoint holds never changes, and a refault that
+hands the guest its page as its own drops them, since its stores from then on
+pass through nothing the spill file sees. Versions take only the slots
+reservations leave: a reservation that finds none free takes the oldest
+version's, with a second chance for one read since the queue last passed over
+it, and the index is bounded at 64 MiB. A version that fails its CRC32C is
+dropped and the page read from its volume.
+
 The dirty budget sets the size of the spill file. `New` allocates the whole
 extent (`fallocate` on Linux) before the pager takes any work, and a filesystem
 that cannot hold it refuses the pager, because a sparse file's unused space could
@@ -932,7 +947,8 @@ page cache is in flight, and it takes none of the cache's load slots.
 
 An eviction drops a clean page rather than spilling it, because its volume holds
 its bytes, so a pulled VM's refault reads the hosts' disks. The spill file holds
-only private pages and bounds the dirty pages the pager admits.
+private pages, which bound the dirty pages the pager admits, and the published
+versions of pages that were spilled before their checkpoints retired.
 
 A migration's destination attaches through the peer backing. A page the source
 still holds, and every page no checkpoint holds, comes from the source. Every
