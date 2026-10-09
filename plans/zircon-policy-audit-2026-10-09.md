@@ -20,7 +20,7 @@ Fuchsia sources are at fuchsia 90e54e09 under `~/src/fuchsia`.
 - Ours maps every resident page of the read-ahead window when the fault
   follows a recent one: 2,048 pages at 4 KiB, located and looked up per fault
   (`vmmemory/fault.go` planFault, `vmmemory/window.go` survey).
-- Decision: take Zircon's 16. Open.
+- Decision: taken (d361afe5), with its rule that a page mapped around a fault is not counted used.
 
 ## Read-ahead
 
