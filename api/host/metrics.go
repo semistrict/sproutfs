@@ -164,6 +164,17 @@ func MetricFamilies(status Status) []MetricFamily {
 		func(p PagerKind) float64 { return float(p.Evictions) })
 	byKind("sproutfs_pager_spills_total", Counter, "Pages the pager has written to its spill file.",
 		func(p PagerKind) float64 { return float(p.Spills) })
+	byKind("sproutfs_pager_versions", Gauge, "Published pages the pager's spill file keeps a version of.",
+		func(p PagerKind) float64 { return float(p.Versions) })
+	byKind("sproutfs_pager_kept_versions_total", Counter,
+		"Published pages a checkpoint's retire kept in the spill file as their versions.",
+		func(p PagerKind) float64 { return float(p.KeptVersions) })
+	byKind("sproutfs_pager_version_writes_total", Counter,
+		"Published pages an eviction wrote to the spill file as their versions.",
+		func(p PagerKind) float64 { return float(p.VersionWrites) })
+	byKind("sproutfs_pager_version_loads_total", Counter,
+		"Pages a load read from a version in the spill file rather than from the store.",
+		func(p PagerKind) float64 { return float(p.VersionLoads) })
 	byKind("sproutfs_pager_idle_pages", Gauge,
 		"Resident pages no memory region maps, kept for the next one that inherits them.",
 		func(p PagerKind) float64 { return float(p.IdlePages) })

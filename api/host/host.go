@@ -267,6 +267,14 @@ type PagerKind struct {
 	Faults      uint64 `json:"faults"`
 	Evictions   uint64 `json:"evictions"`
 	Spills      uint64 `json:"spills"`
+	// Versions is how many published pages the pager's spill file keeps a
+	// version of, a gauge. KeptVersions counts those a checkpoint's retire
+	// kept, VersionWrites those an eviction wrote, and VersionLoads the pages
+	// a load read from one rather than from the store.
+	Versions      int    `json:"versions"`
+	KeptVersions  uint64 `json:"kept_versions"`
+	VersionWrites uint64 `json:"version_writes"`
+	VersionLoads  uint64 `json:"version_loads"`
 	// IdlePages is how many resident pages no memory region maps: published
 	// pages kept under their identity for the next memory region that
 	// inherits them. It is a gauge.
