@@ -1,10 +1,11 @@
 ---
 id: TASK-122.2
 title: 'Refault a VM''s evicted published pages from the host''s disk, not the store'
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-08 23:57'
-updated_date: '2026-10-09 01:20'
+updated_date: '2026-10-09 10:57'
 labels:
   - performance
 dependencies: []
@@ -26,6 +27,12 @@ Outside the share the cluster cache is on for, a host keeps a VM's published pag
 - [ ] #2 A test proves a publication's pages reach the disk and a later fault reads them there
 - [ ] #3 The benchmark's random reads are measured before and after
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+Done as steps 1 and 2 of plans/local-writeback-2026-10-09.md rather than through the page cache's disk: the spill file keeps published versions (at retire, TASK-122.8, and at eviction of an identity root's page), and every load reads a version before the backing. Measure the benchmark's random reads on GCE with scripts/demo-gce.sh postgres beside the 2026-10-09 baseline (74 reads/s, p50 76 ms) and plain (23,825/s).
+<!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
 

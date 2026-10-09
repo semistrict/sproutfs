@@ -102,6 +102,18 @@ func addCounts(into, from map[string]uint64) map[string]uint64 {
 	return sum
 }
 
+// campaignVersions is how many published versions a campaign's pager keeps on
+// seed: none on half the seeds, its own bound on the rest, independently of
+// which seeds take the client's batched path. A pager that keeps versions
+// loads a page it evicted from its spill file, so the seeds that keep none are
+// the ones whose refaults reach the backing and the client's commands again.
+func campaignVersions(seed uint64) int {
+	if (seed/2)%2 == 0 {
+		return -1
+	}
+	return 0
+}
+
 // prefetchCampaign runs one seed of the campaign.
 func prefetchCampaign(t *testing.T, seed uint64) campaignRun {
 	return runCampaign(t, seed, func(ctx context.Context, disk *sim.Disk) { prefetchWorld(t, ctx, seed, disk, 2, 1) })
@@ -118,7 +130,7 @@ func prefetchWorld(t *testing.T, ctx context.Context, seed uint64, disk *sim.Dis
 	guestCount := forks + 2
 	f, err := newFixtureOn(t, ctx, disk, vmmemory.Config{PageSize: uint64(pageSize), Arena: suiteArena,
 		ResidentPages: 24, LogicalPages: campaignPages * (guestCount + 1), DirtyPages: campaignPages * guestCount,
-		ReadAheadPages: 4, PrefetchRuns: 2})
+		ReadAheadPages: 4, PrefetchRuns: 2, MaxSpillVersions: campaignVersions(seed)})
 	if err != nil {
 		// A host whose spill file could not be made never started.
 		if !injected(err) {
