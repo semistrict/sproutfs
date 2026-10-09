@@ -610,7 +610,10 @@ func (m *mapping) outOfMappings(ctx context.Context, command string) bool {
 // given, or zeros mapped, a few times a run, and a file dropped only as a fork
 // point's seal ends.
 func (m *mapping) commandLost(ctx context.Context, command string) bool {
-	p := 0.002
+	// A map is lost rarely enough that most seeds' regions live, and often
+	// enough that the campaigns lose one: their pagers keep versions and
+	// their clients exit, so they map less than they did.
+	p := 0.004
 	switch command {
 	case "give-file", "map-zero":
 		p = 0.05
