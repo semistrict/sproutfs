@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"testing"
 	"time"
+	"unsafe"
 )
 
 // Layered reports whether this memory region's pages are served by the
@@ -139,6 +140,9 @@ const (
 // HarvestOwn takes back every mapping of r it can, as a session does when its
 // client refuses one of r's mappings for want of budget.
 func HarvestOwn(ctx context.Context, r *MemoryRegion) (int, error) { return r.harvestOwn(ctx) }
+
+// VersionKeyBytes is what a published version's key costs the index.
+const VersionKeyBytes = unsafe.Sizeof(versionKey{})
 
 // Repeated reports whether a fault on page for this access would be a repeated
 // fault, which the Linux transport paces.

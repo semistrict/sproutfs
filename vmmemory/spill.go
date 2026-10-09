@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"slices"
 
-	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/vmmemory/internal/zirconvm"
 )
 
@@ -24,15 +23,49 @@ type reservation struct {
 	taken bool
 }
 
-// The index of published versions is memory: each costs its identity twice,
-// once as a key and once in the queue it is dropped from, and the map's own
-// overhead. maxVersionIndexBytes bounds it, which at 2 MiB pages is every
-// slot of any spill file a node has, and at 4 KiB about a gigabyte and a half
-// of versions.
+// The index of published versions is memory: each costs its key twice, once
+// in the map and once in the queue it is dropped from, and the map's own
+// overhead. maxVersionIndexBytes bounds it, which at 2 MiB pages is every slot
+// of any spill file a node has, and at 4 KiB about 20 GiB of versions.
 const (
-	maxVersionIndexBytes   = 64 << 20
-	versionIndexEntryBytes = 176
+	maxVersionIndexBytes   = 512 << 20
+	versionIndexEntryBytes = 104
 )
+
+// versionKey is the key a published version is kept under: its page's
+// identity, with the checkpoint and volume it names interned as a number
+// (versionRootLocked). A full identity holds two strings, and a 4 KiB pager
+// keeps millions of versions.
+type versionKey struct {
+	root uint32
+	page uint64
+}
+
+// versionRoot is the number a version key names root by, made where there is
+// none and create says to. The numbers live as long as the pager; each is one
+// checkpoint's volume.
+func (h *Host) versionRoot(root rootKey, create bool) (uint32, bool) {
+	h.versionRootsMu.RLock()
+	n, ok := h.versionRoots[root]
+	h.versionRootsMu.RUnlock()
+	if ok || !create {
+		return n, ok
+	}
+	h.versionRootsMu.Lock()
+	defer h.versionRootsMu.Unlock()
+	if n, ok := h.versionRoots[root]; ok {
+		return n, true
+	}
+	n = uint32(len(h.versionRoots))
+	h.versionRoots[root] = n
+	return n, true
+}
+
+// versionKey is the key id's version is kept under.
+func (h *Host) versionKey(id pageKey, create bool) (versionKey, bool) {
+	root, ok := h.versionRoot(rootOf(id), create)
+	return versionKey{root: root, page: id.id.Page}, ok
+}
 
 // versionSlots is how many evictions a pager has writing versions at once at
 // most, and so how many slots its spill file has beside its dirty budget: a
@@ -133,7 +166,8 @@ func (h *Host) retireSpill(spill reservation, now storedPage) {
 	h.mu.Lock()
 	if now.stored && !now.id.zero() {
 		// Publish gives the allocation back where it keeps nothing.
-		if h.spill.Publish(spill.ref, now.id) {
+		key, _ := h.versionKey(now.id, true)
+		if h.spill.Publish(spill.ref, key) {
 			h.stats.KeptVersions++
 		}
 	} else {
@@ -155,8 +189,12 @@ func (r *MemoryRegion) readVersions(ctx context.Context, first uint64, wanted []
 	ps := h.pageSize
 	left := wanted
 	loaded := uint64(0)
-	for at, key := range keys {
-		if !wanted[at] || key == (pageKey{}) || key.zero() {
+	for at, id := range keys {
+		if !wanted[at] || id == (pageKey{}) || id.zero() {
+			continue
+		}
+		key, known := h.versionKey(id, false)
+		if !known {
 			continue
 		}
 		found, err := h.spill.ReadVersion(ctx, key, data[uint64(at)*ps:uint64(at+1)*ps])
@@ -206,7 +244,8 @@ func (h *Host) keepVersion(ctx context.Context, cow *zirconvm.CowPages, offset u
 		h.mu.Unlock()
 		return
 	}
-	key := pageKey{id: control.Identity{Ref: root.key.ref, Volume: root.key.volume, Page: offset / h.pageSize}}
+	interned, _ := h.versionRoot(root.key, true)
+	key := versionKey{root: interned, page: offset / h.pageSize}
 	if h.spill.HasVersion(key) {
 		h.mu.Unlock()
 		return
@@ -235,7 +274,7 @@ func (h *Host) keepVersion(ctx context.Context, cow *zirconvm.CowPages, offset u
 	h.mu.Unlock()
 	if err != nil && context.Cause(ctx) == nil {
 		slog.Warn("vmmemory: an evicted page could not be kept in the spill file; it is read from its volume next time",
-			"volume", key.id.Volume, "page", key.id.Page, "error", err)
+			"volume", root.key.volume, "page", key.page, "error", err)
 	}
 }
 

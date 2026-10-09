@@ -205,7 +205,9 @@ hands the guest its page as its own drops them, since its stores from then on
 pass through nothing the spill file sees. Versions take only the slots
 reservations leave: a reservation that finds none free takes the oldest
 version's, with a second chance for one read since the queue last passed over
-it, and the index is bounded at 64 MiB. A version that fails its CRC32C is
+it. A version is kept under its page and a number for its checkpoint's volume,
+sixteen bytes, and the index is bounded at 512 MiB: about 20 GiB of versions at
+4 KiB pages. A version that fails its CRC32C is
 dropped and the page read from its volume.
 
 A published page an eviction takes is kept as its version too, step 2 of the

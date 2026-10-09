@@ -3,6 +3,8 @@ package vmmemory_test
 import (
 	"testing"
 	"testing/synctest"
+
+	"github.com/semistrict/sproutfs/vmmemory"
 )
 
 // A checkpoint's page whose bytes are in its reservation when the checkpoint
@@ -110,4 +112,13 @@ func TestAnEvictedPublishedPageLoadsFromTheSpillFileNextTime(t *testing.T) {
 			t.Fatalf("%d version loads, want page zero's", s.VersionLoads)
 		}
 	})
+}
+
+// A 4 KiB pager keeps a version of millions of pages, so the key each is
+// kept under is a number for its checkpoint's volume and its page, not the
+// identity's two strings.
+func TestAVersionsKeyIsSixteenBytes(t *testing.T) {
+	if vmmemory.VersionKeyBytes != 16 {
+		t.Fatalf("a version's key is %d bytes, want 16", vmmemory.VersionKeyBytes)
+	}
 }

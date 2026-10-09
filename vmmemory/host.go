@@ -65,9 +65,14 @@ type Host struct {
 	lent map[lentKey]*MemoryRegionCheckpoint
 	// spill is the spill file: a reservation per private page this pager
 	// admits, and the published versions of pages (spill.go). versionWrites
-	// counts the evictions writing a version, guarded by mu.
-	spill         *zirconvm.SpillStorage[pageKey]
-	versionWrites int
+	// counts the evictions writing a version, guarded by mu. versionRoots
+	// numbers each checkpoint's volume a version key names (versionKey),
+	// guarded by versionRootsMu, a leaf: a load looks its versions up with
+	// no other lock held, and must not wait for mu.
+	spill          *zirconvm.SpillStorage[versionKey]
+	versionWrites  int
+	versionRootsMu sync.RWMutex
+	versionRoots   map[rootKey]uint32
 	// requests are the READ requests not in use (pagerequests.go).
 	// prefetching counts the prefetches still reading, and prefetchRunning
 	// those whose goroutines have not ended, mapping their pages included.
@@ -239,7 +244,7 @@ func New(ctx context.Context, resources *resource.Budget, cfg Config, arena Aren
 	// The spill storage drops whatever the file held, since the spill is
 	// scratch and none of it is read back, and allocates the file's whole
 	// extent.
-	spillStorage, err := zirconvm.NewSpillStorage[pageKey](ctx, spill, pageSize, spillPages(cfg), spillVersions(cfg))
+	spillStorage, err := zirconvm.NewSpillStorage[versionKey](ctx, spill, pageSize, spillPages(cfg), spillVersions(cfg))
 	if errors.Is(err, zirconvm.ErrNotSupported) || errors.Is(err, zirconvm.ErrOutOfRange) {
 		return nil, fmt.Errorf("%w: %w", ErrConfig, err)
 	}
@@ -258,7 +263,8 @@ func New(ctx context.Context, resources *resource.Budget, cfg Config, arena Aren
 		memoryRegions: make(map[*MemoryRegion]struct{}), highWater: highWater(cfg.DirtyPages),
 		io: make(chan struct{}, cfg.ConcurrentIO), writeback: make(chan struct{}, 1),
 		roots: make(map[rootKey]*identityRoot), rootOfPages: make(map[*zirconvm.CowPages]*identityRoot),
-		prefetches: make(map[*prefetch]struct{})}
+		versionRoots: make(map[rootKey]uint32),
+		prefetches:   make(map[*prefetch]struct{})}
 	h.evictor = newPagerEvictor(h)
 	h.pmm = &arenaPmm{host: h, zero: zirconvm.NewFramePage(nil)}
 	// No compression: a frame's bytes are the pager's to move, so a page's
