@@ -14,22 +14,24 @@ import (
 // build them.
 const (
 	// vmaHeadroom is the share of the node's mapping-count limit this host
-	// admits a VMM's replacements against. The pager's mappings are not the only
-	// ones a VMM process has, and the limit is the kernel's for the whole
-	// address space, so half of it is the budget and the rest is headroom.
+	// admits a memory region's replacements against. The pager's mappings are
+	// not the only ones a VMM process has, and the limit is the kernel's for the
+	// whole address space, so half of it is the budget and the rest is
+	// headroom.
 	vmaHeadroom = 2
 	// minimumVMAs is the smallest budget worth admitting against; below it the
-	// budget is disabled instead, which is also what a client without /proc gets.
+	// budget is disabled instead.
 	minimumVMAs = 128
 	maximumVMAs = 1 << 20
 	// maxMapCountPath is where Linux reports that limit.
 	maxMapCountPath = "/proc/sys/vm/max_map_count"
 )
 
-// vmaBudget is the mapping-count budget a VMM's replacements are admitted
-// against, read from the node's own limit with headroom. Zero disables the
-// budget, which is what a client that cannot read /proc gets anyway, and is
-// what an unreadable or implausibly small limit is answered with.
+// vmaBudget is the mapping-count budget a memory region's replacements are
+// admitted against, read from the node's own limit with headroom. The client
+// counts its region's mappings itself, so a jailed VMM keeps the budget too.
+// Zero disables it, which is what an unreadable or implausibly small limit is
+// answered with.
 func vmaBudget() int {
 	raw, err := os.ReadFile(maxMapCountPath)
 	if err != nil {

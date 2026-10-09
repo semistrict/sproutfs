@@ -45,7 +45,9 @@ impl Peer {
         }
     }
 
-    fn accept(&self, spec: MemoryRegionSpec) -> (UnixStream, OwnedFd) {
+    /// Accepts the session's connection and reads its HELLO and MEMORY_REGION,
+    /// which say where the memory region is.
+    fn accept(&self, spec: MemoryRegionSpec) -> (UnixStream, OwnedFd, usize) {
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut socket = loop {
             match self.listener.accept() {
@@ -87,7 +89,7 @@ impl Peer {
                 ..Frame::default()
             }
         );
-        (socket, uffd)
+        (socket, uffd, memory_region.offset as usize)
     }
 }
 
@@ -237,7 +239,7 @@ fn connect_with<T: Send>(
     let peer = Peer::new();
     std::thread::scope(|scope| {
         let server = scope.spawn(|| {
-            let (mut socket, _uffd) = peer.accept(spec);
+            let (mut socket, _uffd, _) = peer.accept(spec);
             script(&mut socket)
         });
         let session = Session::connect(peer.directory.join("control.sock"), spec);
@@ -542,10 +544,21 @@ fn serve_backing(
     backing: &OwnedFd,
     script: impl FnOnce(&mut UnixStream) + Send,
 ) -> io::Result<()> {
+    serve_region(spec, attach, file, backing, |socket, _| script(socket))
+}
+
+/// serve_backing for a script that needs to know where the memory region is.
+fn serve_region(
+    spec: MemoryRegionSpec,
+    attach: Frame,
+    file: Frame,
+    backing: &OwnedFd,
+    script: impl FnOnce(&mut UnixStream, usize) + Send,
+) -> io::Result<()> {
     let peer = Peer::new();
     std::thread::scope(|scope| {
         let server = scope.spawn(|| {
-            let (mut socket, uffd) = peer.accept(spec);
+            let (mut socket, uffd, address) = peer.accept(spec);
             let _events = RemapEvents::new(uffd);
             attach.write(&mut socket).unwrap();
             file.send_fd(&mut socket, backing).unwrap();
@@ -558,7 +571,7 @@ fn serve_backing(
                     ..Frame::default()
                 }
             );
-            script(&mut socket);
+            script(&mut socket, address);
         });
         let result = Session::connect(peer.directory.join("control.sock"), spec)
             .and_then(|mut session| session.run());

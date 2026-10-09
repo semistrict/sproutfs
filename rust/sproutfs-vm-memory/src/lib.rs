@@ -11,6 +11,8 @@ compile_error!("sproutfs-vm-memory currently supports Linux x86_64 and aarch64")
 mod control;
 mod generations;
 mod linux;
+mod mappings;
+mod runs;
 pub use linux::{BACKING_HUGETLB, BACKING_MEMFD, MAX_PAGE_SIZE, MIN_PAGE_SIZE};
 mod vma_budget;
 mod wire;
@@ -126,6 +128,9 @@ pub struct Session {
     memory_region: OwnedMemoryRegion,
     last_command: Option<Frame>,
     terminal: bool,
+    /// What the memory region is mapped as, run by run, which is how many
+    /// mappings it costs: what `vmas` admits each command against.
+    mappings: mappings::Mappings,
     vmas: vma_budget::VmaBudget,
 }
 
@@ -195,6 +200,7 @@ impl Session {
         let page_size = Self::geometry(attach, spec.len)?;
         let vmas = vma_budget::VmaBudget::new(attach.flags)?;
         let mut session = Self {
+            mappings: mappings::Mappings::new(spec.len / page_size),
             vmas,
             requests: control::Requests::new(socket.try_clone()?)?,
             socket,
@@ -453,7 +459,10 @@ impl Session {
                 0 // only the immediately preceding identical command is retryable
             } else if let Err(errno) = self.validate(command) {
                 errno
-            } else if let Err(err) = self.vmas.admit_command([command.kind]) {
+            } else if let Err(err) = self
+                .vmas
+                .admit_command(self.mappings.count(), [command.kind])
+            {
                 err.raw_os_error().unwrap_or(libc::EIO)
             } else {
                 // After mutation begins, failure is terminal, not a rejected
@@ -515,7 +524,10 @@ impl Session {
                 merged.push(*run);
             }
         }
-        if let Err(err) = self.vmas.admit_command(merged.iter().map(|run| run.kind)) {
+        if let Err(err) = self
+            .vmas
+            .admit_command(self.mappings.count(), merged.iter().map(|run| run.kind))
+        {
             return self.requests.send(Frame {
                 kind: wire::ACK,
                 id: command.id,
@@ -546,7 +558,7 @@ impl Session {
             index = end;
         }
         for run in runs {
-            self.record_generation(run);
+            self.record(run);
         }
         self.last_command = Some(command);
         self.requests.send(Frame {
@@ -660,7 +672,7 @@ impl Session {
 
     fn apply(&mut self, c: Frame) -> io::Result<()> {
         self.replace(c).map_err(|err| in_run(0, 1, c, err))?;
-        self.record_generation(c);
+        self.record(c);
         Ok(())
     }
 
@@ -688,12 +700,15 @@ impl Session {
         mapping.replace(target)
     }
 
-    fn record_generation(&mut self, c: Frame) {
+    /// Records what an applied command did: the generation its pages are at
+    /// and what they are mapped as.
+    fn record(&mut self, c: Frame) {
         let size = self.page_size as u64;
         self.memory_region.generations.set(
             (c.offset / size) as usize,
             ((c.offset + c.len) / size) as usize,
             c.generation,
         );
+        self.mappings.record(c, size);
     }
 }

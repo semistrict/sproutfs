@@ -849,8 +849,8 @@ sixteen pages or fewer. A gap is never closed across a range's boundary. The
 rule applies only after the process has refused the region a mapping. With it
 always on, forks of a seeded database updating keys at random held 4.7 GiB each
 on 2026-09-23: the guest's writes caused 345,000 page copies and the rule
-3,040,000. Plain Firecracker's clones held 0.69 GiB. A process gets half the
-node's `vm.max_map_count`, which is 1,048,576 on a current distribution.
+3,040,000. Plain Firecracker's clones held 0.69 GiB. Each memory region gets half
+the node's `vm.max_map_count`, which is 1,048,576 on a current distribution.
 
 **A range that is half private becomes private.** When half a range's pages are
 at their offsets in its extent, the pager copies the rest into the extent's
@@ -1553,9 +1553,17 @@ one mapping per call would fail the ioctl and the seal.
 `UFFD_USER_MODE_ONLY` does not cover KVM's own accesses, so the deployment must
 grant kernel-fault UFFD through the permitted syscall route or
 `/dev/userfaultfd`, and allow it under the actual seccomp policy. The client's
-mapping-count budget is opt-in. Zero disables it and reads nothing from `/proc`,
-which a jailed process without `/proc` needs. A nonzero limit is an admission
-bound, which `/proc/self/maps` can only make less conservative.
+mapping-count budget is opt-in, and zero disables it. A nonzero limit bounds the
+mappings the session's own memory region makes, which the client counts from the
+commands it applied rather than from `/proc`, so a jailed VMM, which has no
+`/proc`, keeps it as well as any other. Two pages side by side are one mapping
+when they are traps, or the next page of one file; the zero page is counted apart
+from the traps it may merge with. A test drives a real session and checks that
+count against the kernel's after every command. Until 2026-10-09 a client without
+`/proc/self/maps` counted six for every mapping command and never less, so a
+jailed VMM refused every map after 87,381 of them: on GCE it held 326 mappings
+when it did, and its guest froze while the pager waited for a revocation
+(TASK-122.5).
 
 Eviction cannot rely on `madvise`: dropping anonymous contents leaves the shared
 backing resident elsewhere, and punching the backing makes future accesses read
@@ -1878,12 +1886,16 @@ recorded its runs before sending them and undid the record on a refusal; three
 undid the wrong runs, and one of them ended an embedder's VM with
 `UFFDIO_CONTINUE: invalid argument`.
 
-Only replacements that install a mapping are charged against the budget. A
-revocation returns its range to the trap mapping the region was attached as,
-which merges with the traps around it, so it can only lower the count. It is
-admitted regardless of the budget, as is a batch of revocations of any size. The
-kernel headroom the limit leaves covers a revocation's transient cost, so a limit
-above half of `/proc/sys/vm/max_map_count` is refused at attachment.
+Only replacements that install a mapping are charged against the budget, six
+each over the region's count, for the mapping they are built in, the splits at
+both edges and the reservation they are staged in. A revocation returns its range
+to the trap mapping the region was attached as, which merges with the traps
+around it. It is admitted regardless of the budget, as is a batch of revocations
+of any size, because a refused mapping is answered with revocations and nothing
+else frees the budget. One in the middle of a file's run splits it in three; that
+and a revocation's transient cost are what the kernel headroom the limit leaves
+covers, so a limit above half of `/proc/sys/vm/max_map_count` is refused at
+attachment.
 
 A batch split across several commands is the exception. Once one of its commands
 has landed, a refusal is as ambiguous as a lost acknowledgement, and terminal.

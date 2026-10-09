@@ -1,31 +1,28 @@
 use super::*;
-use std::io::Write;
-use std::sync::atomic::{AtomicU64, Ordering};
+use crate::mappings::Mappings;
 
-fn maps(contents: &[u8]) -> BufReader<File> {
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-    let path = std::env::temp_dir().join(format!(
-        "sproutfs-vma-unit-{}-{}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ));
-    let mut file = File::options()
-        .read(true)
-        .write(true)
-        .create_new(true)
-        .open(&path)
-        .unwrap();
-    std::fs::remove_file(path).unwrap();
-    file.write_all(contents).unwrap();
-    BufReader::new(file)
+const PAGE: u64 = 4096;
+
+fn command(kind: u64, page: u64) -> wire::Frame {
+    wire::Frame {
+        kind,
+        offset: page * PAGE,
+        len: PAGE,
+        backing: if kind == wire::MAP { page * PAGE } else { 0 },
+        flags: if kind == wire::MAP_ZERO {
+            wire::IMMUTABLE
+        } else {
+            0
+        },
+        ..wire::Frame::default()
+    }
 }
 
 #[test]
-fn disabled_budget_needs_no_maps_and_admits_any_request() {
-    let mut budget = VmaBudget::new(0).unwrap();
-    assert!(budget.maps.is_none());
+fn disabled_budget_admits_any_request() {
+    let budget = VmaBudget::new(0).unwrap();
     for replacements in [0, 1, usize::MAX] {
-        budget.admit(replacements).unwrap();
+        budget.admit(usize::MAX, replacements).unwrap();
     }
 }
 
@@ -39,23 +36,23 @@ fn small_nonzero_limits_are_invalid() {
     }
 }
 
+// Each replacement that installs a mapping may cost six while it is applied,
+// over what the memory region is mapped as now.
 #[test]
-fn cumulative_budget_admits_the_exact_limit_and_refuses_overflow() {
-    let mut budget = VmaBudget {
-        limit: 128,
-        estimate: 2,
-        maps: None,
-    };
-    // Each replacement reserves six VMAs, including temporary edge splits.
-    budget.admit(21).unwrap();
-    budget.admit(0).unwrap();
-    for replacements in [1, usize::MAX] {
+fn a_command_is_admitted_up_to_the_limit_over_the_mappings_there_are() {
+    let budget = VmaBudget { limit: 128 };
+    budget.admit(2, 21).unwrap();
+    budget.admit(128, 0).unwrap();
+    for (mapped, replacements) in [(3, 21), (0, 22), (128, 1), (0, usize::MAX)] {
         assert_eq!(
-            budget.admit(replacements).unwrap_err().raw_os_error(),
-            Some(libc::ENOSPC)
+            budget
+                .admit(mapped, replacements)
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::ENOSPC),
+            "{mapped} mapped, {replacements} replacements"
         );
     }
-    assert_eq!(budget.estimate, 128);
 }
 
 // A refused mapping sends the pager to revoke, which is the only thing that
@@ -66,70 +63,83 @@ fn cumulative_budget_admits_the_exact_limit_and_refuses_overflow() {
 // whatever the budget holds.
 #[test]
 fn a_refused_mapping_still_admits_the_revocation_that_frees_the_budget() {
-    let mut budget = VmaBudget {
-        limit: 128,
-        estimate: 128,
-        maps: None,
-    };
+    let budget = VmaBudget { limit: 128 };
     for kind in [wire::MAP, wire::MAP_ZERO] {
         assert_eq!(
-            budget.admit_command([kind]).unwrap_err().raw_os_error(),
+            budget
+                .admit_command(128, [kind])
+                .unwrap_err()
+                .raw_os_error(),
             Some(libc::ENOSPC)
         );
     }
-    budget.admit_command([wire::REVOKE]).unwrap();
+    budget.admit_command(128, [wire::REVOKE]).unwrap();
     // A batch of them is admitted however large, and a mixed one costs only
     // what it installs: two mappings here, which the exhausted budget refuses.
     budget
-        .admit_command(std::iter::repeat_n(wire::REVOKE, 1024))
+        .admit_command(128, std::iter::repeat_n(wire::REVOKE, 1024))
         .unwrap();
     assert_eq!(
         budget
-            .admit_command([wire::REVOKE, wire::MAP, wire::REVOKE, wire::MAP_ZERO])
+            .admit_command(128, [wire::REVOKE, wire::MAP, wire::REVOKE, wire::MAP_ZERO])
             .unwrap_err()
             .raw_os_error(),
         Some(libc::ENOSPC)
     );
-    assert_eq!(budget.estimate, 128);
 }
 
+// The budget follows what the memory region is mapped as, not what it has
+// been: a VMM that maps and revokes far more often than the limit allows
+// mappings at once is never refused while it holds few. A jailed VMM has no
+// /proc, and this budget was once an estimate that only grew without one: on
+// GCE it refused every map after 87,381 of them, with 326 mappings held, and
+// the guest froze.
 #[test]
-fn refresh_recovers_merged_mappings_and_rewinds_on_every_attempt() {
-    let mut budget = VmaBudget {
-        limit: 128,
-        estimate: 125,
-        maps: Some(maps(b"first\nsecond\n")),
-    };
-    budget.admit(2).unwrap();
-    assert_eq!(budget.estimate, 14);
-    budget.admit(19).unwrap();
-    assert_eq!(budget.estimate, 128);
-    budget.admit(21).unwrap();
-    assert_eq!(budget.estimate, 128);
-    assert_eq!(
-        budget.admit(22).unwrap_err().raw_os_error(),
-        Some(libc::ENOSPC)
-    );
+fn a_region_that_maps_and_revokes_without_end_is_never_refused_while_it_holds_few() {
+    let budget = VmaBudget { limit: 128 };
+    let mut mappings = Mappings::new(64);
+    for round in 0..100_000u64 {
+        let page = round % 64;
+        for kind in [wire::MAP, wire::MAP_ZERO, wire::REVOKE] {
+            budget
+                .admit_command(mappings.count(), [kind])
+                .unwrap_or_else(|err| panic!("round {round} {kind}: {err}"));
+            mappings.record(command(kind, page), PAGE);
+        }
+        assert_eq!(mappings.count(), 1);
+    }
 }
 
+// A region that does hold many mappings is refused once what a command could
+// cost would pass the limit, and admitted again once revocations have merged
+// them back.
 #[test]
-fn refresh_counts_an_unterminated_final_mapping_and_stops_at_the_limit() {
-    let mut budget = VmaBudget {
-        limit: 128,
-        estimate: 125,
-        maps: Some(maps(b"first\nsecond")),
-    };
-    budget.admit(21).unwrap();
-    assert_eq!(budget.estimate, 128);
-    let content = "mapping\n".repeat(256);
-    let mut full = VmaBudget {
-        limit: 128,
-        estimate: 128,
-        maps: Some(maps(content.as_bytes())),
-    };
-    assert_eq!(
-        full.admit(1).unwrap_err().raw_os_error(),
-        Some(libc::ENOSPC)
+fn a_region_holding_many_mappings_is_refused_until_they_are_revoked() {
+    let budget = VmaBudget { limit: 128 };
+    let mut mappings = Mappings::new(256);
+    let mut page = 0;
+    // Every other page mapped from the private file at its own page of it
+    // backwards, so no two merge.
+    while budget.admit_command(mappings.count(), [wire::MAP]).is_ok() {
+        mappings.record(
+            wire::Frame {
+                backing: (255 - page) * PAGE,
+                ..command(wire::MAP, page)
+            },
+            PAGE,
+        );
+        page += 2;
+    }
+    // Each map adds itself and the trap after it: admitted up to 122, the
+    // last one leaves 124.
+    assert_eq!(mappings.count(), 124);
+    mappings.record(
+        wire::Frame {
+            len: page * PAGE,
+            ..command(wire::REVOKE, 0)
+        },
+        PAGE,
     );
-    assert_eq!(full.estimate, 128);
+    assert_eq!(mappings.count(), 1);
+    budget.admit_command(mappings.count(), [wire::MAP]).unwrap();
 }

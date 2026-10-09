@@ -420,3 +420,119 @@ fn a_private_file_the_client_cannot_map_ends_the_attach() {
         )
     );
 }
+
+/// How many mappings the kernel keeps for the memory region of `pages` pages at
+/// `address` in this process.
+fn mappings_within(address: usize, pages: usize) -> usize {
+    let end = address + pages * PAGE;
+    std::fs::read_to_string("/proc/self/maps")
+        .unwrap()
+        .lines()
+        .filter(|line| {
+            let range = line.split_whitespace().next().unwrap();
+            let (low, high) = range.split_once('-').unwrap();
+            let low = usize::from_str_radix(low, 16).unwrap();
+            let high = usize::from_str_radix(high, 16).unwrap();
+            low < end && high > address
+        })
+        .count()
+}
+
+// The VMA budget admits against the mappings the session counts from what it
+// applied, because a jailed VMM has no /proc to count them from. That count is
+// what the kernel keeps: pages that continue one file are one mapping, whether
+// immutable or not, a revocation merges back into the traps around it, and a page mapped
+// into a gap merges with both sides. The zero page is counted apart from the
+// traps, which only ever overcounts.
+#[test]
+#[ignore = "requires native UFFD support and permission to create kernel-mode UFFD"]
+fn the_mappings_a_session_counts_are_the_mappings_the_kernel_keeps() {
+    const PAGES: usize = 32;
+    let shared = named_file(c"sproutfs-files-count", PAGE, PAGES);
+    let private = named_file(c"sproutfs-files-count-private", PAGE, PAGES);
+    let attach = Frame {
+        flags: 128, // the smallest VMA budget, so every command is admitted against it
+        ..attachment_for(PAGE)
+    };
+    serve_region(
+        spec(PAGES),
+        attach,
+        file_for(wire::PRIVATE_FILE, PAGE, PAGES * PAGE),
+        &private,
+        |socket, address| {
+            file_for(1, PAGE, PAGES * PAGE)
+                .send_fd(socket, &read_only(&shared))
+                .unwrap();
+            let mut counted = crate::mappings::Mappings::new(PAGES);
+            let mut generations = [0u64; PAGES];
+            let mut id = 1;
+            let mut send =
+                |kind: u64, file: u64, page: usize, pages: usize, at: usize, immutable: bool| {
+                    let generation = generations[page] + 1;
+                    assert!(
+                        generations[page..page + pages]
+                            .iter()
+                            .all(|g| *g + 1 == generation)
+                    );
+                    generations[page..page + pages].fill(generation);
+                    id += 1;
+                    let command = Frame {
+                        kind,
+                        id,
+                        offset: (page * PAGE) as u64,
+                        len: (pages * PAGE) as u64,
+                        backing: if kind == wire::MAP {
+                            (at * PAGE) as u64
+                        } else {
+                            0
+                        },
+                        generation,
+                        flags: match kind {
+                            wire::MAP => (file << 1) | if immutable { wire::IMMUTABLE } else { 0 },
+                            wire::MAP_ZERO => wire::IMMUTABLE,
+                            _ => 0,
+                        },
+                    };
+                    acknowledge(socket, command, 0);
+                    counted.record(command, PAGE as u64);
+                    (counted.count(), mappings_within(address, PAGES))
+                };
+            assert_eq!(mappings_within(address, PAGES), 1);
+            for (kind, file, page, pages, at, immutable) in [
+                (wire::MAP, wire::PRIVATE_FILE, 0, 4, 0, false),
+                (wire::MAP, wire::PRIVATE_FILE, 4, 1, 4, false),
+                (wire::MAP, wire::PRIVATE_FILE, 5, 1, 4, false),
+                (wire::MAP, 1, 6, 1, 6, true),
+                (wire::MAP, 1, 7, 1, 7, true),
+                (wire::MAP, wire::PRIVATE_FILE, 8, 1, 8, true),
+                (wire::MAP, wire::PRIVATE_FILE, 9, 1, 9, false),
+                (wire::REVOKE, 0, 4, 1, 0, false),
+                (wire::MAP, wire::PRIVATE_FILE, 20, 8, 12, false),
+                (wire::REVOKE, 0, 22, 2, 0, false),
+                (wire::MAP, wire::PRIVATE_FILE, 22, 2, 14, false),
+                // Each stretch whose pages share one history is revoked on its
+                // own, because a command needs every page it covers at one
+                // generation.
+                (wire::REVOKE, 0, 0, 4, 0, false),
+                (wire::REVOKE, 0, 4, 1, 0, false),
+                (wire::REVOKE, 0, 5, 5, 0, false),
+                (wire::REVOKE, 0, 20, 2, 0, false),
+                (wire::REVOKE, 0, 22, 2, 0, false),
+                (wire::REVOKE, 0, 24, 4, 0, false),
+            ] {
+                let (counted, kept) = send(kind, file, page, pages, at, immutable);
+                assert_eq!(counted, kept, "after {kind} of {pages} at page {page}");
+            }
+            assert_eq!(mappings_within(address, PAGES), 1);
+            let (counted, kept) = send(wire::MAP_ZERO, 0, 30, 1, 0, true);
+            assert!(
+                counted >= kept,
+                "the zero page: counted {counted}, kept {kept}"
+            );
+            let (counted, kept) = send(wire::REVOKE, 0, 30, 1, 0, false);
+            assert_eq!((counted, kept), (1, 1));
+            stop(socket);
+        },
+    )
+    .unwrap();
+}
