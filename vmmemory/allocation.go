@@ -422,7 +422,7 @@ func (h *Host) protectedLocked(q *MemoryRegion, share int) bool {
 // idle pages itself, and another consumer that finds the lock taken waits for
 // the budget's next release, which a pager this busy is about to make.
 func (h *Host) reclaimIdle(ctx context.Context, _ int64) (bool, error) {
-	return h.takeIdleIf(h.mu.TryLock, nil), nil
+	return h.takeIdleIf(h.mu.TryLock, nil, nil), nil
 }
 
 // DropIdle gives up every idle page this host can take without waiting, and

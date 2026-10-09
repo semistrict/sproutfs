@@ -154,7 +154,7 @@ func (h *Host) reclaimStep(ctx context.Context, req *evictionRequest, _ bool, _ 
 		// step begun just before would, and the allocation's next look
 		// reports it.
 		h.mu.Unlock()
-		if h.takeIdle() {
+		if h.takeIdleKeeping(ctx) {
 			return zirconvm.ReclaimAttempt{Success: zirconvm.ReclaimSuccess{Type: zirconvm.ReclaimEvict, NumPages: 1}},
 				true, nil
 		}
@@ -416,6 +416,13 @@ func (h *Host) evictPage(ctx context.Context, page *zirconvm.VmPage) error {
 			// here, and this page is excluded from every later step by it.
 			q.heldPages(ctx, err)
 			return errors.Join(errVictimHeld, err)
+		}
+	}
+	// A root's page is a published page, and the spill file keeps it as its
+	// version unless it has one: its next load reads the host's disk.
+	if f.layer == nil {
+		if link, ok := h.node.PageQueues().Backlink(page); ok {
+			h.keepVersion(ctx, link.Cow, link.Offset, page)
 		}
 	}
 	sort.Slice(spills, func(i, j int) bool { return spills[i].ref.Value() < spills[j].ref.Value() })

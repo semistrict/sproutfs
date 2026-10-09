@@ -464,8 +464,10 @@ func TestAFaultNeverWaitsForAPrefetchOfOtherPages(t *testing.T) {
 // its own page and reads nothing else.
 func TestAPrefetchTakesOnlyFreeSlots(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
+		// No published versions: the fault times its own read, and the version
+		// its eviction would write is the version tests' to time.
 		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 8, LogicalPages: 32, DirtyPages: 8,
-			ReadAheadPages: 4})
+			ReadAheadPages: 4, MaxSpillVersions: -1})
 		a, am := f.attach(f.slowBacking(8))
 		for _, page := range []uint64{0, 4} {
 			accessUnder(f.ctx, t, a, am, page, false)

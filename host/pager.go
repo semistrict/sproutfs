@@ -110,7 +110,8 @@ func (slot pagerSlot) of(pagers vmmemory.Pagers) *vmmemory.Host {
 // newPager builds one of a supervisor's pagers over its arena and a spill file
 // it opens on the host's disk. A restart is a host loss, so the spill file
 // starts empty. The pager allocates the file's whole extent, the dirty pages
-// its cap allows, so another writer on the node cannot take that space later.
+// its cap allows and the slots of its version fills, so another writer on the
+// node cannot take that space later.
 // A disk that cannot hold the extent is a configuration this host cannot keep:
 // it is refused here, and not when a guest's page has nowhere to go. The caller
 // closes the spill file after the pager. A pager that is not built closes it
@@ -131,7 +132,7 @@ func newPager(ctx context.Context, disk platform.Disk, resources *resource.Budge
 	}
 	if errors.Is(err, platform.ErrNoSpace) || errors.Is(err, errors.ErrUnsupported) {
 		return nil, nil, fmt.Errorf("%w: the disk cannot allocate the %s spill file's %d bytes: %w",
-			ErrInvalidConfig, kind, int64(cfg.DirtyPages)*int64(cfg.PageSize), err)
+			ErrInvalidConfig, kind, vmmemory.SpillFileBytes(cfg), err)
 	}
 	return nil, nil, fmt.Errorf("%s pager of %d offsets for %d pages of %d bytes: %w",
 		kind, cfg.Offsets(), cfg.ResidentPages, cfg.PageSize, err)

@@ -17,8 +17,13 @@ func spaceFixture(t *testing.T, total int64, dirty int) (*fixture, error) {
 	t.Helper()
 	runtime := sim.New(sim.Config{})
 	disk := runtime.NewDisk("pager", sim.DiskConfig{Space: sim.SpaceConfig{TotalBytes: total}})
-	return newFixtureOn(t, sim.WithRuntime(t.Context(), runtime), disk, vmmemory.Config{
-		PageSize: uint64(pageSize), ResidentPages: 2, LogicalPages: 4, DirtyPages: dirty, Arena: suiteArena})
+	return newFixtureOn(t, sim.WithRuntime(t.Context(), runtime), disk, spaceConfig(dirty))
+}
+
+// spaceConfig is a space fixture's pager of dirty reservations.
+func spaceConfig(dirty int) vmmemory.Config {
+	return vmmemory.Config{PageSize: uint64(pageSize), ResidentPages: 2, LogicalPages: 4, DirtyPages: dirty,
+		Arena: suiteArena}
 }
 
 // spillHolds is what the fixture's spill file holds on its filesystem.
@@ -39,7 +44,11 @@ func TestAPagerHoldsItsWholeSpillFileFromTheStart(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := int64(2 * pageSize)
+		// Its dirty budget of two pages, and a slot for each fill of a version.
+		want := vmmemory.SpillFileBytes(spaceConfig(2))
+		if want != int64(10*pageSize) {
+			t.Fatalf("a spill file of two reservations is %d bytes, want ten pages", want)
+		}
 		if size, holds := f.spillBytes(), f.spillHolds(); size != want || holds != want {
 			t.Fatalf("a new pager's spill file is %d bytes and holds %d, want %d and %d", size, holds, want, want)
 		}
@@ -91,9 +100,9 @@ func TestASpillSucceedsOnADiskFilledFromOutside(t *testing.T) {
 			if err := r.Detach(t.Context()); err != nil {
 				t.Fatal(err)
 			}
-			if holds := f.spillHolds(); holds != int64(pageSize) {
-				t.Fatalf("round %d: the spill file holds %d bytes once its slot is given back, want %d",
-					round, holds, pageSize)
+			if holds, want := f.spillHolds(), vmmemory.SpillFileBytes(spaceConfig(1)); holds != want {
+				t.Fatalf("round %d: the spill file holds %d bytes once its slot is given back, want its extent of %d",
+					round, holds, want)
 			}
 		}
 	})

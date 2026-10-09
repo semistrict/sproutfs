@@ -75,10 +75,11 @@ func TestBudgetsAreCountedInThisPagersPage(t *testing.T) {
 	if got := f.h.PageSize(); got != checkpoint.PageSize4KiB {
 		t.Fatalf("the pager's page is %d", got)
 	}
-	// The spill file's whole extent is this pager's fixed disk cap: eight of
-	// its own pages and not eight of the other's.
-	if got := f.spillBytes(); got != 8*checkpoint.PageSize4KiB {
-		t.Fatalf("the spill file is %d bytes, want %d", got, 8*checkpoint.PageSize4KiB)
+	// The spill file's whole extent is this pager's fixed disk cap: its dirty
+	// budget of eight and the eight slots of its version fills, all of its
+	// own pages and not of the other's.
+	if got := f.spillBytes(); got != 16*checkpoint.PageSize4KiB {
+		t.Fatalf("the spill file is %d bytes, want %d", got, 16*checkpoint.PageSize4KiB)
 	}
 	// Read-ahead is in this pager's pages too: a four-page run over 4 KiB pages
 	// serves 16 KiB, so a fault on page 0 of a memory region maps pages 0 to 3 and no

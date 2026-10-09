@@ -3,9 +3,11 @@ package vmmemory
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"slices"
 
+	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/vmmemory/internal/zirconvm"
 )
 
@@ -32,15 +34,38 @@ const (
 	versionIndexEntryBytes = 176
 )
 
+// versionSlots is how many evictions a pager has writing versions at once at
+// most, and so how many slots its spill file has beside its dirty budget: a
+// version is written to a slot no reservation holds, and a reservation the
+// dirty budget admits must always find one.
+const versionSlots = 8
+
+// spillPages is how many pages a pager's spill file holds: its dirty budget,
+// and a slot for each version write in flight where it keeps versions.
+func spillPages(cfg Config) int {
+	if spillVersions(cfg) == 0 {
+		return cfg.DirtyPages
+	}
+	return cfg.DirtyPages + versionSlots
+}
+
+// SpillFileBytes is the extent of the spill file a pager of cfg allocates
+// when it starts, which a host's disk promises it.
+func SpillFileBytes(cfg Config) int64 {
+	return int64(spillPages(cfg)) * int64(cfg.PageSize)
+}
+
 // spillVersions is the most published versions a pager's spill file keeps.
 func spillVersions(cfg Config) int {
 	switch {
-	case cfg.MaxSpillVersions < 0:
+	case cfg.MaxSpillVersions < 0 || cfg.Ephemeral:
+		// An ephemeral disk's pages are never published, so it has no
+		// versions to keep.
 		return 0
 	case cfg.MaxSpillVersions > 0:
-		return min(cfg.MaxSpillVersions, cfg.DirtyPages)
+		return min(cfg.MaxSpillVersions, cfg.DirtyPages+versionSlots)
 	}
-	return min(cfg.DirtyPages, maxVersionIndexBytes/versionIndexEntryBytes)
+	return min(cfg.DirtyPages+versionSlots, maxVersionIndexBytes/versionIndexEntryBytes)
 }
 
 // noReservation is no reservation at all.
@@ -122,9 +147,10 @@ func (h *Host) retireSpill(spill reservation, now storedPage) {
 // and the spill file keeps a published version of into data, which covers the
 // run whole, and reports what is left for the backing to read: wanted, less
 // what it read. keys is each page's identity, zero where it has none to look
-// up. A version the device lost is dropped and the page read from the backing.
+// up. A version the device lost is dropped and the page read from the backing;
+// a read the caller gave up on fails the run.
 func (r *MemoryRegion) readVersions(ctx context.Context, first uint64, wanted []bool, keys []pageKey,
-	data []byte) []bool {
+	data []byte) ([]bool, error) {
 	h := r.host
 	ps := h.pageSize
 	left := wanted
@@ -134,6 +160,9 @@ func (r *MemoryRegion) readVersions(ctx context.Context, first uint64, wanted []
 			continue
 		}
 		found, err := h.spill.ReadVersion(ctx, key, data[uint64(at)*ps:uint64(at+1)*ps])
+		if err != nil && context.Cause(ctx) != nil {
+			return nil, err
+		}
 		if err != nil {
 			slog.Warn("vmmemory: a published version in the spill file could not be read; the page is read from its volume",
 				"page", first+uint64(at), "error", err)
@@ -153,15 +182,75 @@ func (r *MemoryRegion) readVersions(ctx context.Context, first uint64, wanted []
 		h.stats.VersionLoads += loaded
 		h.mu.Unlock()
 	}
-	return left
+	return left, nil
+}
+
+// keepVersion writes page, a page of an identity root the caller holds the
+// lock of and is about to evict, to the spill file as the version of the
+// identity it holds, where the spill file keeps none: the page's next load
+// reads it there rather than its volume (step 2 of
+// plans/local-writeback-2026-10-09.md). cow and offset are where the root
+// holds it. A page lent under a fork point's name that no checkpoint has
+// published is not kept, and neither is one while versionSlots evictions are
+// writing theirs: each write is to a slot no reservation holds, and the
+// spill file has that many beside the dirty budget, so a reservation the
+// budget admits always finds one. A write that fails leaves the page to be
+// read from its volume, as it would have been.
+func (h *Host) keepVersion(ctx context.Context, cow *zirconvm.CowPages, offset uint64, page *zirconvm.VmPage) {
+	if spillVersions(h.cfg) == 0 || isLent(page) {
+		return
+	}
+	h.mu.Lock()
+	root := h.rootOfPages[cow]
+	if root == nil || (root.lent != nil && !root.published) {
+		h.mu.Unlock()
+		return
+	}
+	key := pageKey{id: control.Identity{Ref: root.key.ref, Volume: root.key.volume, Page: offset / h.pageSize}}
+	if h.spill.HasVersion(key) {
+		h.mu.Unlock()
+		return
+	}
+	if h.versionWrites == versionSlots || h.err != nil {
+		h.stats.VersionWritesSkipped++
+		h.mu.Unlock()
+		return
+	}
+	h.versionWrites++
+	h.mu.Unlock()
+	buffer := h.takeWindow(1)
+	defer h.putWindow(buffer)
+	data := (*buffer)[:h.pageSize]
+	f := frameOf(page)
+	err := f.file.Read(ctx, f.slot, data)
+	written := false
+	if err == nil {
+		written, err = h.spill.WriteVersion(ctx, key, data)
+	}
+	h.mu.Lock()
+	h.versionWrites--
+	if written {
+		h.stats.VersionWrites++
+	}
+	h.mu.Unlock()
+	if err != nil && context.Cause(ctx) == nil {
+		slog.Warn("vmmemory: an evicted page could not be kept in the spill file; it is read from its volume next time",
+			"volume", key.id.Volume, "page", key.id.Page, "error", err)
+	}
 }
 
 // takeReservationLocked admits one more private page to the dirty budget if
-// the budget has room. Caller holds h.mu.
+// the budget has room. The spill file has a slot for every reservation the
+// budget admits beside every version write in flight, so one it admits always
+// finds a slot. Caller holds h.mu.
 func (h *Host) takeReservationLocked() (reservation, bool) {
+	if h.dirty >= h.cfg.DirtyPages {
+		return noReservation, false
+	}
 	ref, ok := h.spill.Reserve()
 	if !ok {
-		return noReservation, false
+		panic(fmt.Sprintf("vmmemory: the spill file had no slot for a reservation the dirty budget admitted: %d of %d dirty, %d versions being written",
+			h.dirty, h.cfg.DirtyPages, h.versionWrites))
 	}
 	h.dirty++
 	h.stats.PeakDirtyPages = max(h.stats.PeakDirtyPages, h.dirty)
@@ -192,7 +281,7 @@ func (h *Host) takeFreeSpill(want int) []reservation {
 	if h.err != nil || want <= 0 {
 		return nil
 	}
-	spills := make([]reservation, 0, min(want, h.spill.Available()))
+	spills := make([]reservation, 0, min(want, h.cfg.DirtyPages-h.dirty))
 	for len(spills) < want {
 		spill, ok := h.takeReservationLocked()
 		if !ok {

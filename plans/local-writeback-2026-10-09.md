@@ -159,9 +159,13 @@ for the bugs it closes, and the benchmark beside plain GCE.
    hold writes it to a free slot, and drops it; a refault reads the log
    before the store (absorbs TASK-122.2). The file's slots stop being the
    dirty budget: the pager admits reservations against its dirty budget, the
-   file has that many slots plus room for versions, and a version write takes
-   only a slot no reservation can be refused for, so the dirty budget is
-   never short of a slot a version holds. Gate: the benchmark's random reads
+   file has that many slots plus eight for version writes in flight, and a
+   version write takes only a slot no reservation can be refused for. The
+   write is in the eviction, as a spill is, until step 3 takes eviction off
+   the fault path; writing at load instead, behind the read on a task of its
+   own, was tried and dropped: it writes every page read rather than every
+   page evicted, and a background write a host's crash interrupts makes a
+   seeded simulation replay differently. Gate: the benchmark's random reads
    come from local disk.
 3. **Write back.** The writer, Written pages, the asynchronous evictor.
    Gate: no eviction inside a fault on the benchmark's write phases.

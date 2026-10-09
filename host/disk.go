@@ -36,8 +36,9 @@ type diskFiles struct {
 
 // diskUsers is every user of the host's disk that cannot give space back:
 //
-//   - each pager's spill file, at the dirty pages it may hold, which is the
-//     extent the pager allocates when it starts;
+//   - each pager's spill file, at the extent the pager allocates when it
+//     starts: the dirty pages it may hold and a slot for each version fill
+//     in flight (vmmemory.SpillFileBytes);
 //   - each running VMM's staging, at the largest state a capture may write;
 //   - the images staged for an import, at what they hold.
 //
@@ -46,7 +47,7 @@ type diskFiles struct {
 func diskUsers(config SupervisorConfig, files diskFiles, running func() int, staged *atomic.Int64) []resource.DiskUser {
 	var users []resource.DiskUser
 	spill := func(slot pagerSlot, cfg vmmemory.Config) {
-		promise := int64(cfg.DirtyPages) * int64(cfg.PageSize)
+		promise := vmmemory.SpillFileBytes(cfg)
 		users = append(users, resource.DiskUser{Name: "spill-" + string(slot),
 			Promised: func() int64 { return promise }, Allocated: allocation(files.spills[slot])})
 	}

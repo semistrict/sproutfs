@@ -221,7 +221,11 @@ func TestUnsealAbandonsTheCheckpointAndAllowsAnotherSeal(t *testing.T) {
 func TestRetireLocatesPerWindowAndFreesTheMemoryRegionBetweenBatches(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		vmmemory.SetCheckpointBatchPages(t, 2)
-		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 8, LogicalPages: 16, DirtyPages: 8, ReadAheadPages: 4})
+		// No published versions: the fault below evicts a published page,
+		// and the version an eviction writes would hold it on the spill
+		// file's latency, which is not the wait this is about.
+		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 8, LogicalPages: 16, DirtyPages: 8, ReadAheadPages: 4,
+			MaxSpillVersions: -1})
 		r, m, b := f.memoryRegion(8)
 		for page := range uint64(4) {
 			access(t, r, m, page, true)[0] = byte(40 + page)

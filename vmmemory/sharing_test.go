@@ -683,15 +683,17 @@ func TestAPublishedPageOutlivesTheLastMemoryRegionThatMappedIt(t *testing.T) {
 			t.Fatalf("a slot for another memory region's page: %+v %v", stats, err)
 		}
 		// A memory region inheriting a's identities maps the idle page 1 without a read,
-		// and reads page 0 again, which was given up.
+		// and reads page 0 again, which was given up: from the spill file,
+		// which kept it as its version when it went, and not from its volume.
 		b, bm, bb := f.memoryRegion(4)
 		access(t, b, bm, 1, false)
 		if bb.loads != 0 {
 			t.Fatalf("the idle page was loaded again %d times", bb.loads)
 		}
 		access(t, b, bm, 0, false)
-		if bb.loads != 1 {
-			t.Fatalf("the page given up was loaded %d times, want once", bb.loads)
+		if stats, err := f.h.Stats(t.Context()); err != nil || bb.loads != 0 || stats.VersionLoads != 1 {
+			t.Fatalf("the page given up was loaded %d times from its volume, and %d from the spill file (%v), want once from the spill file",
+				bb.loads, stats.VersionLoads, err)
 		}
 	})
 }

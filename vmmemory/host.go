@@ -63,9 +63,11 @@ type Host struct {
 	// lent is the checkpoint a fork point's name belongs to, for every fork
 	// point that lends its pages to children on this host. Guarded by mu.
 	lent map[lentKey]*MemoryRegionCheckpoint
-	// spill is the dirty budget: the spill file as the storage of a
-	// reservation per private page this pager admits. See spill.go.
-	spill *zirconvm.SpillStorage[pageKey]
+	// spill is the spill file: a reservation per private page this pager
+	// admits, and the published versions of pages (spill.go). versionWrites
+	// counts the evictions writing a version, guarded by mu.
+	spill         *zirconvm.SpillStorage[pageKey]
+	versionWrites int
 	// requests are the READ requests not in use (pagerequests.go).
 	// prefetching counts the prefetches still reading, and prefetchRunning
 	// those whose goroutines have not ended, mapping their pages included.
@@ -139,8 +141,11 @@ type Host struct {
 	node *zirconvm.Node
 	pmm  *arenaPmm
 	// roots is every identity root a memory region of this pager has located
-	// a page of. A root lives until the pager closes. Guarded by mu.
-	roots map[rootKey]*identityRoot
+	// a page of, and rootOfPages each of them by the pages object a page's
+	// backlink names, which is how an eviction learns the identity of the
+	// page it takes. A root lives until the pager closes. Guarded by mu.
+	roots       map[rootKey]*identityRoot
+	rootOfPages map[*zirconvm.CowPages]*identityRoot
 	// prefetches is every prefetch whose slots are not settled yet. Guarded
 	// by mu, as are prefetching and prefetchRunning.
 	prefetches map[*prefetch]struct{}
@@ -168,8 +173,8 @@ var populationWindowBytes uint64 = 256 << 20
 // New uses a dedicated scratch spill file. It is not crash recovery metadata
 // and must not be shared with another Host, which includes the other pager of
 // the same host: each owns its arena and its spill file alone. New allocates
-// the file's whole extent, DirtyPages times this pager's page, so the file must
-// be a platform.AllocatingFile on a filesystem with room for it. Acknowledged
+// the file's whole extent, SpillFileBytes, so the file must be a
+// platform.AllocatingFile on a filesystem with room for it. Acknowledged
 // durability always goes through Backing, never spill. The caller retains
 // ownership of Arena, and of every file it makes, and of spill until every
 // MemoryRegion detaches.
@@ -234,7 +239,7 @@ func New(ctx context.Context, resources *resource.Budget, cfg Config, arena Aren
 	// The spill storage drops whatever the file held, since the spill is
 	// scratch and none of it is read back, and allocates the file's whole
 	// extent.
-	spillStorage, err := zirconvm.NewSpillStorage[pageKey](ctx, spill, pageSize, cfg.DirtyPages, spillVersions(cfg))
+	spillStorage, err := zirconvm.NewSpillStorage[pageKey](ctx, spill, pageSize, spillPages(cfg), spillVersions(cfg))
 	if errors.Is(err, zirconvm.ErrNotSupported) || errors.Is(err, zirconvm.ErrOutOfRange) {
 		return nil, fmt.Errorf("%w: %w", ErrConfig, err)
 	}
@@ -252,7 +257,8 @@ func New(ctx context.Context, resources *resource.Budget, cfg Config, arena Aren
 		requests:      sync.Pool{New: func() any { return zirconvm.NewPageRequest() }},
 		memoryRegions: make(map[*MemoryRegion]struct{}), highWater: highWater(cfg.DirtyPages),
 		io: make(chan struct{}, cfg.ConcurrentIO), writeback: make(chan struct{}, 1),
-		roots: make(map[rootKey]*identityRoot), prefetches: make(map[*prefetch]struct{})}
+		roots: make(map[rootKey]*identityRoot), rootOfPages: make(map[*zirconvm.CowPages]*identityRoot),
+		prefetches: make(map[*prefetch]struct{})}
 	h.evictor = newPagerEvictor(h)
 	h.pmm = &arenaPmm{host: h, zero: zirconvm.NewFramePage(nil)}
 	// No compression: a frame's bytes are the pager's to move, so a page's
@@ -420,6 +426,7 @@ func (h *Host) closeRoots() error {
 	}
 	roots := h.roots
 	h.roots = make(map[rootKey]*identityRoot)
+	h.rootOfPages = make(map[*zirconvm.CowPages]*identityRoot)
 	h.mu.Unlock()
 	// Every page of a root goes back with it, and with its slot its count
 	// of the roots' pages and of the idle ones (releaseFrame).

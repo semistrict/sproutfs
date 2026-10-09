@@ -56,7 +56,7 @@ func listedPull(t *testing.T, code rank.Code, withSelf bool, percent int) func(h
 // faults, and the faults of pages its pager evicted since, make no request of
 // the object store.
 func TestOutsideTheClusterShareAPulledVMIsKeptWhole(t *testing.T) {
-	counted, _, guest, _, h := pulledRunWith(t, 64<<20, listedPull(t, rank.Code{K: 4, M: 2}, true, 0))
+	counted, pagers, guest, _, h := pulledRunWith(t, 64<<20, listedPull(t, rank.Code{K: 4, M: 2}, true, 0))
 	if held := h.hosts[1].Membership(); held.List().Len() != 6 || held.Code() != (rank.Code{K: 4, M: 2}) {
 		t.Fatalf("the host holds %d disks under %s, want six under 4+2", held.List().Len(), held.Code())
 	}
@@ -68,14 +68,27 @@ func TestOutsideTheClusterShareAPulledVMIsKeptWhole(t *testing.T) {
 		t.Fatalf("the pull ended at %+v, want the whole checkpoint on the disk", stats)
 	}
 	counted.reset()
+	before, err := pagers.pmem().Stats(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
 	readPulled(t, guest)
+	// The second pass reads the spill file's versions of what the first
+	// read, which its evictions kept there.
 	readPulled(t, guest)
 	if gets := counted.count(); gets != 0 {
 		t.Fatalf("faulting a pulled VM's pages in twice made %d requests of the object store, want none", gets)
 	}
-	if disk := h.hosts[1].Status().Cache.Disk; disk.Hits != 2*pullPages+1 || disk.Lost != 0 ||
+	if disk := h.hosts[1].Status().Cache.Disk; disk.Hits != pullPages+1 || disk.Lost != 0 ||
 		disk.Entries != pullPages+1 {
 		t.Fatalf("the page cache's disk reports %+v, want every page and the segment whole", disk)
+	}
+	after, err := pagers.pmem().Stats(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loads := after.VersionLoads - before.VersionLoads; loads != pullPages {
+		t.Fatalf("the second pass loaded %d pages from the spill file, want every page", loads)
 	}
 }
 

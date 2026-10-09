@@ -414,6 +414,7 @@ func (h *Host) rootLocked(key rootKey) *identityRoot {
 	}
 	root := &identityRoot{key: key, object: object, pages: object.CowPages(), reads: reads}
 	h.roots[key] = root
+	h.rootOfPages[root.pages] = root
 	return root
 }
 
@@ -615,13 +616,26 @@ func (h *Host) takeIdle() bool {
 	return h.takeIdleIf(func() bool {
 		h.mu.Lock()
 		return true
-	}, nil)
+	}, nil, nil)
+}
+
+// takeIdleKeeping is takeIdle for the evictor, which writes the page it gives
+// up to the spill file as its version first (keepVersion).
+func (h *Host) takeIdleKeeping(ctx context.Context) bool {
+	return h.takeIdleIf(func() bool {
+		h.mu.Lock()
+		return true
+	}, nil, func(cow *zirconvm.CowPages, offset uint64, page *zirconvm.VmPage) {
+		h.keepVersion(ctx, cow, offset, page)
+	})
 }
 
 // takeIdleIf is takeIdle, where lock takes h.mu or reports it could not, of
 // the idle pages want accepts, any where want is nil. want is called with
-// h.mu held.
-func (h *Host) takeIdleIf(lock func() bool, want func(*frame) bool) bool {
+// h.mu held. keep, where it is not nil, is called with the page's lock held
+// and nothing else, before the page goes.
+func (h *Host) takeIdleIf(lock func() bool, want func(*frame) bool,
+	keep func(*zirconvm.CowPages, uint64, *zirconvm.VmPage)) bool {
 	if !lock() {
 		return false
 	}
@@ -641,6 +655,9 @@ func (h *Host) takeIdleIf(lock func() bool, want func(*frame) bool) bool {
 	h.mu.Unlock()
 	if !ok {
 		return false
+	}
+	if keep != nil {
+		keep(idle.Cow, idle.Offset, idle.Page)
 	}
 	evicted := h.evictIdle(idle.Cow, idle.Offset)
 	frameOf(idle.Page).mu.Unlock()

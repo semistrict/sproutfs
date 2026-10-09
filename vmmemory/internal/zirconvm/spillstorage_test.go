@@ -320,3 +320,30 @@ func TestReleaseDropsEveryVersion(t *testing.T) {
 		expect(t, "nothing stored", s.GetMemoryUsage().UncompressedContentBytes, uint64(0))
 	})
 }
+
+// A page written as a version takes an allocation no reservation holds, and a
+// reservation that finds none free takes it back; with every allocation a
+// reservation, nothing is written.
+func TestAWrittenVersionTakesOnlyWhatReservationsLeave(t *testing.T) {
+	forEachVmoPageSize(t, func(t *testing.T, env *vmoEnv) {
+		s, _ := env.newSpillStorage(t, 3)
+		s.Reserve()
+		s.Reserve()
+		written, err := s.WriteVersion(env.ctx, 1, pattern(env.ps, 'W'))
+		mustNotFail(t, "write", err)
+		expect(t, "written", written, true)
+		expect(t, "kept", s.HasVersion(1), true)
+		got, found := readVersion(t, env, s, 1)
+		expect(t, "found", found, true)
+		expect(t, "the bytes", got == string(pattern(env.ps, 'W')), true)
+		written, err = s.WriteVersion(env.ctx, 1, pattern(env.ps, 'X'))
+		mustNotFail(t, "write again", err)
+		expect(t, "a key kept already is not written", written, false)
+		_, ok := s.Reserve()
+		expect(t, "a reservation takes the version's allocation", ok, true)
+		expect(t, "the version went", s.HasVersion(1), false)
+		written, err = s.WriteVersion(env.ctx, 2, pattern(env.ps, 'Y'))
+		mustNotFail(t, "write with every allocation reserved", err)
+		expect(t, "nothing written", written, false)
+	})
+}

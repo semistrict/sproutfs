@@ -208,6 +208,19 @@ version's, with a second chance for one read since the queue last passed over
 it, and the index is bounded at 64 MiB. A version that fails its CRC32C is
 dropped and the page read from its volume.
 
+A published page an eviction takes is kept as its version too, step 2 of the
+plan: before the evictor drops a page of an identity root, mapped or idle, it
+writes the page to a free slot unless the spill file holds its version
+already, so the page's next load reads the host's disk rather than its volume.
+That write is the one thing an eviction of a clean page costs, and only the
+first time, since a page loaded from its version is dropped again for free. A
+page lent under a fork point's name that no checkpoint has published is not
+kept. At most eight such writes are in flight, and the spill file has a slot
+for each beside the dirty budget, so a version only ever takes a slot no
+reservation can be refused for; an eviction that finds all eight busy drops
+its page without one. The ephemeral pager keeps no versions, since nothing it
+holds is published, and `MaxSpillVersions` below zero keeps none at all.
+
 The dirty budget sets the size of the spill file. `New` allocates the whole
 extent (`fallocate` on Linux) before the pager takes any work, and a filesystem
 that cannot hold it refuses the pager, because a sparse file's unused space could

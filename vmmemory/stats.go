@@ -50,9 +50,12 @@ type Stats struct {
 	// checkpoint pages whose bytes were in their reservations when their
 	// checkpoints retired, kept under their identities rather than given back.
 	// KeptVersions counts those kept, and VersionLoads the pages a load read
-	// from one rather than from the backing (spill.go).
-	Versions                   int
-	KeptVersions, VersionLoads uint64
+	// from one rather than from the backing (spill.go). VersionWrites counts
+	// the published pages an eviction wrote to the spill file as their
+	// versions, and VersionWritesSkipped those it dropped without, every slot
+	// for a version write being in use.
+	Versions                                                        int
+	KeptVersions, VersionLoads, VersionWrites, VersionWritesSkipped uint64
 	// HarvestedPages counts the pages the evictor harvested ahead of taking
 	// any: their mappings taken away and their bytes kept, so that the guest's
 	// next touch of one faults and marks it accessed (harvest.go).

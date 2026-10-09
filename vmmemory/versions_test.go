@@ -26,9 +26,11 @@ func TestAPublishedSpilledPageLoadsFromTheSpillFile(t *testing.T) {
 		if b.data[0] != 41 {
 			t.Fatalf("the checkpoint published %d, want the guest's 41", b.data[0])
 		}
+		// Page zero's, and that of any published page an eviction took.
 		s := hostStats(t, f)
-		if s.KeptVersions != 1 || s.Versions != 1 {
-			t.Fatalf("kept %d versions, %d now, want page zero's", s.KeptVersions, s.Versions)
+		if s.KeptVersions != 1 || s.Versions != 1+int(s.VersionWrites) {
+			t.Fatalf("kept %d versions and wrote %d, %d now, want page zero's and the written", s.KeptVersions,
+				s.VersionWrites, s.Versions)
 		}
 		loads := b.loads
 		if got := accessUnder(f.ctx, t, r, m, 0, false)[0]; got != 41 {
@@ -68,6 +70,44 @@ func TestARefaultedPageKeepsNoStaleVersion(t *testing.T) {
 		accessUnder(f.ctx, t, r, m, 2, false)
 		if got := accessUnder(f.ctx, t, r, m, 0, false)[0]; got != 42 {
 			t.Fatalf("page zero reads %d after its checkpoint, want 42", got)
+		}
+	})
+}
+
+// A published page an eviction takes is written to the spill file as its
+// version, so its next load reads the host's disk rather than its volume
+// (plans/local-writeback-2026-10-09.md, step 2). The eviction drops it, and a
+// page whose version the spill file holds already is dropped without a write.
+func TestAnEvictedPublishedPageLoadsFromTheSpillFileNextTime(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := newFixture(t, 2, 8, 4)
+		r, m, b := f.memoryRegion(4)
+		if got := accessUnder(f.ctx, t, r, m, 0, false)[0]; got != 1 {
+			t.Fatalf("page zero reads %d, want its volume's 1", got)
+		}
+		if s := hostStats(t, f); s.VersionWrites != 0 {
+			t.Fatalf("%d versions written before any eviction, want none", s.VersionWrites)
+		}
+		// Two more pages than the arena holds besides page zero, so page zero
+		// is evicted.
+		accessUnder(f.ctx, t, r, m, 1, false)
+		accessUnder(f.ctx, t, r, m, 2, false)
+		if _, mapped := m.pages[0]; mapped {
+			t.Fatal("page zero is still mapped, so it was never evicted")
+		}
+		if s := hostStats(t, f); s.VersionWrites != 1 || s.Versions != 1 || s.Spills != 0 {
+			t.Fatalf("%d versions written, %d kept, %d spills, want page zero's version and no spill",
+				s.VersionWrites, s.Versions, s.Spills)
+		}
+		loads := b.loads
+		if got := accessUnder(f.ctx, t, r, m, 0, false)[0]; got != 1 {
+			t.Fatalf("page zero reads %d once evicted, want 1", got)
+		}
+		if b.loads != loads {
+			t.Fatalf("loading page zero again read its volume %d times, want none", b.loads-loads)
+		}
+		if s := hostStats(t, f); s.VersionLoads != 1 {
+			t.Fatalf("%d version loads, want page zero's", s.VersionLoads)
 		}
 	})
 }

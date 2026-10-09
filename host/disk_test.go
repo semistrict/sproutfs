@@ -93,7 +93,9 @@ func simDisk(t *testing.T, total int64) (context.Context, *sim.Runtime, *sim.Dis
 	return sim.WithRuntime(t.Context(), runtime), runtime, disk
 }
 
-// A host promises each spill file the dirty pages its pager may hold, each
+// A host promises each spill file the dirty pages its pager may hold and the
+// slots of its version fills, eight pages for each pager that keeps versions,
+// each
 // running VMM a state file as large as a capture, and a staged image what it
 // holds. The page cache's disk is no promise: it is the cache, which the
 // limiter gives what is left.
@@ -112,8 +114,8 @@ func TestAHostPromisesItsDiskToWhatCannotGiveItBack(t *testing.T) {
 		got = append(got, promise{user.Name, user.Promised()})
 	}
 	want := []promise{
-		{"spill-ram", 4608 * 2 * mib},
-		{"spill-pmem", 1536 * 2 * mib},
+		{"spill-ram", (4608 + 8) * 2 * mib},
+		{"spill-pmem", (1536 + 8) * 2 * mib},
 		{"spill-ephemeral", 2048 * mib},
 		{promiseVMMStaging, 3 * 64 * mib},
 		{promiseStagedImages, 5 * mib},
@@ -130,7 +132,7 @@ func TestAHostsSpillFilesHoldTheirWholeExtentOnceItsPagersStart(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx, _, disk := simDisk(t, 256*mib)
 		files := mustStartPagers(t, ctx, diskHost(32*mib), disk)
-		want := map[pagerSlot]int64{ramPager: 32 * mib, pmemPager: 16 * mib, ephemeralPager: 32 * mib}
+		want := map[pagerSlot]int64{ramPager: 48 * mib, pmemPager: 32 * mib, ephemeralPager: 32 * mib}
 		for slot, spill := range files.spills {
 			size, err := spill.Size(t.Context())
 			if err != nil {
@@ -145,8 +147,8 @@ func TestAHostsSpillFilesHoldTheirWholeExtentOnceItsPagersStart(t *testing.T) {
 					slot, size/mib, holds/mib, want[slot]/mib, want[slot]/mib)
 			}
 		}
-		if got := disk.Usage().HostBytes; got != 80*mib {
-			t.Fatalf("the host holds %d MiB of its disk, want 80", got/mib)
+		if got := disk.Usage().HostBytes; got != 112*mib {
+			t.Fatalf("the host holds %d MiB of its disk, want 112", got/mib)
 		}
 	})
 }
@@ -166,23 +168,24 @@ func TestAHostWhosePromisesDoNotFitIsRefused(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// 256 - 16 - (32 + 16 + 32) = 160, less a band of a fifth.
+		// 256 - 16 - (48 + 32 + 32) = 128, less a band of a fifth: 102.4 MiB,
+		// a byte up.
 		status := limiter.Status()
 		limiter.Close()
-		if status.PromisedBytes != 80*mib || status.CacheShareBytes != 128*mib {
-			t.Fatalf("the host promised %d MiB and gave the cache %d, want 80 and 128",
-				status.PromisedBytes/mib, status.CacheShareBytes/mib)
+		if status.PromisedBytes != 112*mib || status.CacheShareBytes != 107374183 {
+			t.Fatalf("the host promised %d bytes and gave the cache %d, want %d and 107374183",
+				status.PromisedBytes, status.CacheShareBytes, 112*mib)
 		}
-		if report := diskReport(status); report.PromisedBytes != 80*mib || report.Binding != "free-bytes" ||
-			len(report.Promises) != 5 || report.Promises[0].AllocatedBytes != 32*mib ||
+		if report := diskReport(status); report.PromisedBytes != 112*mib || report.Binding != "free-bytes" ||
+			len(report.Promises) != 5 || report.Promises[0].AllocatedBytes != 48*mib ||
 			len(report.Writes.Refused) != 4 {
 			t.Fatalf("the host reports %+v", report)
 		}
 
-		// 32 + 16 + 200 fits the filesystem, but leaves 8 MiB free of a floor
+		// 48 + 32 + 168 fits the filesystem, but leaves 8 MiB free of a floor
 		// of 16 with nothing else on it, which no other writer can change.
 		ctx, runtime, disk = simDisk(t, 256*mib)
-		config = diskHost(200 * mib)
+		config = diskHost(168 * mib)
 		config.Disk, config.Clock = disk, runtime.NewClock("larger")
 		_, err = startDiskLimiter(ctx, config,
 			diskUsers(config, mustStartPagers(t, ctx, config, disk), none, &staged), nil)
@@ -208,21 +211,21 @@ func TestAHostStartsUnreadyWhileAnotherWriterHoldsItsRoom(t *testing.T) {
 		config.Disk, config.Clock = disk, clock
 		var staged atomic.Int64
 		users := diskUsers(config, mustStartPagers(t, ctx, config, disk), func() int { return 0 }, &staged)
-		// The spill files hold 80 MiB. 170 more leave 6 free: under the
-		// floor of 16, though the filesystem holds the promises with 160 over.
-		disk.SetOutsideBytes(170 * mib)
+		// The spill files hold 112 MiB. 138 more leave 6 free: under the
+		// floor of 16, though the filesystem holds the promises with 128 over.
+		disk.SetOutsideBytes(138 * mib)
 		limiter, err := startDiskLimiter(ctx, config, users, nil)
 		if err != nil {
 			t.Fatalf("a host whose promises fit the filesystem was refused while another writer held it: %v", err)
 		}
 		defer limiter.Close()
-		want := "the disk cannot keep the host's promises: the host promises 83886080 bytes to spill-ram, " +
+		want := "the disk cannot keep the host's promises: the host promises 117440512 bytes to spill-ram, " +
 			"spill-pmem, spill-ephemeral, vmm-staging, staged-images, and the free-bytes goal (free 16777216 bytes) " +
-			"leaves it 73400320"
+			"leaves it 106954752"
 		if err := limiter.Ready(); err == nil || err.Error() != want {
 			t.Fatalf("the host started ready with %v, want %q", err, want)
 		}
-		disk.SetOutsideBytes(100 * mib)
+		disk.SetOutsideBytes(68 * mib)
 		ticks := 0
 		for limiter.Ready() != nil {
 			clock.Advance(resource.DefaultDiskInterval)
@@ -304,10 +307,10 @@ func TestACacheDirectoryOnAnotherFilesystemIsRefused(t *testing.T) {
 func TestAHostWhoseDiskCannotHoldItsSpillFilesIsRefused(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx, _, disk := simDisk(t, 256*mib)
-		// 32 + 16 + 256 is more than the filesystem.
+		// 48 + 32 + 256 is more than the filesystem.
 		_, err := startPagers(t, ctx, diskHost(256*mib), disk)
 		if !errors.Is(err, ErrInvalidConfig) || !errors.Is(err, platform.ErrNoSpace) {
-			t.Fatalf("a host whose spill files need 304 MiB of 256 started with %v, want %v and %v",
+			t.Fatalf("a host whose spill files need 336 MiB of 256 started with %v, want %v and %v",
 				err, ErrInvalidConfig, platform.ErrNoSpace)
 		}
 		want := "host: invalid configuration: the disk cannot allocate the ephemeral spill file's 268435456 bytes: " +
@@ -315,8 +318,8 @@ func TestAHostWhoseDiskCannotHoldItsSpillFilesIsRefused(t *testing.T) {
 		if err.Error() != want {
 			t.Fatalf("the host was refused with %q, want %q", err, want)
 		}
-		if got := disk.Usage().HostBytes; got != 48*mib {
-			t.Fatalf("the refused host holds %d MiB of its disk, want the 48 of the pagers it started", got/mib)
+		if got := disk.Usage().HostBytes; got != 80*mib {
+			t.Fatalf("the refused host holds %d MiB of its disk, want the 80 of the pagers it started", got/mib)
 		}
 	})
 }
@@ -339,8 +342,8 @@ func (w *fileWriter) Write(p []byte) (int, error) {
 func TestAnImageTheDiskCannotKeepIsNotStaged(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx, runtime, disk := simDisk(t, 256*mib)
-		// 256 - 16 - (32 + 16 + 128) leaves 64: one region.
-		config := diskHost(128 * mib)
+		// 256 - 16 - (48 + 32 + 96) leaves 64: one region.
+		config := diskHost(96 * mib)
 		config.Disk, config.Clock = disk, runtime.NewClock("host")
 		var staged atomic.Int64
 		limiter, err := startDiskLimiter(ctx, config,

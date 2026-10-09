@@ -278,6 +278,74 @@ func (s *SpillStorage[K]) ReadVersion(ctx context.Context, key K, dst []byte) (b
 	return true, nil
 }
 
+// HasVersion reports whether the storage keeps a published version of key.
+func (s *SpillStorage[K]) HasVersion(key K) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.versions[key]
+	return ok
+}
+
+// WriteVersion keeps data, a page, as the published version of key, in an
+// allocation no reservation holds: a free one, one never handed out, or the
+// oldest version's. It reports false, and writes nothing, where key has a
+// version already, none may be kept, or every allocation is a reservation or
+// another write's. The allocation is the write's alone until the write ends,
+// so a caller that bounds its writes in flight and admits reservations
+// against a budget that many allocations short of the storage's never finds
+// a reservation refused for one.
+func (s *SpillStorage[K]) WriteVersion(ctx context.Context, key K, data []byte) (bool, error) {
+	assert(len(data) > 0 && uint64(len(data)) <= s.pageSize, "a version is a page")
+	s.mu.Lock()
+	if _, known := s.versions[key]; known || s.maxVersions == 0 {
+		s.mu.Unlock()
+		return false, nil
+	}
+	id, ok := -1, false
+	switch {
+	case len(s.versions) >= s.maxVersions:
+		id, ok = s.dropOldestLocked()
+	case len(s.free) > 0:
+		id, ok = s.free[len(s.free)-1], true
+		s.free = s.free[:len(s.free)-1]
+	case s.next < s.budget:
+		id, ok = s.next, true
+		s.next++
+		s.allocations = append(s.allocations, spillAllocation{})
+	default:
+		id, ok = s.dropOldestLocked()
+	}
+	s.mu.Unlock()
+	if !ok {
+		return false, nil
+	}
+	n, err := s.file.WriteAt(ctx, data, int64(id)*int64(s.pageSize))
+	if err == nil && n != len(data) {
+		err = io.ErrShortWrite
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err != nil {
+		s.freeLocked(id)
+		return false, err
+	}
+	if _, known := s.versions[key]; known {
+		// Another write kept the same version first.
+		s.freeLocked(id)
+		return false, nil
+	}
+	allocation := &s.allocations[id]
+	*allocation = spillAllocation{sum: crc32.Checksum(data, spillChecksums), length: uint32(len(data)),
+		written: true, version: true}
+	s.stored++
+	s.storedBytes += uint64(len(data))
+	s.published++
+	version := spillVersion[K]{key: key, id: id, number: s.published}
+	s.versions[key] = version
+	s.queue = append(s.queue, version)
+	return true, nil
+}
+
 // Versions is how many published versions the storage keeps.
 func (s *SpillStorage[K]) Versions() int {
 	s.mu.Lock()

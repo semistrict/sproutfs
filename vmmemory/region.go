@@ -668,7 +668,10 @@ var reclaimSeam func(index uint64)
 func (r *MemoryRegion) readRun(ctx context.Context, first uint64, wanted []bool, keys []pageKey, dst []byte,
 	histogram *latency.Histogram) ([]bool, error) {
 	ps := r.host.pageSize
-	wanted = r.readVersions(ctx, first, wanted, keys, dst)
+	wanted, err := r.readVersions(ctx, first, wanted, keys, dst)
+	if err != nil {
+		return nil, err
+	}
 	if !slices.Contains(wanted, true) {
 		return nil, nil
 	}

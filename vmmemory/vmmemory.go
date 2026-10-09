@@ -496,7 +496,8 @@ type Config struct {
 	// MaxSpillVersions bounds the published versions the spill file keeps
 	// (spill.go). Zero keeps as many as the index's memory bound allows, and a
 	// negative number keeps none, so every load of a published page reads
-	// its backing.
+	// its backing. An ephemeral pager keeps none: nothing it holds is ever
+	// published.
 	MaxSpillVersions int
 	// Ephemeral makes this the pager of ephemeral disks: PMEM memory regions no
 	// checkpoint holds. Their private pages are their only copy, in the arena

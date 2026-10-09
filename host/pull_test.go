@@ -56,6 +56,14 @@ func pulledRun(t *testing.T, diskBytes int64) (*countedObjects, *hostPagers, *ma
 func pulledRunWith(t *testing.T, diskBytes int64,
 	configure func(h *hostHarness)) (*countedObjects, *hostPagers, *machine, *volume.VM, *hostHarness) {
 	t.Helper()
+	return pulledRunOf(t, diskBytes, 0, configure)
+}
+
+// pulledRunOf is pulledRunWith whose pagers keep at most versions published
+// versions in their spill files, as vmmemory.Config.MaxSpillVersions says.
+func pulledRunOf(t *testing.T, diskBytes int64, versions int,
+	configure func(h *hostHarness)) (*countedObjects, *hostPagers, *machine, *volume.VM, *hostHarness) {
+	t.Helper()
 	h := newSizedHostHarness(t, 2)
 	counted := &countedObjects{ObjectStore: h.configs[1].ObjectStore}
 	h.configs[1].ObjectStore = counted
@@ -67,7 +75,8 @@ func pulledRunWith(t *testing.T, diskBytes int64,
 	t.Cleanup(func() { _ = file.Close() })
 	h.configs[1].Cache = checkpoint.CacheConfig{Disk: file, DiskBytes: diskBytes, DiskRegionBytes: 8 << 20}
 	pagers := newPagerWithConfig(t, h.configs[1].Resources, vmmemory.Config{
-		ResidentPages: pullResident, LogicalPages: 2 * pullPages, DirtyPages: pullResident, ReadAheadPages: 1})
+		ResidentPages: pullResident, LogicalPages: 2 * pullPages, DirtyPages: pullResident, ReadAheadPages: 1,
+		MaxSpillVersions: versions})
 	h.configs[1].Pagers = pagers.pagers
 	if configure != nil {
 		configure(h)
@@ -139,6 +148,8 @@ func TestAPulledVMFaultsWithoutTheObjectStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	readPulled(t, guest)
+	// Each page the first pass read from the disk is kept in the spill file
+	// as its eviction takes it, and the second pass reads it there.
 	readPulled(t, guest)
 	after, err := pagers.pmem().Stats(t.Context())
 	if err != nil {
@@ -156,8 +167,11 @@ func TestAPulledVMFaultsWithoutTheObjectStore(t *testing.T) {
 		t.Fatalf("faulting a pulled VM's pages in, and again after they were evicted, made %d requests "+
 			"of the object store, want none", gets)
 	}
-	if disk := h.hosts[1].Status().Cache.Disk; disk.Hits != 2*pullPages+1 || disk.Lost != 0 {
-		t.Fatalf("the page cache's disk reports %+v, want every fault and the segment served from it", disk)
+	if disk := h.hosts[1].Status().Cache.Disk; disk.Hits != pullPages+1 || disk.Lost != 0 {
+		t.Fatalf("the page cache's disk reports %+v, want the first pass's faults and the segment served from it", disk)
+	}
+	if loads := after.VersionLoads - before.VersionLoads; loads != pullPages {
+		t.Fatalf("the second pass loaded %d pages from the spill file, want every page", loads)
 	}
 }
 
@@ -206,7 +220,10 @@ func TestAPulledVMKeepsItsLaterCheckpointsOnTheDisk(t *testing.T) {
 // the pull's fetching before it publishes, so a pull closed with its fetching
 // would keep nothing of the stop, and the two pages would come from the store.
 func TestAPulledVMKeepsItsStopsCheckpointOnTheDisk(t *testing.T) {
-	counted, pagers, guest, _, h := pulledRun(t, 64<<20)
+	// No published versions in the spill files: what this checks is the page
+	// cache's disk, and the spill file would answer for the pages the stop
+	// published, which it kept as their versions.
+	counted, pagers, guest, _, h := pulledRunOf(t, 64<<20, -1, nil)
 	if _, err := h.hosts[1].WaitPulled(t.Context(), "vm-1"); err != nil {
 		t.Fatal(err)
 	}

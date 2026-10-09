@@ -798,7 +798,7 @@ func (h *Host) reclaimExtent(f *arenaFile) bool {
 			return freed
 		}
 		h.mu.Unlock()
-		if !h.takeIdleIf(func() bool { h.mu.Lock(); return true }, orphaned) {
+		if !h.takeIdleIf(func() bool { h.mu.Lock(); return true }, orphaned, nil) {
 			return false
 		}
 	}
