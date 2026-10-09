@@ -440,9 +440,16 @@ func loadConfig(lookup func(string) string) (config, error) {
 		RAM:  int(number("SPROUTFS_RAM_LOGICAL_PAGES", int64(resident.RAM)*32)),
 		PMEM: int(number("SPROUTFS_PMEM_LOGICAL_PAGES", int64(resident.PMEM)*32)),
 	}
+	// The dirty budget defaults to what the spill file holds, because that is
+	// what it is allocated for: every dirty page has somewhere to go when the
+	// arena needs its slot, and the loss window, not the arena, bounds how long
+	// one stays unpublished. A budget of the arena's size left half of the
+	// embedder's spill file unused and held a writing guest's stores for whole
+	// checkpoint uploads: a PostgreSQL benchmark on GCE ran 1,221 tps with it
+	// and 2,290 with the spill file's (TASK-122.3).
 	c.DirtyPages = host.KindPages{
-		RAM:  int(number("SPROUTFS_RAM_DIRTY_PAGES", int64(min(resident.RAM, spillable.RAM)))),
-		PMEM: int(number("SPROUTFS_PMEM_DIRTY_PAGES", int64(min(resident.PMEM, spillable.PMEM)))),
+		RAM:  int(number("SPROUTFS_RAM_DIRTY_PAGES", int64(min(spillable.RAM, c.LogicalPages.RAM)))),
+		PMEM: int(number("SPROUTFS_PMEM_DIRTY_PAGES", int64(min(spillable.PMEM, c.LogicalPages.PMEM)))),
 	}
 	for _, budget := range []struct {
 		kind                                    string

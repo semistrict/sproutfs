@@ -72,13 +72,14 @@ func TestConfigTakesTheDocumentedDefaults(t *testing.T) {
 	if config.HotTier != nil {
 		t.Fatalf("a host given no hot tier reads through %+v", *config.HotTier)
 	}
-	// Each pager's resident pages are its own arena, and its other two bounds
-	// are derived from that — each counted in that pager's own page, which is
-	// why a RAM page other than the default would make them nothing alike: at
-	// the default 2 MiB, 1.5 GiB of RAM arena is 768 pages and 512 MiB of PMEM
-	// arena is 256.
+	// Each pager's resident pages are its own arena, its logical cap is derived
+	// from that and its dirty budget from its share of the spill file — each
+	// counted in that pager's own page, which is why a RAM page other than the
+	// default would make them nothing alike: at the default 2 MiB, 1.5 GiB of
+	// RAM arena is 768 pages, 512 MiB of PMEM arena is 256, and 12 GiB and
+	// 4 GiB of spill are 6,144 and 2,048.
 	if config.LogicalPages != (host.KindPages{RAM: 768 * 32, PMEM: 8 * 1024}) ||
-		config.DirtyPages != (host.KindPages{RAM: 768, PMEM: 256}) {
+		config.DirtyPages != (host.KindPages{RAM: 6144, PMEM: 2048}) {
 		t.Fatalf("pager bounds %v %v", config.LogicalPages, config.DirtyPages)
 	}
 	if config.VMMemoryBytes != 512<<20 || config.Firecracker.VCPUs != 1 {
@@ -433,8 +434,8 @@ func TestConfigDividesTheBudgetsByTheShare(t *testing.T) {
 		ramLogical int
 	}{
 		// Each pager's page counts are its own, here both 2 MiB.
-		{"50", 1 << 30, 1 << 30, 8 << 30, 8 << 30, 512, 512, 512 * 32},
-		{"25", 1 << 29, 3 << 29, 4 << 30, 12 << 30, 256, 768, 256 * 32},
+		{"50", 1 << 30, 1 << 30, 8 << 30, 8 << 30, 4096, 4096, 512 * 32},
+		{"25", 1 << 29, 3 << 29, 4 << 30, 12 << 30, 2048, 6144, 256 * 32},
 	} {
 		values := minimal()
 		values["SPROUTFS_RAM_SHARE_PERCENT"] = share.percent
@@ -753,7 +754,7 @@ func TestConfigRunsRAMAtFourKiBWhenAsked(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.RAMPageSize != 4<<10 || config.DirtyPages != (host.KindPages{RAM: 1 << 18, PMEM: 512}) ||
+	if config.RAMPageSize != 4<<10 || config.DirtyPages != (host.KindPages{RAM: 1 << 21, PMEM: 4096}) ||
 		config.LogicalPages.RAM != (1<<18)*32 {
 		t.Fatalf("a 4 KiB RAM page gave page %d, dirty budgets %v and a RAM logical cap of %d",
 			config.RAMPageSize, config.DirtyPages, config.LogicalPages.RAM)

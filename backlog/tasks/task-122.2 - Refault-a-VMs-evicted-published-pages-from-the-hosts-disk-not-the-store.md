@@ -4,6 +4,7 @@ title: 'Refault a VM''s evicted published pages from the host''s disk, not the s
 status: To Do
 assignee: []
 created_date: '2026-10-08 23:57'
+updated_date: '2026-10-09 01:20'
 labels:
   - performance
 dependencies: []
@@ -25,3 +26,9 @@ Outside the share the cluster cache is on for, a host keeps a VM's published pag
 - [ ] #2 A test proves a publication's pages reach the disk and a later fault reads them there
 - [ ] #3 The benchmark's random reads are measured before and after
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Measured 2026-10-09 with a pulled VM and the cache's write budget removed (the deployment's 1 TiB/day budget counts the spill files' writes on the device counter, so it had refused every cache write): random 8 KiB reads went from 73/s p50 75 ms to 155/s p50 13.8 ms, which is about what 2 MiB misses allow on a 240 MB/s disk. But writing every publication through to the disk (46 GB held after one run) on the disk the spill files use made checkpoints slow enough that pgbench -i took 532 s instead of 45 and pgbench ran at 1 tps with 357,046 dirty waits. Keeping published pages on the disk has to be paced behind the guest's own I/O and must not lengthen the checkpoint a waiting store depends on; and the write budget must not be spent by the spill files.
+<!-- SECTION:NOTES:END -->

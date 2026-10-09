@@ -204,12 +204,11 @@ spec:
               value: "2147483648"
             # The volatile private state each pager may hold in its arena and
             # its spill file together, counted in that pager's own page, which
-            # is 2 MiB for both. Each defaults to its share of the arena, which is what a
-            # guest whose dirty set never outruns the arena needs; a workload
-            # guest writing hundreds of megabytes between checkpoints, with
-            # forks doing the same beside it, outruns that long before the spill
-            # file is full. The two are 12 GiB divided as the arena is, three
-            # quarters to RAM: 9 GiB and 3 GiB of 2 MiB pages.
+            # is 2 MiB for both. Each defaults to its share of the spill file,
+            # 12 GiB and 4 GiB here; these are less, because a checkpoint plans
+            # its whole dirty set in memory and this pod has 8 GiB. The two are
+            # 12 GiB divided as the arena is, three quarters to RAM: 9 GiB and
+            # 3 GiB of 2 MiB pages.
             - name: SPROUTFS_RAM_DIRTY_PAGES
               value: "4608"
             - name: SPROUTFS_PMEM_DIRTY_PAGES

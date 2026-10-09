@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-09 00:08'
+updated_date: '2026-10-09 01:35'
 labels:
   - performance
 dependencies: []
@@ -27,3 +28,9 @@ A store that finds the dirty budget full waits in Host.takeSpill (vmmemory/press
 - [ ] #2 No probe of a guest under the benchmark fails or takes more than a second for want of dirty budget
 - [ ] #3 docs/vm-memory.md states what a full dirty budget costs a guest
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-10-09: with the PMEM dirty budget raised from the arena's 3,276 pages to the spill file's 6,552 (SPROUTFS_PMEM_DIRTY_PAGES), the benchmark's pgbench went from 1,221 tps / 13.1 ms to 2,290 / 7.0 ms, pgbench -i from 52 s to 34 s (plain: 38 s), dirty waits during pgbench from about 43,000 to 807, and no probe failed (3 before). The host now defaults each dirty budget to its spill share. What is left of this task: the waits that remain, and that a full budget still parks a vCPU for a whole upload.
+<!-- SECTION:NOTES:END -->
