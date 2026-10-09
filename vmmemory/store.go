@@ -251,9 +251,42 @@ func (r *MemoryRegion) storeZeros(ctx context.Context, index, first, last uint64
 
 // allocateRun takes slots of the region's private file for the run [first,
 // last), which holds index, by the placement rule first, then free consecutive
-// slots, then index alone, which is the one slot that may give up idle pages
-// for it.
+// slots, then index alone, which is the one slot that may evict for it. A run
+// that finds no room first has an eviction step free a batch of slots, and is
+// placed in what that freed: one victim a fault left every store after the
+// arena filled a fault of its own (TASK-122.7).
 func (r *MemoryRegion) allocateRun(ctx context.Context, index, first, last uint64) (uint64, []MapRun, error) {
+	start, runs, err := r.placeRunInRoom(ctx, index, first, last)
+	if err != nil || len(runs) > 0 {
+		return start, runs, err
+	}
+	if last-first > 1 && !sim.Bug(ctx, "pager-write-ahead-after-one-victim") {
+		// The step evicts with the region given up, as reclaimPrivate does.
+		// The run is still fresh when the region is held again: every path
+		// that makes a page of the window private or binds it holds the
+		// window's stripe, as this store does.
+		if err := r.withoutMemoryRegion(ctx, func() error {
+			_, err := r.host.evictOne(ctx, &evictionRequest{region: r})
+			return err
+		}); err != nil {
+			return 0, nil, err
+		}
+		start, runs, err := r.placeRunInRoom(ctx, index, first, last)
+		if err != nil || len(runs) > 0 {
+			return start, runs, err
+		}
+	}
+	at, err := r.reclaimPrivate(ctx, index)
+	if err != nil {
+		return 0, nil, err
+	}
+	return index, []MapRun{r.runAt(index, at, 1)}, nil
+}
+
+// placeRunInRoom is allocateRun short of evicting: the run by the placement
+// rule, or in free consecutive slots, shortened to what the pager has room for,
+// and no runs where there is none.
+func (r *MemoryRegion) placeRunInRoom(ctx context.Context, index, first, last uint64) (uint64, []MapRun, error) {
 	h := r.host
 	f := r.privateFile()
 	if err := r.host.makeRoom(ctx, f, int(last-first)); err != nil {
@@ -285,11 +318,7 @@ func (r *MemoryRegion) allocateRun(ctx context.Context, index, first, last uint6
 			return start, []MapRun{r.runAt(start, at, count)}, nil
 		}
 	}
-	at, err := r.reclaimPrivate(ctx, index)
-	if err != nil {
-		return 0, nil, err
-	}
-	return index, []MapRun{r.runAt(index, at, 1)}, nil
+	return 0, nil, nil
 }
 
 // slotOf is the slot of the page the region maps at index, slot -1 where it

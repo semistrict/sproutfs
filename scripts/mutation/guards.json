@@ -114,6 +114,18 @@
     "purpose": "Keep a spilled page's bytes in its reservation after a refault hands the guest the page as its own. The guest stores over it, and the checkpoint's retire keeps the stale bytes as the version the page was published as."
   },
   {
+    "id": "pager-evict-one-victim-a-step",
+    "package": "vmmemory",
+    "run": "^TestASequentialWriteThroughAFullArenaFaultsOncePerRun$",
+    "purpose": "Take one victim an eviction step, as the evictor did before it batched: every store after a 4 KiB arena fills evicts for itself and faults once a page."
+  },
+  {
+    "id": "pager-write-ahead-after-one-victim",
+    "package": "vmmemory",
+    "run": "^TestASequentialWriteThroughAFullArenaFaultsOncePerRun$",
+    "purpose": "Place a store's write-ahead run only in slots free before its eviction, so the store that evicts maps its own page alone and every run takes two faults."
+  },
+  {
     "id": "spill-sparse",
     "package": "vmmemory",
     "run": "^TestASpillSucceedsOnADiskFilledFromOutside$",

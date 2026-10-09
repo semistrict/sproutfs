@@ -909,7 +909,9 @@ PMEM's pager does none of this: its page is the whole range.
 A store into fresh memory also writes ahead: the fresh zero pages after it in
 its read-ahead run, and before it when the run ends first, get private pages in
 the same command, at most `Config.WriteAheadPages`. Write-ahead takes only free
-slots and free dirty reservations, and never evicts or waits. The run is mapped
+slots and free dirty reservations, and never waits. A run that finds no room
+has one eviction step free a batch first and is placed in what it freed, so it
+does not shrink to its faulting page once the arena is full. The run is mapped
 writable, so a guest writing fresh memory in order faults once per run, and the
 pager never learns which of its pages the guest stored into. Each holds a dirty
 reservation and is written back like a stored page, so a guest can run out of
@@ -2077,10 +2079,15 @@ harvested page the guest touches again: 1,568 in the 128 MiB run, about
 often than once a turnover is lost either way; for it, what a refault reads,
 a whole 2 MiB page, is the lever (TASK-110).
 
-An allocation short of a slot evicts one page by the synchronous path of
-Zircon's evictor (`internal/zirconvm/evictor.go`), which calls the pager's
-reclaim step (`vmmemory/evict.go`) until a page is freed or the step finds
-nothing. Each step takes, in order: the oldest idle page; the slots of running
+An allocation short of a slot evicts by the synchronous path of Zircon's
+evictor (`internal/zirconvm/evictor.go`), which calls the pager's reclaim step
+(`vmmemory/evict.go`) until a page is freed or the step finds nothing. A step
+takes a batch of victims, 2 MiB of them or a sixteenth of the arena whichever
+is fewer (512 at 4 KiB, one at 2 MiB), and evicts them together: one
+revocation pass over the regions they are mapped in and one spill write. Before
+2026-10-09 a step took one, and a 4 KiB guest writing through a full arena
+faulted once a page, each fault a revocation round trip and a 4 KiB write
+(TASK-122.7). Each victim is, in order: the oldest idle page; the slots of running
 prefetches, by cancelling them; then, after it harvests, the oldest harvested
 page the fair share lets it take, or the oldest isolated page it has not
 harvested; the oldest page of all; and last a page a cold copy will be compared

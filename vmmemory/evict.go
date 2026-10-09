@@ -12,8 +12,11 @@ import (
 // The pager evicts with Zircon's evictor (internal/zirconvm/evictor.go). An
 // allocation short of a slot calls its synchronous path for one page, and the
 // evictor reclaims with reclaimStep, the pager's counterpart of Zircon's
-// reclaim from the page queues: it takes one victim and reclaims it. The
-// victim is, in order:
+// reclaim from the page queues: it takes a batch of victims, 2 MiB of them or
+// a sixteenth of the arena whichever is fewer, and reclaims them together, one
+// revocation pass and one spill write for the batch. A 4 KiB pager that took
+// one victim a step made every store after its arena filled evict for itself
+// (TASK-122.7). Each victim is, in order:
 //
 //   - the oldest idle page, which no memory region maps, so its slot costs no
 //     revocation and no spill and nothing a guest is using;
@@ -135,8 +138,8 @@ func evictPastAFreeSlot(ctx context.Context) bool {
 	return sim.Buggify(ctx, "vmmemory/evict-past-a-free-slot", 0.5)
 }
 
-// reclaimStep is one step of the pager's evictor: it takes one victim for req
-// and reclaims it, or reports that there is nothing to take. It always
+// reclaimStep is one step of the pager's evictor: it takes a batch of victims
+// for req and reclaims them, or reports that there is nothing to take. It always
 // compresses, and every level takes a mapped page in the end, since an
 // allocation short of a slot has nowhere else to get one.
 func (h *Host) reclaimStep(ctx context.Context, req *evictionRequest, _ bool, _ zirconvm.EvictionLevel) (zirconvm.ReclaimAttempt, bool, error) {
@@ -189,18 +192,57 @@ func (h *Host) reclaimStep(ctx context.Context, req *evictionRequest, _ bool, _ 
 		h.mu.Unlock()
 		return zirconvm.ReclaimAttempt{}, false, nil
 	}
-	page := h.peekVictimLocked(req)
+	// A step takes a batch of victims, each locked, which it evicts together:
+	// one revocation pass over every region they are mapped in and one write
+	// of their spills, rather than a round trip and a write for each. At 2 MiB
+	// a batch is the one page it always was.
+	var pages []*zirconvm.VmPage
+	busy := req.busy
+	batch := h.evictBatch()
+	if sim.Bug(ctx, "pager-evict-one-victim-a-step") {
+		batch = 1
+	}
+	for len(pages) < batch {
+		page := h.peekVictimLocked(req)
+		if page == nil {
+			break
+		}
+		if len(pages) == 0 {
+			busy = req.busy
+		}
+		pages = append(pages, page)
+	}
+	// A peek after the first finds the victims this step holds locked, and
+	// would take them for pages something else is using: whether anything is
+	// busy is the first peek's to say.
+	if len(pages) > 0 {
+		req.busy = busy
+	}
 	req.changed = h.changed
 	// Slots reserved by a concurrent load are in no queue yet.
 	if h.queuedLocked() < h.cfg.ResidentPages {
 		req.busy = true
 	}
 	h.mu.Unlock()
-	if page == nil {
+	if len(pages) == 0 {
 		return zirconvm.ReclaimAttempt{}, false, nil
 	}
 	req.preferEviction = false
-	return h.reclaimVictim(ctx, page)
+	return h.reclaimVictims(ctx, pages)
+}
+
+// evictBatchBytes is how much one eviction step frees at most: as many pages
+// as make 2 MiB, so a 4 KiB pager evicts 512 at a time and a 2 MiB pager one.
+// evictBatchShare bounds it by the arena too: a step never takes more than a
+// sixteenth of it, so a small arena is not emptied for one fault.
+const (
+	evictBatchBytes = 2 << 20
+	evictBatchShare = 16
+)
+
+// evictBatch is how many victims one eviction step takes at most.
+func (h *Host) evictBatch() int {
+	return max(1, min(int(evictBatchBytes/h.pageSize), h.cfg.ResidentPages/evictBatchShare))
 }
 
 // freedLocked reports a slot that came free after the allocation looked, as a
@@ -303,28 +345,48 @@ func (h *Host) usableVictimLocked(f *frame) bool {
 // reclaimVictim reclaims a victim peekVictimLocked returned locked, and
 // unlocks it, as Host.reclaimVictim does.
 func (h *Host) reclaimVictim(ctx context.Context, page *zirconvm.VmPage) (zirconvm.ReclaimAttempt, bool, error) {
-	defer h.unlockPage(page)
-	// A cold copy the guest did not change goes back to the page it was
-	// copied from rather than to the spill: see cold.go.
-	given, err := h.giveBackVictim(ctx, page)
+	return h.reclaimVictims(ctx, []*zirconvm.VmPage{page})
+}
+
+// reclaimVictims reclaims the victims peekVictimLocked returned locked, and
+// unlocks them. A cold copy the guest did not change goes back to the page it
+// was copied from rather than to the spill (cold.go); the rest are evicted
+// together (evictPages). The attempt counts every page that went, as a spill
+// where any was a region's own page; with none gone it is a failure on the
+// first held one.
+func (h *Host) reclaimVictims(ctx context.Context, pages []*zirconvm.VmPage) (zirconvm.ReclaimAttempt, bool, error) {
+	defer func() {
+		for _, page := range pages {
+			h.unlockPage(page)
+		}
+	}()
+	kind, gone := zirconvm.ReclaimEvict, 0
+	evicting := make([]*zirconvm.VmPage, 0, len(pages))
+	for _, page := range pages {
+		given, err := h.giveBackVictim(ctx, page)
+		if err != nil {
+			return zirconvm.ReclaimAttempt{}, false, err
+		}
+		if given {
+			kind = zirconvm.ReclaimCompress
+			gone++
+			continue
+		}
+		if frameOf(page).layer != nil {
+			kind = zirconvm.ReclaimCompress
+		}
+		evicting = append(evicting, page)
+	}
+	held, err := h.evictPages(ctx, evicting)
 	if err != nil {
 		return zirconvm.ReclaimAttempt{}, false, err
 	}
-	if given {
-		return zirconvm.ReclaimAttempt{Success: zirconvm.ReclaimSuccess{Type: zirconvm.ReclaimCompress, NumPages: 1},
-			Page: page}, true, nil
+	gone += len(evicting) - len(held)
+	if gone == 0 {
+		return zirconvm.ReclaimAttempt{Failure: zirconvm.ReclaimOther, Page: held[0]}, true, nil
 	}
-	kind := zirconvm.ReclaimEvict
-	if frameOf(page).layer != nil {
-		kind = zirconvm.ReclaimCompress
-	}
-	if err := h.evictPage(ctx, page); err != nil {
-		if errors.Is(err, errVictimHeld) {
-			return zirconvm.ReclaimAttempt{Failure: zirconvm.ReclaimOther, Page: page}, true, nil
-		}
-		return zirconvm.ReclaimAttempt{}, false, err
-	}
-	return zirconvm.ReclaimAttempt{Success: zirconvm.ReclaimSuccess{Type: kind, NumPages: 1}, Page: page}, true, nil
+	return zirconvm.ReclaimAttempt{Success: zirconvm.ReclaimSuccess{Type: kind, NumPages: uint64(gone)}, Page: pages[0]},
+		true, nil
 }
 
 // aliasesOf is the bindings that map a frame, read under h.mu.
@@ -347,132 +409,205 @@ func (r *MemoryRegion) spillTarget(b *binding) (spill reservation, elsewhere boo
 	return b.spill, !b.dirty || b.checkpoint != nil
 }
 
-// evictPage evicts a locked victim: it revokes every alias before reading its
-// bytes, writes a region's own page to the reservations of the bindings it is
-// the state of, takes it out of its object, and gives its slot back. The slot
-// goes back only once the spill has succeeded.
+// evictPage evicts a locked victim, as evictPages does, and reports a victim
+// it could not take as errVictimHeld.
 func (h *Host) evictPage(ctx context.Context, page *zirconvm.VmPage) error {
-	f := frameOf(page)
-	// A page of a region's own layer has its bytes written to that region's
-	// reservations, which a detach gives back, and it is taken out of that
-	// region's layer, which a detach destroys. So the region is held live,
-	// shared, from before its reservations are read until the page is gone,
-	// as a give-back holds it. One that cannot be held without waiting is
-	// detaching, or about to, and gives the page back itself: the victim is
-	// held. The page's lock keeps its layer from changing meanwhile.
-	if owner := f.layer; owner != nil && !sim.Bug(ctx, "pager-detach-under-an-eviction") {
-		if !owner.live.TryRLock() {
-			return errVictimHeld
-		}
-		defer owner.live.RUnlock()
+	held, err := h.evictPages(ctx, []*zirconvm.VmPage{page})
+	if err != nil {
+		return err
 	}
-	// The reservations the page's bytes go to are read as the alias set
-	// grows: a seal taken while this runs joins the checkpoint's copy to the
-	// page before it hands that copy the page's reservation, so an alias set
-	// that has not grown since its reservations were read names every one the
-	// bytes can be in, and one read twice is written once.
-	var spills []reservation
-	taken := make(map[reservation]bool)
+	if len(held) > 0 {
+		return errVictimHeld
+	}
+	return nil
+}
+
+// victim is one page of a batch evictPages takes: its frame, and the
+// reservations its bytes go to.
+type victim struct {
+	page   *zirconvm.VmPage
+	f      *frame
+	spills []reservation
+	// held marks a victim the batch could not take, which stays as it was.
+	held bool
+}
+
+// evictPages evicts locked victims together: it revokes every alias of every
+// one of them before reading their bytes, with one pass over each region they
+// are mapped in, writes the regions' own pages to the reservations of the
+// bindings they are the state of, with one write of all of them, keeps a
+// root's page as its version, takes each out of its object, and gives its slot
+// back. A slot goes back only once the spills have succeeded. It reports the
+// victims it could not take: those of a region detaching, and those mapped in
+// a region that could not take a mapping away, which is terminal from there.
+func (h *Host) evictPages(ctx context.Context, pages []*zirconvm.VmPage) ([]*zirconvm.VmPage, error) {
+	victims := make([]*victim, 0, len(pages))
 	byRegion := make(map[*MemoryRegion][]*binding)
-	walked := make(map[*binding]bool)
-	for grown := true; grown; {
-		grown = false
-		aliases := h.aliasesOf(f)
-		if evictionSeam != nil {
-			evictionSeam(f.slot)
+	mappedIn := make(map[*MemoryRegion][]*victim)
+	for _, page := range pages {
+		v := &victim{page: page, f: frameOf(page)}
+		victims = append(victims, v)
+		// A page of a region's own layer has its bytes written to that
+		// region's reservations, which a detach gives back, and it is taken
+		// out of that region's layer, which a detach destroys. So the region
+		// is held live, shared, from before its reservations are read until
+		// the page is gone, as a give-back holds it. One that cannot be held
+		// without waiting is detaching, or about to, and gives the page back
+		// itself: the victim is held. The page's lock keeps its layer from
+		// changing meanwhile.
+		if owner := v.f.layer; owner != nil && !sim.Bug(ctx, "pager-detach-under-an-eviction") {
+			if !owner.live.TryRLock() {
+				v.held = true
+				continue
+			}
+			defer owner.live.RUnlock()
 		}
-		for _, b := range aliases {
-			if walked[b] {
-				continue
+		// The reservations the page's bytes go to are read as the alias set
+		// grows: a seal taken while this runs joins the checkpoint's copy to
+		// the page before it hands that copy the page's reservation, so an
+		// alias set that has not grown since its reservations were read names
+		// every one the bytes can be in, and one read twice is written once.
+		taken := make(map[reservation]bool)
+		walked := make(map[*binding]bool)
+		for grown := true; grown; {
+			grown = false
+			aliases := h.aliasesOf(v.f)
+			if evictionSeam != nil {
+				evictionSeam(v.f.slot)
 			}
-			walked[b], grown = true, true
-			byRegion[b.region] = append(byRegion[b.region], b)
-			if b.region.Checkpoint() != nil {
-				// A publication is reading this region's pages while this
-				// eviction takes one of them.
-				sim.Probe(ctx, ProbeEvictionDuringPublication)
-			}
-			if f.layer == nil {
-				// A root's page: its bytes are its identity's, read again.
-				continue
-			}
-			spill, elsewhere := b.region.spillTarget(b)
-			if spill.none() {
-				if !elsewhere {
-					return errors.New("private page has no spill reservation")
+			for _, b := range aliases {
+				if walked[b] {
+					continue
 				}
-				continue
+				walked[b], grown = true, true
+				byRegion[b.region] = append(byRegion[b.region], b)
+				if len(mappedIn[b.region]) == 0 || mappedIn[b.region][len(mappedIn[b.region])-1] != v {
+					mappedIn[b.region] = append(mappedIn[b.region], v)
+				}
+				if b.region.Checkpoint() != nil {
+					// A publication is reading this region's pages while this
+					// eviction takes one of them.
+					sim.Probe(ctx, ProbeEvictionDuringPublication)
+				}
+				if v.f.layer == nil {
+					// A root's page: its bytes are its identity's, read again.
+					continue
+				}
+				spill, elsewhere := b.region.spillTarget(b)
+				if spill.none() {
+					if !elsewhere {
+						return nil, errors.New("private page has no spill reservation")
+					}
+					continue
+				}
+				if taken[spill] {
+					continue
+				}
+				taken[spill] = true
+				v.spills = append(v.spills, spill)
 			}
-			if taken[spill] {
-				continue
-			}
-			taken[spill] = true
-			spills = append(spills, spill)
 		}
 	}
 	for _, q := range inAttachOrder(byRegion) {
 		if err := q.revokeBindings(ctx, byRegion[q]); err != nil {
 			// A region that cannot take the mapping away is terminal from
-			// here, and this page is excluded from every later step by it.
+			// here, and every victim it maps is excluded from every later step
+			// by it.
 			q.heldPages(ctx, err)
-			return errors.Join(errVictimHeld, err)
+			for _, v := range mappedIn[q] {
+				v.held = true
+			}
 		}
 	}
 	// A root's page is a published page, and the spill file keeps it as its
 	// version unless it has one: its next load reads the host's disk.
-	if f.layer == nil {
-		if link, ok := h.node.PageQueues().Backlink(page); ok {
-			h.keepVersion(ctx, link.Cow, link.Offset, page)
+	for _, v := range victims {
+		if !v.held && v.f.layer == nil {
+			if link, ok := h.node.PageQueues().Backlink(v.page); ok {
+				h.keepVersion(ctx, link.Cow, link.Offset, v.page)
+			}
 		}
 	}
-	sort.Slice(spills, func(i, j int) bool { return spills[i].ref.Value() < spills[j].ref.Value() })
-	if len(spills) > 0 {
-		ps := int(h.pageSize)
-		data := make([]byte, len(spills)*ps)
-		refs := make([]zirconvm.ReferenceValue, len(spills))
-		for i, spill := range spills {
-			if err := f.file.Read(ctx, f.slot, data[i*ps:(i+1)*ps]); err != nil {
-				return err
-			}
-			refs[i] = spill.ref
+	if err := h.spillVictims(ctx, victims); err != nil {
+		return nil, err
+	}
+	// In a controlled run another task may go on here, with the pages'
+	// mappings gone and their bytes written away but the pages still in
+	// their objects: a fault on one, which finds it held and waits, or a seal
+	// of a region that maps one, which joins the checkpoint's copy to it.
+	if err := sim.Admit(ctx, "vmmemory/evict-remove"); err != nil {
+		return nil, err
+	}
+	var held []*zirconvm.VmPage
+	for _, v := range victims {
+		if v.held {
+			held = append(held, v.page)
+			continue
 		}
-		writes, err := h.spill.StoreReserved(ctx, refs, data)
-		if err != nil {
+		// Out of its object, so no lookup finds it; then nothing names it, and
+		// its slot goes back. The aliases are taken off under a hold of h.mu
+		// of their own, whatever they are by then. The page's lock, held
+		// throughout, keeps out every path that names a page but a seal's
+		// walk, which names it to the checkpoint's copy of a binding that
+		// names it, and hands that copy the binding's reservation, which the
+		// bytes went to: so the copy dropped here with the rest finds its
+		// bytes there. Once they are off, nothing names the page, and
+		// releaseFrame's look finds none.
+		h.removeFromObject(v.page)
+		h.mu.Lock()
+		h.stats.Evictions++
+		if v.f.aliases.len() > 0 {
+			h.displaced++
+		}
+		h.dropAliasesLocked(v.f)
+		h.mu.Unlock()
+		if evictedSeam != nil {
+			evictedSeam(v.f.slot)
+		}
+		h.releaseFrame(v.page)
+	}
+	return held, nil
+}
+
+// spillVictims writes each victim's bytes to the reservations they go to,
+// every one of a batch in one store: the reservations in ascending order, each
+// run of consecutive ones one write.
+func (h *Host) spillVictims(ctx context.Context, victims []*victim) error {
+	type target struct {
+		spill reservation
+		v     *victim
+	}
+	var targets []target
+	for _, v := range victims {
+		if v.held {
+			continue
+		}
+		for _, spill := range v.spills {
+			targets = append(targets, target{spill, v})
+		}
+	}
+	if len(targets) == 0 {
+		return nil
+	}
+	sort.Slice(targets, func(i, j int) bool { return targets[i].spill.ref.Value() < targets[j].spill.ref.Value() })
+	ps := int(h.pageSize)
+	data := make([]byte, len(targets)*ps)
+	refs := make([]zirconvm.ReferenceValue, len(targets))
+	for i, t := range targets {
+		if err := t.v.f.file.Read(ctx, t.v.f.slot, data[i*ps:(i+1)*ps]); err != nil {
 			return err
 		}
-		h.mu.Lock()
-		h.stats.SpillWrites += uint64(writes)
-		h.stats.SpillWriteBytes += uint64(len(data))
-		h.stats.Spills += uint64(len(spills))
-		h.mu.Unlock()
+		refs[i] = t.spill.ref
 	}
-	// In a controlled run another task may go on here, with the page's
-	// mappings gone and its bytes written away but the page still in its
-	// object: a fault on it, which finds it held and waits, or a seal of a
-	// region that maps it, which joins the checkpoint's copy to it.
-	if err := sim.Admit(ctx, "vmmemory/evict-remove"); err != nil {
+	writes, err := h.spill.StoreReserved(ctx, refs, data)
+	if err != nil {
 		return err
 	}
-	// Out of its object, so no lookup finds it; then nothing names it, and its
-	// slot goes back. The aliases are taken off under a hold of h.mu of their
-	// own, whatever they are by then. The page's lock, held throughout, keeps
-	// out every path that names a page but a seal's walk, which names it to
-	// the checkpoint's copy of a binding that names it, and hands that copy
-	// the binding's reservation, which the bytes went to: so the copy dropped
-	// here with the rest finds its bytes there. Once they are off, nothing names
-	// the page, and releaseFrame's look finds none.
-	h.removeFromObject(page)
 	h.mu.Lock()
-	h.stats.Evictions++
-	if f.aliases.len() > 0 {
-		h.displaced++
-	}
-	h.dropAliasesLocked(f)
+	h.stats.SpillWrites += uint64(writes)
+	h.stats.SpillWriteBytes += uint64(len(data))
+	h.stats.Spills += uint64(len(targets))
 	h.mu.Unlock()
-	if evictedSeam != nil {
-		evictedSeam(f.slot)
-	}
-	h.releaseFrame(page)
 	return nil
 }
 
