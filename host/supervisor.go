@@ -214,15 +214,15 @@ type SupervisorConfig struct {
 	// it makes to the orchestrator carries. An empty token is a deployment that
 	// admits anyone, which only a host run by hand is.
 	Orchestrator, APIToken string
-	// HugepageDir is the pod's hugetlbfs mount. The PMEM arena is a MFD_HUGETLB
+	// HugepageDir is the pod's hugetlbfs mount. A 2 MiB arena is a MFD_HUGETLB
 	// memfd rather than a file in it, but the mount is what the kubelet grants
 	// the pod its HugeTLB allotment through, so its absence means there are no
-	// huge pages to allocate and is worth failing on at startup. The RAM arena
-	// is an ordinary memfd and does not touch the pool unless its page is 2 MiB.
+	// huge pages to allocate and is worth failing on at startup. An arena at
+	// 4 KiB is an ordinary memfd and does not touch the pool.
 	HugepageDir string
 	// RAMPageSize is the RAM pager's page, as RAMPage reads it: zero is the
-	// default 4 KiB. At 2 MiB the RAM arena's share comes out of the pod's
-	// HugeTLB allotment as PMEM's does.
+	// default 2 MiB, whose arena comes out of the pod's HugeTLB allotment as
+	// PMEM's does. At 4 KiB it is ordinary memory charged to the pod.
 	RAMPageSize uint64
 	// PMEMPageSize is the PMEM and ephemeral pagers' page, as PMEMPage reads
 	// it: zero is the default 2 MiB. At 4 KiB their arenas are ordinary memory
@@ -235,9 +235,9 @@ type SupervisorConfig struct {
 	// The page cache's disk is read back, because it holds only copies of
 	// what the store holds.
 	ScratchDir string
-	// ArenaBytes is the resident page store of each pager. The PMEM share comes
-	// out of the pod's HugeTLB allotment and the RAM share out of the pod's
-	// ordinary memory, so a node provisions the two separately. The two arenas
+	// ArenaBytes is the resident page store of each pager. A share at a 2 MiB
+	// page comes out of the pod's HugeTLB allotment and one at 4 KiB out of the
+	// pod's ordinary memory, so a node provisions the two separately. The arenas
 	// are separate memfds and their capacities sum to what the deployment gave
 	// this host; whoever fills this in has already divided it, so nothing below
 	// has a share to decide.

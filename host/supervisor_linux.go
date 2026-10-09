@@ -210,19 +210,30 @@ func Start(ctx context.Context, config SupervisorConfig) (Service, error) {
 	// One pager per kind of memory region, each over an arena and a spill file of its
 	// own. The two capacities sum to what the deployment gave this host, so
 	// nothing is counted twice and the arenas never compete for a slot.
-	ram, err := s.startPager(ctx, ramPager, pagerConfig(config, vmmemory.Ram))
+	// The ephemeral pager is the third, with an arena and a spill file of its
+	// own too, and only where the deployment gave it a disk.
+	ramConfig, pmemConfig, ephemeralConfig := pagerConfig(config, vmmemory.Ram),
+		pagerConfig(config, vmmemory.Pmem), ephemeralPagerConfig(config)
+	configs := []vmmemory.Config{ramConfig, pmemConfig}
+	if ephemeralConfig != nil {
+		configs = append(configs, *ephemeralConfig)
+	}
+	// Arenas the node's HugeTLB pool cannot hold would start and run until a
+	// guest had written enough, and then lose the VM on a fault.
+	if err := checkHugeTLB(configs...); err != nil {
+		return nil, err
+	}
+	ram, err := s.startPager(ctx, ramPager, ramConfig)
 	if err != nil {
 		return nil, err
 	}
-	pmem, err := s.startPager(ctx, pmemPager, pagerConfig(config, vmmemory.Pmem))
+	pmem, err := s.startPager(ctx, pmemPager, pmemConfig)
 	if err != nil {
 		return nil, err
 	}
 	s.pagers = vmmemory.Pagers{Ram: ram, Pmem: pmem}
-	// The ephemeral pager is the third, with an arena and a spill file of its
-	// own too, and only where the deployment gave it a disk.
-	if cfg := ephemeralPagerConfig(config); cfg != nil {
-		if s.pagers.Ephemeral, err = s.startPager(ctx, ephemeralPager, *cfg); err != nil {
+	if ephemeralConfig != nil {
+		if s.pagers.Ephemeral, err = s.startPager(ctx, ephemeralPager, *ephemeralConfig); err != nil {
 			return nil, err
 		}
 	}

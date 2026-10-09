@@ -25,7 +25,9 @@ The node must have a 2 MiB HugeTLB pool of 12 GiB and `/dev/kvm`.
 `scripts/lib/gce-demo-startup.sh` sets both up before k3s starts, so kubelet
 advertises `hugepages-2Mi: 12Gi` when it registers the node. A host runs one
 pager per kind of memory region, both on 2 MiB pages from the pool, so both
-arenas come out of the pod's `hugepages-2Mi` allotment. RAM at 4 KiB
+arenas come out of the pod's `hugepages-2Mi` allotment. A host whose 2 MiB
+arenas are larger than that allotment or the node's pool refuses to start and
+says by how much. RAM at 4 KiB
 (`SPROUTFS_RAM_PAGE_BYTES=4096`) puts the RAM arena on ordinary memory charged
 to the pod's `memory` request; PMEM at 4 KiB (`SPROUTFS_PMEM_PAGE_BYTES=4096`)
 does the same for the PMEM and ephemeral arenas. The sizes come from the

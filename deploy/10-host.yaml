@@ -267,7 +267,7 @@ spec:
               value: "6GiB"
           resources:
             # The HugeTLB allotment is both arenas, 5 GiB of them with room
-            # over. The ordinary memory beside it holds the Go heap, the page
+            # over; a host whose arenas it cannot hold refuses to start. The ordinary memory beside it holds the Go heap, the page
             # cache, one Firecracker process per VM and the page cache of the
             # spill file. A checkpoint plans every page it is about to upload
             # in memory at once, so the peak scales with the dirty set, which

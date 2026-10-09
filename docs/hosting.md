@@ -41,6 +41,13 @@ save enough checkpoint and fsync traffic to be worth the extra index entries
 and faults. A disk stays a whole number of 2 MiB, because Firecracker requires
 it of a PMEM device.
 
+An arena at 2 MiB is huge pages, which the pager takes as a guest first writes
+each page, so the host checks at start that its 2 MiB arenas fit both the
+pod's `hugepages-2Mi` allotment (the least `hugetlb.2MB.max` of its cgroup and
+every cgroup above it) and the node's pool, and refuses to start, naming the
+three numbers, when they do not. Before 2026-10-09 such a host started and ran
+until a fault could not allocate its page, and the VM was lost.
+
 The supervisor builds the host's [disk limiter](#budgets) once the spill files
 are open and hold their extents. It refuses to start when the disk cannot
 allocate a spill file, or cannot keep its promises under its goals. It also
