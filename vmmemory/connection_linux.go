@@ -25,10 +25,9 @@ type ConnectionConfig struct {
 	// backing stands in front of. It is a diagnostic only — nothing selects a
 	// volume, a page or an authority by it — and empty is allowed.
 	Name string
-	// MaxVMAs bounds the client process's mapping count for the replacements
-	// this pager drives. Zero disables the budget entirely, which is what a
-	// jailed client without /proc needs; a nonzero value is the admission
-	// limit and requires /proc/self/maps in the client to be accountable.
+	// MaxVMAs bounds the mappings the client's memory region makes, which the
+	// client counts from the commands it applied, so it needs no /proc and a
+	// jailed client keeps it. Zero disables the budget.
 	MaxVMAs int
 	// QueuePages bounds distinct pending faults. Overflow terminates service;
 	// the UFFD reader never waits on the worker while draining REMAP events.
@@ -743,7 +742,16 @@ func (c *Connection) wake() {
 // command would keep the pager serving it for as long as it lives. A page that
 // faults again in the meantime is merged with this entry, so the wait for the
 // queue is measured from the access that has waited longest.
-func (c *Connection) deferFault(page uint64, entry queuedFault) bool {
+func (c *Connection) deferFault(page uint64, entry queuedFault, refused error) bool {
+	// A refusal is rare, and a guest held by one waits on work it cannot see,
+	// so each is written down with the command and the client's errno.
+	attrs := []any{"memory_region", c.cfg.Name, "page", page}
+	var command *commandFailure
+	if errors.As(refused, &command) {
+		attrs = append(attrs, command.attrs()...)
+	}
+	slog.Warn("vmmemory: the client refused a fault's mapping; it waits for a revocation",
+		append(attrs, "error", refused)...)
 	revoked := c.host.revocations()
 	c.host.mu.Lock()
 	c.host.stats.RefusedMappings++
@@ -918,7 +926,7 @@ func (c *Connection) serveFaults() {
 				// which is other work of this pager's: the fault is queued
 				// again once a revocation has landed. Until then the guest
 				// waits, as it does for the dirty budget.
-				if !c.deferFault(page, entry) {
+				if !c.deferFault(page, entry, err) {
 					return
 				}
 				continue
