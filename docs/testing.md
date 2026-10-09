@@ -2284,8 +2284,8 @@ whose reads take a millisecond, with planning priced at a microsecond per page
 located (`vmmemory.WorkPlan`), and count the pages every lookup located
 (`sim.WorkPiece.Bytes`). Under `pager-plan-the-window-first`, a forward hop
 takes the read and 512 µs instead of the read and 1 µs. Under
-`pager-plan-the-window-at-random`, a hop at random locates 512 pages instead of
-one. `checkpoint-decode-every-lookup` is counted by
+`pager-fault-around-the-window`, a hop at random locates 512 pages around it
+instead of 16. `checkpoint-decode-every-lookup` is counted by
 `TestASegmentIsDecodedOncePerCheckpointWhileCached`, which prices a decode by
 its bytes (`checkpoint.WorkPageTable`).
 

@@ -270,10 +270,16 @@
     "purpose": "Plan the window of a fault that prefetches before its own page's read starts, as every fault did. Each hop of a chain of 4 KiB faults reading forwards then pays the window's planning on top of its read."
   },
   {
-    "id": "pager-plan-the-window-at-random",
+    "id": "pager-fault-around-the-window",
     "package": "vmmemory",
-    "run": "^(TestADependentChainOf4KiBFaultsPaysOnePageReadAHop|TestAFaultAtRandomMapsItsPageAloneAndTheNextInItsWindowTheRest)$",
-    "purpose": "Plan the whole window of a fault at random, every page of it located and looked up among the resident pages, as every fault did, rather than its page alone. Each hop of a chain of 4 KiB faults at random then pays the window's planning on top of its read, and maps the window's resident pages it will not read."
+    "run": "^(TestADependentChainOf4KiBFaultsPaysOnePageReadAHop|TestAFaultMapsTheResidentPagesFromItsOwnOnReadingNone)$",
+    "purpose": "Map the resident pages of a fault's whole read-ahead window, every page of it located and looked up, rather than Zircon's 16 from the faulting page on. Each hop of a chain of 4 KiB faults at random then plans 512 pages behind its read, and maps pages of its window behind it it will not read."
+  },
+  {
+    "id": "pager-mark-pages-around-accessed",
+    "package": "vmmemory",
+    "run": "^TestPagesMappedAroundAFaultKeepTheirAge$",
+    "purpose": "Count a page mapped around a fault, or landed by a prefetch, as used, which Zircon's fault does not: speculation then ages as the guest's own pages do."
   },
   {
     "id": "checkpoint-decode-every-lookup",

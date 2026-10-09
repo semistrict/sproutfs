@@ -230,3 +230,30 @@ func WithoutMappingAudit(t *testing.T) {
 // Ended is closed once r is terminal, which is how its session learns of an
 // end another memory region's step found (Connection.verify).
 func Ended(r *MemoryRegion) <-chan struct{} { return r.ended }
+
+// FaultAround is how many pages from the faulting one on a fault maps where
+// they are resident.
+const FaultAround = faultAround
+
+// PageAge is how many generations old the page r maps at page is in its page
+// queues, and whether it is in their reclaim queues at all.
+func (r *MemoryRegion) PageAge(page uint64) (uint64, bool) {
+	r.bindingsMu.Lock()
+	b, _ := r.lookupLocked(page)
+	r.bindingsMu.Unlock()
+	if b == nil {
+		return 0, false
+	}
+	h := r.host
+	h.mu.Lock()
+	p := b.page
+	h.mu.Unlock()
+	if p == nil {
+		return 0, false
+	}
+	reclaim, age := h.node.PageQueues().DebugPageIsReclaim(p)
+	return age, reclaim
+}
+
+// AgePages ages every page in the page queues one generation.
+func (h *Host) AgePages() { h.node.PageQueues().RotateReclaimQueues() }

@@ -184,15 +184,16 @@ func chainPager(t *testing.T, ctx context.Context, runtime *sim.Runtime) (*fixtu
 }
 
 // A guest that follows pointers through 4 KiB pages faults once a hop, each
-// fault in a window of its own and none in the window after a recent one, so
-// none prefetches but the first. Each hop costs exactly one read of the store
-// and the planning of its own page, which is all a fault at random plans: one
-// lookup of one page. The first hop, the memory region's first fault, plans
-// its window too, in one lookup, and the segment that locates them is decoded
-// once, by the first lookup, for every hop after. Planning the window of a
-// fault at random (pager-plan-the-window-at-random) adds the window's 512 pages
-// to every hop; decoding the segment for every lookup
-// (checkpoint-decode-every-lookup) adds a read of the segment and its decode.
+// fault on a stream of its own, so none prefetches but the first. Each hop
+// costs exactly one read of the store and the planning of its own page: a
+// fault at random locates its page alone, and the 16 pages from it on that it
+// maps where resident in one lookup behind its read. The first hop, the memory
+// region's first fault, plans its window, in one lookup, and the segment that
+// locates them is decoded once, by the first lookup, for every hop after.
+// Mapping the resident pages of the whole window around every fault
+// (pager-fault-around-the-window) adds the window's 512 pages to every hop;
+// decoding the segment for every lookup (checkpoint-decode-every-lookup) adds
+// a read of the segment and its decode.
 // A store into a page the memory region holds nothing for asks the volume
 // about the page twice, whether it is a hole and then for its read, and costs
 // the same read.
@@ -226,7 +227,12 @@ func TestADependentChainOf4KiBFaultsPaysOnePageReadAHop(t *testing.T) {
 					if at == 0 && took < 2*chainGet {
 						t.Fatalf("the first hop took %v, want at least the reads of the segment and the page", took)
 					}
-					want := ownPage
+					// Its window's end bounds what is around it, and a fault on
+					// its window's last page has nothing around it.
+					want := slices.Clone(ownPage)
+					if around := min(vmmemory.FaultAround, chainWindow-int(page%chainWindow)); around > 1 {
+						want = append(want, around)
+					}
 					if at == 0 {
 						want = append(slices.Clone(ownPage), chainWindow)
 					}
@@ -386,15 +392,12 @@ func TestAFaultThatCannotLocateItsWindowGivesBackEverySlot(t *testing.T) {
 	})
 }
 
-// A fault at random plans nothing of its window but its page, so it maps
-// nothing beside its page, not even the pages another memory region holds
-// under the identities of its window's: a guest reading at random gains as
-// little from those as from a prefetch. The next fault in that window follows
-// it, and maps every one of them with its own page, reading none: what a fault
-// at random costs its guest is at most that one fault more in its window.
-// Planning the window of a fault at random (pager-plan-the-window-at-random)
-// maps them all with the first.
-func TestAFaultAtRandomMapsItsPageAloneAndTheNextInItsWindowTheRest(t *testing.T) {
+// A fault at random maps the pages from its own on that another memory region
+// holds under the identities of its window's, up to Zircon's 16 and its
+// window's end, reading none of them, and nothing behind it. A fault behind it
+// maps the rest. Mapping the resident pages of the whole window around every
+// fault (pager-fault-around-the-window) maps them all with the first.
+func TestAFaultMapsTheResidentPagesFromItsOwnOnReadingNone(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newConfiguredFixture(t, prefetchConfig())
 		const window = 8
@@ -429,24 +432,70 @@ func TestAFaultAtRandomMapsItsPageAloneAndTheNextInItsWindowTheRest(t *testing.T
 			return pages
 		}
 		after := hostStats(t, f)
-		if got := mapped(); !slices.Equal(got, []uint64{5*window + 3}) || after.Loads != before.Loads ||
-			after.IdentityHits-before.IdentityHits != 1 {
+		if got := mapped(); !slices.Equal(got, pageRange(5*window+3, 6*window)) || after.Loads != before.Loads ||
+			after.IdentityHits-before.IdentityHits != window-3 {
 			t.Fatalf("the fault at random mapped %v of window 5 with %d identity hits and %d loads, "+
-				"want its own page alone, bound to the sibling's, reading nothing",
+				"want its page and the rest of its window from it, bound to the sibling's, reading nothing",
 				got, after.IdentityHits-before.IdentityHits, after.Loads-before.Loads)
 		}
-		if err := child.Fault(f.ctx, 5*window+6, false); err != nil {
+		if err := child.Fault(f.ctx, 5*window, false); err != nil {
 			t.Fatal(err)
 		}
 		last := hostStats(t, f)
 		if got := mapped(); !slices.Equal(got, pageRange(5*window, 6*window)) || last.Loads != before.Loads ||
-			last.IdentityHits-after.IdentityHits != window-1 || last.PrefetchRandom != after.PrefetchRandom {
-			t.Fatalf("the fault after it mapped %v of window 5 with %d identity hits and %d loads, "+
-				"want the whole window, every page but the first bound to the sibling's, reading nothing",
+			last.IdentityHits-after.IdentityHits != 3 {
+			t.Fatalf("the fault behind it mapped %v of window 5 with %d identity hits and %d loads, "+
+				"want the whole window, the first three pages bound to the sibling's, reading nothing",
 				got, last.IdentityHits-after.IdentityHits, last.Loads-before.Loads)
 		}
 		for page := uint64(5 * window); page < 6*window; page++ {
 			requirePage(t, cm, page)
+		}
+	})
+}
+
+// A fault maps the resident pages around it without counting them used, as
+// Zircon's fault does not (DisableMarkAccessed, vm/vm_mapping.cc): the pages
+// beside its own keep the age and the queue they had, so the harvest and the
+// evictor see them as what the guest has not touched.
+// Counting them used (pager-mark-pages-around-accessed) makes them as new as
+// the page the guest faulted on.
+func TestPagesMappedAroundAFaultKeepTheirAge(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := newConfiguredFixture(t, prefetchConfig())
+		const window = 8
+		child, _ := f.attach(f.slowBacking(64))
+		if err := child.Fault(f.ctx, window+2, false); err != nil {
+			t.Fatal(err)
+		}
+		// A sibling reads window 5 whole, from its first fault.
+		parent, _ := f.attach(f.slowBacking(64))
+		if err := parent.Fault(f.ctx, 5*window, false); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.h.SettlePrefetches(f.ctx); err != nil {
+			t.Fatal(err)
+		}
+		f.h.AgePages()
+		f.h.AgePages()
+		type age struct {
+			generations uint64
+			reclaim     bool
+		}
+		before := map[uint64]age{}
+		for page := uint64(5*window + 4); page < 6*window; page++ {
+			generations, reclaim := parent.PageAge(page)
+			before[page] = age{generations, reclaim}
+		}
+		if err := child.Fault(f.ctx, 5*window+3, false); err != nil {
+			t.Fatal(err)
+		}
+		for page := uint64(5*window + 4); page < 6*window; page++ {
+			generations, reclaim := child.PageAge(page)
+			if got := (age{generations, reclaim}); got != before[page] {
+				t.Fatalf("page %d, mapped around the fault, is %+v, want %+v as it was before the fault",
+					page, got, before[page])
+			}
 		}
 	})
 }

@@ -8,41 +8,33 @@ import (
 )
 
 // A fault reads its window one of three ways, decided before it plans
-// anything (planFault), and plans only what that way reads:
+// anything (planFault), and plans only what that way maps or reads:
 //
-//   - A fault at random, one that follows none of its memory region's recent
-//     faults (followsRecent), in a pager that does not prefetch at random
-//     (Config.PrefetchAtRandom), reads its page alone (readAlone). Its plan is
-//     its page: it locates that page, takes it — bound to a resident page
-//     under its identity, or a slot to read it into — and reads it. It plans
-//     nothing of the rest of its window, which it neither reads nor maps.
-//   - A fault that follows a recent one, one that goes on a stream that reads
-//     ahead, and any fault in a pager that prefetches at random, reads its
-//     page first and prefetches behind it what its stream has earned of its
-//     window (readFirst, readahead.go). It locates its page
-//     alone, takes it, and starts its read on a task of its own. Only then
-//     does it locate the rest of its window, in one lookup, and plan it: the
-//     resident pages it maps beside its own, and the slots of the pages the
-//     prefetch reads, both found for the whole window at once. The read is
-//     under way while it plans, so planning the window costs the fault
-//     nothing while it takes less than the read.
+//   - Most faults read their page first (readFirst). A fault locates its page
+//     alone, takes it — bound to a resident page under its identity, or a slot
+//     to read it into — and starts its read on a task of its own. Only then
+//     does it locate the rest of what it plans, in one lookup: the
+//     faultAround pages from its own on, which it maps where they are
+//     resident and never reads, as Zircon's fault does, and the pages its
+//     stream has earned to read ahead (readahead.go), which it prefetches
+//     behind its page. The read is under way while it plans, so planning
+//     costs the fault nothing while it takes less than the read.
+//   - A fault with nothing around it in its window and nothing to read ahead,
+//     on its window's last page, reads its page alone (readAlone).
 //   - A post-copy stream's fault reads its whole window at once with its page
 //     (readRun), so it locates the whole window first. Nothing waits on it.
 //
-// A fault used to plan its whole window, whichever it was, and at 4 KiB a
-// window is 2,048 pages. Before it read anything, on GCE on 2026-10-04 that
-// planning took a dependent 4 KiB fault from the cluster to 3.2 ms against
-// 0.67 ms for the page's read alone
-// (docs/measurements/gce-fault-first-2026-10-04.md). Planned behind the read,
-// it still took 1.05 ms: locating 2,048 pages and looking each up among the
-// resident pages took about 0.75 ms of processor a fault, as long as the read,
-// and a fault at random used none of it but the resident pages it mapped
-// (docs/measurements/gce-fault-planning-2026-10-04.md). Planning its page
-// alone took the median hop to 0.83 ms, and the faults' processor time from
-// 0.41 s to 0.05 s of a chain of 400
-// (docs/measurements/gce-random-fault-planning-2026-10-04.md). Such a fault
-// costs its guest at most one more fault in its window: the next fault there
-// follows this one, and plans the window.
+// A fault used to plan its whole window, and at 4 KiB a window is 2,048
+// pages. Before it read anything, on GCE on 2026-10-04 that planning took a
+// dependent 4 KiB fault from the cluster to 3.2 ms against 0.67 ms for the
+// page's read alone (docs/measurements/gce-fault-first-2026-10-04.md). Planned
+// behind the read, it still took 1.05 ms: locating 2,048 pages and looking
+// each up among the resident pages took about 0.75 ms of processor a fault, as
+// long as the read (docs/measurements/gce-fault-planning-2026-10-04.md).
+// Planning its page alone took the median hop to 0.83 ms, and the faults'
+// processor time from 0.41 s to 0.05 s of a chain of 400
+// (docs/measurements/gce-random-fault-planning-2026-10-04.md). Zircon's bound
+// of 16 pages around a fault is a lookup a 128th of that.
 
 // WorkPlan is the work of planning a window, one unit a page located, which a
 // simulation prices (sim.Config.Compute) so that a test sees a fault's
@@ -54,10 +46,10 @@ type reading int
 
 const (
 	// readAlone reads the faulting page alone and plans nothing else: a
-	// fault that follows none of its memory region's recent faults.
+	// fault with nothing around it and nothing to read ahead.
 	readAlone reading = iota
-	// readFirst reads the faulting page first and prefetches behind it what
-	// its stream has earned of the window: a fault that follows one.
+	// readFirst reads the faulting page first, maps what is resident around
+	// it and prefetches behind it what its stream has earned.
 	readFirst
 	// readRun reads the whole window at once with the faulting page: a
 	// post-copy stream's fault.

@@ -550,9 +550,8 @@ none of a region's streams starts one. One on a page after a stream's latest,
 within one more read-ahead of what that fault brought in, goes on it. A stream's
 first two faults read their pages alone; its third reads four pages ahead, and
 each fault after that four times as many, until one reads its whole run. A
-region's first fault reads its whole run. Mapping the resident pages of the run
-costs no read, and a fault that follows a recent one does it whatever its
-stream has earned.
+region's first fault reads its whole run. A fault maps the resident pages of the 16 from its own on, which
+costs no read, whatever its stream has earned.
 
 This is Zircon's split. Its kernel maps at most 16 present pages around a fault
 and reads nothing else (`kPageFaultMaxOptimisticPages`); how much to read is
@@ -668,18 +667,17 @@ reading again, fails it.
 
 ### Reading at random
 
-Only a fault that looks like reading forwards prefetches. A memory region
-remembers the windows of its last eight faults that read its backing. A fault
-prefetches the rest of its run when one of them is its own window or the window
-before, and when the region has had no fault yet. Any other fault reads its page
-and nothing else, and `Stats.PrefetchRandom` counts it.
+Only a fault that goes on a stream that has earned a read-ahead prefetches
+([faults and read-ahead](#faults-and-read-ahead)). Any other fault reads its
+page and nothing else, and `Stats.PrefetchRandom` counts it.
 
-A fault at random also plans only its page
-([planning a fault](#planning-a-fault)), and does not map the window's pages
-that are resident under their identities. The next fault in the window plans the
-window and maps them without a read.
-`TestAFaultAtRandomMapsItsPageAloneAndTheNextInItsWindowTheRest` holds the pager
-to that.
+Every fault maps the pages from its own on that are resident under their
+identities, up to 16 and its window's end, as Zircon's does, and reads none of
+them. It does not count them used: a page mapped around a fault or landed by a
+prefetch keeps its age and its queue, as Zircon's do
+(`TestPagesMappedAroundAFaultKeepTheirAge`).
+`TestAFaultMapsTheResidentPagesFromItsOwnOnReadingNone` holds the pager to the
+16.
 
 The reason is processor time: at 4 KiB, a prefetched run of 2,047 pages from the
 cluster is about 100 ms of processor time to check and decode. On GCE on
@@ -710,13 +708,13 @@ fails it.
 
 A fault plans only what it reads (`vmmemory/faultfirst.go`):
 
-- A fault at random locates its page in one lookup of one page, takes it, bound
-  to a resident page under its identity or to a slot to read it into, and reads
-  it.
-- A fault that follows a recent one, or goes on a stream that reads ahead,
-  locates and takes its page alone and starts the page's read on its own task.
-  Only then does it locate the rest of its window, in one lookup of the volume,
-  and plan it while the read is under way: it maps what is resident there, and
+- A fault on its window's last page with nothing to read ahead locates its
+  page in one lookup of one page, takes it, bound to a resident page under its
+  identity or to a slot to read it into, and reads it.
+- Any other fault locates and takes its page alone and starts the page's read
+  on its own task. Only then does it locate the 16 pages from its own on and
+  what its stream has earned to read ahead, in one lookup of the volume, and
+  plan them while the read is under way: it maps what is resident there, and
   reads what its stream has earned.
 - A post-copy stream's fault plans its whole window first, because it reads the
   window with its page.
@@ -750,9 +748,10 @@ and the pager's own work against 575 µs, and a fault reading forwards 1.03 ms
 against 2.21 ms (`BenchmarkARandom4KiBFault`, `BenchmarkAForward4KiBFault`).
 
 `TestADependentChainOf4KiBFaultsPaysOnePageReadAHop` runs a 4 KiB pager over a
-real checkpoint store and holds every hop at random to one read and one lookup
-of its own page, with the segment decoded once; the in-tree bugs
-`pager-plan-the-window-at-random` and `checkpoint-decode-every-lookup` fail it.
+real checkpoint store and holds every hop at random to one read, one lookup of
+its own page and one of the 16 around it behind the read, with the segment
+decoded once; the in-tree bugs `pager-fault-around-the-window` and
+`checkpoint-decode-every-lookup` fail it.
 `TestAForwardChainOf4KiBFaultsPlansItsWindowInOneLookup` holds every hop reading
 forwards to one read and its page's planning, its window located in one lookup
 beside the read; `pager-plan-the-window-first` fails it.

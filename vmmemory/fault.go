@@ -387,17 +387,27 @@ func (r *MemoryRegion) refault(ctx context.Context, b *binding) (bool, error) {
 	return true, nil
 }
 
-// planFault plans the window of the page index for the faulting page fault, or
-// the window's end for none, as far as the fault will read it: the whole
-// window, located at once, for a fault that reads its run first; the window,
-// with the faulting page located alone, for one that reads its page first,
-// which reads only the pages its stream has earned (readsAhead) and maps the
-// rest of the window only where it is resident; and the faulting page alone
-// for one at random.
+// faultAround is how many pages from the faulting one on a fault maps where
+// they are resident, reading none of them: Zircon's
+// kPageFaultMaxOptimisticPages (vm/include/vm/vm_address_region.h), which
+// maps that many present pages behind a fault and allocates nothing for them.
+const faultAround = 16
+
+// planFault plans the pages of the window of the page index that the fault on
+// fault, or the window's end for none, maps or reads: the whole window,
+// located at once, for a fault that reads its run first; and otherwise, with
+// the faulting page located alone, the pages it reads (readsAhead) and the
+// faultAround pages from it on, which it maps only where resident. A fault
+// with nothing around it plans its page alone.
 func (r *MemoryRegion) planFault(ctx context.Context, index, fault uint64) (*plan, error) {
 	start, end := r.window(index)
 	first, last := r.readsAhead(ctx, index, start, end)
-	follows := r.prefetches(ctx, start)
+	from, to := first, max(last, min(index+faultAround, end))
+	if sim.Bug(ctx, "pager-fault-around-the-window") {
+		// The bug maps the resident pages of the whole window around every
+		// fault, as the pager did before it took Zircon's bound.
+		from, to = start, end
+	}
 	var p *plan
 	var err error
 	how := readAlone
@@ -405,15 +415,12 @@ func (r *MemoryRegion) planFault(ctx context.Context, index, fault uint64) (*pla
 	case runFirst(ctx):
 		how = readRun
 		p, err = r.plan(ctx, start, end, fault)
-	case follows || last-first > 1:
+	case to-from > 1:
 		how = readFirst
-		p, err = r.planPage(ctx, start, end, fault, index)
+		p, err = r.planPage(ctx, from, to, fault, index)
 		if err == nil {
 			p.readFrom, p.readTo = first, last
 		}
-	case sim.Bug(ctx, "pager-plan-the-window-at-random"):
-		// The bug plans the whole window of a fault at random.
-		p, err = r.plan(ctx, start, end, fault)
 	default:
 		p, err = r.plan(ctx, index, index+1, fault)
 	}
@@ -459,6 +466,14 @@ func (p *plan) readAlone(ctx context.Context, index uint64) error {
 // and the rest is prefetched behind it.
 func (p *plan) readFirst(ctx context.Context, index uint64) error {
 	r := p.region
+	if p.readTo-p.readFrom == 1 && p.reserved[index-p.start].slot >= 0 {
+		// It reads its page alone, and maps only what is resident around it.
+		h := r.host
+		h.mu.Lock()
+		h.stats.PrefetchRandom++
+		h.mu.Unlock()
+		sim.Probe(ctx, ProbePrefetchRandom)
+	}
 	if sim.Bug(ctx, "pager-plan-the-window-first") {
 		// The bug plans the whole window before the faulting page's read
 		// starts.

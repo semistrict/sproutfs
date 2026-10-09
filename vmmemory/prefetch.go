@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"sync"
 	"time"
 
 	"github.com/semistrict/sproutfs/checkpoint"
@@ -70,8 +69,8 @@ import (
 // for its slots, ProbePrefetchDuplicate a landed page whose identity another
 // load had made resident first, and ProbePrefetchHeld a page a migration's
 // source turned out still to hold, which a prefetch drops, and
-// ProbePrefetchRandom a run left unread because its fault followed none of
-// its memory region's recent faults.
+// ProbePrefetchRandom a fault that read its page alone, its stream having
+// earned no read-ahead.
 const (
 	ProbePrefetchLanded    = "vmmemory/prefetch-landed"
 	ProbePrefetchMapped    = "vmmemory/prefetch-mapped"
@@ -214,59 +213,6 @@ func (h *Host) SettlePrefetches(ctx context.Context) error {
 // each run before its page (docs/measurements/gce-real-app-restore-2026-10-04.md).
 func PrefetchesAtRandom(pageSize uint64) bool {
 	return pageSize >= checkpoint.PageSize2MiB
-}
-
-// prefetches reports whether a fault in the window that begins at start
-// prefetches the rest of its window behind its page: one that follows a
-// recent fault of its memory region, and in a pager that prefetches at random
-// any fault. It records the window among the memory region's recent faults.
-func (r *MemoryRegion) prefetches(ctx context.Context, start uint64) bool {
-	follows := r.followsRecent(start)
-	random := r.host.cfg.PrefetchAtRandom && !sim.Bug(ctx, "pager-read-alone-at-random")
-	return follows || random || sim.Bug(ctx, "pager-prefetch-every-fault")
-}
-
-// recentFaults is how many of a memory region's latest faulting windows a
-// fault is compared with to tell a guest reading forwards from one reading at
-// random. Eight lets that many threads of a guest each read forwards at once.
-const recentFaults = 8
-
-// faultHistory is the windows of a memory region's latest faults that read
-// its backing.
-type faultHistory struct {
-	mu      sync.Mutex
-	windows [recentFaults]uint64
-	next    int
-	count   int
-}
-
-// followsRecent reports whether a fault in the window that begins at start
-// follows one of this memory region's recent faults, one in the same window
-// or in the window before, and records the window. A memory region's first
-// fault counts as following: a boot and a restore begin by reading forwards.
-//
-// Only such a fault plans the rest of its window and prefetches it; every
-// other plans its page alone (planFault), unless its pager prefetches at
-// random (prefetches). On GCE on 2026-10-04 a
-// chain of dependent 4 KiB faults read from the cluster took 24 ms a hop when
-// every fault prefetched its run, against 0.67 ms for a page alone: each
-// 2,047-page prefetch is about 100 ms of processor, and the prefetches of the
-// hops before took the processors the next hop's own read needed.
-func (r *MemoryRegion) followsRecent(start uint64) bool {
-	window := start / uint64(r.readAheadPages)
-	history := &r.history
-	history.mu.Lock()
-	defer history.mu.Unlock()
-	follows := history.count == 0
-	for _, recent := range history.windows[:history.count] {
-		if recent == window || recent+1 == window {
-			follows = true
-		}
-	}
-	history.windows[history.next] = window
-	history.next = (history.next + 1) % recentFaults
-	history.count = min(history.count+1, recentFaults)
-	return follows
 }
 
 // prefetch is the rest of one fault's run, read behind the fault, as READ
@@ -847,7 +793,7 @@ func (r *MemoryRegion) mapPrefetched(ctx context.Context, pf *prefetch, landed [
 	defer plan.unlock()
 	mapped := uint64(0)
 	for _, page := range landed {
-		if plan.bindLanded(page) {
+		if plan.bindLanded(ctx, page) {
 			mapped++
 		}
 	}
@@ -870,7 +816,7 @@ func (r *MemoryRegion) mapPrefetched(ctx context.Context, pf *prefetch, landed [
 // bindLanded takes one page a prefetch landed into the plan, where the region
 // has nothing at that page yet and its identity is still the one that
 // landed, and its root still holds it.
-func (p *plan) bindLanded(page prefetchPage) bool {
+func (p *plan) bindLanded(ctx context.Context, page prefetchPage) bool {
 	i := page.page - p.start
 	if p.pages[i] != nil || p.zeros[i] || !p.eligible(page.page) || p.region.mapped(page.page) {
 		return false
@@ -887,7 +833,11 @@ func (p *plan) bindLanded(page prefetchPage) bool {
 	if found == nil || !r.reachable(found) || !p.hold(found) {
 		return false
 	}
-	r.host.node.PageQueues().MarkAccessed(found)
+	// A page read ahead is no page the guest has used, as one mapped around a
+	// fault is not (takeRootRun).
+	if sim.Bug(ctx, "pager-mark-pages-around-accessed") {
+		r.host.node.PageQueues().MarkAccessed(found)
+	}
 	r.bind(page.page, found)
 	p.pages[i], p.fresh[i] = found, true
 	return true

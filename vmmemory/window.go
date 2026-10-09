@@ -573,7 +573,12 @@ func (p *plan) takeRootRun(ctx context.Context, first, last uint64, eligible []b
 			left[page-first] = !sim.Bug(ctx, "pager-read-a-held-page-again")
 			continue
 		}
-		r.host.node.PageQueues().MarkAccessed(found)
+		// Mapping a page around a fault is no access of it, as Zircon's fault
+		// does not count one (DisableMarkAccessed, vm/vm_mapping.cc): a page
+		// the guest goes on to use shows it to the harvest.
+		if sim.Bug(ctx, "pager-mark-pages-around-accessed") {
+			r.host.node.PageQueues().MarkAccessed(found)
+		}
 		r.bind(page, found)
 		p.pages[i], p.fresh[i], taken[page-first] = found, true, true
 		hits++

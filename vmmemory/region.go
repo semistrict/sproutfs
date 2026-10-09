@@ -40,11 +40,9 @@ type MemoryRegion struct {
 	// have not ended. It is guarded by Host.mu; a detach waits for it to reach
 	// zero. See prefetch.go.
 	prefetchRunning int
-	// history is the windows of this memory region's latest faults, which
-	// tell a fault whose window to plan from one at random, and streams its
-	// latest streams of forward faults, which tell how far a fault reads
-	// ahead (readahead.go).
-	history faultHistory
+	// streams are this memory region's latest streams of forward faults,
+	// which tell a guest reading forwards from one reading at random, and how
+	// far a fault reads ahead (readahead.go).
 	streams readAhead
 	// reads is the page source the READ requests of this memory region's
 	// faults go to. See pagerequests.go.
