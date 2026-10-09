@@ -47,13 +47,18 @@
 # The valkey template also carries cmd/sproutfs-guest-chase, given the same
 # way, as a fourth argument or in SPROUTFS_GUEST_CHASE.
 #
+# The postgres template is the minirootfs plus Alpine's PostgreSQL 16 (the
+# PostgreSQL Licence), with pgbench, and fio (GPL-2.0), which is what
+# scripts/lib/demo-postgres.sh runs: an embedder's database benchmark, with no
+# container runtime. Its data directory is made in the guest, on the root.
+#
 # Usage: scripts/build-guest-image.sh [--template NAME]
 #            [image-path [agent-binary [witness-binary [chase-binary]]]]
 # The image path defaults to /var/lib/sproutfs/guest.ext4 and is printed on
 # stdout when the build succeeds; progress goes to stderr.
 set -euo pipefail
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-usage() { echo "Usage: $0 [--template alpine|workload|valkey] [image-path [agent-binary [witness-binary [chase-binary]]]]" >&2; exit 2; }
+usage() { echo "Usage: $0 [--template alpine|workload|valkey|postgres] [image-path [agent-binary [witness-binary [chase-binary]]]]" >&2; exit 2; }
 template=alpine
 while [[ ${1:-} == --* ]]; do
     case $1 in
@@ -64,7 +69,7 @@ while [[ ${1:-} == --* ]]; do
 done
 (($# <= 4)) || usage
 case $template in
-    alpine | workload | valkey) ;;
+    alpine | workload | valkey | postgres) ;;
     *) echo "No template named $template." >&2; usage ;;
 esac
 image=${1:-/var/lib/sproutfs/guest.ext4}
@@ -93,7 +98,7 @@ workload_repos=(
     "ofetch https://github.com/unjs/ofetch 1dbc37f"
 )
 case $template in
-    alpine | valkey) image_size=2G ;;
+    alpine | valkey | postgres) image_size=2G ;;
     workload) image_size=5G ;;
 esac
 
@@ -209,6 +214,23 @@ if [[ $template == valkey ]]; then
         apk add --no-cache valkey valkey-cli
         apk info -v valkey | head -1 > /etc/sproutfs-valkey-version
         valkey-server --version >&2
+        rm -rf /var/cache/apk/*'
+    unmount_tree
+fi
+if [[ $template == postgres ]]; then
+    echo "building the postgres tree" >&2
+    enter_tree
+    # The server, its client and pgbench, which is in contrib, and fio. Their
+    # versions are written into the image, so a measurement names what it ran.
+    sudo -n chroot "$root" /bin/sh -c 'set -eu
+        apk add --no-cache postgresql16 postgresql16-client postgresql16-contrib fio
+        {
+            apk info -v postgresql16 | head -1
+            apk info -v fio | head -1
+        } > /etc/sproutfs-postgres-version
+        postgres --version >&2
+        pgbench --version >&2
+        fio --version >&2
         rm -rf /var/cache/apk/*'
     unmount_tree
 fi

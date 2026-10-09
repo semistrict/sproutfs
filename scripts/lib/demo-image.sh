@@ -160,8 +160,12 @@ for image in ${SPROUTFS_DEMO_GUEST_IMAGES:-alpine workload}; do
         bash "$repo/scripts/build-guest-image.sh" --template valkey "$demo/guest/valkey.ext4" \
             "$agent" "$witness" "$chase"
         ;;
+    postgres)
+        bash "$repo/scripts/build-guest-image.sh" --template postgres "$demo/guest/postgres.ext4" \
+            "$agent" "$witness"
+        ;;
     *)
-        echo "No guest image named $image: SPROUTFS_DEMO_GUEST_IMAGES names alpine, workload or valkey." >&2
+        echo "No guest image named $image: SPROUTFS_DEMO_GUEST_IMAGES names alpine, workload, valkey or postgres." >&2
         exit 2
         ;;
     esac

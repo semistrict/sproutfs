@@ -16,6 +16,10 @@
 #             a restore
 #   arena-worst  the isolated arena's worst cases beside the shared arena's, both
 #             modes in one run of at most half an hour
+#   postgres  an embedder's database benchmark on one host shaped as theirs:
+#             a 12 GiB file written and read at random, then PostgreSQL loaded
+#             and run with pgbench, with the guest probed throughout and the
+#             evidence of any stall kept
 #   redeploy  rebuild the image from the current source and restart the pods
 #   status    what exists, on the cloud side and on the node
 #   ssh       a shell on the VM, or a command on it
@@ -24,7 +28,11 @@
 #
 # Overridable: SPROUTFS_DEMO_PROJECT, SPROUTFS_DEMO_ZONE, SPROUTFS_DEMO_INSTANCE,
 # SPROUTFS_DEMO_BUCKET, SPROUTFS_DEMO_VM_IMAGE, SPROUTFS_DEMO_ARENA (the hosts'
-# arena mode, isolated or shared, for create and redeploy; isolated by default).
+# arena mode, isolated or shared, for create and redeploy; isolated by default),
+# SPROUTFS_DEMO_MACHINE_TYPE, SPROUTFS_DEMO_BOOT_DISK_TYPE and
+# SPROUTFS_DEMO_BOOT_DISK_GB (the node and the disk its spill files and scratch
+# are on), and SPROUTFS_DEMO_GUEST_IMAGES (the guest images create and
+# redeploy build: alpine and workload, which deploy/ names, and postgres).
 set -euo pipefail
 
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -118,7 +126,8 @@ create_instance() {
         --machine-type="${SPROUTFS_DEMO_MACHINE_TYPE:-n2-standard-8}" \
         --min-cpu-platform='Intel Cascade Lake' --enable-nested-virtualization \
         --image="$vm_image" --image-project=ubuntu-os-cloud \
-        --boot-disk-size=200GB --boot-disk-type=pd-balanced --boot-disk-auto-delete \
+        --boot-disk-size="${SPROUTFS_DEMO_BOOT_DISK_GB:-200}GB" \
+        --boot-disk-type="${SPROUTFS_DEMO_BOOT_DISK_TYPE:-pd-balanced}" --boot-disk-auto-delete \
         --network="${SPROUTFS_DEMO_NETWORK:-default}" \
         --service-account="$(service_account)" \
         --scopes=https://www.googleapis.com/auth/devstorage.read_write \
@@ -335,7 +344,8 @@ HOOK
         sudo install -d -m 0755 /opt/sproutfs-demo
         sudo rm -rf /opt/sproutfs-demo/repo
         sudo tar -xzf repo.tar.gz -C /opt/sproutfs-demo
-        sudo bash demo-image.sh /opt/sproutfs-demo $container_image 2>&1 \
+        sudo SPROUTFS_DEMO_GUEST_IMAGES='${SPROUTFS_DEMO_GUEST_IMAGES:-alpine workload}' \
+            bash demo-image.sh /opt/sproutfs-demo $container_image 2>&1 \
             | tee /tmp/demo-image.log"
 }
 
@@ -447,6 +457,35 @@ workload() {
     "${cloud[@]}" compute scp --recurse --zone="$zone" \
         "$instance:/tmp/sproutfs-workload" "$run"
     echo "Recorded under $run." >&2
+}
+
+# An embedder's database benchmark, run on the node by scripts/lib/demo-postgres.sh,
+# which reshapes the host deployment into theirs first. What it records is left
+# on the node under /tmp/sproutfs-postgres and copied back here. The node needs
+# the postgres guest image (SPROUTFS_DEMO_GUEST_IMAGES), the memory for a 16 GiB
+# arena (n2-highmem-8) and a disk like theirs (pd-ssd, 500 GB).
+postgres() {
+    check_instance_owner
+    wait_for_pods
+    "${cloud[@]}" compute scp --zone="$zone" "$repo/scripts/lib/demo-postgres.sh" "$instance:"
+    local status=0
+    remote "set -euo pipefail
+        $kube
+        SPROUTFS_POSTGRES_PLAIN=${SPROUTFS_POSTGRES_PLAIN:-0} SPROUTFS_POSTGRES_PULL=${SPROUTFS_POSTGRES_PULL:-0} \
+            SPROUTFS_POSTGRES_HOST_ENV=$(printf %q "${SPROUTFS_POSTGRES_HOST_ENV:-}") \
+            SPROUTFS_POSTGRES_PMEM_PAGE=${SPROUTFS_POSTGRES_PMEM_PAGE:-2097152} \
+            ${SPROUTFS_POSTGRES_HUGEPAGES:+SPROUTFS_POSTGRES_HUGEPAGES=$SPROUTFS_POSTGRES_HUGEPAGES} \
+            bash demo-postgres.sh 2>&1 | tee /tmp/demo-postgres.log" || status=$?
+    local into=${SPROUTFS_DEMO_POSTGRES_OUT:-$repo/.workload-runs} run
+    run=$into/postgres-$(date -u +%Y%m%dT%H%M%SZ)
+    [[ ${SPROUTFS_POSTGRES_PLAIN:-0} != 1 ]] || run=$run-plain
+    [[ ${SPROUTFS_POSTGRES_PULL:-0} != 1 ]] || run=$run-pull
+    [[ ${SPROUTFS_POSTGRES_PMEM_PAGE:-2097152} != 4096 ]] || run=$run-pmem4k
+    mkdir -p "$into"
+    "${cloud[@]}" compute scp --recurse --zone="$zone" \
+        "$instance:/tmp/sproutfs-postgres" "$run"
+    echo "Recorded under $run." >&2
+    return "$status"
 }
 
 # Many forks, migrations, stops and starts under a workload, with every guest's
@@ -606,6 +645,7 @@ case "$action" in
     features) features ;;
     arena) arena ;;
     arena-worst) arena_worst ;;
+    postgres) postgres ;;
     redeploy) redeploy ;;
     status) status ;;
     # ssh joins its arguments and hands them to a shell on the node, the way
@@ -621,5 +661,5 @@ case "$action" in
         ;;
     kubectl) remote "$kube; kubectl $(printf '%q ' "$@")" ;;
     delete) delete ;;
-    *) echo "Usage: $0 [create|run|fixes|bigguest|workload|soak|features|arena|arena-worst|redeploy|status|ssh|kubectl|delete] [arguments]" >&2; exit 2 ;;
+    *) echo "Usage: $0 [create|run|fixes|bigguest|workload|soak|features|arena|arena-worst|postgres|redeploy|status|ssh|kubectl|delete] [arguments]" >&2; exit 2 ;;
 esac
