@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-09 00:08'
-updated_date: '2026-10-09 01:35'
+updated_date: '2026-10-09 01:43'
 labels:
   - performance
 dependencies: []
@@ -33,4 +33,6 @@ A store that finds the dirty budget full waits in Host.takeSpill (vmmemory/press
 
 <!-- SECTION:NOTES:BEGIN -->
 2026-10-09: with the PMEM dirty budget raised from the arena's 3,276 pages to the spill file's 6,552 (SPROUTFS_PMEM_DIRTY_PAGES), the benchmark's pgbench went from 1,221 tps / 13.1 ms to 2,290 / 7.0 ms, pgbench -i from 52 s to 34 s (plain: 38 s), dirty waits during pgbench from about 43,000 to 807, and no probe failed (3 before). The host now defaults each dirty budget to its spill share. What is left of this task: the waits that remain, and that a full budget still parks a vCPU for a whole upload.
+
+Anatomy of a 32 s probe stall (RAM share 52%, PMEM dirty budget 7,863 pages, 2026-10-09): the file phase wrote at 698 MiB/s until the dirty set reached the budget; for the next ~25 s the PMEM pager served no fault at all while ~23,000 stores waited, all four vCPUs in kvm_vcpu_block; the checkpoint asked for at the high-water mark took 39 s to upload ~5.8 GB, and when it published the dirty set fell to 2,016 and faults resumed. A larger budget only moves the wall: nothing is released until a whole publication lands. The fix is to release reservations as each sealed part lands, or to pace stores before the wall rather than park every vCPU at it.
 <!-- SECTION:NOTES:END -->
