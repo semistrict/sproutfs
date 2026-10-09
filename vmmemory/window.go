@@ -116,6 +116,10 @@ type plan struct {
 	free    []bool
 	alone   locations
 	reading reading
+	// readFrom and readTo bound the pages the plan reads, of those it plans:
+	// a fault that reads its page first reads only what its stream has earned
+	// (readsAhead), and maps the rest of its window only where resident.
+	readFrom, readTo uint64
 	// provisional is the run of slots a fault that reads its page first took
 	// for its window (reserveProvisional).
 	provisional provisionalRun
@@ -155,7 +159,7 @@ func (r *MemoryRegion) newPlan(start, end, fault uint64) *plan {
 	// random pays for each one it makes.
 	n := end - start
 	marks := make([]bool, 4*n)
-	p := &plan{region: r, start: start, end: end, fault: fault, store: end,
+	p := &plan{region: r, start: start, end: end, fault: fault, store: end, readFrom: start, readTo: end,
 		pages: make([]*zirconvm.VmPage, n), reserved: make([]fileSlot, n),
 		fresh: marks[:n:n], zeros: marks[n : 2*n : 2*n], writable: marks[2*n : 3*n : 3*n],
 		private: marks[3*n:]}
@@ -218,6 +222,9 @@ func (p *plan) locationsOf(page uint64) *locations {
 	}
 	return &p.window
 }
+
+// reads reports whether the plan reads page where it needs reading.
+func (p *plan) reads(page uint64) bool { return page >= p.readFrom && page < p.readTo }
 
 // identity reports the store page whose bytes this page reads, which is the
 // whole of what names it: a page is published whole or not at all.
@@ -492,7 +499,7 @@ func (p *plan) survey(ctx context.Context, except uint64, prefetched bool) surve
 			continue
 		}
 		if !named {
-			if !prefetched && !p.own(page) {
+			if !prefetched && !p.own(page) && p.reads(page) {
 				found.into[at] = p.fileOf(page)
 			}
 			page++
@@ -516,8 +523,9 @@ func (p *plan) survey(ctx context.Context, except uint64, prefetched bool) surve
 				continue
 			}
 			key, _ := p.identity(q)
-			if reading.of(key) {
-				// A page a prefetch is reading is that prefetch's to bring in.
+			if !p.reads(q) || reading.of(key) {
+				// A page past what the fault reads ahead is its own fault's
+				// to read, and one a prefetch is reading that prefetch's.
 				continue
 			}
 			found.into[i] = files.of(key)
@@ -636,7 +644,7 @@ func (p *plan) reserveProvisional(index uint64) {
 	file := p.fileOf(index)
 	first, last := index, index+1
 	if p.reading == readFirst {
-		first, last = p.start, p.end
+		first, last = p.readFrom, p.readTo
 	}
 	at, count := p.region.host.allocateFree(file, int(last-first))
 	if count == 0 {
@@ -754,7 +762,8 @@ func (p *plan) reserveOwn() {
 	h := r.host
 	for page := p.start; page < p.end; page++ {
 		i := page - p.start
-		if p.pages[i] != nil || p.zeros[i] || p.reserved[i].slot >= 0 || !p.own(page) || !p.eligible(page) {
+		if p.pages[i] != nil || p.zeros[i] || p.reserved[i].slot >= 0 || !p.own(page) || !p.eligible(page) ||
+			!p.reads(page) {
 			continue
 		}
 		h.mu.Lock()

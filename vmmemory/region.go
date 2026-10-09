@@ -41,8 +41,11 @@ type MemoryRegion struct {
 	// zero. See prefetch.go.
 	prefetchRunning int
 	// history is the windows of this memory region's latest faults, which
-	// tell a guest reading forwards from one reading at random.
+	// tell a fault whose window to plan from one at random, and streams its
+	// latest streams of forward faults, which tell how far a fault reads
+	// ahead (readahead.go).
 	history faultHistory
+	streams readAhead
 	// reads is the page source the READ requests of this memory region's
 	// faults go to. See pagerequests.go.
 	reads   *requestSource

@@ -23,9 +23,9 @@ import (
 // 2026-10-03 a 4 KiB page from the cluster took 0.65 ms and its 8 MiB run
 // 39 ms (docs/measurements/gce-dependent-reads-2026-10-03.md).
 //
-// A fault that follows one of its memory region's recent faults, in its own
-// run or the one before, prefetches (followsRecent). One at random prefetches
-// only in a pager of large pages (Config.PrefetchAtRandom,
+// A fault that goes on one of its memory region's streams of forward faults
+// prefetches as far ahead as the stream has earned (readahead.go). One at
+// random prefetches only in a pager of large pages (Config.PrefetchAtRandom,
 // PrefetchesAtRandom), and otherwise reads its page alone. A prefetch costs
 // processors a page as a fault's read does: a run of 4 KiB pages is 2,047 of
 // them to prefetch, and one of 2 MiB pages three.

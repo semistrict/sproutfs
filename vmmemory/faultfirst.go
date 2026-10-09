@@ -16,9 +16,10 @@ import (
 //     its page: it locates that page, takes it — bound to a resident page
 //     under its identity, or a slot to read it into — and reads it. It plans
 //     nothing of the rest of its window, which it neither reads nor maps.
-//   - A fault that follows a recent one, and any fault in a pager that
-//     prefetches at random, reads its page first and prefetches the rest of
-//     its window behind it (readFirst). It locates its page
+//   - A fault that follows a recent one, one that goes on a stream that reads
+//     ahead, and any fault in a pager that prefetches at random, reads its
+//     page first and prefetches behind it what its stream has earned of its
+//     window (readFirst, readahead.go). It locates its page
 //     alone, takes it, and starts its read on a task of its own. Only then
 //     does it locate the rest of its window, in one lookup, and plan it: the
 //     resident pages it maps beside its own, and the slots of the pages the
@@ -55,8 +56,8 @@ const (
 	// readAlone reads the faulting page alone and plans nothing else: a
 	// fault that follows none of its memory region's recent faults.
 	readAlone reading = iota
-	// readFirst reads the faulting page first and prefetches the rest of
-	// the window behind it: a fault that follows one.
+	// readFirst reads the faulting page first and prefetches behind it what
+	// its stream has earned of the window: a fault that follows one.
 	readFirst
 	// readRun reads the whole window at once with the faulting page: a
 	// post-copy stream's fault.

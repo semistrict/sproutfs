@@ -534,15 +534,33 @@ its binding, because a slot holds a binding or lies in an interval, never both.
 
 ## Faults and read-ahead
 
-A read fault that follows a recent one serves its whole aligned read-ahead run,
-its own page first. Pages already resident under the same page identity are
-mapped without a read. The faulting page is read alone, installed with those
-resident pages in one mapping command, and its access resolved. The rest of the
-run is a **prefetch**: one backing read on its own goroutine, started beside the
+A read fault that follows a recent one serves its aligned read-ahead run, its
+own page first. Pages already resident under the same page identity are mapped
+without a read. The faulting page is read alone, installed with those resident
+pages in one mapping command, and its access resolved. The pages it reads ahead
+are a **prefetch**: one backing read on its own goroutine, started beside the
 fault's read, which the fault never waits for (`vmmemory/prefetch.go`). A fault
 at random serves its page alone, except in a pager of 2 MiB pages
 ([reading at random](#reading-at-random)). Read-ahead uses only free slots and
 never evicts; only the faulting page may cause an eviction.
+
+How far a fault reads ahead is decided by streams, as Linux's on-demand
+read-ahead does (`vmmemory/readahead.go`), not by the run. A fault that goes on
+none of a region's streams starts one. One on a page after a stream's latest,
+within one more read-ahead of what that fault brought in, goes on it. A stream's
+first two faults read their pages alone; its third reads four pages ahead, and
+each fault after that four times as many, until one reads its whole run. A
+region's first fault reads its whole run. Mapping the resident pages of the run
+costs no read, and a fault that follows a recent one does it whatever its
+stream has earned.
+
+This is Zircon's split. Its kernel maps at most 16 present pages around a fault
+and reads nothing else (`kPageFaultMaxOptimisticPages`); how much to read is
+the user pager's, and Fxfs reads an aligned 128 KiB. A 4 KiB pager sees a guest's
+read of 8 KiB as two faults on adjacent pages. While the second fault of a run
+prefetched the rest of it, the embedder's PostgreSQL benchmark on GCE on
+2026-10-09 loaded 44 pages and evicted as many for each fault of its random
+reads, and read 252 times a second against 23,825 on plain Linux.
 
 Reading the page first matters to a guest that follows pointers. On GCE a 4 KiB
 page from the cluster took 0.65 ms and an 8 MiB run 39 ms; at 2 MiB, 10 ms and
@@ -695,9 +713,11 @@ A fault plans only what it reads (`vmmemory/faultfirst.go`):
 - A fault at random locates its page in one lookup of one page, takes it, bound
   to a resident page under its identity or to a slot to read it into, and reads
   it.
-- A fault that follows a recent one locates and takes its page alone and starts
-  the page's read on its own task. Only then does it locate the rest of its
-  window, in one lookup of the volume, and plan it while the read is under way.
+- A fault that follows a recent one, or goes on a stream that reads ahead,
+  locates and takes its page alone and starts the page's read on its own task.
+  Only then does it locate the rest of its window, in one lookup of the volume,
+  and plan it while the read is under way: it maps what is resident there, and
+  reads what its stream has earned.
 - A post-copy stream's fault plans its whole window first, because it reads the
   window with its page.
 

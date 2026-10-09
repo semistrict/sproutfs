@@ -390,10 +390,14 @@ func (r *MemoryRegion) refault(ctx context.Context, b *binding) (bool, error) {
 // planFault plans the window of the page index for the faulting page fault, or
 // the window's end for none, as far as the fault will read it: the whole
 // window, located at once, for a fault that reads its run first; the window,
-// with the faulting page located alone, for one that reads its page first; and
-// the faulting page alone for one at random.
+// with the faulting page located alone, for one that reads its page first,
+// which reads only the pages its stream has earned (readsAhead) and maps the
+// rest of the window only where it is resident; and the faulting page alone
+// for one at random.
 func (r *MemoryRegion) planFault(ctx context.Context, index, fault uint64) (*plan, error) {
 	start, end := r.window(index)
+	first, last := r.readsAhead(ctx, index, start, end)
+	follows := r.prefetches(ctx, start)
 	var p *plan
 	var err error
 	how := readAlone
@@ -401,9 +405,12 @@ func (r *MemoryRegion) planFault(ctx context.Context, index, fault uint64) (*pla
 	case runFirst(ctx):
 		how = readRun
 		p, err = r.plan(ctx, start, end, fault)
-	case r.prefetches(ctx, start):
+	case follows || last-first > 1:
 		how = readFirst
 		p, err = r.planPage(ctx, start, end, fault, index)
+		if err == nil {
+			p.readFrom, p.readTo = first, last
+		}
 	case sim.Bug(ctx, "pager-plan-the-window-at-random"):
 		// The bug plans the whole window of a fault at random.
 		p, err = r.plan(ctx, start, end, fault)

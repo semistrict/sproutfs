@@ -234,6 +234,24 @@
     "purpose": "Evict a page a guest maps for a fault's slot while a prefetch holds free slots for pages nobody has asked for yet, rather than cancel that prefetch."
   },
   {
+    "id": "pager-read-ahead-on-a-second-fault",
+    "package": "vmmemory",
+    "run": "^TestAGuestReadingTwoPagesAtRandomReadsNothingAhead$",
+    "purpose": "Read ahead from a stream's second fault. A 4 KiB pager sees each 8 KiB read at random as two faults on adjacent pages, so every such read prefetches."
+  },
+  {
+    "id": "pager-read-ahead-a-window-at-once",
+    "package": "vmmemory",
+    "run": "^TestAGuestReadingForwardsReadsFurtherAheadEachFault$",
+    "purpose": "Have a stream earn its whole read-ahead window at once instead of four times as many pages a fault."
+  },
+  {
+    "id": "pager-random-fault-replaces-a-stream",
+    "package": "vmmemory",
+    "run": "^TestFaultsAtRandomLeaveAStreamItsReadAhead$",
+    "purpose": "Put each new stream in the place of the stream used least recently, so a guest's faults at random push out a stream reading forwards."
+  },
+  {
     "id": "pager-prefetch-every-fault",
     "package": "vmmemory",
     "run": "^TestADependentChainOfFaultsWaitsForOnePageAHop$",
