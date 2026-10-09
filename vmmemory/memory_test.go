@@ -537,6 +537,9 @@ func (m batchedMapping) MapBatch(ctx context.Context, runs []vmmemory.MapRun) (i
 			}
 		}
 	}
+	if m.hasExited() {
+		return 0, 0, errClientExited
+	}
 	if m.refuseMap || m.outOfMappings(ctx, "map-batch") {
 		return 0, 0, vmmemory.ErrMappingRefused
 	}
